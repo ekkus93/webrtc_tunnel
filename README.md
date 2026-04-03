@@ -1,6 +1,36 @@
 # rust_webrtc
 
+[![CI](https://github.com/ekkus93/rust_webrtc/actions/workflows/ci.yml/badge.svg)](https://github.com/ekkus93/rust_webrtc/actions/workflows/ci.yml)
+
 `rust_webrtc` is a CLI-only secure TCP tunnel that carries a single TCP stream over a WebRTC data channel while using MQTT only as an untrusted signaling transport.
+
+## Build
+
+This project builds with stable Rust and Cargo.
+
+Build the full workspace:
+
+```bash
+cargo build --workspace
+```
+
+For optimized release binaries:
+
+```bash
+cargo build --release --workspace
+```
+
+The main executables are:
+
+- `target/debug/p2pctl`
+- `target/debug/p2p-offer`
+- `target/debug/p2p-answer`
+
+Or, in release mode:
+
+- `target/release/p2pctl`
+- `target/release/p2p-offer`
+- `target/release/p2p-answer`
 
 ## Architecture
 
