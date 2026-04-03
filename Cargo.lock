@@ -1687,6 +1687,7 @@ dependencies = [
 name = "p2p-webrtc"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures-util",
  "p2p-core",
  "thiserror 2.0.18",

@@ -215,36 +215,36 @@ This TODO list is intended for implementation by GitHub Copilot or another codin
 ## 5. `p2p-webrtc`
 
 ### 5.1 PeerConnection wrapper
-- [ ] Build config from `webrtc` config section
-- [ ] Support STUN URL list
-- [ ] Do not implement TURN in v1
-- [ ] Create PeerConnection wrapper API usable by daemon layer
+- [x] Build config from `webrtc` config section
+- [x] Support STUN URL list
+- [x] Do not implement TURN in v1
+- [x] Create PeerConnection wrapper API usable by daemon layer
 
 ### 5.2 SDP flow
-- [ ] Implement create offer
-- [ ] Implement apply remote offer
-- [ ] Implement create answer
-- [ ] Implement apply remote answer
+- [x] Implement create offer
+- [x] Implement apply remote offer
+- [x] Implement create answer
+- [x] Implement apply remote answer
 
 ### 5.3 ICE flow
-- [ ] Capture local ICE candidates
-- [ ] Serialize local ICE candidates into signaling messages
-- [ ] Apply remote ICE candidates from signaling messages
-- [ ] Surface ICE state changes to daemon layer
+- [x] Capture local ICE candidates
+- [x] Serialize local ICE candidates into signaling messages
+- [x] Apply remote ICE candidates from signaling messages
+- [x] Surface ICE state changes to daemon layer
 
 ### 5.4 Data channel
-- [ ] Create data channel on offer side
-- [ ] Accept data channel on answer side
-- [ ] Enforce expected label `tunnel`
-- [ ] Surface open/close/message events
+- [x] Create data channel on offer side
+- [x] Accept data channel on answer side
+- [x] Enforce expected label `tunnel`
+- [x] Surface open/close/message events
 
 ### 5.5 ICE restart hooks
-- [ ] Provide API for ICE restart attempt
-- [ ] Surface timeout/failure conditions clearly
+- [x] Provide API for ICE restart attempt
+- [x] Surface timeout/failure conditions clearly
 
 ### 5.6 Tests / harnesses
-- [ ] Unit-test signaling-to-webrtc mapping where practical
-- [ ] Add integration hooks for later end-to-end tests
+- [x] Unit-test signaling-to-webrtc mapping where practical
+- [x] Add integration hooks for later end-to-end tests
 
 ---
 
@@ -459,10 +459,10 @@ This TODO list is intended for implementation by GitHub Copilot or another codin
 - [x] replay cache
 
 ### Phase 3: WebRTC session plumbing
-- [ ] PeerConnection wrapper
-- [ ] SDP flow
-- [ ] ICE flow
-- [ ] data channel wrapper
+- [x] PeerConnection wrapper
+- [x] SDP flow
+- [x] ICE flow
+- [x] data channel wrapper
 
 ### Phase 4: tunnel transport
 - [ ] tunnel frame codec

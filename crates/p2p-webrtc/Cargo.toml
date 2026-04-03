@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+bytes.workspace = true
 p2p-core = { path = "../p2p-core" }
 futures-util.workspace = true
 thiserror.workspace = true
