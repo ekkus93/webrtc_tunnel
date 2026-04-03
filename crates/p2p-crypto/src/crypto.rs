@@ -59,6 +59,27 @@ pub fn derive_aead_key(
     Ok(key)
 }
 
+pub fn derive_aead_key_from_shared_secret(
+    shared_secret: &[u8; 32],
+    sender_kid: &Kid,
+    recipient_kid: &Kid,
+    msg_id: &MsgId,
+) -> Result<[u8; 32], CryptoError> {
+    let mut salt = Vec::with_capacity(64);
+    salt.extend_from_slice(sender_kid.as_bytes());
+    salt.extend_from_slice(recipient_kid.as_bytes());
+
+    let mut info = Vec::with_capacity(26);
+    info.extend_from_slice(b"p2ts/v1/msg");
+    info.extend_from_slice(msg_id.as_bytes());
+    info.push(PROTOCOL_SUITE);
+
+    let hkdf = Hkdf::<Sha256>::new(Some(&salt), shared_secret);
+    let mut key = [0_u8; 32];
+    hkdf.expand(&info, &mut key).map_err(|error| CryptoError::Kdf(error.to_string()))?;
+    Ok(key)
+}
+
 pub fn encrypt_message(
     key: &[u8; 32],
     nonce: &[u8; 24],

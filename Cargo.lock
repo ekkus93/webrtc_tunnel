@@ -1665,9 +1665,11 @@ dependencies = [
  "rumqttc",
  "serde",
  "serde_cbor",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -2050,6 +2052,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-stream",
  "tokio-util",
+ "url",
 ]
 
 [[package]]

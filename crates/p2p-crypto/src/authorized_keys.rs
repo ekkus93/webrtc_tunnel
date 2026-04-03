@@ -2,9 +2,10 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use p2p_core::PeerId;
+use p2p_core::{Kid, PeerId};
 
 use crate::error::CryptoError;
+use crate::kid_from_signing_key;
 use crate::public_identity::PublicIdentity;
 
 #[derive(Clone, Debug)]
@@ -63,5 +64,9 @@ impl AuthorizedKeys {
 
     pub fn get_by_peer_id(&self, peer_id: &PeerId) -> Option<&AuthorizedKey> {
         self.keys.iter().find(|key| &key.peer_id == peer_id)
+    }
+
+    pub fn get_by_kid(&self, kid: &Kid) -> Option<&AuthorizedKey> {
+        self.keys.iter().find(|key| kid_from_signing_key(&key.public_identity.sign_public) == *kid)
     }
 }

@@ -104,6 +104,14 @@ impl IdentityFile {
         }
     }
 
+    pub fn signing_kid(&self) -> p2p_core::Kid {
+        crate::kid_from_signing_key(&self.verifying_key)
+    }
+
+    pub fn kex_static_secret(&self) -> StaticSecret {
+        StaticSecret::from(*self.kex_secret.expose_secret())
+    }
+
     pub fn render_toml(&self) -> String {
         format!(
             "format = \"p2ptunnel-identity-v1\"\npeer_id = \"{}\"\n\n[sign]\nalg = \"ed25519\"\nprivate = \"{}\"\npublic = \"{}\"\n\n[kex]\nalg = \"x25519\"\nprivate = \"{}\"\npublic = \"{}\"\n",

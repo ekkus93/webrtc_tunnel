@@ -156,59 +156,59 @@ This TODO list is intended for implementation by GitHub Copilot or another codin
 ## 4. `p2p-signaling`
 
 ### 4.1 Wire format structs
-- [ ] Define outer envelope struct matching exact wire layout
-- [ ] Implement binary encode
-- [ ] Implement binary decode
-- [ ] Enforce exact field lengths
-- [ ] Enforce max payload sizes
+- [x] Define outer envelope struct matching exact wire layout
+- [x] Implement binary encode
+- [x] Implement binary decode
+- [x] Enforce exact field lengths
+- [x] Enforce max payload sizes
 
 ### 4.2 Inner message structs
-- [ ] Define CBOR-serializable inner message structs
-- [ ] Define all message body types:
-  - [ ] hello
-  - [ ] offer
-  - [ ] answer
-  - [ ] ice_candidate
-  - [ ] ack
-  - [ ] ping
-  - [ ] pong
-  - [ ] close
-  - [ ] error
-  - [ ] ice_restart_request
-  - [ ] renegotiate_request
+- [x] Define CBOR-serializable inner message structs
+- [x] Define all message body types:
+  - [x] hello
+  - [x] offer
+  - [x] answer
+  - [x] ice_candidate
+  - [x] ack
+  - [x] ping
+  - [x] pong
+  - [x] close
+  - [x] error
+  - [x] ice_restart_request
+  - [x] renegotiate_request
 
 ### 4.3 MQTT transport wrapper
-- [ ] Implement broker connection with TLS requirement
-- [ ] Implement stable client ID config
-- [ ] Implement subscribe to own signal topic
-- [ ] Implement publish to peer signal topic
-- [ ] Set QoS from config
-- [ ] Handle reconnect to broker cleanly
+- [x] Implement broker connection with TLS requirement
+- [x] Implement stable client ID config
+- [x] Implement subscribe to own signal topic
+- [x] Implement publish to peer signal topic
+- [x] Set QoS from config
+- [x] Handle reconnect to broker cleanly
 
 ### 4.4 End-to-end signaling pipeline
-- [ ] Build encrypt+sign send path
-- [ ] Build verify+decrypt receive path
-- [ ] Reject non-encrypted / non-signed messages by construction
+- [x] Build encrypt+sign send path
+- [x] Build verify+decrypt receive path
+- [x] Reject non-encrypted / non-signed messages by construction
 
 ### 4.5 Replay protection
-- [ ] Implement in-memory replay cache keyed by `(sender_kid, msg_id)`
-- [ ] Enforce max age
-- [ ] Enforce clock skew limits
-- [ ] Reject duplicates
-- [ ] Reject stale session messages
+- [x] Implement in-memory replay cache keyed by `(sender_kid, msg_id)`
+- [x] Enforce max age
+- [x] Enforce clock skew limits
+- [x] Reject duplicates
+- [x] Reject stale session messages
 
 ### 4.6 Ack logic
-- [ ] Implement `ack_required` flag handling
-- [ ] Implement encrypted `ack` messages
-- [ ] Handle duplicate receives idempotently
+- [x] Implement `ack_required` flag handling
+- [x] Implement encrypted `ack` messages
+- [x] Handle duplicate receives idempotently
 
 ### 4.7 Tests
-- [ ] Round-trip encode/decode outer envelope
-- [ ] Round-trip encrypt/decrypt inner messages
-- [ ] Reject wrong recipient KID
-- [ ] Reject invalid signature
-- [ ] Reject duplicate msg_id
-- [ ] Reject stale timestamp
+- [x] Round-trip encode/decode outer envelope
+- [x] Round-trip encrypt/decrypt inner messages
+- [x] Reject wrong recipient KID
+- [x] Reject invalid signature
+- [x] Reject duplicate msg_id
+- [x] Reject stale timestamp
 
 ---
 
@@ -399,8 +399,8 @@ This TODO list is intended for implementation by GitHub Copilot or another codin
 - [x] crypto primitives
 - [x] config parsing
 - [x] file parsing
-- [ ] wire encode/decode
-- [ ] replay cache
+- [x] wire encode/decode
+- [x] replay cache
 - [ ] frame codec
 
 ### 11.2 Integration tests
@@ -452,11 +452,11 @@ This TODO list is intended for implementation by GitHub Copilot or another codin
 - [x] crypto helpers
 
 ### Phase 2: signaling protocol
-- [ ] outer wire format
-- [ ] inner CBOR messages
-- [ ] encrypt/sign send path
-- [ ] verify/decrypt receive path
-- [ ] replay cache
+- [x] outer wire format
+- [x] inner CBOR messages
+- [x] encrypt/sign send path
+- [x] verify/decrypt receive path
+- [x] replay cache
 
 ### Phase 3: WebRTC session plumbing
 - [ ] PeerConnection wrapper
