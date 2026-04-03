@@ -1,0 +1,17 @@
+[package]
+name = "p2p-offer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap.workspace = true
+p2p-core = { path = "../../crates/p2p-core" }
+p2p-daemon = { path = "../../crates/p2p-daemon" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

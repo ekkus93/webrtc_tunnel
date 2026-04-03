@@ -1,0 +1,20 @@
+[package]
+name = "p2p-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+p2p-core = { path = "../p2p-core" }
+p2p-signaling = { path = "../p2p-signaling" }
+p2p-tunnel = { path = "../p2p-tunnel" }
+p2p-webrtc = { path = "../p2p-webrtc" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

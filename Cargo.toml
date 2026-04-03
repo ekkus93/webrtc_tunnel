@@ -1,0 +1,54 @@
+[workspace]
+members = [
+  "crates/p2p-core",
+  "crates/p2p-crypto",
+  "crates/p2p-signaling",
+  "crates/p2p-webrtc",
+  "crates/p2p-tunnel",
+  "crates/p2p-daemon",
+  "bins/p2p-offer",
+  "bins/p2p-answer",
+  "bins/p2pctl",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/phil/rust_webrtc"
+rust-version = "1.85"
+
+[workspace.dependencies]
+base64 = "0.22.1"
+bytes = "1.10.1"
+chacha20poly1305 = "0.10.1"
+clap = { version = "4.5.37", features = ["derive", "env"] }
+ed25519-dalek = { version = "2.1.1", features = ["rand_core", "zeroize"] }
+futures-util = "0.3.31"
+hex = "0.4.3"
+hkdf = "0.12.4"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+rumqttc = "0.25.1"
+secrecy = { version = "0.10.3", features = ["serde"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_cbor = "0.11.2"
+serde_json = "1.0.140"
+sha2 = "0.10.8"
+thiserror = "2.0.12"
+tokio = { version = "1.44.2", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+toml = "0.8.20"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json"] }
+webrtc = "0.8.0"
+x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }
+zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"

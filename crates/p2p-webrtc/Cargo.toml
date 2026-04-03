@@ -1,0 +1,17 @@
+[package]
+name = "p2p-webrtc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+p2p-core = { path = "../p2p-core" }
+futures-util.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+webrtc.workspace = true
+
+[lints]
+workspace = true
