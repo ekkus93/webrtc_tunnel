@@ -1710,6 +1710,7 @@ dependencies = [
  "p2p-core",
  "p2p-crypto",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
