@@ -126,7 +126,7 @@ mod tests {
             redact_secrets: true,
             redact_sdp: true,
             redact_candidates: true,
-            log_rotation: "daily".to_owned(),
+            log_rotation: "none".to_owned(),
         }
     }
 

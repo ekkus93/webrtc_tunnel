@@ -81,7 +81,7 @@ Reconnect currently depends on `pending_stream.is_some()`, which is no longer tr
   - [x] bridge closed
 - [x] Decide and implement the intended v1 behavior when a live bridge drops:
   - [x] either fail the local client immediately and end the session, or
-  - [ ] hold and reconnect for a short window if that behavior is truly implemented
+  - [x] hold-and-reconnect for a short window remains intentionally unimplemented in v1
 - [x] Remove reconnect gating based solely on `pending_stream.is_some()`.
 - [x] Ensure reconnect logic is triggered for the normal active-session ICE failure path.
 - [x] Add tests for a live tunnel entering ICE failed/disconnected state.
@@ -191,9 +191,9 @@ The data channel is created using a config label, then validated against a hardc
 
 ### Tasks
 - [x] Decide whether data channel label is truly configurable in v1.
-- [ ] If configurable:
-  - [ ] remove hardcoded validation against a different constant
-  - [ ] use config consistently on both create and receive paths
+- [x] Configurable-label branch rejected for v1.
+  - [x] do not support per-config label overrides in v1
+  - [x] keep the single protocol label on both create and receive paths
 - [x] If not configurable:
   - [x] remove the config field
   - [x] hardcode one label everywhere
@@ -215,11 +215,11 @@ The config validator checks some basics but does not enforce several stronger fa
 - possibly daemon startup code
 
 ### Tasks
-- [ ] Audit all `security.*` config knobs.
-- [ ] Enforce or remove any knob that the implementation does not truly support.
-- [ ] Add validation for insecure path conditions where feasible.
-- [ ] Validate required file presence and consistency for TLS if TLS config remains supported.
-- [ ] Ensure startup fails clearly on unsupported or insecure settings.
+- [x] Audit all `security.*` config knobs.
+- [x] Enforce or remove any knob that the implementation does not truly support.
+- [x] Add validation for insecure path conditions where feasible.
+- [x] Validate required file presence and consistency for TLS if TLS config remains supported.
+- [x] Ensure startup fails clearly on unsupported or insecure settings.
 
 ### Acceptance criteria
 - Security-related config is either enforced or rejected, not silently ignored.
@@ -237,14 +237,14 @@ Some session validation and ACK ordering paths are weaker than intended.
 - `crates/p2p-signaling/src/messages.rs`
 
 ### Tasks
-- [ ] Audit message types that require ACK.
-- [ ] Confirm ACK is sent only after the message is considered valid for this peer/session.
-- [ ] Confirm duplicates are handled cleanly.
-- [ ] Add tests for:
-  - [ ] duplicate offer
-  - [ ] stale session message
-  - [ ] wrong sender peer
-  - [ ] unauthorized peer
+- [x] Audit message types that require ACK.
+- [x] Confirm ACK is sent only after the message is considered valid for this peer/session.
+- [x] Confirm duplicates are handled cleanly.
+- [x] Add tests for:
+  - [x] duplicate offer
+  - [x] stale session message
+  - [x] wrong sender peer
+  - [x] unauthorized peer
 
 ### Acceptance criteria
 - ACK behavior is protocol-consistent and not misleading.
@@ -262,10 +262,10 @@ Some session validation and ACK ordering paths are weaker than intended.
 - `bins/p2pctl/src/main.rs`
 
 ### Tasks
-- [ ] Refuse to overwrite existing `identity` or `identity.pub` by default.
-- [ ] Add `--force` to allow explicit overwrite.
-- [ ] Print a clear warning or success message indicating whether files were newly created or replaced.
-- [ ] Add tests for default refusal and `--force` behavior.
+- [x] Refuse to overwrite existing `identity` or `identity.pub` by default.
+- [x] Add `--force` to allow explicit overwrite.
+- [x] Print a clear warning or success message indicating whether files were newly created or replaced.
+- [x] Add tests for default refusal and `--force` behavior.
 
 ### Acceptance criteria
 - Existing identities are not overwritten accidentally.
@@ -282,10 +282,10 @@ Some session validation and ACK ordering paths are weaker than intended.
 - `crates/p2p-core/src/config.rs`
 
 ### Tasks
-- [ ] Make password loading conditional.
-- [ ] Allow username-only, certificate-only, or anonymous broker auth modes where explicitly configured.
-- [ ] Add validation rules so invalid combinations fail clearly.
-- [ ] Add tests for password/no-password startup behavior.
+- [x] Make password loading conditional.
+- [x] Allow username-only, certificate-only, or anonymous broker auth modes where explicitly configured.
+- [x] Add validation rules so invalid combinations fail clearly.
+- [x] Add tests for password/no-password startup behavior.
 
 ### Acceptance criteria
 - Broker auth modes are explicit and do not require a password file when not needed.
@@ -302,17 +302,17 @@ Some config knobs appear unused or unimplemented.
 - relevant implementation crates
 
 ### Tasks
-- [ ] Audit each config field for real runtime use.
-- [ ] For each unused field, choose one:
-  - [ ] implement it
-  - [ ] remove it
-  - [ ] mark it unsupported and fail if set
-- [ ] Candidate fields to audit first:
-  - [ ] `webrtc.max_message_size`
-  - [ ] `logging.log_rotation`
-  - [ ] `health.status_socket`
-  - [ ] reconnect hold-local-client fields
-- [ ] Update README/docs to match the real config surface.
+- [x] Audit each config field for real runtime use.
+- [x] For each unused field, choose one:
+  - [x] implement it
+  - [x] remove it
+  - [x] mark it unsupported and fail if set
+- [x] Candidate fields to audit first:
+  - [x] `webrtc.max_message_size`
+  - [x] `logging.log_rotation`
+  - [x] `health.status_socket`
+  - [x] reconnect hold-local-client fields
+- [x] Update README/docs to match the real config surface.
 
 ### Acceptance criteria
 - Config no longer promises behavior that does not exist.
@@ -328,12 +328,12 @@ The current tests are a good start, but the risky areas are state-machine/failur
 - tests across `p2p-daemon`, `p2p-signaling`, `p2p-webrtc`, `p2p-tunnel`
 
 ### Tasks
-- [ ] Add tests for replay rejection across daemon idle loop iterations.
-- [ ] Add tests for active answer session handling while tunnel bridge is running.
-- [ ] Add tests for reconnect after ICE failure during an active tunnel.
-- [ ] Add tests for unauthorized peer offers.
-- [ ] Add tests for stale-session messages.
-- [ ] Add tests for duplicate ACK-required signaling messages.
+- [x] Add tests for replay rejection across daemon idle loop iterations.
+- [x] Add tests for active answer session handling while tunnel bridge is running.
+- [x] Add tests for reconnect after ICE failure during an active tunnel.
+- [x] Add tests for unauthorized peer offers.
+- [x] Add tests for stale-session messages.
+- [x] Add tests for duplicate ACK-required signaling messages.
 
 ### Acceptance criteria
 - The highest-risk control-flow and protocol paths are covered by regression tests.
@@ -350,10 +350,10 @@ The code already has decent structure, but sensitive paths should be extra cauti
 - signaling and crypto call sites
 
 ### Tasks
-- [ ] Audit logs for potential leakage of decrypted payloads or sensitive metadata.
-- [ ] Ensure broker credentials and key material are never logged.
-- [ ] Keep SDP/candidate redaction behavior consistent.
-- [ ] Add structured logs for reject reasons without leaking plaintext contents.
+- [x] Audit logs for potential leakage of decrypted payloads or sensitive metadata.
+- [x] Ensure broker credentials and key material are never logged.
+- [x] Keep SDP/candidate redaction behavior consistent.
+- [x] Add structured logs for reject reasons without leaking plaintext contents.
 
 ### Acceptance criteria
 - Logs remain useful for debugging without violating the secure design intent.
@@ -375,13 +375,13 @@ The code already has decent structure, but sensitive paths should be extra cauti
 - [x] Resolve data-channel-label mismatch
 
 ## Phase 3 — Config/UX cleanup
-- [ ] Harden config validation
-- [ ] Add `p2pctl keygen --force`
-- [ ] Make password file optional
-- [ ] Remove or implement dead config knobs
+- [x] Harden config validation
+- [x] Add `p2pctl keygen --force`
+- [x] Make password file optional
+- [x] Remove or implement dead config knobs
 
 ## Phase 4 — Regression coverage
-- [ ] Add tests for all critical failure/replay/reconnect paths
+- [x] Add tests for all critical failure/replay/reconnect paths
 
 ---
 

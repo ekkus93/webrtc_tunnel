@@ -619,7 +619,7 @@ log_file = "~/.local/state/p2ptunnel/log/p2ptunnel.log"
 redact_secrets = true
 redact_sdp = true
 redact_candidates = true
-log_rotation = "daily"
+log_rotation = "none"
 
 [health]
 heartbeat_interval_secs = 10
@@ -628,6 +628,13 @@ status_socket = ""
 write_status_file = true
 status_file = "~/.local/state/p2ptunnel/status.json"
 ```
+
+Notes:
+- `broker.username` / `broker.password_file` support three explicit modes in v1: anonymous or certificate-only (`""` / `""`), username-only (`"user"` / `""`), or username plus password file.
+- `webrtc.max_message_size` is fixed at `262144` in v1.
+- `reconnect.hold_local_client_during_reconnect` must stay `false` and `reconnect.local_client_hold_secs` must stay `0`; holding a live local client across reconnect is not implemented.
+- `logging.log_rotation` is not implemented in v1 and must remain `"none"`.
+- `health.status_socket` is not implemented in v1 and must remain empty.
 
 ### Example answer config differences
 - `role = "answer"`

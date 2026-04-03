@@ -106,6 +106,9 @@ Do not collapse unrelated responsibilities into a single crate unless the user e
 ## Config, files, and failure handling
 
 - Use strict config parsing and reject unknown keys when strict mode is enabled.
+- Treat the public config surface as fail-closed: unsupported security toggles must be rejected, not silently ignored.
+- In v1, `logging.log_rotation` must stay `none`, `health.status_socket` must stay empty, and the reconnect local-client hold knobs remain disabled.
+- Broker auth supports anonymous/certificate-only, username-only, or username+password-file modes; do not require a password file when the config leaves it empty.
 - Refuse startup on insecure identity file permissions.
 - Refuse startup on role/config mismatches.
 - Fail closed on security errors.

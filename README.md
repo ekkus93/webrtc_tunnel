@@ -112,8 +112,8 @@ The config format is `p2ptunnel-config-v1`.
 
 - `[node]`: local `peer_id` and role (`offer` or `answer`)
 - `[paths]`: identity, authorized keys, state, and log paths
-- `[broker]`: MQTT broker URL, topic prefix, credentials, and TLS requirements
-- `[webrtc]`: STUN URLs, trickle ICE, ICE restart, and data-channel limits
+- `[broker]`: MQTT broker URL, topic prefix, optional credentials, and TLS requirements
+- `[webrtc]`: STUN URLs, trickle ICE, ICE restart, and the fixed v1 transport size
 - `[tunnel]`: stream/frame version and bridge behavior
 - `[tunnel.offer]`: local listen host/port and remote peer
 - `[tunnel.answer]`: target host/port and allowed remote peers
@@ -143,6 +143,8 @@ client_key_file = "~/.config/p2ptunnel/client.key"
 server_name = "broker.example.com"
 insecure_skip_verify = false
 ```
+
+Set `username = ""` and `password_file = ""` for anonymous or certificate-only broker auth, or keep `username` set and leave `password_file = ""` for username-only auth. In v1, `connect_timeout_secs` must stay `5`, `session_expiry_secs` must stay `0`, and broker TLS verification cannot be disabled.
 
 ### Example offer-side tunnel config
 

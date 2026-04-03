@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::ConfigError;
 use crate::ids::PeerId;
 
+const V1_WEBRTC_MAX_MESSAGE_SIZE: usize = 262_144;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeRole {
@@ -61,7 +63,12 @@ impl AppConfig {
             )));
         }
 
-        if self.security.require_mqtt_tls && !self.broker.url.starts_with("mqtts://") {
+        if !self.security.require_mqtt_tls {
+            return Err(ConfigError::InvalidConfig(
+                "security.require_mqtt_tls must remain enabled in v1".to_owned(),
+            ));
+        }
+        if !self.broker.url.starts_with("mqtts://") {
             return Err(ConfigError::InvalidConfig(
                 "broker.url must use mqtts:// when TLS is required".to_owned(),
             ));
@@ -81,6 +88,26 @@ impl AppConfig {
                 "security.replay_cache_size must be greater than zero".to_owned(),
             ));
         }
+        if !self.security.require_authorized_keys {
+            return Err(ConfigError::InvalidConfig(
+                "security.require_authorized_keys must remain enabled in v1".to_owned(),
+            ));
+        }
+        if !self.security.reject_unknown_config_keys {
+            return Err(ConfigError::InvalidConfig(
+                "security.reject_unknown_config_keys must remain enabled in v1".to_owned(),
+            ));
+        }
+        if !self.security.refuse_world_readable_identity {
+            return Err(ConfigError::InvalidConfig(
+                "security.refuse_world_readable_identity must remain enabled in v1".to_owned(),
+            ));
+        }
+        if !self.security.refuse_world_writable_paths {
+            return Err(ConfigError::InvalidConfig(
+                "security.refuse_world_writable_paths must remain enabled in v1".to_owned(),
+            ));
+        }
         if self.broker.connect_timeout_secs != 5 {
             return Err(ConfigError::InvalidConfig(
                 "broker.connect_timeout_secs is unsupported by the current MQTT transport"
@@ -90,6 +117,11 @@ impl AppConfig {
         if self.broker.session_expiry_secs != 0 {
             return Err(ConfigError::InvalidConfig(
                 "broker.session_expiry_secs is unsupported with the MQTT v4 transport".to_owned(),
+            ));
+        }
+        if self.broker.username.is_empty() && !self.broker.password_file.as_os_str().is_empty() {
+            return Err(ConfigError::InvalidConfig(
+                "broker.password_file requires broker.username in v1".to_owned(),
             ));
         }
         if self.broker.url.starts_with("mqtts://") {
@@ -117,11 +149,76 @@ impl AppConfig {
             }
         }
 
-        if self.security.require_authorized_keys && !self.paths.authorized_keys.is_file() {
+        if !self.paths.authorized_keys.is_file() {
             return Err(ConfigError::InvalidConfig(format!(
                 "authorized_keys file '{}' does not exist",
                 self.paths.authorized_keys.display()
             )));
+        }
+        if self.webrtc.max_message_size != V1_WEBRTC_MAX_MESSAGE_SIZE {
+            return Err(ConfigError::InvalidConfig(format!(
+                "webrtc.max_message_size must remain {V1_WEBRTC_MAX_MESSAGE_SIZE} in v1"
+            )));
+        }
+        if self.logging.log_rotation != "none" {
+            return Err(ConfigError::InvalidConfig(
+                "logging.log_rotation is unsupported in v1; use 'none'".to_owned(),
+            ));
+        }
+        if !self.health.status_socket.as_os_str().is_empty() {
+            return Err(ConfigError::InvalidConfig(
+                "health.status_socket is unsupported in v1".to_owned(),
+            ));
+        }
+        if self.reconnect.hold_local_client_during_reconnect {
+            return Err(ConfigError::InvalidConfig(
+                "reconnect.hold_local_client_during_reconnect is unsupported in v1".to_owned(),
+            ));
+        }
+        if self.reconnect.local_client_hold_secs != 0 {
+            return Err(ConfigError::InvalidConfig(
+                "reconnect.local_client_hold_secs is unsupported in v1".to_owned(),
+            ));
+        }
+        validate_required_file(&self.paths.identity, "identity")?;
+        validate_required_file(&self.paths.authorized_keys, "authorized_keys")?;
+        validate_required_file(&self.broker.tls.ca_file, "broker.tls.ca_file")?;
+        validate_optional_file(
+            &self.broker.password_file,
+            "broker.password_file",
+            !self.broker.password_file.as_os_str().is_empty(),
+        )?;
+        validate_optional_file(
+            &self.broker.tls.client_cert_file,
+            "broker.tls.client_cert_file",
+            !self.broker.tls.client_cert_file.as_os_str().is_empty(),
+        )?;
+        validate_optional_file(
+            &self.broker.tls.client_key_file,
+            "broker.tls.client_key_file",
+            !self.broker.tls.client_key_file.as_os_str().is_empty(),
+        )?;
+        validate_non_world_writable(&self.paths.identity, "paths.identity")?;
+        validate_non_world_writable(&self.paths.authorized_keys, "paths.authorized_keys")?;
+        validate_non_world_writable(&self.paths.state_dir, "paths.state_dir")?;
+        validate_non_world_writable(&self.paths.log_dir, "paths.log_dir")?;
+        validate_non_world_writable(&self.logging.log_file, "logging.log_file")?;
+        validate_non_world_writable(&self.health.status_file, "health.status_file")?;
+        validate_non_world_writable(&self.broker.tls.ca_file, "broker.tls.ca_file")?;
+        if !self.broker.password_file.as_os_str().is_empty() {
+            validate_non_world_writable(&self.broker.password_file, "broker.password_file")?;
+        }
+        if !self.broker.tls.client_cert_file.as_os_str().is_empty() {
+            validate_non_world_writable(
+                &self.broker.tls.client_cert_file,
+                "broker.tls.client_cert_file",
+            )?;
+        }
+        if !self.broker.tls.client_key_file.as_os_str().is_empty() {
+            validate_non_world_writable(
+                &self.broker.tls.client_key_file,
+                "broker.tls.client_key_file",
+            )?;
         }
 
         match self.node.role {
@@ -337,9 +434,65 @@ fn expand_optional_path(path: &Path) -> Result<PathBuf, ConfigError> {
     expand_home(path)
 }
 
+fn validate_required_file(path: &Path, field_name: &'static str) -> Result<(), ConfigError> {
+    validate_optional_file(path, field_name, true)
+}
+
+fn validate_optional_file(
+    path: &Path,
+    field_name: &'static str,
+    required: bool,
+) -> Result<(), ConfigError> {
+    if path.as_os_str().is_empty() {
+        if required {
+            return Err(ConfigError::InvalidConfig(format!("{field_name} must be set")));
+        }
+        return Ok(());
+    }
+    if !path.is_file() {
+        return Err(ConfigError::InvalidConfig(format!(
+            "{field_name} file '{}' does not exist",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_non_world_writable(path: &Path, field_name: &'static str) -> Result<(), ConfigError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+
+    let candidate = if path.exists() {
+        path
+    } else {
+        path.parent().ok_or_else(|| {
+            ConfigError::InvalidConfig(format!(
+                "{field_name} must have an existing parent directory for path security checks"
+            ))
+        })?
+    };
+
+    let metadata = fs::metadata(candidate)?;
+    if metadata.permissions().mode() & 0o002 != 0 {
+        return Err(ConfigError::InvalidConfig(format!(
+            "{field_name} path '{}' must not be world-writable",
+            candidate.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_non_world_writable(_path: &Path, _field_name: &'static str) -> Result<(), ConfigError> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::fs;
     use std::path::Path;
 
@@ -442,7 +595,7 @@ log_file = "{log_file}"
 redact_secrets = true
 redact_sdp = true
 redact_candidates = true
-log_rotation = "daily"
+log_rotation = "none"
 
 [health]
 heartbeat_interval_secs = 10
@@ -462,6 +615,17 @@ status_file = "{status_file}"
         )
     }
 
+    fn write_required_files(config_dir: &Path) {
+        fs::write(config_dir.join("identity"), "peer_id = \"answer-office\"\n").expect("identity");
+        fs::write(config_dir.join("authorized_keys"), "").expect("write auth keys");
+        fs::write(config_dir.join("mqtt_password"), "secret\n").expect("password");
+        fs::write(
+            config_dir.join("ca.crt"),
+            "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+        )
+        .expect("ca");
+    }
+
     #[test]
     fn config_loads_and_parses() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -469,7 +633,7 @@ status_file = "{status_file}"
         let state_dir = temp_dir.path().join("state");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::create_dir_all(state_dir.join("log")).expect("create state dir");
-        fs::write(config_dir.join("authorized_keys"), "").expect("write auth keys");
+        write_required_files(&config_dir);
 
         let config_path = temp_dir.path().join("config.toml");
         fs::write(&config_path, sample_config(&config_dir, &state_dir)).expect("write config");
@@ -485,7 +649,7 @@ status_file = "{status_file}"
         let state_dir = temp_dir.path().join("state");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::create_dir_all(state_dir.join("log")).expect("create state dir");
-        fs::write(config_dir.join("authorized_keys"), "").expect("write auth keys");
+        write_required_files(&config_dir);
 
         let config = sample_config(&config_dir, &state_dir)
             .replace("allow_remote_peers = [\"offer-home\"]", "allow_remote_peers = []");
@@ -501,7 +665,7 @@ status_file = "{status_file}"
         let state_dir = temp_dir.path().join("state");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::create_dir_all(state_dir.join("log")).expect("create state dir");
-        fs::write(config_dir.join("authorized_keys"), "").expect("write auth keys");
+        write_required_files(&config_dir);
 
         let config = sample_config(&config_dir, &state_dir)
             .replace("session_expiry_secs = 0", "session_expiry_secs = 60");
@@ -517,7 +681,7 @@ status_file = "{status_file}"
         let state_dir = temp_dir.path().join("state");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::create_dir_all(state_dir.join("log")).expect("create state dir");
-        fs::write(config_dir.join("authorized_keys"), "").expect("write auth keys");
+        write_required_files(&config_dir);
 
         let config = sample_config(&config_dir, &state_dir)
             .replace("client_key_file = \"\"", "client_key_file = \"/tmp/client.key\"");
@@ -533,7 +697,7 @@ status_file = "{status_file}"
         let state_dir = temp_dir.path().join("state");
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::create_dir_all(state_dir.join("log")).expect("create state dir");
-        fs::write(config_dir.join("authorized_keys"), "").expect("write auth keys");
+        write_required_files(&config_dir);
 
         let config = sample_config(&config_dir, &state_dir)
             .replace("connect_timeout_secs = 5", "connect_timeout_secs = 10");
@@ -544,8 +708,88 @@ status_file = "{status_file}"
 
     #[test]
     fn expand_home_uses_current_home_directory() {
-        let home = env::var_os("HOME").expect("HOME should be set for tests");
+        let home = std::env::var_os("HOME").expect("HOME should be set for tests");
         let expanded = expand_home(Path::new("~/example")).expect("path should expand");
         assert_eq!(expanded, std::path::PathBuf::from(home).join("example"));
+    }
+
+    #[test]
+    fn config_allows_anonymous_broker_auth() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::create_dir_all(state_dir.join("log")).expect("create state dir");
+        write_required_files(&config_dir);
+
+        let config = sample_config(&config_dir, &state_dir)
+            .replace("username = \"answer-office\"", "username = \"\"")
+            .replace(
+                &format!("password_file = \"{}\"", config_dir.join("mqtt_password").display()),
+                "password_file = \"\"",
+            );
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, config).expect("write config");
+        AppConfig::load_from_file(&config_path).expect("anonymous config");
+    }
+
+    #[test]
+    fn config_allows_username_only_broker_auth() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::create_dir_all(state_dir.join("log")).expect("create state dir");
+        write_required_files(&config_dir);
+
+        let config = sample_config(&config_dir, &state_dir).replace(
+            &format!("password_file = \"{}\"", config_dir.join("mqtt_password").display()),
+            "password_file = \"\"",
+        );
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, config).expect("write config");
+        AppConfig::load_from_file(&config_path).expect("username-only config");
+    }
+
+    #[test]
+    fn config_rejects_password_without_username() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::create_dir_all(state_dir.join("log")).expect("create state dir");
+        write_required_files(&config_dir);
+
+        let config = sample_config(&config_dir, &state_dir)
+            .replace("username = \"answer-office\"", "username = \"\"");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, config).expect("write config");
+        assert!(AppConfig::load_from_file(&config_path).is_err());
+    }
+
+    #[test]
+    fn config_rejects_dead_knobs() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::create_dir_all(state_dir.join("log")).expect("create state dir");
+        write_required_files(&config_dir);
+
+        for (from, to) in [
+            ("max_message_size = 262144", "max_message_size = 1024"),
+            ("log_rotation = \"none\"", "log_rotation = \"daily\""),
+            ("status_socket = \"\"", "status_socket = \"/tmp/p2ptunnel.sock\""),
+            (
+                "hold_local_client_during_reconnect = false",
+                "hold_local_client_during_reconnect = true",
+            ),
+            ("local_client_hold_secs = 0", "local_client_hold_secs = 5"),
+        ] {
+            let config = sample_config(&config_dir, &state_dir).replace(from, to);
+            let config_path = temp_dir.path().join("config.toml");
+            fs::write(&config_path, config).expect("write config");
+            assert!(AppConfig::load_from_file(&config_path).is_err(), "{to}");
+        }
     }
 }

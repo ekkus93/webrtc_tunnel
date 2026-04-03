@@ -152,7 +152,7 @@ pub async fn run_answer_daemon(
         let (envelope, message, sender) = match decode_result {
             Ok(decoded) => decoded,
             Err(error) => {
-                tracing::warn!("rejecting signaling message: {error}");
+                tracing::warn!(reason = %error, "rejecting signaling message");
                 continue;
             }
         };
@@ -165,7 +165,7 @@ pub async fn run_answer_daemon(
                 let peer_allowed =
                     config.tunnel.answer.allow_remote_peers.contains(&sender.peer_id);
                 if !peer_allowed {
-                    tracing::warn!("rejecting unauthorized peer {}", sender.peer_id);
+                    tracing::warn!(peer_id = %sender.peer_id, "rejecting unauthorized peer");
                     continue;
                 }
                 if should_ack_idle_offer(peer_allowed, message.message_type.requires_ack()) {
@@ -357,7 +357,11 @@ async fn run_offer_session(
                         Some(session.session_id),
                     )?;
                     if sender.peer_id != session.remote_peer_id {
-                        tracing::warn!("ignoring message from unexpected peer {}", sender.peer_id);
+                        tracing::warn!(
+                            peer_id = %sender.peer_id,
+                            expected_peer_id = %session.remote_peer_id,
+                            "ignoring message from unexpected peer"
+                        );
                         continue;
                     }
                     if message.message_type.requires_ack() {
@@ -588,14 +592,20 @@ async fn run_answer_session(
                                 continue;
                             }
                             tracing::warn!(
-                                "rejecting signaling message during active answer session: {error}"
+                                reason = %error,
+                                session_id = %session.session_id,
+                                "rejecting signaling message during active answer session"
                             );
                             continue;
                         }
                     };
                     let (envelope, message, sender) = decoded;
                     if sender.peer_id != session.remote_peer_id {
-                        tracing::warn!("ignoring message from unexpected peer {}", sender.peer_id);
+                        tracing::warn!(
+                            peer_id = %sender.peer_id,
+                            expected_peer_id = %session.remote_peer_id,
+                            "ignoring message from unexpected peer"
+                        );
                         continue;
                     }
                     if message.message_type.requires_ack() {
@@ -1267,7 +1277,7 @@ mod tests {
                 redact_secrets: true,
                 redact_sdp: true,
                 redact_candidates: true,
-                log_rotation: "daily".to_owned(),
+                log_rotation: "none".to_owned(),
             },
             health: HealthConfig {
                 heartbeat_interval_secs: 10,

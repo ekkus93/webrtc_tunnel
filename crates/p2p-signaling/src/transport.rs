@@ -216,7 +216,12 @@ impl MqttSignalingTransport {
 }
 
 fn build_mqtt_options(config: &AppConfig) -> Result<(MqttOptions, QoS, String), SignalingError> {
-    if config.security.require_mqtt_tls && !config.broker.url.starts_with("mqtts://") {
+    if !config.security.require_mqtt_tls {
+        return Err(SignalingError::Protocol(
+            "security.require_mqtt_tls must remain enabled in v1".to_owned(),
+        ));
+    }
+    if !config.broker.url.starts_with("mqtts://") {
         return Err(SignalingError::Protocol(
             "broker.url must use mqtts:// when TLS is required".to_owned(),
         ));
@@ -232,13 +237,26 @@ fn build_mqtt_options(config: &AppConfig) -> Result<(MqttOptions, QoS, String), 
         ));
     }
 
-    let password = fs::read_to_string(&config.broker.password_file)?.trim().to_owned();
     let separator = if config.broker.url.contains('?') { '&' } else { '?' };
     let url = format!("{}{}client_id={}", config.broker.url, separator, config.broker.client_id);
     let mut options = MqttOptions::parse_url(url)?;
     options.set_keep_alive(Duration::from_secs(u64::from(config.broker.keepalive_secs)));
     options.set_clean_session(config.broker.clean_session);
-    options.set_credentials(config.broker.username.clone(), password);
+    match (config.broker.username.is_empty(), config.broker.password_file.as_os_str().is_empty()) {
+        (true, true) => {}
+        (false, true) => {
+            options.set_credentials(config.broker.username.clone(), String::new());
+        }
+        (false, false) => {
+            let password = fs::read_to_string(&config.broker.password_file)?.trim().to_owned();
+            options.set_credentials(config.broker.username.clone(), password);
+        }
+        (true, false) => {
+            return Err(SignalingError::Protocol(
+                "broker.password_file requires broker.username in v1".to_owned(),
+            ));
+        }
+    }
 
     if config.broker.url.starts_with("mqtts://") {
         let (broker_host, _port) = options.broker_address();
@@ -476,6 +494,103 @@ mod tests {
     }
 
     #[test]
+    fn reject_wrong_sender_peer_id() {
+        let (offer, answer, offer_keys, answer_keys) = codecs();
+        let codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let mut message = InnerMessageBuilder::new(
+            SessionId::random(),
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+        message.sender_peer_id = "wrong-sender".parse().expect("peer id");
+        let (_envelope, payload) = codec
+            .encode_for_peer(
+                &offer_keys
+                    .get_by_peer_id(&answer.identity.peer_id)
+                    .expect("answer peer exists")
+                    .clone(),
+                &message,
+                false,
+            )
+            .expect("encode");
+
+        let mut replay_cache = ReplayCache::new(32);
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        assert!(matches!(
+            answer_codec.decode(&payload, &mut replay_cache, None),
+            Err(SignalingError::Protocol(message))
+                if message.contains("inner sender peer_id does not match")
+        ));
+    }
+
+    #[test]
+    fn reject_unauthorized_sender() {
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let intruder = generate_identity("intruder-peer").expect("intruder identity");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer auth");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer auth");
+        let codec = SignalCodec::new(&intruder.identity, &offer_keys, 120, 300);
+        let message = InnerMessageBuilder::new(
+            SessionId::random(),
+            intruder.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+        let (_envelope, payload) = codec
+            .encode_for_peer(
+                &offer_keys
+                    .get_by_peer_id(&answer.identity.peer_id)
+                    .expect("answer peer exists")
+                    .clone(),
+                &message,
+                false,
+            )
+            .expect("encode");
+
+        let mut replay_cache = ReplayCache::new(32);
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        assert!(matches!(
+            answer_codec.decode(&payload, &mut replay_cache, None),
+            Err(SignalingError::Protocol(message)) if message.contains("not authorized")
+        ));
+    }
+
+    #[test]
+    fn reject_stale_session_when_expected_session_is_set() {
+        let (offer, answer, offer_keys, answer_keys) = codecs();
+        let codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let expected_session = SessionId::random();
+        let stale_session = SessionId::random();
+        let message = InnerMessageBuilder::new(
+            stale_session,
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+        let (_envelope, payload) = codec
+            .encode_for_peer(
+                &offer_keys
+                    .get_by_peer_id(&answer.identity.peer_id)
+                    .expect("answer peer exists")
+                    .clone(),
+                &message,
+                false,
+            )
+            .expect("encode");
+
+        let mut replay_cache = ReplayCache::new(32);
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        assert!(matches!(
+            answer_codec.decode(&payload, &mut replay_cache, Some(expected_session)),
+            Err(SignalingError::Protocol(message)) if message.contains("active session")
+        ));
+    }
+
+    #[test]
     fn reject_stale_timestamp() {
         let (offer, answer, offer_keys, answer_keys) = codecs();
         let codec = SignalCodec::new(&offer.identity, &offer_keys, 0, 0);
@@ -607,7 +722,7 @@ mod tests {
                 redact_secrets: true,
                 redact_sdp: true,
                 redact_candidates: true,
-                log_rotation: "daily".to_owned(),
+                log_rotation: "none".to_owned(),
             },
             health: HealthConfig {
                 heartbeat_interval_secs: 10,
@@ -632,6 +747,58 @@ mod tests {
 
         let (options, _qos, _topic) = build_mqtt_options(&config).expect("options build");
         assert!(matches!(options.transport(), Transport::Tls(_)));
+    }
+
+    #[test]
+    fn build_mqtt_options_supports_anonymous_broker_auth() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("ca.pem"),
+            "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+        )
+        .expect("ca");
+        let mut config = sample_config(temp_dir.path());
+        config.broker.username.clear();
+        config.broker.password_file = PathBuf::new();
+
+        let (options, _qos, _topic) = build_mqtt_options(&config).expect("options build");
+        assert!(options.credentials().is_none());
+    }
+
+    #[test]
+    fn build_mqtt_options_supports_username_only_auth() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("ca.pem"),
+            "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+        )
+        .expect("ca");
+        let mut config = sample_config(temp_dir.path());
+        config.broker.password_file = PathBuf::new();
+
+        let (options, _qos, _topic) = build_mqtt_options(&config).expect("options build");
+        let credentials = options.credentials().expect("credentials");
+        assert_eq!(credentials.username, "answer-office");
+        assert!(credentials.password.is_empty());
+    }
+
+    #[test]
+    fn build_mqtt_options_rejects_password_without_username() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp_dir.path().join("password"), "secret\n").expect("password");
+        std::fs::write(
+            temp_dir.path().join("ca.pem"),
+            "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+        )
+        .expect("ca");
+        let mut config = sample_config(temp_dir.path());
+        config.broker.username.clear();
+
+        assert!(matches!(
+            build_mqtt_options(&config),
+            Err(SignalingError::Protocol(message))
+                if message.contains("password_file requires broker.username")
+        ));
     }
 
     #[test]
