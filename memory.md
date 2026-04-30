@@ -154,3 +154,8 @@
 - Updated `p2p-signaling` so `MqttSignalingTransport::subscribe_own_topic` waits for `SUBACK` and buffers any own-topic publishes seen while pumping the event loop.
 - This addresses the offer-side runtime gap where `AsyncClient::subscribe` could still be only locally queued while the daemon was already accepting a local client, allowing the answer side's first `Ack` and `Answer` to race ahead of the active subscription.
 - Validated with `cargo test -p p2p-signaling --lib`, `cargo test -p p2p-daemon --lib`, and `cargo clippy -p p2p-signaling -p p2p-daemon --all-targets --all-features -- -D warnings`.
+
+## 2026-04-30T13:51:58Z - GPT-5.4 - Added tunnel bridge regression tests for OPEN handshake and target-connect failure
+- Added real local WebRTC-backed tunnel tests in `p2p-tunnel` that verify the offer/answer `OPEN` handshake reaches the target TCP service and bridges bytes end to end.
+- Added a companion regression that verifies answer-side target connect failure is surfaced back to the offer bridge as `RemoteFailure(TargetConnectFailed)` instead of silently hanging.
+- Validated with `cargo test -p p2p-tunnel --lib` and `cargo clippy -p p2p-tunnel --all-targets --all-features -- -D warnings`.

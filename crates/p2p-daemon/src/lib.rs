@@ -890,7 +890,14 @@ async fn run_answer_session(
                 }
                 incoming = session.peer.next_incoming_data_channel(), if session.data_channel.is_none() => {
                     if let Some(channel) = incoming {
-                        session.data_channel = Some(channel?);
+                        let channel = channel?;
+                        session.data_channel = Some(channel.clone());
+                        let bridge = TunnelBridge::new(channel, &config.tunnel);
+                        let connector = connector.clone();
+                        session.bridge_state = BridgeSessionState::Active;
+                        session.bridge_handle = Some(tokio::spawn(async move {
+                            bridge.run_answer(&connector).await
+                        }));
                     }
                 }
                 ice_state = session.peer.next_ice_state() => {
@@ -923,33 +930,6 @@ async fn run_answer_session(
                             session.bridge_state = BridgeSessionState::Closed;
                             return Err(DaemonError::IceFailed(ice_state));
                         }
-                    }
-                }
-                data_event = async {
-                    if let Some(channel) = session.data_channel.as_ref() {
-                        channel.next_event().await
-                    } else {
-                        None
-                    }
-                }, if should_poll_answer_data_events(session.data_channel.is_some(), session.bridge_handle.is_some()) => {
-                    if let Some(DataChannelEvent::Open) = data_event {
-                        write_daemon_status(
-                            ctx,
-                            StatusSnapshot {
-                                active_session_id: Some(session.session_id),
-                                current_state: DaemonState::TunnelOpen,
-                            },
-                        )
-                        .await;
-                        let bridge = TunnelBridge::new(
-                            session.data_channel.clone().ok_or(DaemonError::MissingDataChannel)?,
-                            &config.tunnel,
-                        );
-                        let connector = connector.clone();
-                        session.bridge_state = BridgeSessionState::Active;
-                        session.bridge_handle = Some(tokio::spawn(async move {
-                            bridge.run_answer(&connector).await
-                        }));
                     }
                 }
                 bridge_result = async {
@@ -1492,10 +1472,6 @@ fn should_attempt_offer_reconnect(
         && matches!(bridge_state, BridgeSessionState::Pending | BridgeSessionState::Reconnecting)
 }
 
-fn should_poll_answer_data_events(data_channel_present: bool, bridge_handle_present: bool) -> bool {
-    data_channel_present && !bridge_handle_present
-}
-
 fn should_ack_idle_offer(peer_allowed: bool, requires_ack: bool) -> bool {
     peer_allowed && requires_ack
 }
@@ -1843,7 +1819,7 @@ mod tests {
         compute_backoff_delay, decode_idle_signaling_message, mark_transport_unusable,
         mark_transport_usable, recover_daemon_after_session, replayed_active_busy_offer_key,
         should_ack_idle_offer, should_attempt_offer_reconnect, should_continue_reconnect_attempt,
-        should_poll_answer_data_events, spawn_offer_accept_loop, steady_state_for_role,
+        spawn_offer_accept_loop, steady_state_for_role,
         write_steady_state_status,
     };
 
@@ -2084,13 +2060,6 @@ mod tests {
         assert!(!should_attempt_offer_reconnect(&config, false, BridgeSessionState::Pending));
         assert!(!should_attempt_offer_reconnect(&config, true, BridgeSessionState::Active));
         assert!(should_attempt_offer_reconnect(&config, true, BridgeSessionState::Reconnecting));
-    }
-
-    #[test]
-    fn answer_bridge_task_disables_data_event_polling() {
-        assert!(should_poll_answer_data_events(true, false));
-        assert!(!should_poll_answer_data_events(true, true));
-        assert!(!should_poll_answer_data_events(false, false));
     }
 
     #[test]
