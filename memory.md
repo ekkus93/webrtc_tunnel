@@ -245,3 +245,8 @@
 - Changed the active answer-session loop so a replacement offer from the same authorized peer is accepted while the current session is still `Pending`; the answer daemon now swaps to the new session instead of replying `busy` before any tunnel has opened.
 - Updated the daemon integration coverage in `crates/p2p-daemon/tests/two_node_daemon.rs` to assert the repaired behavior with `active_session_ice_restart_recovers_pending_local_client`, including the replacement-session fallback while the answer side remains passive.
 - Validated with `cargo test -p p2p-daemon --test two_node_daemon active_session_ice_restart_recovers_pending_local_client -- --nocapture`, `cargo test -p p2p-daemon`, `cargo test -p p2p-webrtc`, `cargo clippy -p p2p-daemon --all-targets --all-features -- -D warnings`, and `cargo clippy -p p2p-webrtc --all-targets --all-features -- -D warnings`.
+
+## 2026-04-30T15:59:53Z - GPT-5.4 - Added daemon unit coverage for pending-session replacement
+- Added a test-local `RecordingTransport` in `crates/p2p-daemon/src/lib.rs` and a focused unit test, `pending_answer_session_is_replaced_by_same_peer_offer`, that drives `maybe_replace_pending_answer_session` directly instead of relying on the daemon integration harness.
+- The new unit test proves that a pending answer session is swapped to the replacement `session_id`, remains in `connecting_data_channel`, and publishes exactly the expected `Ack` plus `Answer` back to the same authorized peer.
+- Validated with `cargo test -p p2p-daemon pending_answer_session_is_replaced_by_same_peer_offer -- --nocapture`, `cargo test -p p2p-daemon`, and `cargo clippy -p p2p-daemon --all-targets --all-features -- -D warnings`.

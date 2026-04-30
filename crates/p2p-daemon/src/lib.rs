@@ -2186,7 +2186,7 @@ mod tests {
     use p2p_core::AppConfig;
     use p2p_core::{
         ACK_RETRY_TIMEOUT_SECS, BrokerConfig, BrokerTlsConfig, FailureCode, HealthConfig,
-        LoggingConfig, NodeConfig, NodeRole, ReconnectConfig, SecurityConfig, SessionId,
+        LoggingConfig, NodeConfig, NodeRole, PeerId, ReconnectConfig, SecurityConfig, SessionId,
         TunnelAnswerConfig, TunnelConfig, TunnelOfferConfig, WebRtcConfig,
     };
     use p2p_crypto::{AuthorizedKeys, generate_identity};
@@ -2197,24 +2197,53 @@ mod tests {
     use serde_json::Value;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Mutex;
     use tokio::time::timeout;
 
     use super::{
         ActiveBusyOfferAction, ActiveBusyOfferCache, ActiveBusyOfferKey, BridgeSessionState,
         ActiveSession, AnswerTargetConnector, DaemonError, DaemonRuntimeState, DaemonState,
-        IceConnectionState, MqttSignalingTransport, OfferListener, OfferSessionPayloadOutcome,
+        DaemonSignalingTransport, IceConnectionState, MqttSignalingTransport, OfferListener, OfferSessionPayloadOutcome,
         RuntimeContext, StatusSnapshot, StatusWriter, TunnelBridge, WebRtcPeer,
         apply_answer_overrides,
         apply_offer_overrides, apply_override_pairs, classify_active_busy_offer,
         compute_backoff_delay, decode_idle_signaling_message,
         duplicate_active_session_ack_message, mark_transport_unusable, mark_transport_usable,
         handle_answer_incoming_data_channel, handle_answer_session_message,
-        handle_offer_session_message,
+        handle_offer_session_message, maybe_replace_pending_answer_session,
         process_offer_session_payload, recover_daemon_after_session,
         replayed_active_busy_offer_key, should_ack_idle_offer, should_attempt_offer_reconnect,
         should_continue_reconnect_attempt, spawn_offer_accept_loop, steady_state_for_role,
         write_steady_state_status,
     };
+
+    type PublishedSignals = std::sync::Arc<Mutex<Vec<(PeerId, Vec<u8>)>>>;
+
+    #[derive(Clone, Default)]
+    struct RecordingTransport {
+        published: PublishedSignals,
+    }
+
+    #[allow(async_fn_in_trait)]
+    impl DaemonSignalingTransport for RecordingTransport {
+        async fn subscribe_own_topic(&mut self) -> Result<(), SignalingError> {
+            Ok(())
+        }
+
+        async fn publish_signal(
+            &mut self,
+            peer_id: &PeerId,
+            _topic_prefix: &str,
+            payload: Vec<u8>,
+        ) -> Result<(), SignalingError> {
+            self.published.lock().await.push((peer_id.clone(), payload));
+            Ok(())
+        }
+
+        async fn poll_signal_payload(&mut self) -> Result<Option<Vec<u8>>, SignalingError> {
+            Ok(None)
+        }
+    }
 
     fn sample_config() -> AppConfig {
         AppConfig {
@@ -2976,6 +3005,117 @@ mod tests {
         assert_eq!(session.bridge_state, BridgeSessionState::Pending);
 
         session.peer.close().await.expect("answer peer should close");
+    }
+
+    #[tokio::test]
+    async fn pending_answer_session_is_replaced_by_same_peer_offer() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.webrtc.stun_urls = Vec::new();
+        config.webrtc.enable_trickle_ice = false;
+        config.tunnel.answer.allow_remote_peers = vec!["offer-home".parse().expect("offer peer id")];
+
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+
+        let remote = answer_keys
+            .get_by_peer_id(&offer.identity.peer_id)
+            .cloned()
+            .expect("offer authorized key");
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("answer peer should build");
+        let original_session_id = SessionId::random();
+        let mut session = ActiveSession::new(
+            original_session_id,
+            remote,
+            peer,
+            config.security.replay_cache_size,
+        );
+
+        let (status_path, writer) = status_writer_for_test(&mut config, "pending-replacement");
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
+        let mut transport = RecordingTransport::default();
+
+        let replacement_offer_peer = WebRtcPeer::new(&config.webrtc)
+            .await
+            .expect("replacement offer peer should build");
+        let _replacement_channel = replacement_offer_peer
+            .create_data_channel()
+            .await
+            .expect("replacement offer data channel should build");
+        let replacement_session_id = SessionId::random();
+        let replacement_offer_sdp = replacement_offer_peer
+            .create_offer()
+            .await
+            .expect("replacement offer should build SDP");
+        let replacement_offer = InnerMessageBuilder::new(
+            replacement_session_id,
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Offer(OfferBody { sdp: replacement_offer_sdp }));
+        let (_envelope, replacement_payload) = offer_codec
+            .encode_for_peer(
+                offer_keys
+                    .get_by_peer_id(&answer.identity.peer_id)
+                    .expect("answer key"),
+                &replacement_offer,
+                false,
+            )
+            .expect("replacement offer encodes");
+
+        let replaced = maybe_replace_pending_answer_session(
+            &config,
+            &answer_codec,
+            &mut transport,
+            &mut ctx,
+            &mut session,
+            &replacement_payload,
+        )
+        .await
+        .expect("pending answer session should accept replacement offer");
+
+        assert!(replaced);
+        assert_eq!(session.session_id, replacement_session_id);
+        assert_eq!(session.remote_peer_id, offer.identity.peer_id);
+        assert_eq!(session.state, DaemonState::ConnectingDataChannel);
+        assert_eq!(session.bridge_state, BridgeSessionState::Pending);
+        assert!(session.data_channel.is_none());
+        assert!(session.bridge_handle.is_none());
+
+        let published = transport.published.lock().await.clone();
+        assert_eq!(published.len(), 2, "replacement flow should publish an ack and a fresh answer");
+        assert!(published.iter().all(|(peer_id, _)| *peer_id == offer.identity.peer_id));
+
+        let mut replay_cache = ReplayCache::new(config.security.replay_cache_size);
+        let decoded_types = published
+            .iter()
+            .map(|(_peer_id, payload)| {
+                let (_envelope, message, _sender) = offer_codec
+                    .decode(payload, &mut replay_cache, None)
+                    .expect("published replacement payload should decode");
+                message.message_type
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(decoded_types, vec![p2p_core::MessageType::Ack, p2p_core::MessageType::Answer]);
+
+        let status = read_status_file(&status_path).await;
+        assert_eq!(status["current_state"], "connecting_data_channel");
+        assert_eq!(status["active_session_id"], replacement_session_id.to_string());
+
+        replacement_offer_peer
+            .close()
+            .await
+            .expect("replacement offer peer should close");
+        session.peer.close().await.expect("answer session peer should close");
+        let _ = tokio::fs::remove_file(&status_path).await;
     }
 
     #[tokio::test]

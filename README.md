@@ -435,8 +435,9 @@ ssh -p 2222 user@127.0.0.1
 The offer side owns recovery.
 
 - detect ICE disconnect/failure
-- try ICE restart first
-- if ICE restart fails, fall back to full renegotiation with a new `session_id`
+- if the data channel was already open, try same-session ICE restart first
+- if ICE fails before the data channel ever opens, skip same-session ICE restart and fall back directly to full renegotiation with a new `session_id`
+- if same-session ICE restart fails after transport was already available, fall back to full renegotiation with a new `session_id`
 - use exponential backoff with jitter
 - do **not** keep the local TCP client open across reconnect in v1
 
