@@ -23,6 +23,7 @@ use p2p_tunnel::{AnswerTargetConnector, OfferClient, OfferListener, TunnelBridge
 use p2p_webrtc::{
     DataChannelEvent, DataChannelHandle, IceCandidateSignal, IceConnectionState, WebRtcPeer,
 };
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
@@ -90,6 +91,10 @@ pub async fn run_offer_daemon(
 
     let listener = OfferListener::bind(&config.tunnel.offer).await?;
     tracing::info!("listening for local clients on {}", listener.local_addr()?);
+    // Keep the accept loop alive even while a session is active so extra local
+    // clients are accepted and immediately closed instead of being left waiting
+    // in the kernel backlog until the current session ends.
+    let mut accepted_clients = spawn_offer_accept_loop(listener);
     let remote =
         authorized_keys.get_by_peer_id(&config.tunnel.offer.remote_peer_id).cloned().ok_or_else(
             || DaemonError::MissingAuthorizedPeer(config.tunnel.offer.remote_peer_id.to_string()),
@@ -98,7 +103,10 @@ pub async fn run_offer_daemon(
     loop {
         write_steady_state_status(&config, &status).await?;
 
-        let client = listener.accept_client().await?;
+        let client = accepted_clients
+            .recv()
+            .await
+            .ok_or_else(|| DaemonError::Logging("offer accept loop stopped".to_owned()))??;
         let result =
             run_offer_session(&config, &codec, &mut transport, &status, client, &remote).await;
         recover_daemon_after_session(&config, &status, result).await?;
@@ -762,6 +770,21 @@ async fn cleanup_active_session(session: &mut ActiveSession) {
     }
 }
 
+fn spawn_offer_accept_loop(
+    listener: OfferListener,
+) -> mpsc::Receiver<Result<OfferClient, DaemonError>> {
+    let (tx, rx) = mpsc::channel(1);
+    tokio::spawn(async move {
+        loop {
+            let accepted = listener.accept_client().await.map_err(DaemonError::from);
+            if tx.send(accepted).await.is_err() {
+                return;
+            }
+        }
+    });
+    rx
+}
+
 fn steady_state_for_role(role: &NodeRole) -> DaemonState {
     match role {
         NodeRole::Offer => DaemonState::WaitingForLocalClient,
@@ -1217,6 +1240,7 @@ fn current_time_ms() -> u64 {
 mod tests {
     use std::path::Path;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use p2p_core::AppConfig;
     use p2p_core::{
@@ -1230,13 +1254,16 @@ mod tests {
         SignalingError,
     };
     use serde_json::Value;
+    use tokio::io::AsyncReadExt;
+    use tokio::time::timeout;
 
     use super::{
-        BridgeSessionState, DaemonError, DaemonState, IceConnectionState, StatusWriter,
-        apply_answer_overrides, apply_offer_overrides, apply_override_pairs, compute_backoff_delay,
-        decode_idle_signaling_message, recover_daemon_after_session, should_ack_idle_offer,
-        should_attempt_offer_reconnect, should_continue_reconnect_attempt,
-        should_poll_answer_data_events, steady_state_for_role, write_steady_state_status,
+        BridgeSessionState, DaemonError, DaemonState, IceConnectionState, OfferListener,
+        StatusWriter, apply_answer_overrides, apply_offer_overrides, apply_override_pairs,
+        compute_backoff_delay, decode_idle_signaling_message, recover_daemon_after_session,
+        should_ack_idle_offer, should_attempt_offer_reconnect, should_continue_reconnect_attempt,
+        should_poll_answer_data_events, spawn_offer_accept_loop, steady_state_for_role,
+        write_steady_state_status,
     };
 
     fn sample_config() -> AppConfig {
@@ -1640,5 +1667,53 @@ mod tests {
         assert_eq!(status["current_state"], "idle");
         assert_eq!(status["role"], "answer");
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn offer_accept_loop_rejects_extra_clients_while_session_is_active() {
+        let mut config = sample_config();
+        config.tunnel.offer.listen_port = 0;
+        let listener =
+            OfferListener::bind(&config.tunnel.offer).await.expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have local addr");
+        let mut accepted_clients = spawn_offer_accept_loop(listener);
+
+        let mut first_client =
+            tokio::net::TcpStream::connect(addr).await.expect("first client should connect");
+        let first_session = timeout(Duration::from_secs(1), accepted_clients.recv())
+            .await
+            .expect("accept loop should yield first session")
+            .expect("accept loop should stay alive")
+            .expect("first session should be accepted");
+
+        let mut second_client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("second client should connect before prompt close");
+        let mut second_buffer = [0_u8; 1];
+        let second_read = timeout(Duration::from_secs(1), second_client.read(&mut second_buffer))
+            .await
+            .expect("second client should be closed promptly")
+            .expect("second client read should complete");
+        assert_eq!(second_read, 0, "busy client should see immediate close");
+
+        let mut first_buffer = [0_u8; 1];
+        assert!(
+            timeout(Duration::from_millis(100), first_client.read(&mut first_buffer))
+                .await
+                .is_err(),
+            "active session client should remain connected while busy clients are rejected"
+        );
+
+        drop(first_session);
+
+        let _third_client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("third client should connect after release");
+        let third_session = timeout(Duration::from_secs(1), accepted_clients.recv())
+            .await
+            .expect("accept loop should yield next session")
+            .expect("accept loop should stay alive")
+            .expect("third session should be accepted");
+        drop(third_session);
     }
 }

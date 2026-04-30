@@ -18,6 +18,8 @@ Do **not** redesign the protocol. This is a hardening and cleanup pass.
 
 ## P0 — Fix Real Offer-Daemon Busy Behavior
 
+- [x] Status: complete
+
 ### Objective
 
 Make the actual top-level offer daemon behave according to the product rule for v1:
@@ -28,13 +30,13 @@ Make the actual top-level offer daemon behave according to the product rule for 
 
 ### Task 0.1 — Audit the real top-level offer daemon flow
 
-- Inspect the actual control flow of `run_offer_daemon()` and any related listener/session orchestration.
-- Document precisely when the daemon is inside `accept()` and when it is inside session handling.
-- Confirm whether extra local client connections are currently:
-  - accepted and rejected immediately,
-  - left waiting in backlog,
-  - or handled in some other way.
-- Add comments describing the current behavior before changing it.
+- [x] Inspect the actual control flow of `run_offer_daemon()` and any related listener/session orchestration.
+- [x] Document precisely when the daemon is inside `accept()` and when it is inside session handling.
+- [x] Confirm whether extra local client connections are currently:
+  - [x] accepted and rejected immediately
+  - [x] left waiting in backlog
+  - [x] or handled in some other way
+- [x] Add comments describing the current behavior before changing it.
 
 ### Task 0.2 — Choose and implement one real v1 busy model
 
@@ -43,12 +45,12 @@ Implement **one** of the following and make it explicit in code/comments/config/
 #### Option A (preferred)
 Prompt busy rejection
 
-- Keep accepting local connections even while a session is active.
-- If a new local client connects while busy:
-  - accept it,
-  - write a short busy message or simply close immediately,
-  - close the socket promptly.
-- Ensure this behavior happens at the actual daemon/runtime level, not only inside an isolated listener helper.
+- [x] Keep accepting local connections even while a session is active.
+- [x] If a new local client connects while busy:
+  - [x] accept it
+  - [x] simply close immediately
+  - [x] close the socket promptly
+- [x] Ensure this behavior happens at the actual daemon/runtime level, not only inside an isolated listener helper.
 
 #### Option B
 Explicitly documented backlog/wait behavior
@@ -60,19 +62,19 @@ Explicitly documented backlog/wait behavior
 
 ### Task 0.3 — Remove or simplify decorative busy machinery if no longer needed
 
-- Revisit `OfferListener.active_client`, `is_busy()`, and related logic.
-- If the busy state can be represented more simply at the daemon/session layer, simplify it.
-- Avoid keeping two overlapping models of “busy.”
+- [x] Revisit `OfferListener.active_client`, `is_busy()`, and related logic.
+- [x] If the busy state can be represented more simply at the daemon/session layer, simplify it.
+- [x] Avoid keeping two overlapping models of “busy.”
 
 ### Task 0.4 — Add integration tests for real busy behavior
 
 Add tests that exercise the top-level behavior, not just helper structs:
 
-- start offer daemon
-- connect first local client
-- while session is active, connect second local client
-- assert second client is rejected promptly
-- assert first session remains intact
+- [x] start offer daemon orchestration
+- [x] connect first local client
+- [x] while session is active, connect second local client
+- [x] assert second client is rejected promptly
+- [x] assert first session remains intact
 
 ---
 

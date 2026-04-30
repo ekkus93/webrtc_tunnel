@@ -27,3 +27,9 @@
 
 ## 2026-04-30T08:36:55Z - GPT-5.4 - Added review 3 response file
 - Wrote `docs/responses3.md` summarizing which round-3 review findings look real and listing the implementation questions to clear with ChatGPT before starting another hardening pass.
+
+## 2026-04-30T08:39:55Z - GPT-5.4 - Review 3 decisions frozen
+- ChatGPT confirmed the round-3 v1 decisions: extra local offer-side clients should be accepted and immediately closed with no banner, unauthorized or disallowed peers during an active answer session should receive no response, dead config knobs should be removed rather than left decorative, and only startup/security/init failures should be fatal while ordinary runtime failures should be recoverable.
+
+## 2026-04-30T08:48:09Z - GPT-5.4 - Review 3 phase 1 landed
+- Round-3 phase 1 changed the offer daemon to keep a dedicated accept loop alive during active sessions so extra local clients are accepted and immediately closed with no banner, and added daemon-level busy tests to verify prompt rejection while the first session stays intact.
