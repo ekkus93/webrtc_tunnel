@@ -21,3 +21,9 @@
 
 ## 2026-04-30T08:23:27Z - GPT-5.4 - Review 2 phase 4 landed
 - Round-2 phase 4 added explicit daemon lifecycle documentation plus recovery-path tests that prove offer/answer daemons return to their steady states after target-connect, bridge-task, ICE, and remote-session failures, and the round-2 TODO checklist is now fully complete.
+
+## 2026-04-30T08:34:59Z - GPT-5.4 - Review 3 triage started
+- Reviewed `docs/RUST_WEBRTC_CODE_REVIEW3.md` and `docs/RUST_WEBRTC_CODE_REVIEW3_TODO.md`; the main likely real issues are top-level offer-daemon busy behavior still being serialized, active-answer busy replies bypassing `allow_remote_peers`, several dead/fixed-only config fields, and ordinary operational errors still exiting the daemon.
+
+## 2026-04-30T08:36:55Z - GPT-5.4 - Added review 3 response file
+- Wrote `docs/responses3.md` summarizing which round-3 review findings look real and listing the implementation questions to clear with ChatGPT before starting another hardening pass.
