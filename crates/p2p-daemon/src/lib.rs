@@ -17,7 +17,7 @@ use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use p2p_core::{AppConfig, DaemonState, FailureCode, Kid, MsgId, NodeRole, PeerId, SessionId};
-use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile};
+use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile, kid_from_signing_key};
 use p2p_signaling::{
     AckBody, AnswerBody, CloseBody, EndOfCandidatesBody, ErrorBody, IceCandidateBody, InnerMessage,
     InnerMessageBuilder, MessageBody, MqttSignalingTransport, OfferBody, OuterEnvelope,
@@ -514,6 +514,18 @@ async fn run_offer_session(
                         ) {
                             Ok(decoded) => decoded,
                             Err(error) => {
+                                if maybe_ack_duplicate_active_session_message(
+                                    ctx,
+                                    codec,
+                                    transport,
+                                    &session,
+                                    &payload,
+                                    &error,
+                                )
+                                .await?
+                                {
+                                    continue;
+                                }
                                 tracing::warn!(
                                     reason = %error,
                                     session_id = %session.session_id,
@@ -797,6 +809,18 @@ async fn run_answer_session(
                         ) {
                             Ok(decoded) => decoded,
                             Err(error) => {
+                                if maybe_ack_duplicate_active_session_message(
+                                    ctx,
+                                    codec,
+                                    transport,
+                                    &session,
+                                    &payload,
+                                    &error,
+                                )
+                                .await?
+                                {
+                                    continue;
+                                }
                                 if maybe_handle_active_busy_offer(
                                     ctx,
                                     codec,
@@ -1346,6 +1370,65 @@ async fn maybe_handle_active_busy_offer(
             .await?;
         }
     }
+    Ok(true)
+}
+
+async fn maybe_ack_duplicate_active_session_message(
+    ctx: &mut RuntimeContext<'_>,
+    codec: &SignalCodec<'_>,
+    transport: &mut MqttSignalingTransport,
+    session: &ActiveSession,
+    payload: &[u8],
+    error: &SignalingError,
+) -> Result<bool, DaemonError> {
+    let SignalingError::Protocol(message) = error else {
+        return Ok(false);
+    };
+    if message != "duplicate message detected" {
+        return Ok(false);
+    }
+
+    let envelope = match OuterEnvelope::decode(payload) {
+        Ok(envelope) => envelope,
+        Err(_) => return Ok(false),
+    };
+    if !envelope.flags.ack_required {
+        return Ok(false);
+    }
+
+    let expected_sender_kid =
+        kid_from_signing_key(&session.remote_authorized.public_identity.sign_public);
+    if envelope.sender_kid != expected_sender_kid {
+        return Ok(false);
+    }
+
+    publish_message(
+        ctx,
+        codec,
+        transport,
+        StatusSnapshot {
+            active_session_id: Some(session.session_id),
+            current_state: session.state,
+        },
+        None,
+        &session.remote_authorized,
+        OutgoingSignal {
+            message: codec.build_ack(
+                session.remote_peer_id.clone(),
+                session.session_id,
+                envelope.msg_id,
+            ),
+            response: true,
+        },
+    )
+    .await?;
+
+    tracing::info!(
+        session_id = %session.session_id,
+        duplicate_msg_id = %envelope.msg_id,
+        role = ?ctx.config.node.role,
+        "re-acknowledged duplicate active-session signaling message"
+    );
     Ok(true)
 }
 
