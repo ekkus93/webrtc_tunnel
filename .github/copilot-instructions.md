@@ -108,6 +108,7 @@ Do not collapse unrelated responsibilities into a single crate unless the user e
 - Use strict config parsing and reject unknown keys when strict mode is enabled.
 - Treat the public config surface as fail-closed: unsupported security toggles must be rejected, not silently ignored.
 - In v1, `logging.log_rotation` must stay `none`, `health.status_socket` must stay empty, and the reconnect local-client hold knobs remain disabled.
+- In v1, WebRTC message size, tunnel frame version, and the single active stream are fixed protocol constants; do not expose them as decorative config knobs.
 - In v1, TLS server-name behavior is derived from the broker URL host; do not add a separate public `server_name` override unless the product scope changes.
 - Broker auth supports anonymous/certificate-only, username-only, or username+password-file modes; do not require a password file when the config leaves it empty.
 - Refuse startup on insecure identity file permissions.

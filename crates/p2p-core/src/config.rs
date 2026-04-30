@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 use crate::error::ConfigError;
 use crate::ids::PeerId;
 
-const V1_WEBRTC_MAX_MESSAGE_SIZE: usize = 262_144;
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeRole {
@@ -149,11 +147,6 @@ impl AppConfig {
             return Err(ConfigError::InvalidConfig(format!(
                 "authorized_keys file '{}' does not exist",
                 self.paths.authorized_keys.display()
-            )));
-        }
-        if self.webrtc.max_message_size != V1_WEBRTC_MAX_MESSAGE_SIZE {
-            return Err(ConfigError::InvalidConfig(format!(
-                "webrtc.max_message_size must remain {V1_WEBRTC_MAX_MESSAGE_SIZE} in v1"
             )));
         }
         if self.logging.log_rotation != "none" {
@@ -317,16 +310,13 @@ pub struct WebRtcConfig {
     pub ice_connection_timeout_secs: u16,
     pub enable_trickle_ice: bool,
     pub enable_ice_restart: bool,
-    pub max_message_size: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunnelConfig {
     pub stream_id: u32,
-    pub frame_version: u8,
     pub read_chunk_size: usize,
-    pub write_buffer_limit: usize,
     pub local_eof_grace_ms: u64,
     pub remote_eof_grace_ms: u64,
     pub offer: TunnelOfferConfig,
@@ -339,7 +329,6 @@ pub struct TunnelOfferConfig {
     pub listen_host: String,
     pub listen_port: u16,
     pub remote_peer_id: PeerId,
-    pub auto_open: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -398,8 +387,6 @@ pub struct LoggingConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HealthConfig {
-    pub heartbeat_interval_secs: u64,
-    pub ping_timeout_secs: u64,
     pub status_socket: PathBuf,
     pub write_status_file: bool,
     pub status_file: PathBuf,
@@ -530,13 +517,10 @@ ice_gather_timeout_secs = 15
 ice_connection_timeout_secs = 20
 enable_trickle_ice = true
 enable_ice_restart = true
-max_message_size = 262144
 
 [tunnel]
 stream_id = 1
-frame_version = 1
 read_chunk_size = 16384
-write_buffer_limit = 262144
 local_eof_grace_ms = 250
 remote_eof_grace_ms = 250
 
@@ -544,7 +528,6 @@ remote_eof_grace_ms = 250
 listen_host = "127.0.0.1"
 listen_port = 2222
 remote_peer_id = "offer-home"
-auto_open = true
 
 [tunnel.answer]
 target_host = "127.0.0.1"
@@ -588,8 +571,6 @@ redact_candidates = true
 log_rotation = "none"
 
 [health]
-heartbeat_interval_secs = 10
-ping_timeout_secs = 30
 status_socket = ""
 write_status_file = true
 status_file = "{status_file}"
@@ -767,7 +748,6 @@ status_file = "{status_file}"
         write_required_files(&config_dir);
 
         for (from, to) in [
-            ("max_message_size = 262144", "max_message_size = 1024"),
             ("log_rotation = \"none\"", "log_rotation = \"daily\""),
             ("status_socket = \"\"", "status_socket = \"/tmp/p2ptunnel.sock\""),
             (
@@ -780,6 +760,30 @@ status_file = "{status_file}"
             let config_path = temp_dir.path().join("config.toml");
             fs::write(&config_path, config).expect("write config");
             assert!(AppConfig::load_from_file(&config_path).is_err(), "{to}");
+        }
+    }
+
+    #[test]
+    fn config_rejects_removed_v1_knobs() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::create_dir_all(state_dir.join("log")).expect("create state dir");
+        write_required_files(&config_dir);
+
+        for (anchor, extra) in [
+            ("enable_ice_restart = true", "\nmax_message_size = 262144"),
+            ("stream_id = 1", "\nframe_version = 1"),
+            ("read_chunk_size = 16384", "\nwrite_buffer_limit = 262144"),
+            ("remote_peer_id = \"offer-home\"", "\nauto_open = true"),
+            ("[health]", "\nheartbeat_interval_secs = 10\nping_timeout_secs = 30"),
+        ] {
+            let config =
+                sample_config(&config_dir, &state_dir).replace(anchor, &format!("{anchor}{extra}"));
+            let config_path = temp_dir.path().join("config.toml");
+            fs::write(&config_path, config).expect("write config");
+            assert!(AppConfig::load_from_file(&config_path).is_err(), "{extra}");
         }
     }
 }

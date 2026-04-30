@@ -117,8 +117,8 @@ The config format is `p2ptunnel-config-v1`.
 - `[node]`: local `peer_id` and role (`offer` or `answer`)
 - `[paths]`: identity, authorized keys, state, and log paths
 - `[broker]`: MQTT broker URL, topic prefix, optional credentials, and TLS requirements
-- `[webrtc]`: STUN URLs, trickle ICE, ICE restart, and the fixed v1 transport size
-- `[tunnel]`: stream/frame version and bridge behavior
+- `[webrtc]`: STUN URLs, trickle ICE, and ICE restart
+- `[tunnel]`: bridge behavior for the fixed v1 single-stream protocol
 - `[tunnel.offer]`: local listen host/port and remote peer
 - `[tunnel.answer]`: target host/port and allowed remote peers
 - `[reconnect]`: ICE restart, renegotiation, and backoff settings
@@ -149,6 +149,8 @@ insecure_skip_verify = false
 
 Set `username = ""` and `password_file = ""` for anonymous or certificate-only broker auth, or keep `username` set and leave `password_file = ""` for username-only auth. In v1, `connect_timeout_secs` must stay `5`, `session_expiry_secs` must stay `0`, TLS server name is derived from the broker URL host, and broker TLS verification cannot be disabled.
 
+The fixed v1 protocol constants for WebRTC message size, tunnel frame version, and single-stream handling live in code and the spec rather than in the public config file.
+
 ### Example offer-side tunnel config
 
 ```toml
@@ -156,7 +158,6 @@ Set `username = ""` and `password_file = ""` for anonymous or certificate-only b
 listen_host = "127.0.0.1"
 listen_port = 2222
 remote_peer_id = "answer-office"
-auto_open = true
 ```
 
 ### Example answer-side tunnel config

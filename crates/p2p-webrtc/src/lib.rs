@@ -382,7 +382,6 @@ mod tests {
             ice_connection_timeout_secs: 20,
             enable_trickle_ice: true,
             enable_ice_restart: true,
-            max_message_size: 262_144,
         }
     }
 

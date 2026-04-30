@@ -81,7 +81,6 @@ mod tests {
             listen_host: "127.0.0.1".to_owned(),
             listen_port: 0,
             remote_peer_id: "answer-office".parse().expect("peer id"),
-            auto_open: true,
         }
     }
 

@@ -80,6 +80,8 @@ Add tests that exercise the top-level behavior, not just helper structs:
 
 ## P1 — Clean Up Dead Or Misleading Config Surface
 
+- [x] Status: complete
+
 ### Objective
 
 Ensure every public v1 config field is either:
@@ -94,42 +96,40 @@ Do not leave fields in the config surface that imply real runtime control when t
 
 For every config field, determine whether it is:
 
-- actively used in runtime behavior,
-- only validated but not used,
-- or ignored.
+- [x] actively used in runtime behavior
+- [x] only validated but not used
+- [x] or ignored
 
-Create a short internal table while implementing.
+- [x] Create a short internal table while implementing.
 
 ### Task 1.2 — Resolve suspicious fields
 
 Review and resolve at least these fields:
 
-- `tunnel.offer.auto_open`
-- `tunnel.write_buffer_limit`
-- `health.heartbeat_interval_secs`
-- `health.ping_timeout_secs`
-- `tunnel.frame_version`
-- `webrtc.max_message_size`
+- [x] `tunnel.offer.auto_open`
+- [x] `tunnel.write_buffer_limit`
+- [x] `health.heartbeat_interval_secs`
+- [x] `health.ping_timeout_secs`
+- [x] `tunnel.frame_version`
+- [x] `webrtc.max_message_size`
 
 For each one, do one of the following:
 
-- **Implement it fully**, or
-- **Reject non-default values in config validation**, or
-- **Remove it from the v1 public config surface**
+- [x] **Remove it from the v1 public config surface**
 
 ### Task 1.3 — Make config validation and docs match reality
 
-- Update config validation so unsupported fields do not linger silently.
-- Update example configs and comments.
-- Keep the v1 surface small and honest.
+- [x] Update config validation so unsupported fields do not linger silently.
+- [x] Update example configs and comments.
+- [x] Keep the v1 surface small and honest.
 
 ### Task 1.4 — Add tests for config/runtime alignment
 
 Add tests that verify:
 
-- unsupported fields are rejected when intended
-- implemented fields actually affect runtime state or derived behavior
-- default config remains valid
+- [x] unsupported fields are rejected when intended
+- [x] implemented fields actually affect runtime state or derived behavior
+- [x] default config remains valid
 
 ---
 
@@ -222,26 +222,28 @@ Add tests for cases like:
 
 ## P2 — Simplify Or Remove Misleading Single-Session V1 Surfaces
 
+- [x] Status: complete
+
 ### Objective
 
 Reduce code/config complexity that suggests unsupported concurrency or unsupported behavior.
 
 ### Task 4.1 — Re-evaluate single-session assumptions across codebase
 
-- Identify code paths that imply multiple simultaneous sessions or richer concurrency than v1 actually supports.
-- Simplify where possible.
+- [x] Identify code paths that imply multiple simultaneous sessions or richer concurrency than v1 actually supports.
+- [x] Simplify where possible.
 
 ### Task 4.2 — Remove or document non-real concurrency knobs
 
 If v1 remains truly single-session:
 
-- make that explicit in code comments and config docs
-- remove knobs that imply richer behavior unless they are actually implemented
+- [x] make that explicit in code comments and config docs
+- [x] remove knobs that imply richer behavior unless they are actually implemented
 
 ### Task 4.3 — Improve inline documentation
 
-- Add comments where runtime behavior is intentionally simpler than lower-level helper abstractions.
-- Explain why v1 is single-session and what “busy” means operationally.
+- [x] Add comments where runtime behavior is intentionally simpler than lower-level helper abstractions.
+- [x] Explain why v1 is single-session and what “busy” means operationally.
 
 ---
 

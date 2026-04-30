@@ -1340,20 +1340,16 @@ mod tests {
                 ice_connection_timeout_secs: 10,
                 enable_trickle_ice: true,
                 enable_ice_restart: true,
-                max_message_size: 262_144,
             },
             tunnel: TunnelConfig {
                 stream_id: 1,
-                frame_version: 1,
                 read_chunk_size: 1024,
-                write_buffer_limit: 262_144,
                 local_eof_grace_ms: 250,
                 remote_eof_grace_ms: 250,
                 offer: TunnelOfferConfig {
                     listen_host: "127.0.0.1".to_owned(),
                     listen_port: 5000,
                     remote_peer_id: "answer-office".parse().expect("peer id"),
-                    auto_open: true,
                 },
                 answer: TunnelAnswerConfig {
                     target_host: "127.0.0.1".to_owned(),
@@ -1398,8 +1394,6 @@ mod tests {
                 log_rotation: "none".to_owned(),
             },
             health: HealthConfig {
-                heartbeat_interval_secs: 10,
-                ping_timeout_secs: 30,
                 status_socket: PathBuf::new(),
                 write_status_file: true,
                 status_file: PathBuf::from("/tmp/status.json"),

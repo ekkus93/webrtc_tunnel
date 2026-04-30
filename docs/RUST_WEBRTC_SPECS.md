@@ -561,13 +561,10 @@ ice_gather_timeout_secs = 15
 ice_connection_timeout_secs = 20
 enable_trickle_ice = true
 enable_ice_restart = true
-max_message_size = 262144
 
 [tunnel]
 stream_id = 1
-frame_version = 1
 read_chunk_size = 16384
-write_buffer_limit = 262144
 local_eof_grace_ms = 250
 remote_eof_grace_ms = 250
 
@@ -575,7 +572,6 @@ remote_eof_grace_ms = 250
 listen_host = "127.0.0.1"
 listen_port = 2222
 remote_peer_id = "answer-office"
-auto_open = true
 
 [tunnel.answer]
 target_host = ""
@@ -619,8 +615,6 @@ redact_candidates = true
 log_rotation = "none"
 
 [health]
-heartbeat_interval_secs = 10
-ping_timeout_secs = 30
 status_socket = ""
 write_status_file = true
 status_file = "~/.local/state/p2ptunnel/status.json"
@@ -629,7 +623,7 @@ status_file = "~/.local/state/p2ptunnel/status.json"
 Notes:
 - `broker.username` / `broker.password_file` support three explicit modes in v1: anonymous or certificate-only (`""` / `""`), username-only (`"user"` / `""`), or username plus password file.
 - TLS server-name behavior is derived from the broker URL host in v1; there is no separate public `server_name` override.
-- `webrtc.max_message_size` is fixed at `262144` in v1.
+- WebRTC message size, tunnel frame version, and the single active stream are fixed protocol constants in v1 and are not exposed as public config knobs.
 - `broker.connect_timeout_secs` must stay `5` and `broker.session_expiry_secs` must stay `0`; those fields remain as fixed transport-compatibility settings rather than independent tuning knobs in v1.
 - `reconnect.hold_local_client_during_reconnect` must stay `false` and `reconnect.local_client_hold_secs` must stay `0`; holding a live local client across reconnect is not implemented.
 - `logging.log_rotation` is not implemented in v1 and must remain `"none"`.

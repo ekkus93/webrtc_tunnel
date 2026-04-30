@@ -36,3 +36,6 @@
 
 ## 2026-04-30T08:52:17Z - GPT-5.4 - Review 3 phase 2 landed
 - Round-3 phase 2 made active-answer busy handling respect both authorization and `allow_remote_peers`, so only fully allowed peers receive encrypted `busy` during an active session while unauthorized or disallowed peers get no response.
+
+## 2026-04-30T08:54:54Z - GPT-5.4 - Review 3 phase 3 landed
+- Round-3 phase 3 removed dead or fixed-only v1 config knobs from the public schema, aligned README/spec/Copilot guidance with the leaner config surface, and added config tests that reject those removed fields explicitly.
