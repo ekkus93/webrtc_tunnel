@@ -42,3 +42,12 @@
 
 ## 2026-04-30T08:58:55Z - GPT-5.4 - Review 3 phase 4 landed
 - Round-3 phase 4 made idle runtime accept/poll turbulence recoverable with log-and-retry behavior, converted status-file writes to best-effort logging instead of daemon-fatal errors, added a regression for recoverable status-write failure, and completed the remaining review3 lifecycle/docs checklist.
+
+## 2026-04-30T09:25:56Z - GPT-5.4 - Review 4 docs missing
+- The user asked for triage of `docs/RUST_WEBRTC_CODE_REVIEW4.md` and `docs/RUST_WEBRTC_CODE_REVIEW4_TODO.md`, but those files were not present in `docs/`; only review1 through review3 files currently exist, so review4 triage is blocked until the files or correct paths are provided.
+
+## 2026-04-30T09:29:27Z - GPT-5.4 - Review 4 triage started
+- Reviewed `docs/RUST_WEBRTC_CODE_REVIEW4.md` and `docs/RUST_WEBRTC_CODE_REVIEW4_TODO.md`; the clearest likely-real remaining issues are optimistic `mqtt_connected` status reporting and replay-blind active busy-offer classification, while the broader runtime-policy/testing items look directionally right but need scope decisions around exact connectivity semantics and dedupe lifetime.
+
+## 2026-04-30T09:30:26Z - GPT-5.4 - Added review 4 response file
+- Wrote `docs/responses4.md` summarizing which round-4 review findings look real and listing the three clarification questions to freeze with ChatGPT before starting another hardening pass.
