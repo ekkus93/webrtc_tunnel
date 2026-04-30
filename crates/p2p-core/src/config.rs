@@ -306,8 +306,6 @@ pub struct BrokerTlsConfig {
 #[serde(deny_unknown_fields)]
 pub struct WebRtcConfig {
     pub stun_urls: Vec<String>,
-    pub ice_gather_timeout_secs: u16,
-    pub ice_connection_timeout_secs: u16,
     pub enable_trickle_ice: bool,
     pub enable_ice_restart: bool,
 }
@@ -513,8 +511,6 @@ insecure_skip_verify = false
 
 [webrtc]
 stun_urls = ["stun:stun.l.google.com:19302"]
-ice_gather_timeout_secs = 15
-ice_connection_timeout_secs = 20
 enable_trickle_ice = true
 enable_ice_restart = true
 
@@ -773,6 +769,8 @@ status_file = "{status_file}"
         write_required_files(&config_dir);
 
         for (anchor, extra) in [
+            ("stun_urls = [\"stun:stun.l.google.com:19302\"]", "\nice_gather_timeout_secs = 15"),
+            ("enable_trickle_ice = true", "\nice_connection_timeout_secs = 20"),
             ("enable_ice_restart = true", "\nmax_message_size = 262144"),
             ("stream_id = 1", "\nframe_version = 1"),
             ("read_chunk_size = 16384", "\nwrite_buffer_limit = 262144"),

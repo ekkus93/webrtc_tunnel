@@ -378,8 +378,6 @@ mod tests {
     fn sample_config() -> WebRtcConfig {
         WebRtcConfig {
             stun_urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-            ice_gather_timeout_secs: 15,
-            ice_connection_timeout_secs: 20,
             enable_trickle_ice: true,
             enable_ice_restart: true,
         }

@@ -20,8 +20,8 @@ use p2p_core::{AppConfig, DaemonState, FailureCode, Kid, MsgId, NodeRole, PeerId
 use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile};
 use p2p_signaling::{
     AckBody, AnswerBody, CloseBody, EndOfCandidatesBody, ErrorBody, IceCandidateBody, InnerMessage,
-    InnerMessageBuilder, MessageBody, MqttSignalingTransport, OfferBody, SignalCodec,
-    SignalingError, SignalingSession,
+    InnerMessageBuilder, MessageBody, MqttSignalingTransport, OfferBody, OuterEnvelope,
+    SignalCodec, SignalingError, SignalingSession,
 };
 use p2p_tunnel::{AnswerTargetConnector, OfferClient, OfferListener, TunnelBridge};
 use p2p_webrtc::{
@@ -81,6 +81,10 @@ impl ActiveBusyOfferCache {
         self.order.push_back(key);
         self.seen.insert(key);
         true
+    }
+
+    fn contains(&self, key: &ActiveBusyOfferKey) -> bool {
+        self.seen.contains(key)
     }
 }
 
@@ -1218,6 +1222,14 @@ async fn maybe_handle_active_busy_offer(
     active_session_id: SessionId,
     replay_cache_size: usize,
 ) -> Result<bool, DaemonError> {
+    if let Some(key) = replayed_active_busy_offer_key(payload, active_busy_offers) {
+        tracing::info!(
+            active_session_id = %active_session_id,
+            duplicate_msg_id = %key.msg_id,
+            "suppressing replayed offer before active-session busy reclassification"
+        );
+        return Ok(true);
+    }
     let Some(action) = classify_active_busy_offer(
         ctx.config,
         codec,
@@ -1270,6 +1282,15 @@ async fn maybe_handle_active_busy_offer(
         }
     }
     Ok(true)
+}
+
+fn replayed_active_busy_offer_key(
+    payload: &[u8],
+    active_busy_offers: &ActiveBusyOfferCache,
+) -> Option<ActiveBusyOfferKey> {
+    let envelope = OuterEnvelope::decode(payload).ok()?;
+    let key = ActiveBusyOfferKey { sender_kid: envelope.sender_kid, msg_id: envelope.msg_id };
+    active_busy_offers.contains(&key).then_some(key)
 }
 
 fn classify_active_busy_offer(
@@ -1659,22 +1680,23 @@ mod tests {
     };
     use p2p_crypto::{AuthorizedKeys, generate_identity};
     use p2p_signaling::{
-        ErrorBody, InnerMessageBuilder, MessageBody, OfferBody, ReplayCache, SignalCodec,
-        SignalingError,
+        ErrorBody, InnerMessageBuilder, MessageBody, OfferBody, OuterEnvelope, ReplayCache,
+        SignalCodec, SignalingError,
     };
     use serde_json::Value;
     use tokio::io::AsyncReadExt;
     use tokio::time::timeout;
 
     use super::{
-        ActiveBusyOfferAction, ActiveBusyOfferCache, BridgeSessionState, DaemonError,
-        DaemonRuntimeState, DaemonState, IceConnectionState, OfferListener, RuntimeContext,
-        StatusSnapshot, StatusWriter, apply_answer_overrides, apply_offer_overrides,
-        apply_override_pairs, classify_active_busy_offer, compute_backoff_delay,
-        decode_idle_signaling_message, mark_transport_unusable, mark_transport_usable,
-        recover_daemon_after_session, should_ack_idle_offer, should_attempt_offer_reconnect,
-        should_continue_reconnect_attempt, should_poll_answer_data_events, spawn_offer_accept_loop,
-        steady_state_for_role, write_steady_state_status,
+        ActiveBusyOfferAction, ActiveBusyOfferCache, ActiveBusyOfferKey, BridgeSessionState,
+        DaemonError, DaemonRuntimeState, DaemonState, IceConnectionState, OfferListener,
+        RuntimeContext, StatusSnapshot, StatusWriter, apply_answer_overrides,
+        apply_offer_overrides, apply_override_pairs, classify_active_busy_offer,
+        compute_backoff_delay, decode_idle_signaling_message, mark_transport_unusable,
+        mark_transport_usable, recover_daemon_after_session, replayed_active_busy_offer_key,
+        should_ack_idle_offer, should_attempt_offer_reconnect, should_continue_reconnect_attempt,
+        should_poll_answer_data_events, spawn_offer_accept_loop, steady_state_for_role,
+        write_steady_state_status,
     };
 
     fn sample_config() -> AppConfig {
@@ -1710,8 +1732,6 @@ mod tests {
             },
             webrtc: WebRtcConfig {
                 stun_urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-                ice_gather_timeout_secs: 10,
-                ice_connection_timeout_secs: 10,
                 enable_trickle_ice: true,
                 enable_ice_restart: true,
             },
@@ -2312,6 +2332,43 @@ mod tests {
         assert_eq!(first_key, second_key);
         assert!(dedupe.record_if_new(first_key), "first offer should be new");
         assert!(!dedupe.record_if_new(second_key), "duplicate offer should be suppressed");
+    }
+
+    #[test]
+    fn replayed_active_busy_offer_is_detected_before_full_decode() {
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys parse");
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let new_offer_session = SessionId::random();
+        let message = InnerMessageBuilder::new(
+            new_offer_session,
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Offer(OfferBody { sdp: "second-offer".to_owned() }));
+        let (envelope, _payload) = offer_codec
+            .encode_for_peer(
+                offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("offer encodes");
+        let mut dedupe = ActiveBusyOfferCache::new(64);
+        let key = ActiveBusyOfferKey { sender_kid: envelope.sender_kid, msg_id: envelope.msg_id };
+        assert!(dedupe.record_if_new(key), "authenticated busy offer should seed dedupe");
+
+        let tampered_payload =
+            OuterEnvelope { ciphertext: vec![0_u8; envelope.ciphertext.len()], ..envelope }
+                .encode()
+                .expect("tampered envelope should encode");
+
+        assert_eq!(
+            replayed_active_busy_offer_key(&tampered_payload, &dedupe),
+            Some(key),
+            "replayed duplicate should be suppressed from outer-envelope metadata before decode"
+        );
     }
 
     #[test]

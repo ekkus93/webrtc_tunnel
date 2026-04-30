@@ -149,9 +149,9 @@ insecure_skip_verify = false
 
 Set `username = ""` and `password_file = ""` for anonymous or certificate-only broker auth, or keep `username` set and leave `password_file = ""` for username-only auth. In v1, `connect_timeout_secs` must stay `5`, `session_expiry_secs` must stay `0`, TLS server name is derived from the broker URL host, and broker TLS verification cannot be disabled.
 
-The fixed v1 protocol constants for WebRTC message size, tunnel frame version, and single-stream handling live in code and the spec rather than in the public config file.
+The fixed v1 protocol constants for ICE timing behavior, WebRTC message size, tunnel frame version, and single-stream handling live in code and the spec rather than in the public config file.
 
-While an offer-side session is active, additional local TCP clients are accepted and immediately closed with no banner. During an active answer-side session, only a fully allowed peer may receive an encrypted `busy` response; unauthorized or disallowed peers receive no response, and duplicate replays of the same foreign offer do not trigger repeated `busy` replies.
+While an offer-side session is active, additional local TCP clients are accepted and immediately closed with no banner. During an active answer-side session, only a fully allowed peer may receive an encrypted `busy` response; unauthorized or disallowed peers receive no response, and duplicate replays of the same foreign offer are dropped from the active-session dedupe cache before they can trigger repeated `busy` replies or a second full reclassification pass.
 
 ### Example offer-side tunnel config
 

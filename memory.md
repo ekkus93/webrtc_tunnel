@@ -68,3 +68,12 @@
 
 ## 2026-04-30T10:17:41Z - GPT-5.4 - Added review 5 response file
 - Wrote `docs/responses5.md` summarizing which round-5 review findings look real and listing the three clarification questions to freeze with ChatGPT before starting another narrow hardening pass.
+
+## 2026-04-30T10:23:38Z - GPT-5.4 - Review 5 decisions frozen
+- ChatGPT confirmed that `webrtc.ice_gather_timeout_secs` and `webrtc.ice_connection_timeout_secs` should be removed from the public v1 config unless they become real enforced runtime features.
+- ChatGPT also froze active busy-offer dedupe correctness on the authenticated side after successful decode/verification/decrypt/authz with per-session `(sender_kid, msg_id)` caching, and kept round 5 narrowly scoped rather than expanding into a broader fixed-only config cleanup.
+
+## 2026-04-30T10:28:47Z - GPT-5.4 - Review 5 hardening landed
+- Round-5 removed `webrtc.ice_gather_timeout_secs` and `webrtc.ice_connection_timeout_secs` from the public config schema, fixtures, and docs, and config tests now reject them as removed v1 knobs instead of pretending they are live runtime controls.
+- The active answer busy-offer path still uses the authenticated per-session `(sender_kid, msg_id)` cache as its correctness boundary, but it now also drops already-seen duplicates earlier from decoded outer-envelope metadata as a best-effort optimization before a second full reclassification pass.
+- `docs/RUST_WEBRTC_CODE_REVIEW5_TODO.md` is fully marked complete, and README/spec/Copilot guidance now match the reduced v1 config surface and the tightened busy-offer replay behavior.

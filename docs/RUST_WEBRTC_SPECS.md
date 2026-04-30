@@ -557,8 +557,6 @@ insecure_skip_verify = false
 
 [webrtc]
 stun_urls = ["stun:stun.l.google.com:19302"]
-ice_gather_timeout_secs = 15
-ice_connection_timeout_secs = 20
 enable_trickle_ice = true
 enable_ice_restart = true
 
@@ -623,7 +621,8 @@ status_file = "~/.local/state/p2ptunnel/status.json"
 Notes:
 - `broker.username` / `broker.password_file` support three explicit modes in v1: anonymous or certificate-only (`""` / `""`), username-only (`"user"` / `""`), or username plus password file.
 - TLS server-name behavior is derived from the broker URL host in v1; there is no separate public `server_name` override.
-- WebRTC message size, tunnel frame version, and the single active stream are fixed protocol constants in v1 and are not exposed as public config knobs.
+- ICE timing behavior, WebRTC message size, tunnel frame version, and the single active stream are fixed protocol constants in v1 and are not exposed as public config knobs.
+- During an active answer session, the authenticated per-session busy-offer cache remains authoritative, but already-seen `(sender_kid, msg_id)` duplicates may be dropped earlier from outer-envelope metadata as a best-effort optimization before full reclassification.
 - `broker.connect_timeout_secs` must stay `5` and `broker.session_expiry_secs` must stay `0`; those fields remain as fixed transport-compatibility settings rather than independent tuning knobs in v1.
 - `reconnect.hold_local_client_during_reconnect` must stay `false` and `reconnect.local_client_hold_secs` must stay `0`; holding a live local client across reconnect is not implemented.
 - `logging.log_rotation` is not implemented in v1 and must remain `"none"`.

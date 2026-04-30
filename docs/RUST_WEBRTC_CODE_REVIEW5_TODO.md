@@ -19,6 +19,8 @@ This TODO is intentionally narrow. Do **not** redesign the system. Do **not** br
 
 ## Task 1 — Fix `webrtc.ice_gather_timeout_secs`
 
+**Status:** Done
+
 ### Objective
 
 Make `webrtc.ice_gather_timeout_secs` either:
@@ -26,9 +28,9 @@ Make `webrtc.ice_gather_timeout_secs` either:
 - a real runtime control, or
 - not part of the public v1 config at all
 
-### Required decision
+### Implemented decision
 
-Pick **one** of these approaches and implement it consistently:
+Used **Option B — Remove it**.
 
 #### Option A — Implement it
 
@@ -47,10 +49,13 @@ Pick **one** of these approaches and implement it consistently:
 
 - The field is either genuinely enforced in runtime behavior or no longer exposed as a v1 config knob.
 - There is no longer a config/runtime mismatch for this field.
+- Done: removed from the public config struct, config examples, and docs, and config-load coverage now treats it as a removed v1 knob.
 
 ---
 
 ## Task 2 — Fix `webrtc.ice_connection_timeout_secs`
+
+**Status:** Done
 
 ### Objective
 
@@ -59,9 +64,9 @@ Make `webrtc.ice_connection_timeout_secs` either:
 - a real runtime control, or
 - not part of the public v1 config at all
 
-### Required decision
+### Implemented decision
 
-Pick **one** of these approaches and implement it consistently:
+Used **Option B — Remove it**.
 
 #### Option A — Implement it
 
@@ -79,10 +84,13 @@ Pick **one** of these approaches and implement it consistently:
 ### Acceptance criteria
 
 - The field either affects real runtime behavior or is gone from the public v1 surface.
+- Done: removed from the public config struct, config examples, and docs, and config-load coverage now treats it as a removed v1 knob.
 
 ---
 
 ## Task 3 — Harden active busy-offer replay handling earlier in the path
+
+**Status:** Done
 
 ### Objective
 
@@ -111,10 +119,13 @@ The current code suppresses repeated `busy` replies, but duplicate active-sessio
 
 - Repeated copies of the same active-session foreign offer from an allowed peer do not repeatedly trigger full expensive classification work or repeated `busy` responses.
 - Dedupe state is scoped to the active answer session lifetime.
+- Done: the authenticated per-session cache remains authoritative, and already-seen `(sender_kid, msg_id)` keys are now dropped earlier from decoded outer-envelope metadata before full reclassification.
 
 ---
 
 ## Task 4 — Clean up remaining fixed-only config baggage
+
+**Status:** Done
 
 ### Objective
 
@@ -132,10 +143,13 @@ Reduce the public config surface to knobs that actually matter.
 
 - The public config surface is smaller, clearer, and more honest.
 - No obviously fake user knobs remain.
+- Done: this pass removed the two clearly fake WebRTC timeout knobs and intentionally did not broaden into a larger config-pruning rewrite.
 
 ---
 
 ## Task 5 — Add focused tests for timeout behavior
+
+**Status:** Done
 
 ### Objective
 
@@ -155,10 +169,13 @@ If `ice_connection_timeout_secs` remains public:
 
 - Remaining public timeout knobs have tests proving they matter.
 - Or, if removed, no tests/docs/templates imply they exist.
+- Done: the timeout knobs were removed, related fixtures/templates/docs were updated, and config tests reject the removed fields.
 
 ---
 
 ## Task 6 — Add a focused replay/dedupe lifecycle test for active busy-offer handling
+
+**Status:** Done
 
 ### Objective
 
@@ -175,10 +192,13 @@ Prove that repeated active-session foreign offer replays are suppressed properly
 ### Acceptance criteria
 
 - Regression test exists for repeated duplicate active-session foreign offers.
+- Done: tests cover duplicate busy-offer suppression per session and the new early duplicate fast path.
 
 ---
 
 ## Task 7 — Update docs/config examples
+
+**Status:** Done
 
 ### Objective
 
@@ -193,6 +213,7 @@ Keep docs consistent with the real runtime surface.
 ### Acceptance criteria
 
 - Docs and config examples match the actual runtime surface.
+- Done: README, spec, config examples, and project instructions now reflect the removed timeout knobs and the tightened active busy-offer behavior.
 
 ---
 
@@ -225,8 +246,8 @@ Keep this round narrow and finish the remaining honesty/hardening work.
 
 This round is done when:
 
-- the two WebRTC timeout fields are either real or removed
-- active busy-offer replay handling is tightened earlier in the path
-- remaining fixed-only config baggage is trimmed
-- focused timeout/replay tests exist
-- docs/config examples match reality
+- [x] the two WebRTC timeout fields are either real or removed
+- [x] active busy-offer replay handling is tightened earlier in the path
+- [x] remaining fixed-only config baggage is trimmed
+- [x] focused timeout/replay tests exist
+- [x] docs/config examples match reality
