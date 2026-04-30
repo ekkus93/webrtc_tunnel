@@ -107,13 +107,12 @@ impl TunnelBridge {
                         Some(TcpReadEvent::Data(payload)) => {
                             self.send_frame(TunnelFrame::data(payload)).await?;
                         }
-                        Some(TcpReadEvent::Eof) => {
-                            if !local_eof_sent {
-                                self.send_frame(TunnelFrame::close()).await?;
-                                local_eof_sent = true;
-                                local_eof_deadline = Some(Box::pin(tokio::time::sleep(local_eof_grace)));
-                            }
+                        Some(TcpReadEvent::Eof) if !local_eof_sent => {
+                            self.send_frame(TunnelFrame::close()).await?;
+                            local_eof_sent = true;
+                            local_eof_deadline = Some(Box::pin(tokio::time::sleep(local_eof_grace)));
                         }
+                        Some(TcpReadEvent::Eof) => {}
                         Some(TcpReadEvent::Error(error)) => {
                             let _ = self.send_frame(TunnelFrame::error(FailureCode::ProtocolError)).await;
                             return Err(TunnelError::Io(error));

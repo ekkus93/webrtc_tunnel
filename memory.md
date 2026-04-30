@@ -77,3 +77,7 @@
 - Round-5 removed `webrtc.ice_gather_timeout_secs` and `webrtc.ice_connection_timeout_secs` from the public config schema, fixtures, and docs, and config tests now reject them as removed v1 knobs instead of pretending they are live runtime controls.
 - The active answer busy-offer path still uses the authenticated per-session `(sender_kid, msg_id)` cache as its correctness boundary, but it now also drops already-seen duplicates earlier from decoded outer-envelope metadata as a best-effort optimization before a second full reclassification pass.
 - `docs/RUST_WEBRTC_CODE_REVIEW5_TODO.md` is fully marked complete, and README/spec/Copilot guidance now match the reduced v1 config surface and the tightened busy-offer replay behavior.
+
+## 2026-04-30T10:44:28Z - GPT-5.4 - CI clippy fix landed
+- GitHub Actions hit a stricter `clippy::collapsible_match` diagnostic in `crates/p2p-tunnel/src/bridge.rs` that did not surface earlier locally; the EOF arm was rewritten with a match guard so the behavior stays the same while satisfying the newer CI toolchain.
+- After the fix, `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets` all passed locally again.
