@@ -62,3 +62,9 @@
 ## 2026-04-30T09:51:17Z - GPT-5.4 - Review 4 phases 2 and 3 landed
 - Round-4 phase 2 added a bounded per-active-answer-session dedupe cache keyed by `(sender_kid, msg_id)` so duplicate replays of the same foreign offer no longer trigger repeated encrypted `busy` replies, while unauthorized or disallowed peers still receive no response.
 - Round-4 phase 3 added a regression proving daemon recovery preserves a disconnected `mqtt_connected` state until transport activity succeeds again, aligned README/spec/Copilot guidance with the status and busy-dedupe semantics, and completed the remaining review4 checklist within the frozen focused scope.
+
+## 2026-04-30T10:16:25Z - GPT-5.4 - Review 5 triage started
+- Reviewed `docs/RUST_WEBRTC_CODE_REVIEW5.md` and `docs/RUST_WEBRTC_CODE_REVIEW5_TODO.md`; the clearest likely-real remaining issues are that `webrtc.ice_gather_timeout_secs` and `webrtc.ice_connection_timeout_secs` still appear unused in runtime flow, and active busy-offer dedupe still happens after full decode/decrypt/classification work instead of earlier in the path.
+
+## 2026-04-30T10:17:41Z - GPT-5.4 - Added review 5 response file
+- Wrote `docs/responses5.md` summarizing which round-5 review findings look real and listing the three clarification questions to freeze with ChatGPT before starting another narrow hardening pass.
