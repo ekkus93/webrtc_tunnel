@@ -507,11 +507,21 @@ async fn run_offer_session(
                     },
                 ) => {
                     if let Some(payload) = payload? {
-                        let (envelope, message, sender) = codec.decode(
+                        let (envelope, message, sender) = match codec.decode(
                             &payload,
                             &mut session.signaling.replay_cache,
                             Some(session.session_id),
-                        )?;
+                        ) {
+                            Ok(decoded) => decoded,
+                            Err(error) => {
+                                tracing::warn!(
+                                    reason = %error,
+                                    session_id = %session.session_id,
+                                    "rejecting signaling message during active offer session"
+                                );
+                                continue;
+                            }
+                        };
                         if sender.peer_id != session.remote_peer_id {
                             tracing::warn!(
                                 peer_id = %sender.peer_id,

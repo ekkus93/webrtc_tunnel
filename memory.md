@@ -144,3 +144,8 @@
 - Updated `p2p-signaling` so `MqttSignalingTransport::publish_signal` now advances the `rumqttc` event loop after queueing a publish and buffers any own-topic payloads seen during that pump.
 - This addresses the runtime gap where `AsyncClient::publish` only queued requests locally until `event_loop.poll()` ran, which could leave offer-side signaling messages unsent while the session remained stuck in `negotiating`.
 - Validated with `cargo test -p p2p-signaling` and `cargo test -p p2p-daemon --lib`.
+
+## 2026-04-30T13:23:43Z - GPT-5.4 - Offer session no longer aborts on duplicate active-session signaling
+- Updated the offer-side active session loop in `p2p-daemon` to log and ignore signaling decode/replay failures, matching the answer-side behavior, instead of aborting the whole session on duplicate retransmits.
+- This was triggered by a live run where signaling and WebRTC reached `connected`, but the offer session then failed on `protocol error: duplicate message detected`.
+- Validated with `cargo test -p p2p-daemon --lib`.
