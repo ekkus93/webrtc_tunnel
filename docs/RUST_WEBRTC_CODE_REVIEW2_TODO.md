@@ -21,6 +21,8 @@ This TODO is intentionally explicit so GitHub Copilot can implement it without i
 
 ## Task P0.1 — Make the answer daemon survive per-session failures
 
+- [x] Status: complete
+
 ### Problem
 The answer daemon is intended to be an always-on service, but the current top-level control flow appears to allow per-session errors to bubble out and terminate the daemon process.
 
@@ -28,26 +30,28 @@ The answer daemon is intended to be an always-on service, but the current top-le
 A failed session must **not** kill the answer daemon.
 
 ### Required changes
-- Review the top-level answer daemon entrypoint and loop.
-- Identify any use of `?` or equivalent propagation from per-session handling that can terminate the process.
-- Refactor so the daemon loop catches session-level failures.
-- On session failure:
-  - log the failure,
-  - update local status,
-  - clean up session resources,
-  - return to idle / waiting state.
-- Do **not** silently swallow errors. Log them clearly.
-- Do **not** exit the process for expected operational failures.
+- [x] Review the top-level answer daemon entrypoint and loop.
+- [x] Identify any use of `?` or equivalent propagation from per-session handling that can terminate the process.
+- [x] Refactor so the daemon loop catches session-level failures.
+- [x] On session failure:
+  - [x] log the failure,
+  - [x] update local status,
+  - [x] clean up session resources,
+  - [x] return to idle / waiting state.
+- [x] Do **not** silently swallow errors. Log them clearly.
+- [x] Do **not** exit the process for expected operational failures.
 
 ### Acceptance criteria
-- A target connect failure does not terminate the answer daemon.
-- A bridge task failure does not terminate the answer daemon.
-- An ICE/session failure does not terminate the answer daemon.
-- After failure, the answer daemon continues waiting for the next valid offer.
+- [x] A target connect failure does not terminate the answer daemon.
+- [x] A bridge task failure does not terminate the answer daemon.
+- [x] An ICE/session failure does not terminate the answer daemon.
+- [x] After failure, the answer daemon continues waiting for the next valid offer.
 
 ---
 
 ## Task P0.2 — Make the offer daemon survive per-session failures
+
+- [x] Status: complete
 
 ### Problem
 The offer daemon appears to have the same structural problem: a failed session may terminate the process rather than returning to a usable waiting state.
@@ -56,20 +60,22 @@ The offer daemon appears to have the same structural problem: a failed session m
 A failed offer-side session must terminate the current client/session only, not the daemon process.
 
 ### Required changes
-- Review the top-level offer daemon loop.
-- Catch per-session failures at the session boundary.
-- Ensure the daemon returns to its waiting/accept loop after cleanup.
-- Log failure cause and session identifier.
-- Make sure local listener state is restored properly.
+- [x] Review the top-level offer daemon loop.
+- [x] Catch per-session failures at the session boundary.
+- [x] Ensure the daemon returns to its waiting/accept loop after cleanup.
+- [x] Log failure cause and session identifier.
+- [x] Make sure local listener state is restored properly.
 
 ### Acceptance criteria
-- ICE failure during a session does not exit the offer daemon.
-- Remote error does not exit the offer daemon.
-- Session teardown returns the daemon to waiting for the next local client.
+- [x] ICE failure during a session does not exit the offer daemon.
+- [x] Remote error does not exit the offer daemon.
+- [x] Session teardown returns the daemon to waiting for the next local client.
 
 ---
 
 ## Task P0.3 — Define and enforce the v1 session failure model
+
+- [x] Status: complete
 
 ### Product rule
 For v1:
@@ -79,14 +85,14 @@ For v1:
 - daemon remains alive for the next client/session.
 
 ### Required changes
-- Audit reconnect/session code for any logic that suggests live-stream preservation.
-- Make the v1 behavior explicit in code comments and tests.
-- Ensure current session cleanup is deterministic and not partially retried in the background.
+- [x] Audit reconnect/session code for any logic that suggests live-stream preservation.
+- [x] Make the v1 behavior explicit in code comments and tests.
+- [x] Ensure current session cleanup is deterministic and not partially retried in the background.
 
 ### Acceptance criteria
-- Live dropped tunnel closes the local client/session.
-- Daemon stays alive.
-- Next client/session can proceed normally.
+- [x] Live dropped tunnel closes the local client/session.
+- [x] Daemon stays alive.
+- [x] Next client/session can proceed normally.
 
 ---
 
