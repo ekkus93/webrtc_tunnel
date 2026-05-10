@@ -221,15 +221,15 @@ impl MqttSignalingTransport {
     }
 
     pub async fn poll_signal_payload(&mut self) -> Result<Option<Vec<u8>>, SignalingError> {
-        if let Some(payload) = self.pending_payloads.pop_front() {
-            return Ok(Some(payload));
-        }
-
-        match self.poll().await? {
-            Event::Incoming(Packet::Publish(publish)) if publish.topic == self.own_topic => {
-                Ok(Some(publish.payload.to_vec()))
+        loop {
+            if let Some(payload) = self.pending_payloads.pop_front() {
+                return Ok(Some(payload));
             }
-            _ => Ok(None),
+
+            let event = self.poll().await?;
+            if let Some(payload) = own_topic_publish_payload(&event, &self.own_topic) {
+                return Ok(Some(payload));
+            }
         }
     }
 
@@ -245,12 +245,19 @@ fn buffer_pending_own_topic_publish(
     own_topic: &str,
     pending_payloads: &mut VecDeque<Vec<u8>>,
 ) -> bool {
+    let Some(payload) = own_topic_publish_payload(event, own_topic) else {
+        return false;
+    };
+    pending_payloads.push_back(payload);
+    true
+}
+
+fn own_topic_publish_payload(event: &Event, own_topic: &str) -> Option<Vec<u8>> {
     match event {
         Event::Incoming(Packet::Publish(publish)) if publish.topic == own_topic => {
-            pending_payloads.push_back(publish.payload.to_vec());
-            true
+            Some(publish.payload.to_vec())
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -379,7 +386,8 @@ mod tests {
 
     use super::{
         EnvelopeFlags, InnerMessageBuilder, MqttSignalingTransport, OuterEnvelope, ReplayCache,
-        SignalCodec, buffer_pending_own_topic_publish, build_mqtt_options, signal_topic,
+        SignalCodec, buffer_pending_own_topic_publish, build_mqtt_options,
+        own_topic_publish_payload, signal_topic,
     };
     use crate::{ErrorBody, MessageBody, OfferBody, SignalingError};
 
@@ -692,6 +700,32 @@ mod tests {
         assert!(!buffer_pending_own_topic_publish(&foreign_publish, own_topic, &mut pending));
         assert!(!buffer_pending_own_topic_publish(&suback, own_topic, &mut pending));
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn own_topic_publish_payload_extracts_only_matching_topic_payloads() {
+        let own_topic = "p2ptunnel/v1/nodes/answer-office/signal";
+        let matching_publish = Event::Incoming(Packet::Publish(Publish::new(
+            own_topic,
+            QoS::AtLeastOnce,
+            b"match".to_vec(),
+        )));
+        let foreign_publish = Event::Incoming(Packet::Publish(Publish::new(
+            "p2ptunnel/v1/nodes/offer-home/signal",
+            QoS::AtLeastOnce,
+            b"foreign".to_vec(),
+        )));
+        let suback = Event::Incoming(Packet::SubAck(SubAck::new(
+            9,
+            vec![SubscribeReasonCode::Success(QoS::AtLeastOnce)],
+        )));
+
+        assert_eq!(
+            own_topic_publish_payload(&matching_publish, own_topic),
+            Some(b"match".to_vec())
+        );
+        assert_eq!(own_topic_publish_payload(&foreign_publish, own_topic), None);
+        assert_eq!(own_topic_publish_payload(&suback, own_topic), None);
     }
 
     #[tokio::test]
