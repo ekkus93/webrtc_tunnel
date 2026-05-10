@@ -254,3 +254,23 @@
 - This preserves the earlier `cargo build --release --workspace` fix while also satisfying workspace `clippy` by removing the test-build-only `unused_mut` warning.
 - The new unit test proves that a pending answer session is swapped to the replacement `session_id`, remains in `connecting_data_channel`, and publishes exactly the expected `Ack` plus `Answer` back to the same authorized peer.
 - Validated with `cargo test -p p2p-daemon pending_answer_session_is_replaced_by_same_peer_offer -- --nocapture`, `cargo test -p p2p-daemon`, and `cargo clippy -p p2p-daemon --all-targets --all-features -- -D warnings`.
+
+## 2026-05-10T23:00:10Z - GPT-5.4 - Baseline reread refreshed
+- Re-read `README.md` and `memory.md` to refresh the current project baseline before further work.
+- The active baseline remains: a CLI-only Rust secure TCP tunnel over one reliable ordered WebRTC data channel, MQTT treated as untrusted signaling transport, encrypted and signed signaling, SSH-like identity plus `authorized_keys` workflow, STUN-only v1, and one active tunnel session at a time.
+
+## 2026-05-10T23:01:35Z - GPT-5.4 - Docs baseline reread refreshed
+- Re-read the markdown files in `docs/`, including the main spec, implementation TODO, and review-response history, to refresh the current project baseline before further work.
+- The docs baseline remains aligned on the v1 model: frozen CLI-only Rust scope, SSH-like identity workflow, encrypted and signed MQTT signaling over an untrusted broker, STUN-only WebRTC, single active session behavior, and the completed review rounds that hardened daemon recovery, busy-policy consistency, status semantics, and config-surface honesty.
+
+## 2026-05-10T23:09:37Z - GPT-5.4 - Session-bound signaling regression triaged from runtime logs
+- Runtime log triage showed the first offer/answer session establishing successfully, then later sessions failing with offer-side `acknowledgement timed out` while the answer side retransmits valid current-session `Answer` and `IceCandidate` messages.
+- The strongest current diagnosis is an offer-side active-session signaling receive/ACK handling bug around session boundaries: a late previous-session packet is rejected as expected, but the new session then fails to ACK the answer side's current-session signaling traffic even though auth, MQTT connectivity, and the initial session all worked.
+
+## 2026-05-10T23:14:24Z - GPT-5.4 - MQTT signal polling hardened against broker noise
+- Hardened `p2p-signaling` MQTT receive polling so the transport keeps consuming non-publish and foreign-topic broker events until it reaches a payload for the node's own signaling topic instead of surfacing spurious `None` results to the daemon loop.
+- Added transport coverage for own-topic payload extraction and reran the relevant `p2p-signaling` and `p2p-daemon` test suites, which passed after the change.
+
+## 2026-05-10T23:17:00Z - GPT-5.4 - Transport fix prepared for check-in
+- Confirmed the MQTT signal polling hardening and its transport test coverage are the only changes from this session being staged for check-in, while unrelated local edits in other crates remain unstaged.
+- The repository-wide validation suite passed before check-in: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
