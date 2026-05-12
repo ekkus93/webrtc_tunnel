@@ -259,6 +259,25 @@ impl AppConfig {
         }
         Ok(())
     }
+
+    pub fn ensure_runtime_dirs(&self) -> Result<(), ConfigError> {
+        fs::create_dir_all(&self.paths.state_dir)?;
+        fs::create_dir_all(&self.paths.log_dir)?;
+
+        if self.logging.file_logging {
+            if let Some(parent) = self.logging.log_file.parent() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        if self.health.write_status_file {
+            if let Some(parent) = self.health.status_file.parent() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -444,15 +463,14 @@ fn validate_non_world_writable(path: &Path, field_name: &'static str) -> Result<
         return Ok(());
     }
 
-    let candidate = if path.exists() {
-        path
-    } else {
-        path.parent().ok_or_else(|| {
+    let mut candidate = path;
+    while !candidate.exists() {
+        candidate = candidate.parent().ok_or_else(|| {
             ConfigError::InvalidConfig(format!(
-                "{field_name} must have an existing parent directory for path security checks"
+                "{field_name} must be inside an existing directory for path security checks"
             ))
-        })?
-    };
+        })?;
+    }
 
     let metadata = fs::metadata(candidate)?;
     if metadata.permissions().mode() & 0o002 != 0 {
@@ -607,6 +625,42 @@ status_file = "{status_file}"
 
         let config = AppConfig::load_from_file(&config_path).expect("config should load");
         assert_eq!(config.paths.identity, config_dir.join("identity"));
+    }
+
+    #[test]
+    fn config_loads_when_runtime_dirs_are_missing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        write_required_files(&config_dir);
+
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, sample_config(&config_dir, &state_dir)).expect("write config");
+
+        let config = AppConfig::load_from_file(&config_path).expect("config should load");
+        assert!(!config.paths.state_dir.exists());
+        assert!(!config.paths.log_dir.exists());
+    }
+
+    #[test]
+    fn ensure_runtime_dirs_creates_missing_directories() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        write_required_files(&config_dir);
+
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, sample_config(&config_dir, &state_dir)).expect("write config");
+
+        let config = AppConfig::load_from_file(&config_path).expect("config should load");
+        config.ensure_runtime_dirs().expect("runtime dirs should be created");
+
+        assert!(config.paths.state_dir.is_dir());
+        assert!(config.paths.log_dir.is_dir());
+        assert!(config.logging.log_file.parent().expect("log parent").is_dir());
+        assert!(config.health.status_file.parent().expect("status parent").is_dir());
     }
 
     #[test]

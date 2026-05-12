@@ -34,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     apply_env_overrides(&mut config);
     apply_answer_overrides(&mut config, broker_url, target_host, target_port);
     config.validate()?;
+    config.ensure_runtime_dirs()?;
 
     setup_logging(&config.logging)?;
 

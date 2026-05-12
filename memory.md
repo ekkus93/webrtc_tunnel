@@ -274,3 +274,15 @@
 ## 2026-05-10T23:17:00Z - GPT-5.4 - Transport fix prepared for check-in
 - Confirmed the MQTT signal polling hardening and its transport test coverage are the only changes from this session being staged for check-in, while unrelated local edits in other crates remain unstaged.
 - The repository-wide validation suite passed before check-in: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-12T23:19:16Z - GPT-5.4 - Baseline reread refreshed
+- Re-read `README.md` and `memory.md` to refresh the current project baseline before further work.
+- The active baseline remains: CLI-only Rust secure TCP tunnel, one reliable ordered WebRTC data channel named `tunnel`, MQTT treated as untrusted signaling transport, encrypted and signed signaling, SSH-like identity plus `authorized_keys` workflow, STUN-only v1, and one active tunnel session at a time.
+
+## 2026-05-12T23:20:38Z - GPT-5.4 - Docs baseline reread refreshed
+- Re-read the markdown files in `docs/`, including the main spec, implementation TODO, and review-response history, to refresh the current project baseline before further work.
+- The docs baseline remains aligned on the frozen v1 model: CLI-only Rust scope, encrypted and signed MQTT signaling over an untrusted broker, SSH-like identity workflow, STUN-only WebRTC, one active session at a time, completed hardening rounds through review 5, and a narrow remaining focus on keeping the config surface honest and preserving replay/session invariants.
+
+## 2026-05-12T23:49:33Z - GPT-5.4 - Runtime dirs startup behavior fixed
+- `p2p-offer` and `p2p-answer` now allow missing runtime artifact paths like `paths.state_dir`, `paths.log_dir`, and the parent dirs for `logging.log_file` and `health.status_file` as long as an existing ancestor passes the world-writable security check.
+- Startup now creates those runtime directories before logging/status initialization, so missing state/log trees no longer fail with a generic `Io(NotFound)` while required input files like config, identity, authorized_keys, and broker CA files still remain startup-fatal if absent.
