@@ -272,6 +272,16 @@ mod tests {
     }
 
     #[test]
+    fn multiplex_spec_documents_only_empty_open_ack() {
+        let spec_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/MULTIPLEXED_FORWARDING_SPEC.md");
+        let spec = std::fs::read_to_string(spec_path).expect("multiplex spec should be readable");
+        assert!(spec.contains("answer sends exactly `OPEN(stream_id)` with an empty payload"));
+        assert!(!spec.contains("OPEN(stream_id, { \"ok\": true })"));
+        assert!(!spec.contains("OPEN(stream_id, empty_payload)` or"));
+    }
+
+    #[test]
     fn malformed_open_rejected() {
         let frame = TunnelFrame::new(TunnelFrameType::Open, 1, b"{".to_vec());
         assert!(matches!(TunnelFrameCodec::encode(&frame), Err(TunnelError::InvalidFrame(_))));

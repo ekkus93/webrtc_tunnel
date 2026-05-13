@@ -30,9 +30,9 @@ Finish the remaining stream lifecycle and failure-isolation work in the v2 multi
 | 4.2 Deterministic cleanup | Complete | Cleanup keeps bounded wait for queued close and uses abort-on-drop for teardown. |
 | 4.3 Prevent task leaks | Complete | Session cleanup drains stream map and aborts per-stream tasks. |
 | 4.4 Cleanup tests | Complete | Added idempotent session cleanup/task abort coverage. |
-| 5.1 Update multiplex spec | Pending | Stale non-empty `OPEN` ACK wording still needs doc update. |
-| 5.2 Update examples | Pending | Remaining docs/examples need search cleanup. |
-| 5.3 Add doc guard | Pending | Add guard test if feasible. |
+| 5.1 Update multiplex spec | Complete | Spec now requires exactly empty `OPEN(stream_id)` success ACK and rejects non-empty ACK payloads. |
+| 5.2 Update examples | Complete | Current README/spec docs no longer contain non-empty ACK examples. |
+| 5.3 Add doc guard | Complete | Added a test that guards the multiplexing spec against reintroducing `{ "ok": true }` ACK wording. |
 | 6.1 Local EOF cleanup test | Complete | Covered. |
 | 6.2 TCP write failure test | Complete | Covered via stream runtime event isolation. |
 | 6.3 Closed queue DATA test | Complete | Covered. |

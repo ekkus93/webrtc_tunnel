@@ -612,11 +612,11 @@ Rules:
 
 - offer sends `OPEN(stream_id, { forward_id })`,
 - answer validates and connects to target,
-- answer sends `OPEN(stream_id, empty_payload)` or `OPEN(stream_id, { "ok": true })`,
+- answer sends exactly `OPEN(stream_id)` with an empty payload,
 - after ACK, both sides may exchange `DATA`,
 - if target connect fails, answer sends `ERROR(stream_id, ...)`.
 
-Choose one ACK payload format and document it in code. The simplest is empty payload for success.
+The offer side rejects any non-empty `OPEN` ACK payload as `protocol_error`.
 
 ### 6.6 `DATA`
 
@@ -624,8 +624,8 @@ Choose one ACK payload format and document it in code. The simplest is empty pay
 
 Rules:
 
-- if `stream_id` is unknown, send `ERROR` or treat it as protocol error,
-- if the stream is not open yet, reject,
+- if `stream_id` is unknown or already closed, ignore the late frame and keep the session alive,
+- if the stream is not open yet, ignore the frame and keep the session alive,
 - payload may be empty only if existing framing allows it; otherwise reject empty data frames.
 
 ### 6.7 `CLOSE`
@@ -636,7 +636,7 @@ Rules:
 
 - `CLOSE` must not close the WebRTC session,
 - `CLOSE` must not close other streams,
-- after both sides observe closure, remove stream state,
+- use full-close semantics: when local TCP EOF is observed, send `CLOSE(stream_id)`, remove local stream state, and do not wait for the peer to echo `CLOSE`,
 - duplicate `CLOSE` on already-closing/closed stream should be harmless.
 
 ### 6.8 `ERROR`
