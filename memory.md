@@ -306,3 +306,19 @@
 ## 2026-05-13T09:15:00Z - GPT-5.4 - Workspace validation rerun passed after test helper hardening
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` and `cargo test --workspace --all-targets` both pass again after tightening the new `p2p-daemon` test helper to retry when the status file exists but is briefly still mid-write.
 - The regression was only in test code: `wait_for_status` had assumed any visible status file was immediately parseable JSON, which could fail with EOF during concurrent status writes.
+
+## 2026-05-13T17:31:20Z - GPT-5.5 - Baseline reread refreshed
+- Re-read `README.md` and `memory.md` to refresh the current project baseline before further work.
+- The active baseline remains: CLI-only Rust secure TCP tunnel, one reliable ordered WebRTC data channel named `tunnel`, MQTT treated as untrusted signaling transport, encrypted and signed signaling, SSH-like identity plus `authorized_keys` workflow, STUN-only v1, one active tunnel session at a time, and latest-known `mqtt_connected` status semantics.
+
+## 2026-05-13T17:33:16Z - GPT-5.5 - Validation run results
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` and `cargo test --workspace --all-targets` passed.
+- `cargo fmt --all --check` failed due existing rustfmt differences in `crates/p2p-daemon/src/lib.rs`, `crates/p2p-tunnel/src/bridge.rs`, and `crates/p2p-webrtc/src/lib.rs`.
+
+## 2026-05-13T17:47:22Z - GPT-5.5 - Formatting fixed and validation clean
+- Ran `cargo fmt --all` to apply the rustfmt diffs in `crates/p2p-daemon/src/lib.rs`, `crates/p2p-tunnel/src/bridge.rs`, and `crates/p2p-webrtc/src/lib.rs`.
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets` all passed after formatting.
+
+## 2026-05-13T17:48:24Z - GPT-5.5 - v0.1 release check-in prepared
+- Preparing the validated formatted tree for the `v0.1` release check-in on `master`.
+- The release tree includes rustfmt-only cleanup in `crates/p2p-daemon/src/lib.rs`, `crates/p2p-tunnel/src/bridge.rs`, and `crates/p2p-webrtc/src/lib.rs`, plus memory updates documenting the validation baseline.

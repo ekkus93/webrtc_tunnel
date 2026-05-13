@@ -64,10 +64,9 @@ pub struct IceStateInjectorForTests {
 #[cfg(any(test, debug_assertions))]
 impl IceStateInjectorForTests {
     pub async fn inject(&self, state: IceConnectionState) -> Result<(), WebRtcError> {
-        self.tx
-            .send(state)
-            .await
-            .map_err(|_| WebRtcError::InvalidConfig("ice state channel closed unexpectedly".to_owned()))
+        self.tx.send(state).await.map_err(|_| {
+            WebRtcError::InvalidConfig("ice state channel closed unexpectedly".to_owned())
+        })
     }
 }
 
@@ -405,7 +404,9 @@ fn expected_data_channel_label() -> &'static str {
 mod tests {
     use std::time::Duration;
 
-    use super::{IceConnectionState, WebRtcPeer, build_rtc_configuration, expected_data_channel_label};
+    use super::{
+        IceConnectionState, WebRtcPeer, build_rtc_configuration, expected_data_channel_label,
+    };
     use p2p_core::DATA_CHANNEL_LABEL;
     use p2p_core::WebRtcConfig;
     use tokio::time::timeout;
@@ -454,26 +455,22 @@ mod tests {
         let offer_peer = WebRtcPeer::new(&config).await.expect("offer peer should build");
         let answer_peer = WebRtcPeer::new(&config).await.expect("answer peer should build");
 
-        let offer_channel = offer_peer
-            .create_data_channel()
-            .await
-            .expect("offer data channel should build");
+        let offer_channel =
+            offer_peer.create_data_channel().await.expect("offer data channel should build");
         let offer_sdp = offer_peer.create_offer().await.expect("offer SDP should build");
-        answer_peer
-            .apply_remote_offer(&offer_sdp)
-            .await
-            .expect("answer should apply remote offer");
+        answer_peer.apply_remote_offer(&offer_sdp).await.expect("answer should apply remote offer");
         let answer_sdp = answer_peer.create_answer().await.expect("answer SDP should build");
         offer_peer
             .apply_remote_answer(&answer_sdp)
             .await
             .expect("offer should apply remote answer");
 
-        let answer_channel = timeout(Duration::from_secs(10), answer_peer.next_incoming_data_channel())
-            .await
-            .expect("incoming data channel should arrive")
-            .expect("incoming data channel stream should yield")
-            .expect("incoming data channel should be accepted");
+        let answer_channel =
+            timeout(Duration::from_secs(10), answer_peer.next_incoming_data_channel())
+                .await
+                .expect("incoming data channel should arrive")
+                .expect("incoming data channel stream should yield")
+                .expect("incoming data channel should be accepted");
 
         assert_eq!(answer_channel.label(), DATA_CHANNEL_LABEL);
         assert!(answer_channel.ordered());

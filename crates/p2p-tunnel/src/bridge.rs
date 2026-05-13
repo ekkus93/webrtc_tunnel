@@ -237,11 +237,7 @@ mod tests {
     }
 
     fn sample_webrtc_config() -> WebRtcConfig {
-        WebRtcConfig {
-            stun_urls: Vec::new(),
-            enable_trickle_ice: false,
-            enable_ice_restart: true,
-        }
+        WebRtcConfig { stun_urls: Vec::new(), enable_trickle_ice: false, enable_ice_restart: true }
     }
 
     fn answer_connector(port: u16) -> AnswerTargetConnector {
@@ -252,34 +248,26 @@ mod tests {
         })
     }
 
-    async fn connected_channels() -> (WebRtcPeer, WebRtcPeer, p2p_webrtc::DataChannelHandle, p2p_webrtc::DataChannelHandle) {
-        let offer_peer = WebRtcPeer::new(&sample_webrtc_config())
-            .await
-            .expect("offer peer should build");
-        let answer_peer = WebRtcPeer::new(&sample_webrtc_config())
-            .await
-            .expect("answer peer should build");
+    async fn connected_channels()
+    -> (WebRtcPeer, WebRtcPeer, p2p_webrtc::DataChannelHandle, p2p_webrtc::DataChannelHandle) {
+        let offer_peer =
+            WebRtcPeer::new(&sample_webrtc_config()).await.expect("offer peer should build");
+        let answer_peer =
+            WebRtcPeer::new(&sample_webrtc_config()).await.expect("answer peer should build");
 
-        let offer_channel = offer_peer
-            .create_data_channel()
-            .await
-            .expect("offer data channel should build");
+        let offer_channel =
+            offer_peer.create_data_channel().await.expect("offer data channel should build");
         let offer_sdp = offer_peer.create_offer().await.expect("offer SDP should build");
-        answer_peer
-            .apply_remote_offer(&offer_sdp)
-            .await
-            .expect("answer should accept offer");
+        answer_peer.apply_remote_offer(&offer_sdp).await.expect("answer should accept offer");
         let answer_sdp = answer_peer.create_answer().await.expect("answer SDP should build");
-        offer_peer
-            .apply_remote_answer(&answer_sdp)
-            .await
-            .expect("offer should accept answer");
+        offer_peer.apply_remote_answer(&answer_sdp).await.expect("offer should accept answer");
 
-        let answer_channel = timeout(Duration::from_secs(10), answer_peer.next_incoming_data_channel())
-            .await
-            .expect("incoming data channel should arrive")
-            .expect("incoming data channel stream should yield")
-            .expect("incoming data channel should be accepted");
+        let answer_channel =
+            timeout(Duration::from_secs(10), answer_peer.next_incoming_data_channel())
+                .await
+                .expect("incoming data channel should arrive")
+                .expect("incoming data channel stream should yield")
+                .expect("incoming data channel should be accepted");
 
         offer_channel
             .wait_for_open(Duration::from_secs(10))
@@ -293,15 +281,10 @@ mod tests {
     async fn tunnel_open_handshake_bridges_bytes_after_target_connect() {
         let (offer_peer, answer_peer, offer_channel, answer_channel) = connected_channels().await;
 
-        let target_listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("target listener should bind");
-        let connector = answer_connector(
-            target_listener
-                .local_addr()
-                .expect("target local addr")
-                .port(),
-        );
+        let target_listener =
+            TcpListener::bind(("127.0.0.1", 0)).await.expect("target listener should bind");
+        let connector =
+            answer_connector(target_listener.local_addr().expect("target local addr").port());
 
         let target_task = tokio::spawn(async move {
             let (mut target_stream, _) = target_listener.accept().await.expect("target accept");
@@ -312,9 +295,8 @@ mod tests {
             target_stream.shutdown().await.expect("target shutdown");
         });
 
-        let local_listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("local listener should bind");
+        let local_listener =
+            TcpListener::bind(("127.0.0.1", 0)).await.expect("local listener should bind");
         let local_addr = local_listener.local_addr().expect("local addr");
         let client_task = tokio::spawn(async move {
             let mut client = TcpStream::connect(local_addr).await.expect("client connect");
@@ -327,14 +309,10 @@ mod tests {
         let (offer_stream, _) = local_listener.accept().await.expect("offer accept");
 
         let answer_task = tokio::spawn(async move {
-            TunnelBridge::new(answer_channel, &sample_tunnel_config())
-                .run_answer(&connector)
-                .await
+            TunnelBridge::new(answer_channel, &sample_tunnel_config()).run_answer(&connector).await
         });
         let offer_task = tokio::spawn(async move {
-            TunnelBridge::new(offer_channel, &sample_tunnel_config())
-                .run_offer(offer_stream)
-                .await
+            TunnelBridge::new(offer_channel, &sample_tunnel_config()).run_offer(offer_stream).await
         });
 
         timeout(Duration::from_secs(10), client_task)
@@ -373,23 +351,18 @@ mod tests {
         let connector = answer_connector(probe.local_addr().expect("probe addr").port());
         drop(probe);
 
-        let local_listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("local listener should bind");
+        let local_listener =
+            TcpListener::bind(("127.0.0.1", 0)).await.expect("local listener should bind");
         let local_addr = local_listener.local_addr().expect("local addr");
         let client = TcpStream::connect(local_addr).await.expect("client connect");
         let (offer_stream, _) = local_listener.accept().await.expect("offer accept");
 
         let answer_task = tokio::spawn(async move {
-            TunnelBridge::new(answer_channel, &sample_tunnel_config())
-                .run_answer(&connector)
-                .await
+            TunnelBridge::new(answer_channel, &sample_tunnel_config()).run_answer(&connector).await
         });
 
         let offer_result = timeout(Duration::from_secs(10), async move {
-            TunnelBridge::new(offer_channel, &sample_tunnel_config())
-                .run_offer(offer_stream)
-                .await
+            TunnelBridge::new(offer_channel, &sample_tunnel_config()).run_offer(offer_stream).await
         })
         .await
         .expect("offer bridge should finish");
