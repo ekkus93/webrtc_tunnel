@@ -213,11 +213,22 @@ async fn handle_offer_frame(
         }
         TunnelFrameType::Data => {
             if let Some(stream) = streams.get(&frame.stream_id) {
-                stream
-                    .write_tx
-                    .send(TcpWriteCommand::Data(frame.payload))
-                    .await
-                    .map_err(|_| TunnelError::StreamNotFound(frame.stream_id))?;
+                match stream.write_tx.try_send(TcpWriteCommand::Data(frame.payload)) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        send_stream_error(
+                            frame_tx,
+                            frame.stream_id,
+                            "queue_overflow",
+                            "stream write queue overflow",
+                        )
+                        .await?;
+                        close_stream(frame.stream_id, manager, streams).await?;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        return Err(TunnelError::StreamNotFound(frame.stream_id));
+                    }
+                }
             } else {
                 send_stream_error(
                     frame_tx,
@@ -333,11 +344,22 @@ async fn handle_answer_frame(
         }
         TunnelFrameType::Data => {
             if let Some(stream) = streams.get(&frame.stream_id) {
-                stream
-                    .write_tx
-                    .send(TcpWriteCommand::Data(frame.payload))
-                    .await
-                    .map_err(|_| TunnelError::StreamNotFound(frame.stream_id))?;
+                match stream.write_tx.try_send(TcpWriteCommand::Data(frame.payload)) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        send_stream_error(
+                            frame_tx,
+                            frame.stream_id,
+                            "queue_overflow",
+                            "stream write queue overflow",
+                        )
+                        .await?;
+                        close_stream(frame.stream_id, manager, streams).await?;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        return Err(TunnelError::StreamNotFound(frame.stream_id));
+                    }
+                }
             } else {
                 send_stream_error(
                     frame_tx,
@@ -435,7 +457,7 @@ async fn close_stream(
 ) -> Result<(), TunnelError> {
     manager.remove(stream_id);
     if let Some(stream) = streams.remove(&stream_id) {
-        let _ = stream.write_tx.send(TcpWriteCommand::Close).await;
+        let _ = stream.write_tx.try_send(TcpWriteCommand::Close);
     }
     Ok(())
 }
@@ -617,6 +639,7 @@ fn spawn_writer_only(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::time::Duration;
 
     use p2p_core::{
@@ -630,10 +653,10 @@ mod tests {
     use tokio::time::timeout;
 
     use super::{
-        StreamIdAllocator, StreamLifecycle, StreamManager, StreamState, run_multiplex_answer,
-        run_multiplex_offer,
+        RuntimeStream, StreamIdAllocator, StreamLifecycle, StreamManager, StreamState,
+        TcpWriteCommand, handle_offer_frame, run_multiplex_answer, run_multiplex_offer,
     };
-    use crate::{OfferClient, TunnelError};
+    use crate::{OfferClient, TunnelError, TunnelFrame};
 
     fn stream(stream_id: u32, forward_id: &str) -> StreamState {
         StreamState {
@@ -1027,5 +1050,125 @@ mod tests {
         offer_peer.close().await.expect("offer peer should close");
         answer_peer.close().await.expect("answer peer should close");
         answer_task.abort();
+    }
+
+    #[tokio::test]
+    async fn offer_open_ack_transitions_opening_stream_to_open() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        let client = TcpStream::connect(listener.local_addr().expect("local addr"))
+            .await
+            .expect("client connect");
+        let (tcp_stream, _) = listener.accept().await.expect("accept");
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("register stream");
+        let mut opening_streams = HashMap::from([(1_u32, tcp_stream)]);
+        let mut streams = HashMap::new();
+        let (frame_tx, _frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+
+        handle_offer_frame(
+            TunnelFrame::open_ack(1),
+            &sample_tunnel_config(),
+            &frame_tx,
+            &tcp_frame_tx,
+            &mut manager,
+            &mut opening_streams,
+            &mut streams,
+        )
+        .await
+        .expect("ack should handle");
+
+        assert_eq!(manager.get(1).expect("stream").lifecycle, StreamLifecycle::Open);
+        assert!(opening_streams.is_empty());
+        assert!(streams.contains_key(&1));
+        drop(client);
+    }
+
+    #[tokio::test]
+    async fn data_to_unknown_stream_sends_stream_not_found_error() {
+        let mut manager = StreamManager::new();
+        let mut opening_streams = HashMap::new();
+        let mut streams = HashMap::new();
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+
+        handle_offer_frame(
+            TunnelFrame::data(99, b"lost".to_vec()),
+            &sample_tunnel_config(),
+            &frame_tx,
+            &tcp_frame_tx,
+            &mut manager,
+            &mut opening_streams,
+            &mut streams,
+        )
+        .await
+        .expect("unknown data should produce stream error");
+
+        let error = frame_rx.recv().await.expect("error frame");
+        assert_eq!(error.stream_id, 99);
+        assert_eq!(error.error_payload().expect("error payload").code, "stream_not_found");
+    }
+
+    #[tokio::test]
+    async fn duplicate_close_is_harmless() {
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("register stream");
+        let mut opening_streams = HashMap::new();
+        let mut streams = HashMap::new();
+        let (frame_tx, _frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+
+        for _ in 0..2 {
+            handle_offer_frame(
+                TunnelFrame::close(1),
+                &sample_tunnel_config(),
+                &frame_tx,
+                &tcp_frame_tx,
+                &mut manager,
+                &mut opening_streams,
+                &mut streams,
+            )
+            .await
+            .expect("close should be idempotent");
+        }
+
+        assert_eq!(manager.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn queue_overflow_fails_only_target_stream() {
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("stream 1");
+        manager.register(stream(2, "web-ui")).expect("stream 2");
+        let (full_tx, mut full_rx) = mpsc::channel(1);
+        assert!(full_tx.try_send(TcpWriteCommand::Data(b"queued".to_vec())).is_ok());
+        let (other_tx, _other_rx) = mpsc::channel(1);
+        let mut streams = HashMap::from([
+            (1_u32, RuntimeStream { write_tx: full_tx }),
+            (2_u32, RuntimeStream { write_tx: other_tx }),
+        ]);
+        let mut opening_streams = HashMap::new();
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+
+        handle_offer_frame(
+            TunnelFrame::data(1, b"overflow".to_vec()),
+            &sample_tunnel_config(),
+            &frame_tx,
+            &tcp_frame_tx,
+            &mut manager,
+            &mut opening_streams,
+            &mut streams,
+        )
+        .await
+        .expect("overflow should be stream-local");
+
+        let error = frame_rx.recv().await.expect("queue overflow error");
+        assert_eq!(error.stream_id, 1);
+        assert_eq!(error.error_payload().expect("error payload").code, "queue_overflow");
+        assert!(manager.get(1).is_err());
+        assert!(manager.get(2).is_ok());
+        assert!(streams.contains_key(&2));
+        assert!(matches!(full_rx.recv().await, Some(TcpWriteCommand::Data(_))));
     }
 }
