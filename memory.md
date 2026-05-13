@@ -341,3 +341,22 @@
 ## 2026-05-13T18:05:49Z - GPT-5.5 - macOS daemon test CA-path fix
 - Fixed the `active_offer_session_ignores_duplicate_signal_and_processes_later_valid_ack` unit test so it uses the existing in-memory `RecordingTransport` instead of building a real MQTT transport from `/etc/ssl/certs/ca-certificates.crt`, which does not exist on macOS CI runners.
 - Validated with `cargo fmt --all --check`, the focused daemon regression, `cargo test -p p2p-daemon --lib`, workspace clippy with `-D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-13T18:14:05Z - GPT-5.5 - v0.1 tag moved to latest master
+- Deleted and recreated the annotated `v0.1` tag so it now points to `0f8c89f` (`Fix daemon test CA path portability`) on `master`.
+- Pushed the recreated `v0.1` tag to GitHub after deleting the previous remote tag.
+
+## 2026-05-13T18:16:30Z - GPT-5.5 - Contributor status checked after Copilot trailer rewrite
+- Verified reachable local history has no Copilot author/committer/co-author identity references; only commit subjects/memory notes mention the word Copilot.
+- `gh api repos/ekkus93/rust_webrtc/contributors` currently reports only `ekkus93`, so GitHub's contributors API no longer lists Copilot as a contributor.
+
+## 2026-05-13T19:34:14Z - GPT-5.5 - Multiplexed forwarding docs reviewed
+- Read `docs/MULTIPLEXED_FORWARDING_SPEC.md` and `docs/MULTIPLEXED_FORWARDING_TODO.md` without making implementation changes.
+- Main items needing clarification before coding are offer-session bootstrap/listener lifecycle, v2 config shape for role-specific forward fields, TURN/config example cleanup, and several stream-level error disclosure/policy choices.
+
+## 2026-05-13T19:35:32Z - GPT-5.5 - Multiplexed forwarding questions written
+- Wrote `docs/responses6.md` with the implementation-blocking questions from the multiplexed forwarding doc review so they can be passed to ChatGPT for decisions.
+
+## 2026-05-13T19:38:43Z - GPT-5.5 - Multiplexed forwarding v2 decisions frozen
+- Read `docs/replies6.md`; it freezes v2 behavior as offer listeners bound at startup, first local client triggers negotiation, additional clients during negotiation enter a bounded pending queue, no always-on offer WebRTC, and bind failure is startup-fatal.
+- It also freezes no TURN, role-specific `[forwards.offer]`/`[forwards.answer]` config, explicit peer allowlists only, authorized-peer stream errors, empty `OPEN(stream_id)` ACK, `p2ptunnel-config-v2`, and tunnel frame version `2` with no v1 compatibility shim.

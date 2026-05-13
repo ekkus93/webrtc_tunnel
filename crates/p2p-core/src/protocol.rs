@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_MAGIC: [u8; 4] = *b"P2TS";
-pub const PROTOCOL_VERSION: u8 = 1;
+pub const PROTOCOL_VERSION: u8 = 2;
 pub const PROTOCOL_SUITE: u8 = 1;
-pub const FRAME_VERSION: u8 = 1;
-pub const ACTIVE_STREAM_ID: u32 = 1;
+pub const FRAME_VERSION: u8 = 2;
 pub const ACK_RETRY_TIMEOUT_SECS: u64 = 2;
 pub const ACK_RETRY_LIMIT: u8 = 3;
 pub const DATA_CHANNEL_LABEL: &str = "tunnel";

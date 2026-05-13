@@ -1,5 +1,4 @@
 use std::pin::Pin;
-use std::str;
 use std::time::Duration;
 
 use p2p_core::{FailureCode, TunnelConfig, TunnelFrameType};
@@ -9,7 +8,12 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::Sleep;
 
-use crate::{AnswerTargetConnector, TunnelError, TunnelFrame, TunnelFrameCodec};
+use crate::{
+    AnswerTargetConnector, ErrorPayload, OpenPayload, TunnelError, TunnelFrame, TunnelFrameCodec,
+};
+
+const LEGACY_STREAM_ID: u32 = 1;
+const LEGACY_FORWARD_ID: &str = "ssh";
 
 enum TcpReadEvent {
     Data(Vec<u8>),
@@ -28,7 +32,11 @@ impl TunnelBridge {
     }
 
     pub async fn run_offer(self, stream: TcpStream) -> Result<(), TunnelError> {
-        self.send_frame(TunnelFrame::open()).await?;
+        self.send_frame(TunnelFrame::open(
+            LEGACY_STREAM_ID,
+            OpenPayload { forward_id: LEGACY_FORWARD_ID.to_owned() },
+        )?)
+        .await?;
         loop {
             match self.next_frame().await? {
                 TunnelFrame { frame_type: TunnelFrameType::Open, .. } => {
@@ -61,12 +69,20 @@ impl TunnelBridge {
         let stream = match connector.connect_target().await {
             Ok(stream) => stream,
             Err(error) => {
-                let _ = self.send_frame(TunnelFrame::error(FailureCode::TargetConnectFailed)).await;
+                let _ = self
+                    .send_frame(TunnelFrame::error(
+                        LEGACY_STREAM_ID,
+                        ErrorPayload::from_failure(
+                            FailureCode::TargetConnectFailed,
+                            "target connect failed",
+                        ),
+                    )?)
+                    .await;
                 return Err(error);
             }
         };
 
-        self.send_frame(TunnelFrame::open()).await?;
+        self.send_frame(TunnelFrame::open_ack(LEGACY_STREAM_ID)).await?;
         self.bridge_stream(stream).await
     }
 
@@ -105,16 +121,24 @@ impl TunnelBridge {
                 tcp_event = tcp_rx.recv(), if remote_close_deadline.is_none() => {
                     match tcp_event {
                         Some(TcpReadEvent::Data(payload)) => {
-                            self.send_frame(TunnelFrame::data(payload)).await?;
+                            self.send_frame(TunnelFrame::data(LEGACY_STREAM_ID, payload)).await?;
                         }
                         Some(TcpReadEvent::Eof) if !local_eof_sent => {
-                            self.send_frame(TunnelFrame::close()).await?;
+                            self.send_frame(TunnelFrame::close(LEGACY_STREAM_ID)).await?;
                             local_eof_sent = true;
                             local_eof_deadline = Some(Box::pin(tokio::time::sleep(local_eof_grace)));
                         }
                         Some(TcpReadEvent::Eof) => {}
                         Some(TcpReadEvent::Error(error)) => {
-                            let _ = self.send_frame(TunnelFrame::error(FailureCode::ProtocolError)).await;
+                            let _ = self
+                                .send_frame(TunnelFrame::error(
+                                    LEGACY_STREAM_ID,
+                                    ErrorPayload::from_failure(
+                                        FailureCode::ProtocolError,
+                                        "local tcp read error",
+                                    ),
+                                )?)
+                                .await;
                             return Err(TunnelError::Io(error));
                         }
                         None => {}
@@ -175,15 +199,14 @@ impl TunnelBridge {
 }
 
 fn parse_remote_failure(payload: &[u8]) -> TunnelError {
-    match str::from_utf8(payload) {
-        Ok(text) => {
-            let (code, detail) = match text.split_once(':') {
-                Some((code, detail)) => (code, Some(detail.to_owned())),
-                None => (text, None),
-            };
-            TunnelError::RemoteFailure { code: parse_failure_code(code), detail }
+    match serde_json::from_slice::<ErrorPayload>(payload) {
+        Ok(payload) => TunnelError::RemoteFailure {
+            code: parse_failure_code(&payload.code),
+            detail: Some(payload.message),
+        },
+        Err(error) => {
+            TunnelError::InvalidFrame(format!("remote error payload was not valid JSON: {error}"))
         }
-        Err(_) => TunnelError::InvalidFrame("remote error payload was not valid utf-8".to_owned()),
     }
 }
 
@@ -206,9 +229,7 @@ fn parse_failure_code(code: &str) -> FailureCode {
 mod tests {
     use std::time::Duration;
 
-    use p2p_core::{
-        FailureCode, TunnelAnswerConfig, TunnelConfig, TunnelOfferConfig, WebRtcConfig,
-    };
+    use p2p_core::{FailureCode, ForwardAnswerConfig, TunnelConfig, WebRtcConfig};
     use p2p_webrtc::WebRtcPeer;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -218,22 +239,7 @@ mod tests {
     use crate::{AnswerTargetConnector, TunnelError};
 
     fn sample_tunnel_config() -> TunnelConfig {
-        TunnelConfig {
-            stream_id: 1,
-            read_chunk_size: 16_384,
-            local_eof_grace_ms: 250,
-            remote_eof_grace_ms: 250,
-            offer: TunnelOfferConfig {
-                listen_host: "127.0.0.1".to_owned(),
-                listen_port: 0,
-                remote_peer_id: "answer-office".parse().expect("peer id"),
-            },
-            answer: TunnelAnswerConfig {
-                target_host: "127.0.0.1".to_owned(),
-                target_port: 0,
-                allow_remote_peers: vec!["offer-home".parse().expect("peer id")],
-            },
-        }
+        TunnelConfig { read_chunk_size: 16_384, local_eof_grace_ms: 250, remote_eof_grace_ms: 250 }
     }
 
     fn sample_webrtc_config() -> WebRtcConfig {
@@ -241,7 +247,7 @@ mod tests {
     }
 
     fn answer_connector(port: u16) -> AnswerTargetConnector {
-        AnswerTargetConnector::new(&TunnelAnswerConfig {
+        AnswerTargetConnector::new(&ForwardAnswerConfig {
             target_host: "127.0.0.1".to_owned(),
             target_port: port,
             allow_remote_peers: vec!["offer-home".parse().expect("peer id")],

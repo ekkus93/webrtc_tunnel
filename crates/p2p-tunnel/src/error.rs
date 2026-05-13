@@ -1,11 +1,13 @@
-use p2p_core::{ACTIVE_STREAM_ID, FRAME_VERSION, FailureCode, TunnelFrameType};
+use p2p_core::{FRAME_VERSION, FailureCode, TunnelFrameType};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TunnelError {
     #[error("unsupported tunnel frame version {actual}; expected {expected}")]
     UnsupportedVersion { actual: u8, expected: u8 },
-    #[error("unsupported tunnel stream id {actual}; expected {expected}")]
-    UnsupportedStreamId { actual: u32, expected: u32 },
+    #[error("stream id 0 is reserved for session-level control")]
+    ReservedStreamId,
+    #[error("session-level control frame used nonzero stream id {0}")]
+    SessionControlStreamId(u32),
     #[error("unknown tunnel frame type {0}")]
     UnknownFrameType(u8),
     #[error("truncated tunnel frame")]
@@ -22,6 +24,14 @@ pub enum TunnelError {
     Busy,
     #[error("data channel closed")]
     DataChannelClosed,
+    #[error("data channel writer closed")]
+    WriterClosed,
+    #[error("stream id space exhausted")]
+    StreamIdExhausted,
+    #[error("stream {0} already exists")]
+    StreamAlreadyExists(u32),
+    #[error("stream {0} not found")]
+    StreamNotFound(u32),
     #[error("unexpected tunnel frame {0:?}")]
     UnexpectedFrame(TunnelFrameType),
     #[error("remote tunnel failure: {}", code.as_str())]
@@ -31,9 +41,5 @@ pub enum TunnelError {
 impl TunnelError {
     pub fn unsupported_version(actual: u8) -> Self {
         Self::UnsupportedVersion { actual, expected: FRAME_VERSION }
-    }
-
-    pub fn unsupported_stream_id(actual: u32) -> Self {
-        Self::UnsupportedStreamId { actual, expected: ACTIVE_STREAM_ID }
     }
 }

@@ -383,9 +383,9 @@ mod tests {
     use std::path::PathBuf;
 
     use p2p_core::{
-        AppConfig, BrokerConfig, BrokerTlsConfig, HealthConfig, LoggingConfig, NodeConfig,
-        NodeRole, ReconnectConfig, SecurityConfig, TunnelAnswerConfig, TunnelConfig,
-        TunnelOfferConfig, WebRtcConfig,
+        AppConfig, BrokerConfig, BrokerTlsConfig, ForwardAnswerConfig, ForwardRule, HealthConfig,
+        LoggingConfig, NodeConfig, NodeRole, ReconnectConfig, SecurityConfig, TunnelConfig,
+        WebRtcConfig,
     };
     use p2p_core::{MessageType, SessionId};
     use p2p_crypto::{AuthorizedKeys, generate_identity};
@@ -759,11 +759,12 @@ mod tests {
 
     fn sample_config(base: &std::path::Path) -> AppConfig {
         AppConfig {
-            format: "p2ptunnel-config-v1".to_owned(),
+            format: "p2ptunnel-config-v2".to_owned(),
             node: NodeConfig {
                 peer_id: "answer-office".parse().expect("peer id"),
                 role: NodeRole::Answer,
             },
+            peer: None,
             paths: p2p_core::PathConfig {
                 identity: base.join("identity"),
                 authorized_keys: base.join("authorized_keys"),
@@ -794,21 +795,19 @@ mod tests {
                 enable_ice_restart: true,
             },
             tunnel: TunnelConfig {
-                stream_id: 1,
                 read_chunk_size: 1024,
                 local_eof_grace_ms: 250,
                 remote_eof_grace_ms: 250,
-                offer: TunnelOfferConfig {
-                    listen_host: "127.0.0.1".to_owned(),
-                    listen_port: 2222,
-                    remote_peer_id: "offer-home".parse().expect("peer id"),
-                },
-                answer: TunnelAnswerConfig {
+            },
+            forwards: vec![ForwardRule {
+                id: "ssh".to_owned(),
+                offer: None,
+                answer: Some(ForwardAnswerConfig {
                     target_host: "127.0.0.1".to_owned(),
                     target_port: 22,
                     allow_remote_peers: vec!["offer-home".parse().expect("peer id")],
-                },
-            },
+                }),
+            }],
             reconnect: ReconnectConfig {
                 enable_auto_reconnect: true,
                 strategy: "ice_then_renegotiate".to_owned(),
