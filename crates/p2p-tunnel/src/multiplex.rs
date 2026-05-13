@@ -39,6 +39,11 @@ enum TcpWriteCommand {
     Close,
 }
 
+enum StreamRuntimeEvent {
+    LocalEof { stream_id: u32 },
+    LocalIoError { stream_id: u32, message: String, notify_peer: bool },
+}
+
 struct RuntimeStream {
     write_tx: Option<mpsc::Sender<TcpWriteCommand>>,
     tasks: Vec<JoinHandle<()>>,
@@ -126,6 +131,7 @@ pub async fn run_multiplex_offer(
     let mut streams: HashMap<u32, RuntimeStream> = HashMap::new();
     let mut opening_streams: HashMap<u32, TcpStream> = HashMap::new();
     let (tcp_frame_tx, mut tcp_frame_rx) = mpsc::channel(DEFAULT_WRITER_QUEUE_MESSAGES);
+    let (stream_event_tx, mut stream_event_rx) = mpsc::channel(DEFAULT_WRITER_QUEUE_MESSAGES);
 
     register_offer_client(
         initial_client,
@@ -159,6 +165,12 @@ pub async fn run_multiplex_offer(
                 };
                 frame_tx.send(frame).await.map_err(|_| TunnelError::WriterClosed)?;
             }
+            stream_event = stream_event_rx.recv() => {
+                let Some(stream_event) = stream_event else {
+                    continue;
+                };
+                handle_stream_runtime_event(stream_event, &frame_tx, &mut manager, &mut streams).await?;
+            }
             writer_error = writer_failure_rx.recv() => {
                 let Some(writer_error) = writer_error else {
                     break Err(TunnelError::WriterClosed);
@@ -177,6 +189,7 @@ pub async fn run_multiplex_offer(
                             &mut manager,
                             &mut opening_streams,
                             &mut streams,
+                            &stream_event_tx,
                         ).await?;
                         if manager.active_count() == 0 && opening_streams.is_empty() && streams.is_empty() {
                             break Ok(());
@@ -207,6 +220,7 @@ pub async fn run_multiplex_answer(
     let mut manager = StreamManager::new();
     let mut streams: HashMap<u32, RuntimeStream> = HashMap::new();
     let (tcp_frame_tx, mut tcp_frame_rx) = mpsc::channel(DEFAULT_WRITER_QUEUE_MESSAGES);
+    let (stream_event_tx, mut stream_event_rx) = mpsc::channel(DEFAULT_WRITER_QUEUE_MESSAGES);
     let (target_connect_tx, mut target_connect_rx) = mpsc::channel(DEFAULT_STREAM_QUEUE_MESSAGES);
 
     let result = loop {
@@ -216,6 +230,12 @@ pub async fn run_multiplex_answer(
                     continue;
                 };
                 frame_tx.send(frame).await.map_err(|_| TunnelError::WriterClosed)?;
+            }
+            stream_event = stream_event_rx.recv() => {
+                let Some(stream_event) = stream_event else {
+                    continue;
+                };
+                handle_stream_runtime_event(stream_event, &frame_tx, &mut manager, &mut streams).await?;
             }
             target_result = target_connect_rx.recv() => {
                 let Some(target_result) = target_result else {
@@ -228,6 +248,7 @@ pub async fn run_multiplex_answer(
                     &tcp_frame_tx,
                     &mut manager,
                     &mut streams,
+                    &stream_event_tx,
                 ).await?;
             }
             writer_error = writer_failure_rx.recv() => {
@@ -299,6 +320,7 @@ async fn handle_offer_frame(
     manager: &mut StreamManager,
     opening_streams: &mut HashMap<u32, TcpStream>,
     streams: &mut HashMap<u32, RuntimeStream>,
+    stream_event_tx: &mpsc::Sender<StreamRuntimeEvent>,
 ) -> Result<(), TunnelError> {
     match frame.frame_type {
         TunnelFrameType::Open => {
@@ -318,12 +340,13 @@ async fn handle_offer_frame(
                 return Ok(());
             }
             manager.get_mut(stream_id)?.lifecycle = StreamLifecycle::Open;
-            let runtime_stream = spawn_tcp_bridge(stream_id, stream, tunnel_config, tcp_frame_tx);
+            let runtime_stream =
+                spawn_tcp_bridge(stream_id, stream, tunnel_config, tcp_frame_tx, stream_event_tx);
             streams.insert(stream_id, runtime_stream);
         }
         TunnelFrameType::Data => {
             if let Some(stream) = streams.get(&frame.stream_id) {
-                let Some(write_tx) = stream.write_tx() else {
+                let Some(write_tx) = stream.write_tx().cloned() else {
                     tracing::debug!(
                         stream_id = frame.stream_id,
                         "ignoring DATA for opening stream"
@@ -343,7 +366,8 @@ async fn handle_offer_frame(
                         close_stream(frame.stream_id, manager, streams).await?;
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
-                        return Err(TunnelError::StreamNotFound(frame.stream_id));
+                        handle_closed_stream_queue(frame.stream_id, frame_tx, manager, streams)
+                            .await?;
                     }
                 }
             } else {
@@ -453,7 +477,7 @@ async fn handle_answer_frame(
         }
         TunnelFrameType::Data => {
             if let Some(stream) = streams.get(&frame.stream_id) {
-                let Some(write_tx) = stream.write_tx() else {
+                let Some(write_tx) = stream.write_tx().cloned() else {
                     tracing::debug!(
                         stream_id = frame.stream_id,
                         "ignoring DATA for opening stream"
@@ -473,7 +497,8 @@ async fn handle_answer_frame(
                         close_stream(frame.stream_id, manager, streams).await?;
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
-                        return Err(TunnelError::StreamNotFound(frame.stream_id));
+                        handle_closed_stream_queue(frame.stream_id, frame_tx, manager, streams)
+                            .await?;
                     }
                 }
             } else {
@@ -504,6 +529,7 @@ async fn handle_target_connect_result(
     tcp_frame_tx: &mpsc::Sender<TunnelFrame>,
     manager: &mut StreamManager,
     streams: &mut HashMap<u32, RuntimeStream>,
+    stream_event_tx: &mpsc::Sender<StreamRuntimeEvent>,
 ) -> Result<(), TunnelError> {
     let Ok(stream_state) = manager.get_mut(target_result.stream_id) else {
         return Ok(());
@@ -516,8 +542,13 @@ async fn handle_target_connect_result(
         Ok(stream) => {
             stream_state.lifecycle = StreamLifecycle::Open;
             stream_state.forward_id = target_result.forward_id;
-            let runtime_stream =
-                spawn_tcp_bridge(target_result.stream_id, stream, tunnel_config, tcp_frame_tx);
+            let runtime_stream = spawn_tcp_bridge(
+                target_result.stream_id,
+                stream,
+                tunnel_config,
+                tcp_frame_tx,
+                stream_event_tx,
+            );
             streams.insert(target_result.stream_id, runtime_stream);
             frame_tx
                 .send(TunnelFrame::open_ack(target_result.stream_id))
@@ -545,10 +576,12 @@ fn spawn_tcp_bridge(
     stream: TcpStream,
     tunnel_config: &TunnelConfig,
     tcp_frame_tx: &mpsc::Sender<TunnelFrame>,
+    stream_event_tx: &mpsc::Sender<StreamRuntimeEvent>,
 ) -> RuntimeStream {
     let (mut reader, mut writer) = stream.into_split();
     let (write_tx, mut write_rx) = mpsc::channel::<TcpWriteCommand>(DEFAULT_STREAM_QUEUE_MESSAGES);
     let read_frame_tx = tcp_frame_tx.clone();
+    let read_event_tx = stream_event_tx.clone();
     let read_chunk_size = tunnel_config.read_chunk_size;
     let read_task = tokio::spawn(async move {
         let mut buffer = vec![0_u8; read_chunk_size];
@@ -556,6 +589,7 @@ fn spawn_tcp_bridge(
             match reader.read(&mut buffer).await {
                 Ok(0) => {
                     let _ = read_frame_tx.send(TunnelFrame::close(stream_id)).await;
+                    let _ = read_event_tx.send(StreamRuntimeEvent::LocalEof { stream_id }).await;
                     break;
                 }
                 Ok(read) => {
@@ -567,7 +601,7 @@ fn spawn_tcp_bridge(
                         break;
                     }
                 }
-                Err(_) => {
+                Err(error) => {
                     let _ = read_frame_tx
                         .send(
                             TunnelFrame::error(
@@ -580,16 +614,31 @@ fn spawn_tcp_bridge(
                             .expect("static error payload should encode"),
                         )
                         .await;
+                    let _ = read_event_tx
+                        .send(StreamRuntimeEvent::LocalIoError {
+                            stream_id,
+                            message: format!("local tcp read failed: {error}"),
+                            notify_peer: false,
+                        })
+                        .await;
                     break;
                 }
             }
         }
     });
+    let write_event_tx = stream_event_tx.clone();
     let write_task = tokio::spawn(async move {
         while let Some(command) = write_rx.recv().await {
             match command {
                 TcpWriteCommand::Data(payload) => {
-                    if writer.write_all(&payload).await.is_err() {
+                    if let Err(error) = writer.write_all(&payload).await {
+                        let _ = write_event_tx
+                            .send(StreamRuntimeEvent::LocalIoError {
+                                stream_id,
+                                message: format!("local tcp write failed: {error}"),
+                                notify_peer: true,
+                            })
+                            .await;
                         break;
                     }
                 }
@@ -601,6 +650,40 @@ fn spawn_tcp_bridge(
         }
     });
     RuntimeStream::open(write_tx, vec![read_task, write_task])
+}
+
+async fn handle_stream_runtime_event(
+    event: StreamRuntimeEvent,
+    frame_tx: &mpsc::Sender<TunnelFrame>,
+    manager: &mut StreamManager,
+    streams: &mut HashMap<u32, RuntimeStream>,
+) -> Result<(), TunnelError> {
+    match event {
+        StreamRuntimeEvent::LocalEof { stream_id } => {
+            close_stream(stream_id, manager, streams).await?;
+        }
+        StreamRuntimeEvent::LocalIoError { stream_id, message, notify_peer } => {
+            if notify_peer && (manager.get(stream_id).is_ok() || streams.contains_key(&stream_id)) {
+                send_stream_error(frame_tx, stream_id, "local_io_error", &message).await?;
+            }
+            close_stream(stream_id, manager, streams).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_closed_stream_queue(
+    stream_id: u32,
+    frame_tx: &mpsc::Sender<TunnelFrame>,
+    manager: &mut StreamManager,
+    streams: &mut HashMap<u32, RuntimeStream>,
+) -> Result<(), TunnelError> {
+    tracing::debug!(stream_id, "stream write queue closed");
+    if manager.get(stream_id).is_ok() || streams.contains_key(&stream_id) {
+        send_stream_error(frame_tx, stream_id, "local_io_error", "stream write queue closed")
+            .await?;
+    }
+    close_stream(stream_id, manager, streams).await
 }
 
 async fn close_stream(
@@ -740,11 +823,12 @@ mod tests {
     use tokio::time::timeout;
 
     use super::{
-        RuntimeStream, StreamIdAllocator, StreamLifecycle, StreamManager, StreamState,
-        TcpWriteCommand, close_stream, handle_answer_frame, handle_offer_frame,
-        run_multiplex_answer, run_multiplex_offer, spawn_writer_only,
+        RuntimeStream, StreamIdAllocator, StreamLifecycle, StreamManager, StreamRuntimeEvent,
+        StreamState, TcpWriteCommand, cleanup_all_streams, close_stream, handle_answer_frame,
+        handle_offer_frame, handle_stream_runtime_event, run_multiplex_answer, run_multiplex_offer,
+        spawn_tcp_bridge, spawn_writer_only,
     };
-    use crate::{OfferClient, OpenPayload, TunnelError, TunnelFrame};
+    use crate::{ErrorPayload, OfferClient, OpenPayload, TunnelError, TunnelFrame};
 
     fn stream(stream_id: u32, forward_id: &str) -> StreamState {
         StreamState {
@@ -1260,6 +1344,7 @@ mod tests {
         let mut streams = HashMap::new();
         let (frame_tx, _frame_rx) = mpsc::channel(4);
         let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (stream_event_tx, _stream_event_rx) = mpsc::channel(4);
 
         handle_offer_frame(
             TunnelFrame::open_ack(1),
@@ -1269,6 +1354,7 @@ mod tests {
             &mut manager,
             &mut opening_streams,
             &mut streams,
+            &stream_event_tx,
         )
         .await
         .expect("ack should handle");
@@ -1292,6 +1378,7 @@ mod tests {
         let mut streams = HashMap::new();
         let (frame_tx, mut frame_rx) = mpsc::channel(4);
         let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (stream_event_tx, _stream_event_rx) = mpsc::channel(4);
 
         handle_offer_frame(
             TunnelFrame::open(1, OpenPayload { forward_id: "ssh".to_owned() })
@@ -1302,6 +1389,7 @@ mod tests {
             &mut manager,
             &mut opening_streams,
             &mut streams,
+            &stream_event_tx,
         )
         .await
         .expect("malformed ack should be handled as stream error");
@@ -1324,6 +1412,7 @@ mod tests {
         let mut streams = HashMap::new();
         let (frame_tx, mut frame_rx) = mpsc::channel(4);
         let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (stream_event_tx, _stream_event_rx) = mpsc::channel(4);
 
         handle_offer_frame(
             TunnelFrame::open_ack(1),
@@ -1333,6 +1422,7 @@ mod tests {
             &mut manager,
             &mut opening_streams,
             &mut streams,
+            &stream_event_tx,
         )
         .await
         .expect("duplicate ack should be ignored");
@@ -1385,6 +1475,225 @@ mod tests {
             .await
             .expect("write task should stop")
             .expect("write notify");
+        assert_eq!(manager.active_count(), 0);
+        assert!(streams.is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_tcp_eof_sends_close_and_removes_only_that_stream() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        let client = TcpStream::connect(listener.local_addr().expect("local addr"))
+            .await
+            .expect("client connect");
+        let (stream_a, _) = listener.accept().await.expect("accept stream a");
+        let (tcp_frame_tx, mut tcp_frame_rx) = mpsc::channel(4);
+        let (stream_event_tx, mut stream_event_rx) = mpsc::channel(4);
+        let runtime_stream =
+            spawn_tcp_bridge(1, stream_a, &sample_tunnel_config(), &tcp_frame_tx, &stream_event_tx);
+        let (other_tx, _other_rx) = mpsc::channel(1);
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("stream 1");
+        manager.get_mut(1).expect("stream 1").lifecycle = StreamLifecycle::Open;
+        manager.register(stream(2, "web-ui")).expect("stream 2");
+        manager.get_mut(2).expect("stream 2").lifecycle = StreamLifecycle::Open;
+        let mut streams = HashMap::from([
+            (1_u32, runtime_stream),
+            (2_u32, RuntimeStream::open(other_tx, Vec::new())),
+        ]);
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+
+        drop(client);
+        let close = timeout(Duration::from_secs(1), tcp_frame_rx.recv())
+            .await
+            .expect("close frame should arrive")
+            .expect("close frame should be sent");
+        assert_eq!(close.frame_type, TunnelFrameType::Close);
+        assert_eq!(close.stream_id, 1);
+        let event = timeout(Duration::from_secs(1), stream_event_rx.recv())
+            .await
+            .expect("local EOF event should arrive")
+            .expect("local EOF event should be sent");
+        handle_stream_runtime_event(event, &frame_tx, &mut manager, &mut streams)
+            .await
+            .expect("local EOF cleanup should succeed");
+
+        assert!(manager.get(1).is_err());
+        assert!(manager.get(2).is_ok());
+        assert!(!streams.contains_key(&1));
+        assert!(streams.contains_key(&2));
+        assert!(frame_rx.try_recv().is_err());
+        close_stream(1, &mut manager, &mut streams)
+            .await
+            .expect("duplicate cleanup should be harmless");
+        assert!(manager.get(2).is_ok());
+    }
+
+    #[tokio::test]
+    async fn local_io_error_event_sends_error_and_removes_only_that_stream() {
+        let (stream_a_tx, _stream_a_rx) = mpsc::channel(1);
+        let (stream_b_tx, _stream_b_rx) = mpsc::channel(1);
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("stream 1");
+        manager.get_mut(1).expect("stream 1").lifecycle = StreamLifecycle::Open;
+        manager.register(stream(2, "web-ui")).expect("stream 2");
+        manager.get_mut(2).expect("stream 2").lifecycle = StreamLifecycle::Open;
+        let mut streams = HashMap::from([
+            (1_u32, RuntimeStream::open(stream_a_tx, Vec::new())),
+            (2_u32, RuntimeStream::open(stream_b_tx, Vec::new())),
+        ]);
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+
+        handle_stream_runtime_event(
+            StreamRuntimeEvent::LocalIoError {
+                stream_id: 1,
+                message: "local tcp write failed: broken pipe".to_owned(),
+                notify_peer: true,
+            },
+            &frame_tx,
+            &mut manager,
+            &mut streams,
+        )
+        .await
+        .expect("local I/O failure should be stream-local");
+
+        let error = frame_rx.recv().await.expect("local I/O error frame");
+        assert_eq!(error.stream_id, 1);
+        assert_eq!(error.error_payload().expect("error payload").code, "local_io_error");
+        assert!(manager.get(1).is_err());
+        assert!(manager.get(2).is_ok());
+        assert!(!streams.contains_key(&1));
+        assert!(streams.contains_key(&2));
+    }
+
+    #[tokio::test]
+    async fn closed_stream_write_queue_is_stream_local() {
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("stream 1");
+        manager.get_mut(1).expect("stream 1").lifecycle = StreamLifecycle::Open;
+        manager.register(stream(2, "web-ui")).expect("stream 2");
+        manager.get_mut(2).expect("stream 2").lifecycle = StreamLifecycle::Open;
+        let (closed_tx, closed_rx) = mpsc::channel(1);
+        drop(closed_rx);
+        let (other_tx, mut other_rx) = mpsc::channel(1);
+        let mut streams = HashMap::from([
+            (1_u32, RuntimeStream::open(closed_tx, Vec::new())),
+            (2_u32, RuntimeStream::open(other_tx, Vec::new())),
+        ]);
+        let mut opening_streams = HashMap::new();
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (stream_event_tx, _stream_event_rx) = mpsc::channel(4);
+
+        handle_offer_frame(
+            TunnelFrame::data(1, b"payload".to_vec()),
+            &sample_tunnel_config(),
+            &frame_tx,
+            &tcp_frame_tx,
+            &mut manager,
+            &mut opening_streams,
+            &mut streams,
+            &stream_event_tx,
+        )
+        .await
+        .expect("closed queue should be stream-local");
+
+        let error = frame_rx.recv().await.expect("closed queue error");
+        assert_eq!(error.stream_id, 1);
+        assert_eq!(error.error_payload().expect("error payload").code, "local_io_error");
+        assert!(manager.get(1).is_err());
+        assert!(manager.get(2).is_ok());
+        assert!(!streams.contains_key(&1));
+        assert!(streams.contains_key(&2));
+
+        handle_offer_frame(
+            TunnelFrame::data(2, b"still-open".to_vec()),
+            &sample_tunnel_config(),
+            &frame_tx,
+            &tcp_frame_tx,
+            &mut manager,
+            &mut opening_streams,
+            &mut streams,
+            &stream_event_tx,
+        )
+        .await
+        .expect("other stream should remain usable");
+        assert!(
+            matches!(other_rx.recv().await, Some(TcpWriteCommand::Data(payload)) if payload == b"still-open")
+        );
+    }
+
+    #[tokio::test]
+    async fn late_data_close_and_error_after_cleanup_are_harmless() {
+        let mut manager = StreamManager::new();
+        let mut opening_streams = HashMap::new();
+        let mut streams = HashMap::new();
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (stream_event_tx, _stream_event_rx) = mpsc::channel(4);
+
+        for frame in [
+            TunnelFrame::data(1, b"late".to_vec()),
+            TunnelFrame::close(1),
+            TunnelFrame::error(
+                1,
+                ErrorPayload { code: "local_io_error".to_owned(), message: "late".to_owned() },
+            )
+            .expect("error frame"),
+        ] {
+            handle_offer_frame(
+                frame,
+                &sample_tunnel_config(),
+                &frame_tx,
+                &tcp_frame_tx,
+                &mut manager,
+                &mut opening_streams,
+                &mut streams,
+                &stream_event_tx,
+            )
+            .await
+            .expect("late frame should be harmless");
+        }
+
+        assert_eq!(manager.active_count(), 0);
+        assert!(streams.is_empty());
+        assert!(frame_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn session_cleanup_drains_and_aborts_stream_tasks() {
+        let (read_started_tx, read_started_rx) = oneshot::channel();
+        let (read_done_tx, read_done_rx) = oneshot::channel();
+        let read_task = tokio::spawn(async move {
+            let _notify = DropNotifier(Some(read_done_tx));
+            let _ = read_started_tx.send(());
+            future::pending::<()>().await;
+        });
+        let (write_started_tx, write_started_rx) = oneshot::channel();
+        let (write_done_tx, write_done_rx) = oneshot::channel();
+        let (write_tx, mut write_rx) = mpsc::channel(1);
+        let write_task = tokio::spawn(async move {
+            let _notify = DropNotifier(Some(write_done_tx));
+            let _ = write_started_tx.send(());
+            let _ = write_rx.recv().await;
+        });
+        read_started_rx.await.expect("read task started");
+        write_started_rx.await.expect("write task started");
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("stream 1");
+        let mut streams =
+            HashMap::from([(1_u32, RuntimeStream::open(write_tx, vec![read_task, write_task]))]);
+
+        cleanup_all_streams(&mut manager, &mut streams);
+        cleanup_all_streams(&mut manager, &mut streams);
+
+        timeout(Duration::from_secs(1), read_done_rx)
+            .await
+            .expect("read task should abort")
+            .expect("read task drop notify");
+        timeout(Duration::from_secs(1), write_done_rx)
+            .await
+            .expect("write task should abort")
+            .expect("write task drop notify");
         assert_eq!(manager.active_count(), 0);
         assert!(streams.is_empty());
     }
@@ -1451,6 +1760,7 @@ mod tests {
         let mut streams = HashMap::new();
         let (frame_tx, mut frame_rx) = mpsc::channel(4);
         let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (stream_event_tx, _stream_event_rx) = mpsc::channel(4);
 
         handle_offer_frame(
             TunnelFrame::data(99, b"lost".to_vec()),
@@ -1460,6 +1770,7 @@ mod tests {
             &mut manager,
             &mut opening_streams,
             &mut streams,
+            &stream_event_tx,
         )
         .await
         .expect("unknown data should be ignored");
@@ -1475,6 +1786,7 @@ mod tests {
         let mut streams = HashMap::new();
         let (frame_tx, _frame_rx) = mpsc::channel(4);
         let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (stream_event_tx, _stream_event_rx) = mpsc::channel(4);
 
         for _ in 0..2 {
             handle_offer_frame(
@@ -1485,6 +1797,7 @@ mod tests {
                 &mut manager,
                 &mut opening_streams,
                 &mut streams,
+                &stream_event_tx,
             )
             .await
             .expect("close should be idempotent");
@@ -1508,6 +1821,7 @@ mod tests {
         let mut opening_streams = HashMap::new();
         let (frame_tx, mut frame_rx) = mpsc::channel(4);
         let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (stream_event_tx, _stream_event_rx) = mpsc::channel(4);
 
         handle_offer_frame(
             TunnelFrame::data(1, b"overflow".to_vec()),
@@ -1517,6 +1831,7 @@ mod tests {
             &mut manager,
             &mut opening_streams,
             &mut streams,
+            &stream_event_tx,
         )
         .await
         .expect("overflow should be stream-local");

@@ -397,3 +397,6 @@
 
 ## 2026-05-13T22:01:11Z - GPT-5.5 - Multiplexed fix pass completed
 - Added final lifecycle coverage for daemon-level concurrent forwards and browser-like multiple same-forward streams, completed the multiplexed forwarding fix TODO status/checklist, and confirmed final stale-search matches are historical/review text or valid current tests/behavior.
+
+## 2026-05-13T22:14:12Z - GPT-5.5 - Multiplexed forwarding fix2 review triaged
+- Read `docs/MULTIPLEXED_FORWARDING_CODE_REVIEW2.md` and `docs/MULTIPLEXED_FORWARDING_FIX2_TODO.md`; the review aligns with current gaps in local EOF cleanup, TCP write failure reporting, closed per-stream write queue handling, stale OPEN ACK spec wording, and focused stream-local isolation tests.
