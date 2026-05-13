@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+commit_msg_file=$1
+
+if grep -Eiq '^[[:space:]]*Co-authored-by:[[:space:]]*(Copilot[[:space:]]*<223556219\+Copilot@users\.noreply\.github\.com>|.*223556219\+Copilot@users\.noreply\.github\.com|Copilot[[:space:]]*<)' "$commit_msg_file"; then
+    cat >&2 <<'EOF'
+Error: refusing commit with Copilot co-author trailer.
+
+Remove this line before committing:
+  Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+EOF
+    exit 1
+fi

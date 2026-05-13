@@ -322,3 +322,14 @@
 ## 2026-05-13T17:48:24Z - GPT-5.5 - v0.1 release check-in prepared
 - Preparing the validated formatted tree for the `v0.1` release check-in on `master`.
 - The release tree includes rustfmt-only cleanup in `crates/p2p-daemon/src/lib.rs`, `crates/p2p-tunnel/src/bridge.rs`, and `crates/p2p-webrtc/src/lib.rs`, plus memory updates documenting the validation baseline.
+
+## 2026-05-13T17:52:42Z - GPT-5.5 - Copilot coauthor trailer investigation
+- Commit `cec0f2c` contains a literal `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailer in its commit message.
+- The repository currently has only sample hooks in `.git/hooks` and no configured `core.hooksPath`, commit template, trailer, coauthor, or Copilot-related git config, so no active local hook was present to block that trailer.
+
+## 2026-05-13T17:54:55Z - GPT-5.5 - Copilot coauthor trailer blocked locally
+- Installed a `commit-msg` hook that rejects `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailers and configured this checkout with `core.hooksPath = .githooks`.
+- Verified an actual `git commit --allow-empty` attempt with the Copilot co-author trailer is blocked and leaves `HEAD` unchanged.
+
+## 2026-05-13T17:55:46Z - GPT-5.5 - Copilot coauthor hook check-in
+- Preparing to check in the tracked `.githooks/commit-msg` blocker and memory notes so future checkouts can enable the same Copilot co-author trailer protection.
