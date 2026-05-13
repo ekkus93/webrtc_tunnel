@@ -1156,6 +1156,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_like_multiple_streams_on_one_forward_complete_independently() {
+        const CLIENTS: usize = 5;
+        let (offer_peer, answer_peer, offer_channel, answer_channel) = connected_channels().await;
+
+        let target_listener =
+            TcpListener::bind(("127.0.0.1", 0)).await.expect("target listener should bind");
+        let table = forward_table(target_listener.local_addr().expect("target local addr").port());
+        let target_task = tokio::spawn(async move {
+            for _ in 0..CLIENTS {
+                let (mut target_stream, _) = target_listener.accept().await.expect("target accept");
+                tokio::spawn(async move {
+                    let mut received = [0_u8; 4];
+                    target_stream.read_exact(&mut received).await.expect("target read");
+                    assert_eq!(&received, b"ping");
+                    target_stream.write_all(b"pong").await.expect("target write");
+                    target_stream.shutdown().await.expect("target shutdown");
+                });
+            }
+        });
+
+        let local_listener =
+            TcpListener::bind(("127.0.0.1", 0)).await.expect("local listener should bind");
+        let local_addr = local_listener.local_addr().expect("local addr");
+        let client_tasks = (0..CLIENTS)
+            .map(|_| {
+                tokio::spawn(async move {
+                    let mut client = TcpStream::connect(local_addr).await.expect("client connect");
+                    client.write_all(b"ping").await.expect("client write");
+                    let mut response = [0_u8; 4];
+                    client.read_exact(&mut response).await.expect("client read");
+                    assert_eq!(&response, b"pong");
+                    client.shutdown().await.expect("client shutdown");
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let (first_stream, _) = local_listener.accept().await.expect("first accept");
+        let (tx, mut rx) = mpsc::channel(CLIENTS);
+        let accept_task = tokio::spawn(async move {
+            for _ in 1..CLIENTS {
+                let (stream, _) = local_listener.accept().await.expect("extra accept");
+                tx.send(Ok(OfferClient::new("ssh", stream))).await.expect("queue extra client");
+            }
+        });
+
+        let answer_tunnel = sample_tunnel_config();
+        let answer_task = tokio::spawn(async move {
+            run_multiplex_answer(
+                answer_channel,
+                &answer_tunnel,
+                table,
+                "offer-home".parse().expect("peer id"),
+            )
+            .await
+        });
+        let offer_tunnel = sample_tunnel_config();
+        let offer_task = tokio::spawn(async move {
+            run_multiplex_offer(
+                offer_channel,
+                &offer_tunnel,
+                OfferClient::new("ssh", first_stream),
+                &mut rx,
+            )
+            .await
+        });
+
+        for client_task in client_tasks {
+            timeout(Duration::from_secs(10), client_task)
+                .await
+                .expect("client should finish")
+                .expect("client task should succeed");
+        }
+        timeout(Duration::from_secs(10), accept_task)
+            .await
+            .expect("accept task should finish")
+            .expect("accept task should succeed");
+        timeout(Duration::from_secs(10), target_task)
+            .await
+            .expect("target task should finish")
+            .expect("target task should succeed");
+        timeout(Duration::from_secs(10), offer_task)
+            .await
+            .expect("offer mux should finish")
+            .expect("offer mux join should succeed")
+            .expect("offer mux should succeed");
+
+        offer_peer.close().await.expect("offer peer should close");
+        answer_peer.close().await.expect("answer peer should close");
+        answer_task.abort();
+    }
+
+    #[tokio::test]
     async fn offer_open_ack_transitions_opening_stream_to_open() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
         let client = TcpStream::connect(listener.local_addr().expect("local addr"))

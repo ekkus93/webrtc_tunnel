@@ -74,18 +74,18 @@ The purpose of this TODO is to harden the current implementation so it is safe a
 | 7.3 Make ownership explicit | Done | Added ownership comment to the runtime module. |
 | 7.4 Remove dead runtime path | Done | Removed unused `MultiplexedTunnel` abstraction. |
 | 7.5 Runtime ownership tests | Done | Existing daemon and tunnel tests exercise the real runtime path. |
-| 8.1 Multi-forward concurrent behavior | Pending |  |
-| 8.2 Multiple streams on one forward | Pending |  |
-| 8.3 Browser-like connection pattern | Pending |  |
-| 8.4 Target-connect isolation | Pending |  |
-| 8.5 Writer failure behavior | Pending |  |
-| 8.6 Session failure cleanup | Pending |  |
+| 8.1 Multi-forward concurrent behavior | Done | Added daemon-level two-forward concurrent test. |
+| 8.2 Multiple streams on one forward | Done | Added browser-like same-forward multi-stream tunnel test. |
+| 8.3 Browser-like connection pattern | Done | Added multiple short-lived concurrent streams on one forward. |
+| 8.4 Target-connect isolation | Done | Covered by non-blocking target-connect and stream-scoped failure tests. |
+| 8.5 Writer failure behavior | Done | Writer failure is observed as session-level runtime failure. |
+| 8.6 Session failure cleanup | Done | Stream task cancellation and daemon recovery tests cover cleanup. |
 | 8.7 Docs/sample parse tests | Done | Covered by p2p-core documented sample config test. |
-| 9.1 Final stale search | Pending |  |
-| 9.2 Remove obsolete code/imports | Pending |  |
-| 9.3 Update docs index/README links | Pending |  |
-| 9.4 Confirm no custom data encryption | Pending |  |
-| 10 Acceptance checklist | Pending |  |
+| 9.1 Final stale search | Done | Remaining matches are historical/review/TODO text, test names, or valid current behavior. |
+| 9.2 Remove obsolete code/imports | Done | Removed dead runtime manager and cleaned unused imports/functions. |
+| 9.3 Update docs index/README links | Done | README points to current parse-tested v2 samples. |
+| 9.4 Confirm no custom data encryption | Done | Tunnel `DATA` still relies on WebRTC data-channel DTLS only. |
+| 10 Acceptance checklist | Done | Checklist completed below. |
 
 ---
 
@@ -779,52 +779,52 @@ Mark the implementation complete only when all items below are true.
 
 ## Runtime lifecycle
 
-- [ ] Every stream owns/cancels all per-stream tasks.
-- [ ] Stream close cancels read/write halves.
-- [ ] Session failure cancels all stream tasks.
-- [ ] WebRTC/data-channel failure clears all streams.
-- [ ] Late frames for closed streams are harmless.
+- [x] Every stream owns/cancels all per-stream tasks.
+- [x] Stream close cancels read/write halves.
+- [x] Session failure cancels all stream tasks.
+- [x] WebRTC/data-channel failure clears all streams.
+- [x] Late frames for closed streams are harmless.
 
 ## Writer
 
-- [ ] All data-channel sends use the central writer path.
-- [ ] Writer send failure notifies the session.
-- [ ] Writer failure tears down the session.
-- [ ] Writer failure cancels all streams.
+- [x] All data-channel sends use the central writer path.
+- [x] Writer send failure notifies the session.
+- [x] Writer failure tears down the session.
+- [x] Writer failure cancels all streams.
 
 ## Target connect
 
-- [ ] Answer-side target connect does not block dispatcher.
-- [ ] Target connect has a timeout.
-- [ ] Target connect failure is stream-scoped.
-- [ ] One slow target does not block other streams.
+- [x] Answer-side target connect does not block dispatcher.
+- [x] Target connect has a timeout.
+- [x] Target connect failure is stream-scoped.
+- [x] One slow target does not block other streams.
 
 ## Protocol
 
-- [ ] `OPEN` request payload contains only `forward_id`.
-- [ ] Answer-side `OPEN` ACK has empty payload.
-- [ ] Offer-side rejects non-empty `OPEN` ACK payload.
-- [ ] `stream_id = 0` is rejected for stream frames.
-- [ ] Unknown/forbidden forwards produce intended stream-level behavior.
+- [x] `OPEN` request payload contains only `forward_id`.
+- [x] Answer-side `OPEN` ACK has empty payload.
+- [x] Offer-side rejects non-empty `OPEN` ACK payload.
+- [x] `stream_id = 0` is rejected for stream frames.
+- [x] Unknown/forbidden forwards produce intended stream-level behavior.
 
 ## Config/docs
 
-- [ ] `format = "p2ptunnel-config-v2"` required.
-- [ ] Docs use role-specific `[forwards.offer]` / `[forwards.answer]`.
-- [ ] No stale `turn_urls = []` examples remain.
-- [ ] Old flat/dummy forward examples removed.
-- [ ] Sample configs parse.
-- [ ] First-forward-only CLI/env overrides removed or replaced.
+- [x] `format = "p2ptunnel-config-v2"` required.
+- [x] Docs use role-specific `[forwards.offer]` / `[forwards.answer]`.
+- [x] No stale `turn_urls = []` examples remain.
+- [x] Old flat/dummy forward examples removed.
+- [x] Sample configs parse.
+- [x] First-forward-only CLI/env overrides removed or replaced.
 
 ## Tests
 
-- [ ] Two forwards work concurrently.
-- [ ] Multiple streams on one forward work concurrently.
-- [ ] Browser-like concurrent streams work.
-- [ ] Target connect failure affects only one stream.
-- [ ] Writer failure tears down session.
-- [ ] Session failure cancels all stream tasks.
-- [ ] Docs/sample configs are parse-tested.
+- [x] Two forwards work concurrently.
+- [x] Multiple streams on one forward work concurrently.
+- [x] Browser-like concurrent streams work.
+- [x] Target connect failure affects only one stream.
+- [x] Writer failure tears down session.
+- [x] Session failure cancels all stream tasks.
+- [x] Docs/sample configs are parse-tested.
 
 ---
 

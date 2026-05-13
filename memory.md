@@ -394,3 +394,6 @@
 
 ## 2026-05-13T21:57:18Z - GPT-5.5 - Multiplexed cleanup phase
 - Removed legacy first-forward-only CLI flags, made legacy first-forward env vars fail startup with clear config errors, removed unused `MultiplexedTunnel`, updated v2 docs/examples, and added parse/validate coverage for documented sample configs.
+
+## 2026-05-13T22:01:11Z - GPT-5.5 - Multiplexed fix pass completed
+- Added final lifecycle coverage for daemon-level concurrent forwards and browser-like multiple same-forward streams, completed the multiplexed forwarding fix TODO status/checklist, and confirmed final stale-search matches are historical/review text or valid current tests/behavior.

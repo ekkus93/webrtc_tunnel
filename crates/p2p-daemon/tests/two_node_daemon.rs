@@ -499,3 +499,139 @@ async fn offer_side_drives_reconnect_after_injected_disconnect() {
 async fn active_session_ice_restart_recovers_pending_local_client() {
     run_one_in_memory_session(0, true, true, true).await;
 }
+
+#[tokio::test]
+async fn offer_and_answer_daemons_handle_two_forwards_concurrently() {
+    let offer_identity = generate_identity("offer-home").expect("offer identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+    let offer_keys = authorized_keys_for(&answer_identity);
+    let answer_keys = authorized_keys_for(&offer_identity);
+    let offer_identity_for_task = clone_identity(&offer_identity.identity);
+    let answer_identity_for_task = clone_identity(&answer_identity.identity);
+    let offer_keys_for_task = offer_keys.clone();
+    let answer_keys_for_task = answer_keys.clone();
+
+    let offer_status_path = unique_path("offer-multi-status.json");
+    let answer_status_path = unique_path("answer-multi-status.json");
+    let ssh_offer_port = unused_local_port();
+    let web_offer_port = unused_local_port();
+
+    let ssh_target =
+        TcpListener::bind(("127.0.0.1", 0)).await.expect("ssh target listener should bind");
+    let web_target =
+        TcpListener::bind(("127.0.0.1", 0)).await.expect("web target listener should bind");
+    let ssh_target_port = ssh_target.local_addr().expect("ssh target addr").port();
+    let web_target_port = web_target.local_addr().expect("web target addr").port();
+
+    let mut offer_config =
+        sample_config(NodeRole::Offer, offer_status_path.clone(), ssh_offer_port, ssh_target_port);
+    offer_config.forwards.push(ForwardRule {
+        id: "web-ui".to_owned(),
+        offer: Some(ForwardOfferConfig {
+            listen_host: "127.0.0.1".to_owned(),
+            listen_port: web_offer_port,
+        }),
+        answer: Some(ForwardAnswerConfig {
+            target_host: "127.0.0.1".to_owned(),
+            target_port: web_target_port,
+            allow_remote_peers: vec!["offer-home".parse().expect("offer peer id")],
+        }),
+    });
+    let mut answer_config = sample_config(
+        NodeRole::Answer,
+        answer_status_path.clone(),
+        ssh_offer_port,
+        ssh_target_port,
+    );
+    answer_config.forwards.push(ForwardRule {
+        id: "web-ui".to_owned(),
+        offer: Some(ForwardOfferConfig {
+            listen_host: "127.0.0.1".to_owned(),
+            listen_port: web_offer_port,
+        }),
+        answer: Some(ForwardAnswerConfig {
+            target_host: "127.0.0.1".to_owned(),
+            target_port: web_target_port,
+            allow_remote_peers: vec!["offer-home".parse().expect("offer peer id")],
+        }),
+    });
+
+    let (offer_transport, answer_transport, _trace) = transport_pair(0, 0);
+    let offer_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        offer_config,
+        offer_identity_for_task,
+        offer_keys_for_task,
+        offer_transport,
+        None,
+    ));
+    let answer_task = tokio::spawn(run_answer_daemon_with_transport(
+        answer_config,
+        answer_identity_for_task,
+        answer_keys_for_task,
+        answer_transport,
+    ));
+
+    let ssh_target_task = tokio::spawn(async move {
+        let (mut stream, _) = ssh_target.accept().await.expect("ssh target accept");
+        let mut request = [0_u8; 3];
+        stream.read_exact(&mut request).await.expect("ssh target read");
+        assert_eq!(&request, b"ssh");
+        stream.write_all(b"SSH").await.expect("ssh target write");
+        stream.shutdown().await.expect("ssh target shutdown");
+    });
+    let web_target_task = tokio::spawn(async move {
+        let (mut stream, _) = web_target.accept().await.expect("web target accept");
+        let mut request = [0_u8; 3];
+        stream.read_exact(&mut request).await.expect("web target read");
+        assert_eq!(&request, b"web");
+        stream.write_all(b"WEB").await.expect("web target write");
+        stream.shutdown().await.expect("web target shutdown");
+    });
+
+    let ssh_client_task = tokio::spawn(async move {
+        let mut client = connect_with_retry(ssh_offer_port).await;
+        client.write_all(b"ssh").await.expect("ssh client write");
+        let mut response = [0_u8; 3];
+        client.read_exact(&mut response).await.expect("ssh client read");
+        assert_eq!(&response, b"SSH");
+        client.shutdown().await.expect("ssh client shutdown");
+    });
+    let web_client_task = tokio::spawn(async move {
+        let mut client = connect_with_retry(web_offer_port).await;
+        client.write_all(b"web").await.expect("web client write");
+        let mut response = [0_u8; 3];
+        client.read_exact(&mut response).await.expect("web client read");
+        assert_eq!(&response, b"WEB");
+        client.shutdown().await.expect("web client shutdown");
+    });
+
+    timeout(Duration::from_secs(15), ssh_client_task)
+        .await
+        .expect("ssh client should finish")
+        .expect("ssh client should succeed");
+    timeout(Duration::from_secs(15), web_client_task)
+        .await
+        .expect("web client should finish")
+        .expect("web client should succeed");
+    timeout(Duration::from_secs(15), ssh_target_task)
+        .await
+        .expect("ssh target should finish")
+        .expect("ssh target should succeed");
+    timeout(Duration::from_secs(15), web_target_task)
+        .await
+        .expect("web target should finish")
+        .expect("web target should succeed");
+
+    let offer_status = wait_for_status(&offer_status_path, "waiting_for_local_client").await;
+    let forwards = offer_status["configured_forwards"].as_array().expect("configured forwards");
+    assert!(forwards.iter().any(|forward| forward == "ssh"));
+    assert!(forwards.iter().any(|forward| forward == "web-ui"));
+    let _ = wait_for_status(&answer_status_path, "idle").await;
+
+    offer_task.abort();
+    answer_task.abort();
+    let _ = offer_task.await;
+    let _ = answer_task.await;
+    let _ = tokio::fs::remove_file(offer_status_path).await;
+    let _ = tokio::fs::remove_file(answer_status_path).await;
+}
