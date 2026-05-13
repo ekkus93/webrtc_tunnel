@@ -55,7 +55,7 @@ At runtime:
 4. Both sides establish a reliable, ordered WebRTC data channel named `tunnel`.
 5. Tunnel frames carry many logical TCP streams with explicit `stream_id` values and `OPEN`, `DATA`, `CLOSE`, `ERROR`, `PING`, and `PONG` messages.
 
-Ordinary session failures tear down only the active session. The offer daemon then returns to waiting for the next local client, and the answer daemon returns to idle for the next valid offer.
+The WebRTC session is persistent across logical stream closures: after the last stream closes, the data channel remains available for future local clients. Ordinary WebRTC/session failures tear down the active session and return the daemons to waiting/recovery.
 
 ## Trust model
 
@@ -359,7 +359,7 @@ status_file = "~/.local/state/p2ptunnel/status.json"
 
 The examples above use `broker.emqx.io:8883`, a real public test broker listener with a normal X.509v3 certificate chain that works with the current Rust TLS stack when `broker.tls.ca_file` points at the system CA bundle. The `client_cert_file` and `client_key_file` settings are only for brokers that require mutual TLS client authentication: `client_cert_file` is the client certificate presented to the broker, and `client_key_file` is the matching private key for that certificate. If your broker does not require client certificates, leave both empty as shown above. If your broker does require them, set both together; v2 rejects configs where only one of the two is set. For brokers that require a password, `password_file` should point to a local text file containing only the broker password or token, typically as a single line. In v2, the supported broker auth modes are anonymous or certificate-only (`username = ""`, `password_file = ""`), username-only (`username` set, `password_file = ""`), or username plus password file (`username` set, `password_file` pointing at the password file). In v2, `connect_timeout_secs` must stay `5`, `session_expiry_secs` must stay `0`, TLS server name is derived from the broker URL host, and broker TLS verification cannot be disabled. If you use a public broker, choose a unique `topic_prefix` and treat it as test-only infrastructure.
 
-Each answer-side forward owns its target mapping. The offer side sends only the configured `forward_id` in the tunnel `OPEN` frame, never a target host or port. A successful answer-side `OPEN` acknowledges the stream with an empty `OPEN` payload; `unknown_forward`, `forbidden_forward`, and `target_connect_failed` are stream-level errors and do not require closing other streams.
+Each answer-side forward owns its target mapping. The offer side sends only the configured `forward_id` in the tunnel `OPEN` frame, never a target host or port. A successful answer-side `OPEN` acknowledges the stream with an empty `OPEN` payload; malformed `OPEN` requests, `unknown_forward`, `forbidden_forward`, and `target_connect_failed` are stream-level errors and do not require closing the session or other streams.
 
 `paths.state_dir` is the base directory for local runtime artifacts. In the examples above, it is the parent of the log file and status file under `~/.local/state/p2ptunnel`. The daemons create parent directories for `logging.log_file` and `health.status_file` when needed, so you do not usually need to create `~/.local/state/p2ptunnel` manually before running them. Creating it ahead of time with `mkdir -p ~/.local/state/p2ptunnel/log` is still a safe setup step if you want the paths to exist before the first run.
 

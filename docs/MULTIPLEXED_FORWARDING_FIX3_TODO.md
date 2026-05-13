@@ -46,10 +46,10 @@ Do not rewrite the multiplexed runtime unless required for these items.
 | 2.2 Audit zero-stream behavior | Complete | Removed offer runtime zero-stream exit while accepted-client channel is open. |
 | 2.3 Reuse session for future clients | Complete | Later accepted local clients can open new streams on the same data channel. |
 | 2.4 Persistent-session tests | Complete | Added zero-stream persistence, later client reuse, and stream ID non-reuse coverage. |
-| 3.1 Update multiplexing spec | Pending | Spec update remains. |
-| 3.2 Update README if needed | Pending | README audit remains. |
-| 3.3 Update runtime comments | Pending | Comment stale search remains. |
-| 3.4 Add doc guard tests | Pending | Doc guard extension remains. |
+| 3.1 Update multiplexing spec | Complete | Spec documents stream-local malformed `OPEN`, persistent sessions, and stream ID non-reuse. |
+| 3.2 Update README if needed | Complete | README runtime/protocol wording now describes persistent sessions and malformed `OPEN` stream-local errors. |
+| 3.3 Update runtime comments | Complete | Current runtime stale-search hits are historical/test guard text or valid stream-isolation wording. |
+| 3.4 Add doc guard tests | Complete | Extended the multiplex spec guard test for malformed `OPEN` and persistent-session wording. |
 | 4.1 Empty malformed `OPEN` test | Complete | Covered. |
 | 4.2 Invalid malformed `OPEN` test | Complete | Covered. |
 | 4.3 Missing `forward_id` test | Complete | Covered with `{}` payload. |
@@ -59,10 +59,10 @@ Do not rewrite the multiplexed runtime unless required for these items.
 | 5.2 Later client opens new stream | Complete | Covered. |
 | 5.3 Explicit session failure | Complete | Existing writer failure coverage remains valid. |
 | 5.4 Data-channel failure | Complete | Existing data-channel/session failure cleanup coverage remains valid. |
-| 6.1 Stale search | Pending | Final stale search remains. |
-| 6.2 Formatting/clippy/tests | Pending | Full phase validation remains. |
-| 6.3 Update TODO status/checklist | Pending | Final checklist remains. |
-| 7 Acceptance checklist | Pending | Will be marked after docs, stale search, validation, commit, and push. |
+| 6.1 Stale search | Complete | Remaining hits are historical review/TODO docs, compatibility notes, valid isolation wording, or guard-test strings. |
+| 6.2 Formatting/clippy/tests | Complete | Full workspace validation passed. |
+| 6.3 Update TODO status/checklist | Complete | Status table and checklist updated. |
+| 7 Acceptance checklist | Complete | All acceptance items are complete. |
 
 ---
 
@@ -509,34 +509,34 @@ Mark this TODO complete only when all items below are true.
 
 ## Malformed answer-side `OPEN`
 
-- [ ] Empty answer-side `OPEN` request payload is stream-local `protocol_error`.
-- [ ] Invalid answer-side `OPEN` request payload is stream-local `protocol_error`.
-- [ ] Malformed answer-side `OPEN` does not kill session.
-- [ ] Malformed answer-side `OPEN` does not register an active stream.
-- [ ] Stream B remains usable after malformed stream A.
-- [ ] Valid `OPEN` still works after malformed `OPEN`.
+- [x] Empty answer-side `OPEN` request payload is stream-local `protocol_error`.
+- [x] Invalid answer-side `OPEN` request payload is stream-local `protocol_error`.
+- [x] Malformed answer-side `OPEN` does not kill session.
+- [x] Malformed answer-side `OPEN` does not register an active stream.
+- [x] Stream B remains usable after malformed stream A.
+- [x] Valid `OPEN` still works after malformed `OPEN`.
 
 ## Persistent-session policy
 
-- [ ] Current docs explicitly state persistent-session policy.
-- [ ] Zero active streams does not automatically close the WebRTC session.
-- [ ] Future local client can open a new stream on the same session.
-- [ ] Stream IDs are not reused within the same session.
-- [ ] Explicit writer/data-channel/session failure still tears down the session.
+- [x] Current docs explicitly state persistent-session policy.
+- [x] Zero active streams does not automatically close the WebRTC session.
+- [x] Future local client can open a new stream on the same session.
+- [x] Stream IDs are not reused within the same session.
+- [x] Explicit writer/data-channel/session failure still tears down the session.
 
 ## Docs/comments
 
-- [ ] Current spec says success ACK is empty `OPEN(stream_id)` only.
-- [ ] Current spec documents stream-local malformed `OPEN` handling.
-- [ ] Current spec documents persistent session after all streams close.
-- [ ] No current docs imply one WebRTC session per TCP stream.
-- [ ] No current runtime comments claim single-stream behavior.
+- [x] Current spec says success ACK is empty `OPEN(stream_id)` only.
+- [x] Current spec documents stream-local malformed `OPEN` handling.
+- [x] Current spec documents persistent session after all streams close.
+- [x] No current docs imply one WebRTC session per TCP stream.
+- [x] No current runtime comments claim single-stream behavior.
 
 ## Verification
 
-- [ ] `cargo fmt --check` passes.
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
-- [ ] `cargo test --workspace` passes.
+- [x] `cargo fmt --check` passes.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
+- [x] `cargo test --workspace` passes.
 
 ---
 
