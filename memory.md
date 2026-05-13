@@ -412,3 +412,6 @@
 
 ## 2026-05-13T22:52:44Z - GPT-5.5 - Multiplexed forwarding fix3 decision frozen
 - Read `docs/replies8.md`; v2 persistent sessions must not exit on zero active streams, and `accepted_clients.recv() == None` is the explicit offer-runtime shutdown signal.
+
+## 2026-05-13T23:09:55Z - GPT-5.5 - Multiplexed forwarding fix3 completed
+- Implemented Fix 3: malformed answer-side OPEN is stream-local protocol_error, offer sessions persist across zero streams until accepted-client shutdown, docs/guards were updated, and Fix 3 TODO checklist was completed.

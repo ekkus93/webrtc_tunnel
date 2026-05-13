@@ -618,6 +618,8 @@ Rules:
 
 The offer side rejects any non-empty `OPEN` ACK payload as `protocol_error`.
 
+Malformed answer-side `OPEN` request payloads are stream-local protocol errors. The answer side sends `ERROR(stream_id, protocol_error)` when possible, does not register or open that stream, and keeps the WebRTC session and other streams alive.
+
 ### 6.6 `DATA`
 
 `DATA(stream_id, bytes)` carries raw TCP bytes for that logical stream.
@@ -706,7 +708,7 @@ Offer side responsibilities:
 2. Create one reliable ordered data channel as before.
 3. Start one local TCP listener per configured forward.
 4. For each accepted local TCP connection:
-   - allocate a new `stream_id`,
+   - allocate a new monotonically increasing `stream_id` that is not reused within the same session,
    - create stream state,
    - send `OPEN(stream_id, { forward_id })`,
    - wait for stream-level `OPEN` ACK or `ERROR`,
@@ -726,6 +728,7 @@ Answer side responsibilities:
    - forward ID is unknown,
    - sender peer is not allowed for that forward,
    - payload is malformed.
+   Malformed payload rejection is stream-local: send `ERROR(stream_id, protocol_error)` when possible and keep the session alive.
 4. If accepted:
    - connect to locally configured `target_host:target_port`,
    - send `OPEN(stream_id)` ACK,
@@ -860,7 +863,15 @@ Stream failure is isolated.
 
 A single stream failure must not cause renegotiation.
 
-### 9.3 Reconnect after full session failure
+### 9.3 Persistent session after streams close
+
+The v2 multiplexed session is persistent. After the last logical stream closes, the WebRTC peer connection and data channel remain open so future accepted local clients can open new logical streams over the same existing session.
+
+Zero active streams alone must not close the session. The offer runtime exits only when the local accepted-client channel closes, the data channel/WebRTC session fails or closes, the central writer fails, daemon shutdown occurs, or a fatal protocol/session error occurs.
+
+Stream IDs are monotonically allocated within a session and are not reused after earlier streams close.
+
+### 9.4 Reconnect after full session failure
 
 After session failure, the existing daemon reconnect behavior applies.
 

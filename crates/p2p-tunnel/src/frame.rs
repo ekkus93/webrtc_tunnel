@@ -269,8 +269,15 @@ mod tests {
             .join("../../docs/MULTIPLEXED_FORWARDING_SPEC.md");
         let spec = std::fs::read_to_string(spec_path).expect("multiplex spec should be readable");
         assert!(spec.contains("answer sends exactly `OPEN(stream_id)` with an empty payload"));
+        assert!(spec.contains(
+            "Malformed answer-side `OPEN` request payloads are stream-local protocol errors"
+        ));
+        assert!(spec.contains("The v2 multiplexed session is persistent"));
+        assert!(spec.contains("Zero active streams alone must not close the session"));
         assert!(!spec.contains("OPEN(stream_id, { \"ok\": true })"));
         assert!(!spec.contains("OPEN(stream_id, empty_payload)` or"));
+        assert!(!spec.contains("one WebRTC session per TCP stream"));
+        assert!(!spec.contains("close when no streams"));
     }
 
     #[test]
