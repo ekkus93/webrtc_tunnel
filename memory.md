@@ -400,3 +400,6 @@
 
 ## 2026-05-13T22:14:12Z - GPT-5.5 - Multiplexed forwarding fix2 review triaged
 - Read `docs/MULTIPLEXED_FORWARDING_CODE_REVIEW2.md` and `docs/MULTIPLEXED_FORWARDING_FIX2_TODO.md`; the review aligns with current gaps in local EOF cleanup, TCP write failure reporting, closed per-stream write queue handling, stale OPEN ACK spec wording, and focused stream-local isolation tests.
+
+## 2026-05-13T22:23:39Z - GPT-5.5 - Multiplexed forwarding fix2 completed
+- Implemented stream-local EOF/write-failure/closed-queue cleanup, added lifecycle/failure-isolation tests and an OPEN ACK spec guard, updated stale docs, completed `docs/MULTIPLEXED_FORWARDING_FIX2_TODO.md`, and pushed phase commits.

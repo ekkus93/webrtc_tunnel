@@ -39,10 +39,10 @@ Finish the remaining stream lifecycle and failure-isolation work in the v2 multi
 | 6.4 Late frame tests | Complete | Covered late `DATA`, duplicate `CLOSE`, duplicate `ERROR`, and post-cleanup remote frames. |
 | 6.5 Stream failure isolation test | Complete | Covered stream A failure while stream B remains usable. |
 | 6.6 Session failure test | Complete | Existing central writer/session cleanup coverage remains in place and cleanup coverage was strengthened. |
-| 7.1 Run repository searches | Pending | Final stale search still needed. |
-| 7.2 Remove stale current comments | Pending | Pending final search. |
-| 7.3 Clean unused code/imports | Pending | Pending final lint/search. |
-| 8 Acceptance checklist | Pending | Will be marked after docs, stale search, validation, commit, and push. |
+| 7.1 Run repository searches | Complete | Searched for old stream constants, single-stream wording, non-empty ACKs, `remote_io_error`, and `TunnelBridge`. |
+| 7.2 Remove stale current comments | Complete | Current spec wording was updated; remaining hits are historical review/TODO material or intentional compatibility/history notes. |
+| 7.3 Clean unused code/imports | Complete | Final validation covers dead code/import cleanup. |
+| 8 Acceptance checklist | Complete | All acceptance items are complete. |
 
 This is **not** a redesign. The multiplexed architecture remains:
 
@@ -516,42 +516,42 @@ Mark this TODO complete only when all items below are true.
 
 ## Stream close semantics
 
-- [ ] Local TCP EOF sends `CLOSE(stream_id)`.
-- [ ] Local TCP EOF removes local stream state.
-- [ ] Local cleanup does not require remote `CLOSE` echo.
-- [ ] Duplicate/later remote `CLOSE` is harmless.
-- [ ] Closing stream A does not close stream B.
+- [x] Local TCP EOF sends `CLOSE(stream_id)`.
+- [x] Local TCP EOF removes local stream state.
+- [x] Local cleanup does not require remote `CLOSE` echo.
+- [x] Duplicate/later remote `CLOSE` is harmless.
+- [x] Closing stream A does not close stream B.
 
 ## TCP write failure
 
-- [ ] TCP write failure is observable by the runtime.
-- [ ] TCP write failure closes/removes only that stream.
-- [ ] TCP write failure optionally sends `ERROR(local_io_error)`.
-- [ ] TCP write failure does not kill the session.
-- [ ] Other streams continue after one stream's write failure.
+- [x] TCP write failure is observable by the runtime.
+- [x] TCP write failure closes/removes only that stream.
+- [x] TCP write failure optionally sends `ERROR(local_io_error)`.
+- [x] TCP write failure does not kill the session.
+- [x] Other streams continue after one stream's write failure.
 
 ## Closed queue / late frame handling
 
-- [ ] `DATA` for unknown stream is harmless.
-- [ ] `DATA` for closed stream is harmless.
-- [ ] `DATA` for stream with closed write queue is stream-local.
-- [ ] `TrySendError::Closed` does not bubble out as session-level failure.
-- [ ] Duplicate `CLOSE` and duplicate `ERROR` are harmless.
+- [x] `DATA` for unknown stream is harmless.
+- [x] `DATA` for closed stream is harmless.
+- [x] `DATA` for stream with closed write queue is stream-local.
+- [x] `TrySendError::Closed` does not bubble out as session-level failure.
+- [x] Duplicate `CLOSE` and duplicate `ERROR` are harmless.
 
 ## Docs/protocol
 
-- [ ] Current spec says only empty `OPEN(stream_id)` ACK is valid.
-- [ ] No current docs allow `{ "ok": true }` ACK.
-- [ ] Request `OPEN` still carries only `forward_id`.
-- [ ] Failure still uses stream-level `ERROR`.
+- [x] Current spec says only empty `OPEN(stream_id)` ACK is valid.
+- [x] No current docs allow `{ "ok": true }` ACK.
+- [x] Request `OPEN` still carries only `forward_id`.
+- [x] Failure still uses stream-level `ERROR`.
 
 ## Tests
 
-- [ ] Local EOF cleanup tested.
-- [ ] TCP write failure isolation tested.
-- [ ] Closed queue DATA behavior tested.
-- [ ] Stream A failure does not affect stream B.
-- [ ] Session-level failures still clean all streams.
+- [x] Local EOF cleanup tested.
+- [x] TCP write failure isolation tested.
+- [x] Closed queue DATA behavior tested.
+- [x] Stream A failure does not affect stream B.
+- [x] Session-level failures still clean all streams.
 
 ---
 

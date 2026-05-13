@@ -4,9 +4,9 @@
 
 ## 1. Purpose
 
-This document specifies the next major tunnel upgrade for the Rust WebRTC/MQTT port-forwarding application.
+This document specifies the implemented multiplexed tunnel upgrade for the Rust WebRTC/MQTT port-forwarding application.
 
-The current implementation is effectively a single TCP stream / single configured forward model. That works reasonably for SSH, but it is too limited for general-purpose forwarding. The new design must support:
+The original v1 implementation was effectively a single TCP stream / single configured forward model. That worked reasonably for SSH, but it was too limited for general-purpose forwarding. The v2 design supports:
 
 - multiple configured local forwards,
 - one local listener per configured forward on the offer/client side,
