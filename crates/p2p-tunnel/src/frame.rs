@@ -40,6 +40,9 @@ impl TunnelFrame {
     }
 
     pub fn open(stream_id: u32, payload: OpenPayload) -> Result<Self, TunnelError> {
+        if payload.forward_id.is_empty() {
+            return Err(TunnelError::InvalidFrame("OPEN forward_id must not be empty".to_owned()));
+        }
         Ok(Self::new(TunnelFrameType::Open, stream_id, encode_json_payload(&payload)?))
     }
 
@@ -155,22 +158,11 @@ fn validate_frame(frame: &TunnelFrame) -> Result<(), TunnelError> {
         }
     }
 
-    match frame.frame_type {
-        TunnelFrameType::Open if !frame.payload.is_empty() => {
-            let payload = frame.open_payload()?;
-            if payload.forward_id.is_empty() {
-                return Err(TunnelError::InvalidFrame(
-                    "OPEN forward_id must not be empty".to_owned(),
-                ));
-            }
+    if frame.frame_type == TunnelFrameType::Error {
+        let payload = frame.error_payload()?;
+        if payload.code.is_empty() {
+            return Err(TunnelError::InvalidFrame("ERROR code must not be empty".to_owned()));
         }
-        TunnelFrameType::Error => {
-            let payload = frame.error_payload()?;
-            if payload.code.is_empty() {
-                return Err(TunnelError::InvalidFrame("ERROR code must not be empty".to_owned()));
-            }
-        }
-        _ => {}
     }
 
     Ok(())
@@ -283,8 +275,18 @@ mod tests {
 
     #[test]
     fn malformed_open_rejected() {
+        assert!(matches!(
+            TunnelFrame::open(1, OpenPayload { forward_id: String::new() }),
+            Err(TunnelError::InvalidFrame(_))
+        ));
+    }
+
+    #[test]
+    fn codec_leaves_open_payload_validation_to_role_handlers() {
         let frame = TunnelFrame::new(TunnelFrameType::Open, 1, b"{".to_vec());
-        assert!(matches!(TunnelFrameCodec::encode(&frame), Err(TunnelError::InvalidFrame(_))));
+        let encoded = TunnelFrameCodec::encode(&frame).expect("frame-level encoding should pass");
+        let decoded = TunnelFrameCodec::decode(&encoded).expect("frame-level decode should pass");
+        assert!(matches!(decoded.open_payload(), Err(TunnelError::InvalidFrame(_))));
     }
 
     #[test]

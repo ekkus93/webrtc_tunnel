@@ -143,10 +143,15 @@ pub async fn run_multiplex_offer(
     )
     .await?;
 
+    let mut accepting_clients = true;
     let result = loop {
         tokio::select! {
-            client = accepted_clients.recv() => {
+            client = accepted_clients.recv(), if accepting_clients => {
                 let Some(client) = client else {
+                    accepting_clients = false;
+                    if manager.active_count() == 0 && opening_streams.is_empty() && streams.is_empty() {
+                        break Ok(());
+                    }
                     continue;
                 };
                 let client = client?;
@@ -170,6 +175,9 @@ pub async fn run_multiplex_offer(
                     continue;
                 };
                 handle_stream_runtime_event(stream_event, &frame_tx, &mut manager, &mut streams).await?;
+                if !accepting_clients && manager.active_count() == 0 && opening_streams.is_empty() && streams.is_empty() {
+                    break Ok(());
+                }
             }
             writer_error = writer_failure_rx.recv() => {
                 let Some(writer_error) = writer_error else {
@@ -191,7 +199,7 @@ pub async fn run_multiplex_offer(
                             &mut streams,
                             &stream_event_tx,
                         ).await?;
-                        if manager.active_count() == 0 && opening_streams.is_empty() && streams.is_empty() {
+                        if !accepting_clients && manager.active_count() == 0 && opening_streams.is_empty() && streams.is_empty() {
                             break Ok(());
                         }
                     }
@@ -417,7 +425,24 @@ async fn handle_answer_frame(
                 .await?;
                 return Ok(());
             }
-            let open = frame.open_payload()?;
+            let open = match frame.open_payload() {
+                Ok(open) => open,
+                Err(error) => {
+                    tracing::debug!(
+                        stream_id = frame.stream_id,
+                        %error,
+                        "rejecting malformed OPEN payload"
+                    );
+                    send_stream_error(
+                        frame_tx,
+                        frame.stream_id,
+                        "protocol_error",
+                        "malformed OPEN payload",
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
             let target = match forward_table.target_for(&open.forward_id, remote_peer_id) {
                 Ok(target) => target,
                 Err(ForwardLookupError::UnknownForward) => {
@@ -825,8 +850,8 @@ mod tests {
     use super::{
         RuntimeStream, StreamIdAllocator, StreamLifecycle, StreamManager, StreamRuntimeEvent,
         StreamState, TcpWriteCommand, cleanup_all_streams, close_stream, handle_answer_frame,
-        handle_offer_frame, handle_stream_runtime_event, run_multiplex_answer, run_multiplex_offer,
-        spawn_tcp_bridge, spawn_writer_only,
+        handle_offer_frame, handle_stream_runtime_event, register_offer_client,
+        run_multiplex_answer, run_multiplex_offer, spawn_tcp_bridge, spawn_writer_only,
     };
     use crate::{ErrorPayload, OfferClient, OpenPayload, TunnelError, TunnelFrame};
 
@@ -1053,7 +1078,8 @@ mod tests {
         });
         let offer_tunnel = sample_tunnel_config();
         let offer_task = tokio::spawn(async move {
-            let (_tx, mut rx) = mpsc::channel(1);
+            let (tx, mut rx) = mpsc::channel(1);
+            drop(tx);
             run_multiplex_offer(
                 offer_channel,
                 &offer_tunnel,
@@ -1108,7 +1134,8 @@ mod tests {
         });
         let offer_tunnel = sample_tunnel_config();
         let offer_result = timeout(Duration::from_secs(10), async move {
-            let (_tx, mut rx) = mpsc::channel(1);
+            let (tx, mut rx) = mpsc::channel(1);
+            drop(tx);
             run_multiplex_offer(
                 offer_channel,
                 &offer_tunnel,
@@ -1329,6 +1356,147 @@ mod tests {
         offer_peer.close().await.expect("offer peer should close");
         answer_peer.close().await.expect("answer peer should close");
         answer_task.abort();
+    }
+
+    #[tokio::test]
+    async fn persistent_offer_session_reuses_data_channel_after_zero_streams() {
+        let (offer_peer, answer_peer, offer_channel, answer_channel) = connected_channels().await;
+
+        let target_listener =
+            TcpListener::bind(("127.0.0.1", 0)).await.expect("target listener should bind");
+        let table = forward_table(target_listener.local_addr().expect("target local addr").port());
+        let target_task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut target_stream, _) = target_listener.accept().await.expect("target accept");
+                tokio::spawn(async move {
+                    let mut received = [0_u8; 4];
+                    target_stream.read_exact(&mut received).await.expect("target read");
+                    target_stream.write_all(&received).await.expect("target write");
+                    target_stream.shutdown().await.expect("target shutdown");
+                });
+            }
+        });
+
+        let local_listener =
+            TcpListener::bind(("127.0.0.1", 0)).await.expect("local listener should bind");
+        let local_addr = local_listener.local_addr().expect("local addr");
+        let first_client = tokio::spawn(async move {
+            let mut client = TcpStream::connect(local_addr).await.expect("first client connect");
+            client.write_all(b"one!").await.expect("first client write");
+            let mut response = [0_u8; 4];
+            client.read_exact(&mut response).await.expect("first client read");
+            assert_eq!(&response, b"one!");
+            client.shutdown().await.expect("first client shutdown");
+        });
+        let (first_stream, _) = local_listener.accept().await.expect("first accept");
+
+        let answer_tunnel = sample_tunnel_config();
+        let answer_task = tokio::spawn(async move {
+            run_multiplex_answer(
+                answer_channel,
+                &answer_tunnel,
+                table,
+                "offer-home".parse().expect("peer id"),
+            )
+            .await
+        });
+        let (tx, mut rx) = mpsc::channel(4);
+        let offer_tunnel = sample_tunnel_config();
+        let mut offer_task = tokio::spawn(async move {
+            run_multiplex_offer(
+                offer_channel,
+                &offer_tunnel,
+                OfferClient::new("ssh", first_stream),
+                &mut rx,
+            )
+            .await
+        });
+
+        timeout(Duration::from_secs(10), first_client)
+            .await
+            .expect("first client should finish")
+            .expect("first client task should succeed");
+        assert!(
+            timeout(Duration::from_millis(100), &mut offer_task).await.is_err(),
+            "offer runtime must stay alive with zero active streams while accepting clients"
+        );
+
+        let second_client = tokio::spawn(async move {
+            let mut client = TcpStream::connect(local_addr).await.expect("second client connect");
+            client.write_all(b"two!").await.expect("second client write");
+            let mut response = [0_u8; 4];
+            client.read_exact(&mut response).await.expect("second client read");
+            assert_eq!(&response, b"two!");
+            client.shutdown().await.expect("second client shutdown");
+        });
+        let (second_stream, _) = local_listener.accept().await.expect("second accept");
+        tx.send(Ok(OfferClient::new("ssh", second_stream))).await.expect("queue second client");
+
+        timeout(Duration::from_secs(10), second_client)
+            .await
+            .expect("second client should finish")
+            .expect("second client task should succeed");
+        timeout(Duration::from_secs(10), target_task)
+            .await
+            .expect("target task should finish")
+            .expect("target task should succeed");
+        drop(tx);
+        timeout(Duration::from_secs(10), offer_task)
+            .await
+            .expect("offer mux should finish after accept shutdown")
+            .expect("offer mux join should succeed")
+            .expect("offer mux should succeed");
+
+        offer_peer.close().await.expect("offer peer should close");
+        answer_peer.close().await.expect("answer peer should close");
+        answer_task.abort();
+    }
+
+    #[tokio::test]
+    async fn offer_register_after_zero_streams_does_not_reuse_stream_id() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        let local_addr = listener.local_addr().expect("local addr");
+        let first_client = TcpStream::connect(local_addr).await.expect("first client connect");
+        let (first_stream, _) = listener.accept().await.expect("first accept");
+        let second_client = TcpStream::connect(local_addr).await.expect("second client connect");
+        let (second_stream, _) = listener.accept().await.expect("second accept");
+        let mut manager = StreamManager::new();
+        let mut opening_streams = HashMap::new();
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+
+        register_offer_client(
+            OfferClient::new("ssh", first_stream),
+            &sample_tunnel_config(),
+            &frame_tx,
+            &tcp_frame_tx,
+            &mut manager,
+            &mut opening_streams,
+        )
+        .await
+        .expect("first client should register");
+        let first_open = frame_rx.recv().await.expect("first OPEN");
+        assert_eq!(first_open.stream_id, 1);
+        manager.remove(1);
+        opening_streams.remove(&1);
+
+        register_offer_client(
+            OfferClient::new("ssh", second_stream),
+            &sample_tunnel_config(),
+            &frame_tx,
+            &tcp_frame_tx,
+            &mut manager,
+            &mut opening_streams,
+        )
+        .await
+        .expect("second client should register");
+        let second_open = frame_rx.recv().await.expect("second OPEN");
+        assert_eq!(second_open.stream_id, 2);
+        assert!(manager.get(1).is_err());
+        assert!(manager.get(2).is_ok());
+
+        drop(first_client);
+        drop(second_client);
     }
 
     #[tokio::test]
@@ -1729,6 +1897,105 @@ mod tests {
         assert_eq!(manager.get(7).expect("stream").lifecycle, StreamLifecycle::Opening);
         assert!(streams.contains_key(&7));
         close_stream(7, &mut manager, &mut streams).await.expect("abort pending connect");
+    }
+
+    #[tokio::test]
+    async fn malformed_answer_open_payload_is_stream_local_protocol_error() {
+        for payload in
+            [Vec::new(), b"{".to_vec(), b"{}".to_vec(), br#"{"target_port":22}"#.to_vec()]
+        {
+            let table = forward_table_with_target("10.255.255.1", 65_000);
+            let mut manager = StreamManager::new();
+            let mut streams = HashMap::new();
+            let (frame_tx, mut frame_rx) = mpsc::channel(4);
+            let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+            let (target_connect_tx, mut target_connect_rx) = mpsc::channel(4);
+
+            handle_answer_frame(
+                TunnelFrame::new(TunnelFrameType::Open, 7, payload),
+                &sample_tunnel_config(),
+                &table,
+                &"offer-home".parse().expect("peer id"),
+                &frame_tx,
+                &tcp_frame_tx,
+                &target_connect_tx,
+                &mut manager,
+                &mut streams,
+            )
+            .await
+            .expect("malformed OPEN should be stream-local");
+
+            let error = frame_rx.recv().await.expect("protocol error frame");
+            assert_eq!(error.stream_id, 7);
+            assert_eq!(error.error_payload().expect("error payload").code, "protocol_error");
+            assert!(manager.get(7).is_err());
+            assert!(streams.is_empty());
+            assert!(target_connect_rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_answer_open_preserves_existing_stream_and_later_valid_open() {
+        let table = forward_table_with_target("10.255.255.1", 65_000);
+        let mut manager = StreamManager::new();
+        manager.register(stream(2, "ssh")).expect("stream 2");
+        manager.get_mut(2).expect("stream 2").lifecycle = StreamLifecycle::Open;
+        let (stream_b_tx, mut stream_b_rx) = mpsc::channel(1);
+        let mut streams = HashMap::from([(2_u32, RuntimeStream::open(stream_b_tx, Vec::new()))]);
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (target_connect_tx, _target_connect_rx) = mpsc::channel(4);
+
+        handle_answer_frame(
+            TunnelFrame::new(TunnelFrameType::Open, 1, b"{".to_vec()),
+            &sample_tunnel_config(),
+            &table,
+            &"offer-home".parse().expect("peer id"),
+            &frame_tx,
+            &tcp_frame_tx,
+            &target_connect_tx,
+            &mut manager,
+            &mut streams,
+        )
+        .await
+        .expect("malformed OPEN should be handled");
+        let error = frame_rx.recv().await.expect("protocol error frame");
+        assert_eq!(error.stream_id, 1);
+        assert_eq!(error.error_payload().expect("error payload").code, "protocol_error");
+
+        handle_answer_frame(
+            TunnelFrame::data(2, b"still-open".to_vec()),
+            &sample_tunnel_config(),
+            &table,
+            &"offer-home".parse().expect("peer id"),
+            &frame_tx,
+            &tcp_frame_tx,
+            &target_connect_tx,
+            &mut manager,
+            &mut streams,
+        )
+        .await
+        .expect("stream B should remain usable");
+        assert!(
+            matches!(stream_b_rx.recv().await, Some(TcpWriteCommand::Data(payload)) if payload == b"still-open")
+        );
+
+        handle_answer_frame(
+            TunnelFrame::open(3, OpenPayload { forward_id: "ssh".to_owned() }).expect("open frame"),
+            &sample_tunnel_config(),
+            &table,
+            &"offer-home".parse().expect("peer id"),
+            &frame_tx,
+            &tcp_frame_tx,
+            &target_connect_tx,
+            &mut manager,
+            &mut streams,
+        )
+        .await
+        .expect("valid OPEN should still work");
+        assert_eq!(manager.get(3).expect("stream 3").lifecycle, StreamLifecycle::Opening);
+        assert!(streams.contains_key(&3));
+        close_stream(3, &mut manager, &mut streams).await.expect("abort pending connect");
     }
 
     #[tokio::test]

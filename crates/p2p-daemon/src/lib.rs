@@ -2968,7 +2968,8 @@ mod tests {
         let (offer_stream, _) = local_listener.accept().await.expect("offer accept");
 
         let offer_task = tokio::spawn(async move {
-            let (_tx, mut rx) = mpsc::channel(1);
+            let (tx, mut rx) = mpsc::channel(1);
+            drop(tx);
             p2p_tunnel::run_multiplex_offer(
                 offer_channel,
                 &config.tunnel,

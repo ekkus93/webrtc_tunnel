@@ -403,3 +403,12 @@
 
 ## 2026-05-13T22:23:39Z - GPT-5.5 - Multiplexed forwarding fix2 completed
 - Implemented stream-local EOF/write-failure/closed-queue cleanup, added lifecycle/failure-isolation tests and an OPEN ACK spec guard, updated stale docs, completed `docs/MULTIPLEXED_FORWARDING_FIX2_TODO.md`, and pushed phase commits.
+
+## 2026-05-13T22:48:56Z - GPT-5.5 - Multiplexed forwarding fix3 review triaged
+- Read `docs/MULTIPLEXED_FORWARDING_CODE_REVIEW3.md` and `docs/MULTIPLEXED_FORWARDING_FIX3_TODO.md`; the real gaps are malformed answer-side OPEN bubbling as session error and offer-side zero-stream exit behavior conflicting with persistent-session policy.
+
+## 2026-05-13T22:50:00Z - GPT-5.5 - Multiplexed forwarding fix3 question written
+- Wrote `docs/responses8.md` asking whether a closed `accepted_clients` channel should be treated as explicit offer-runtime shutdown once zero-active-stream exit is removed for persistent sessions.
+
+## 2026-05-13T22:52:44Z - GPT-5.5 - Multiplexed forwarding fix3 decision frozen
+- Read `docs/replies8.md`; v2 persistent sessions must not exit on zero active streams, and `accepted_clients.recv() == None` is the explicit offer-runtime shutdown signal.
