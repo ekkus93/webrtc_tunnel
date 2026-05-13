@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,10 +20,12 @@ pub enum NodeRole {
 pub struct AppConfig {
     pub format: String,
     pub node: NodeConfig,
+    pub peer: Option<PeerConfig>,
     pub paths: PathConfig,
     pub broker: BrokerConfig,
     pub webrtc: WebRtcConfig,
     pub tunnel: TunnelConfig,
+    pub forwards: Vec<ForwardRule>,
     pub reconnect: ReconnectConfig,
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
@@ -55,7 +58,7 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.format != "p2ptunnel-config-v1" {
+        if self.format != "p2ptunnel-config-v2" {
             return Err(ConfigError::InvalidConfig(format!(
                 "unsupported config format '{}'",
                 self.format
@@ -64,7 +67,7 @@ impl AppConfig {
 
         if !self.security.require_mqtt_tls {
             return Err(ConfigError::InvalidConfig(
-                "security.require_mqtt_tls must remain enabled in v1".to_owned(),
+                "security.require_mqtt_tls must remain enabled in v2".to_owned(),
             ));
         }
         if !self.broker.url.starts_with("mqtts://") {
@@ -74,12 +77,12 @@ impl AppConfig {
         }
         if !self.security.require_message_encryption {
             return Err(ConfigError::InvalidConfig(
-                "security.require_message_encryption must remain enabled in v1".to_owned(),
+                "security.require_message_encryption must remain enabled in v2".to_owned(),
             ));
         }
         if !self.security.require_message_signatures {
             return Err(ConfigError::InvalidConfig(
-                "security.require_message_signatures must remain enabled in v1".to_owned(),
+                "security.require_message_signatures must remain enabled in v2".to_owned(),
             ));
         }
         if self.security.replay_cache_size == 0 {
@@ -89,39 +92,39 @@ impl AppConfig {
         }
         if !self.security.require_authorized_keys {
             return Err(ConfigError::InvalidConfig(
-                "security.require_authorized_keys must remain enabled in v1".to_owned(),
+                "security.require_authorized_keys must remain enabled in v2".to_owned(),
             ));
         }
         if !self.security.reject_unknown_config_keys {
             return Err(ConfigError::InvalidConfig(
-                "security.reject_unknown_config_keys must remain enabled in v1".to_owned(),
+                "security.reject_unknown_config_keys must remain enabled in v2".to_owned(),
             ));
         }
         if !self.security.refuse_world_readable_identity {
             return Err(ConfigError::InvalidConfig(
-                "security.refuse_world_readable_identity must remain enabled in v1".to_owned(),
+                "security.refuse_world_readable_identity must remain enabled in v2".to_owned(),
             ));
         }
         if !self.security.refuse_world_writable_paths {
             return Err(ConfigError::InvalidConfig(
-                "security.refuse_world_writable_paths must remain enabled in v1".to_owned(),
+                "security.refuse_world_writable_paths must remain enabled in v2".to_owned(),
             ));
         }
         if self.broker.connect_timeout_secs != 5 {
             return Err(ConfigError::InvalidConfig(
-                "broker.connect_timeout_secs must remain 5 in v1 because the current MQTT transport does not expose a configurable connect timeout"
+                "broker.connect_timeout_secs must remain 5 in v2 because the current MQTT transport does not expose a configurable connect timeout"
                     .to_owned(),
             ));
         }
         if self.broker.session_expiry_secs != 0 {
             return Err(ConfigError::InvalidConfig(
-                "broker.session_expiry_secs must remain 0 in v1 because the current signaling transport uses MQTT v4 semantics"
+                "broker.session_expiry_secs must remain 0 in v2 because the current signaling transport uses MQTT v4 semantics"
                     .to_owned(),
             ));
         }
         if self.broker.username.is_empty() && !self.broker.password_file.as_os_str().is_empty() {
             return Err(ConfigError::InvalidConfig(
-                "broker.password_file requires broker.username in v1".to_owned(),
+                "broker.password_file requires broker.username in v2".to_owned(),
             ));
         }
         if self.broker.url.starts_with("mqtts://") {
@@ -132,7 +135,7 @@ impl AppConfig {
             }
             if self.broker.tls.insecure_skip_verify {
                 return Err(ConfigError::InvalidConfig(
-                    "broker.tls.insecure_skip_verify is unsupported in v1".to_owned(),
+                    "broker.tls.insecure_skip_verify is unsupported in v2".to_owned(),
                 ));
             }
             let client_cert_set = !self.broker.tls.client_cert_file.as_os_str().is_empty();
@@ -152,22 +155,22 @@ impl AppConfig {
         }
         if self.logging.log_rotation != "none" {
             return Err(ConfigError::InvalidConfig(
-                "logging.log_rotation is unsupported in v1; use 'none'".to_owned(),
+                "logging.log_rotation is unsupported in v2; use 'none'".to_owned(),
             ));
         }
         if !self.health.status_socket.as_os_str().is_empty() {
             return Err(ConfigError::InvalidConfig(
-                "health.status_socket is unsupported in v1".to_owned(),
+                "health.status_socket is unsupported in v2".to_owned(),
             ));
         }
         if self.reconnect.hold_local_client_during_reconnect {
             return Err(ConfigError::InvalidConfig(
-                "reconnect.hold_local_client_during_reconnect is unsupported in v1".to_owned(),
+                "reconnect.hold_local_client_during_reconnect is unsupported in v2".to_owned(),
             ));
         }
         if self.reconnect.local_client_hold_secs != 0 {
             return Err(ConfigError::InvalidConfig(
-                "reconnect.local_client_hold_secs is unsupported in v1".to_owned(),
+                "reconnect.local_client_hold_secs is unsupported in v2".to_owned(),
             ));
         }
         validate_required_file(&self.paths.identity, "identity")?;
@@ -211,41 +214,97 @@ impl AppConfig {
             )?;
         }
 
-        match self.node.role {
-            NodeRole::Offer => {
-                if self.tunnel.offer.remote_peer_id.as_str().is_empty() {
-                    return Err(ConfigError::InvalidConfig(
-                        "tunnel.offer.remote_peer_id must be set for offer role".to_owned(),
-                    ));
-                }
-                if self.tunnel.offer.listen_port == 0 {
-                    return Err(ConfigError::InvalidConfig(
-                        "tunnel.offer.listen_port must be non-zero".to_owned(),
-                    ));
-                }
+        self.validate_forwards()?;
+
+        Ok(())
+    }
+
+    fn validate_forwards(&self) -> Result<(), ConfigError> {
+        if self.forwards.is_empty() {
+            return Err(ConfigError::InvalidConfig(
+                "at least one [[forwards]] rule is required".to_owned(),
+            ));
+        }
+
+        let mut ids = HashSet::new();
+        let mut offer_binds = HashSet::new();
+        for forward in &self.forwards {
+            validate_forward_id(&forward.id)?;
+            if !ids.insert(forward.id.clone()) {
+                return Err(ConfigError::InvalidConfig(format!(
+                    "duplicate forward id '{}'",
+                    forward.id
+                )));
             }
-            NodeRole::Answer => {
-                if self.tunnel.answer.target_host.is_empty() {
-                    return Err(ConfigError::InvalidConfig(
-                        "tunnel.answer.target_host must be set for answer role".to_owned(),
-                    ));
+
+            match self.node.role {
+                NodeRole::Offer => {
+                    let Some(offer) = &forward.offer else {
+                        return Err(ConfigError::InvalidConfig(format!(
+                            "forward '{}' requires [forwards.offer] for offer role",
+                            forward.id
+                        )));
+                    };
+                    validate_listen_host(&offer.listen_host, &forward.id)?;
+                    if offer.listen_port == 0 {
+                        return Err(ConfigError::InvalidConfig(format!(
+                            "forward '{}' listen_port must be non-zero",
+                            forward.id
+                        )));
+                    }
+                    if !offer_binds.insert((offer.listen_host.clone(), offer.listen_port)) {
+                        return Err(ConfigError::InvalidConfig(format!(
+                            "duplicate offer listen socket '{}:{}'",
+                            offer.listen_host, offer.listen_port
+                        )));
+                    }
                 }
-                if self.tunnel.answer.target_port == 0 {
-                    return Err(ConfigError::InvalidConfig(
-                        "tunnel.answer.target_port must be non-zero".to_owned(),
-                    ));
-                }
-                if self.tunnel.answer.allow_remote_peers.is_empty() {
-                    return Err(ConfigError::InvalidConfig(
-                        "tunnel.answer.allow_remote_peers must not be empty for answer role"
-                            .to_owned(),
-                    ));
+                NodeRole::Answer => {
+                    let Some(answer) = &forward.answer else {
+                        return Err(ConfigError::InvalidConfig(format!(
+                            "forward '{}' requires [forwards.answer] for answer role",
+                            forward.id
+                        )));
+                    };
+                    if answer.target_host.is_empty() {
+                        return Err(ConfigError::InvalidConfig(format!(
+                            "forward '{}' target_host must be set",
+                            forward.id
+                        )));
+                    }
+                    if answer.target_port == 0 {
+                        return Err(ConfigError::InvalidConfig(format!(
+                            "forward '{}' target_port must be non-zero",
+                            forward.id
+                        )));
+                    }
+                    if answer.allow_remote_peers.is_empty() {
+                        return Err(ConfigError::InvalidConfig(format!(
+                            "forward '{}' allow_remote_peers must not be empty",
+                            forward.id
+                        )));
+                    }
+                    if answer.allow_remote_peers.iter().any(|peer| peer.as_str() == "*") {
+                        return Err(ConfigError::InvalidConfig(format!(
+                            "forward '{}' allow_remote_peers must use explicit peer IDs",
+                            forward.id
+                        )));
+                    }
                 }
             }
         }
 
-        if self.tunnel.stream_id != 1 {
-            return Err(ConfigError::InvalidConfig("v1 only supports stream_id = 1".to_owned()));
+        if matches!(self.node.role, NodeRole::Offer) {
+            let Some(peer) = &self.peer else {
+                return Err(ConfigError::InvalidConfig(
+                    "[peer].remote_peer_id must be set for offer role".to_owned(),
+                ));
+            };
+            if peer.remote_peer_id.as_str().is_empty() {
+                return Err(ConfigError::InvalidConfig(
+                    "[peer].remote_peer_id must be set for offer role".to_owned(),
+                ));
+            }
         }
 
         Ok(())
@@ -288,6 +347,12 @@ impl AppConfig {
 pub struct NodeConfig {
     pub peer_id: PeerId,
     pub role: NodeRole,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerConfig {
+    pub remote_peer_id: PeerId,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -335,28 +400,121 @@ pub struct WebRtcConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunnelConfig {
-    pub stream_id: u32,
     pub read_chunk_size: usize,
     pub local_eof_grace_ms: u64,
     pub remote_eof_grace_ms: u64,
-    pub offer: TunnelOfferConfig,
-    pub answer: TunnelAnswerConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TunnelOfferConfig {
+pub struct ForwardRule {
+    pub id: String,
+    pub offer: Option<ForwardOfferConfig>,
+    pub answer: Option<ForwardAnswerConfig>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardOfferConfig {
     pub listen_host: String,
     pub listen_port: u16,
-    pub remote_peer_id: PeerId,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TunnelAnswerConfig {
+pub struct ForwardAnswerConfig {
     pub target_host: String,
     pub target_port: u16,
     pub allow_remote_peers: Vec<PeerId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfferForwardBind {
+    pub forward_id: String,
+    pub listen_host: String,
+    pub listen_port: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TargetAddr {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ForwardLookupError {
+    UnknownForward,
+    ForbiddenForward,
+    MissingOfferConfig,
+    MissingAnswerConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct ForwardTable {
+    by_id: std::collections::HashMap<String, ForwardRule>,
+}
+
+impl ForwardTable {
+    pub fn new(forwards: &[ForwardRule]) -> Self {
+        Self {
+            by_id: forwards.iter().map(|forward| (forward.id.clone(), forward.clone())).collect(),
+        }
+    }
+
+    pub fn get(&self, forward_id: &str) -> Option<&ForwardRule> {
+        self.by_id.get(forward_id)
+    }
+
+    pub fn offer_listeners(&self) -> Result<Vec<OfferForwardBind>, ForwardLookupError> {
+        let mut listeners = Vec::new();
+        for forward in self.by_id.values() {
+            let offer = forward.offer.as_ref().ok_or(ForwardLookupError::MissingOfferConfig)?;
+            listeners.push(OfferForwardBind {
+                forward_id: forward.id.clone(),
+                listen_host: offer.listen_host.clone(),
+                listen_port: offer.listen_port,
+            });
+        }
+        listeners.sort_by(|left, right| left.forward_id.cmp(&right.forward_id));
+        Ok(listeners)
+    }
+
+    pub fn target_for(
+        &self,
+        forward_id: &str,
+        remote_peer_id: &PeerId,
+    ) -> Result<TargetAddr, ForwardLookupError> {
+        let forward = self.by_id.get(forward_id).ok_or(ForwardLookupError::UnknownForward)?;
+        let answer = forward.answer.as_ref().ok_or(ForwardLookupError::MissingAnswerConfig)?;
+        if !answer.allow_remote_peers.contains(remote_peer_id) {
+            return Err(ForwardLookupError::ForbiddenForward);
+        }
+        Ok(TargetAddr { host: answer.target_host.clone(), port: answer.target_port })
+    }
+}
+
+fn validate_forward_id(id: &str) -> Result<(), ConfigError> {
+    if id.is_empty() {
+        return Err(ConfigError::InvalidConfig("forward id must not be empty".to_owned()));
+    }
+    if id.len() > 64 {
+        return Err(ConfigError::InvalidConfig(format!("forward id '{id}' exceeds 64 characters")));
+    }
+    if !id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')) {
+        return Err(ConfigError::InvalidConfig(format!(
+            "forward id '{id}' contains invalid characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_listen_host(host: &str, forward_id: &str) -> Result<(), ConfigError> {
+    if host.is_empty() {
+        return Err(ConfigError::InvalidConfig(format!(
+            "forward '{forward_id}' listen_host must be set"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -501,7 +659,7 @@ mod tests {
     fn sample_config(config_dir: &Path, state_dir: &Path) -> String {
         format!(
             r#"
-format = "p2ptunnel-config-v1"
+format = "p2ptunnel-config-v2"
 
 [node]
 peer_id = "answer-office"
@@ -537,17 +695,14 @@ enable_trickle_ice = true
 enable_ice_restart = true
 
 [tunnel]
-stream_id = 1
 read_chunk_size = 16384
 local_eof_grace_ms = 250
 remote_eof_grace_ms = 250
 
-[tunnel.offer]
-listen_host = "127.0.0.1"
-listen_port = 2222
-remote_peer_id = "offer-home"
+[[forwards]]
+id = "ssh"
 
-[tunnel.answer]
+[forwards.answer]
 target_host = "127.0.0.1"
 target_port = 22
 allow_remote_peers = ["offer-home"]
@@ -830,9 +985,9 @@ status_file = "{status_file}"
             ("stun_urls = [\"stun:stun.l.google.com:19302\"]", "\nice_gather_timeout_secs = 15"),
             ("enable_trickle_ice = true", "\nice_connection_timeout_secs = 20"),
             ("enable_ice_restart = true", "\nmax_message_size = 262144"),
-            ("stream_id = 1", "\nframe_version = 1"),
+            ("remote_eof_grace_ms = 250", "\nframe_version = 1"),
             ("read_chunk_size = 16384", "\nwrite_buffer_limit = 262144"),
-            ("remote_peer_id = \"offer-home\"", "\nauto_open = true"),
+            ("target_port = 22", "\nauto_open = true"),
             ("[health]", "\nheartbeat_interval_secs = 10\nping_timeout_secs = 30"),
         ] {
             let config =

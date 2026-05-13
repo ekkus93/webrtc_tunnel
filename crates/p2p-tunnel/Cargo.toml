@@ -9,6 +9,8 @@ rust-version.workspace = true
 bytes.workspace = true
 p2p-core = { path = "../p2p-core" }
 p2p-webrtc = { path = "../p2p-webrtc" }
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

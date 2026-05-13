@@ -16,18 +16,18 @@ use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use p2p_core::{AppConfig, DaemonState, FailureCode, Kid, MsgId, NodeRole, PeerId, SessionId};
+use p2p_core::{
+    AppConfig, ConfigError, DaemonState, FailureCode, ForwardAnswerConfig, ForwardOfferConfig,
+    ForwardTable, Kid, MsgId, NodeRole, PeerId, SessionId,
+};
 use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile, kid_from_signing_key};
 use p2p_signaling::{
     AckBody, AnswerBody, CloseBody, EndOfCandidatesBody, ErrorBody, IceCandidateBody, InnerMessage,
     InnerMessageBuilder, MessageBody, MqttSignalingTransport, OfferBody, OuterEnvelope,
     SignalCodec, SignalingError, SignalingSession,
 };
-use p2p_tunnel::{AnswerTargetConnector, OfferClient, OfferListener, TunnelBridge};
-use p2p_webrtc::{
-    DataChannelEvent, DataChannelHandle, IceCandidateSignal, IceConnectionState, WebRtcPeer,
-};
-use tokio::net::TcpStream;
+use p2p_tunnel::{OfferClient, OfferListener};
+use p2p_webrtc::{DataChannelHandle, IceCandidateSignal, IceConnectionState, WebRtcPeer};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
@@ -41,6 +41,14 @@ pub use status::{DaemonStatus, StatusWriter};
 pub struct OfferSessionTestHandle {
     pub session_id: SessionId,
     pub ice_state_injector: p2p_webrtc::IceStateInjectorForTests,
+}
+
+struct OfferSessionIo<'a> {
+    client: OfferClient,
+    accepted_clients: &'a mut mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>>,
+    remote: &'a AuthorizedKey,
+    #[cfg(any(test, debug_assertions))]
+    session_hook: Option<mpsc::UnboundedSender<OfferSessionTestHandle>>,
 }
 
 const DAEMON_RUNTIME_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -267,17 +275,14 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
     write_steady_state_status(&ctx).await;
 
-    let listener = OfferListener::bind(&config.tunnel.offer).await?;
-    tracing::info!("listening for local clients on {}", listener.local_addr()?);
-    // Keep the accept loop alive even while a session is active so extra local
-    // clients are accepted and immediately closed instead of being left waiting
-    // in the kernel backlog until the current session ends.
-    let mut accepted_clients = spawn_offer_accept_loop(listener);
+    let listeners = bind_offer_listeners(&config).await?;
+    let mut accepted_clients = spawn_offer_accept_loops(listeners);
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
-    let remote =
-        authorized_keys.get_by_peer_id(&config.tunnel.offer.remote_peer_id).cloned().ok_or_else(
-            || DaemonError::MissingAuthorizedPeer(config.tunnel.offer.remote_peer_id.to_string()),
-        )?;
+    let remote_peer_id = offer_remote_peer_id(&config)?;
+    let remote = authorized_keys
+        .get_by_peer_id(&remote_peer_id)
+        .cloned()
+        .ok_or_else(|| DaemonError::MissingAuthorizedPeer(remote_peer_id.to_string()))?;
 
     loop {
         write_steady_state_status(&ctx).await;
@@ -292,10 +297,13 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
                         &codec,
                         transport,
                         &mut ctx,
-                        client,
-                        &remote,
-                        #[cfg(any(test, debug_assertions))]
-                        session_hook.clone(),
+                        OfferSessionIo {
+                            client,
+                            accepted_clients: &mut accepted_clients,
+                            remote: &remote,
+                            #[cfg(any(test, debug_assertions))]
+                            session_hook: session_hook.clone(),
+                        },
                     )
                     .await;
                 recover_daemon_after_session(&ctx, result).await;
@@ -371,7 +379,6 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
     let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
     write_steady_state_status(&ctx).await;
 
-    let connector = AnswerTargetConnector::new(&config.tunnel.answer);
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
 
     loop {
@@ -409,8 +416,7 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
                 tracing::info!("received optional hello from {}", sender.peer_id);
             }
             MessageBody::Offer(offer) => {
-                let peer_allowed =
-                    config.tunnel.answer.allow_remote_peers.contains(&sender.peer_id);
+                let peer_allowed = is_peer_allowed_for_active_busy_reply(&config, &sender.peer_id);
                 tracing::debug!(
                     session_id = %message.session_id,
                     sender_peer_id = %sender.peer_id,
@@ -477,15 +483,7 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
                     .await?;
 
                     session.state = DaemonState::ConnectingDataChannel;
-                    run_answer_session(
-                        &config,
-                        &codec,
-                        &mut transport,
-                        &connector,
-                        &mut ctx,
-                        session,
-                    )
-                    .await
+                    run_answer_session(&config, &codec, &mut transport, &mut ctx, session).await
                 }
                 .await;
                 recover_daemon_after_session(&ctx, session_result).await;
@@ -511,7 +509,9 @@ pub fn apply_offer_overrides(
         config.broker.url = broker_url;
     }
     if let Some(listen_port) = listen_port {
-        config.tunnel.offer.listen_port = listen_port;
+        if let Some(offer) = first_offer_forward_mut(config) {
+            offer.listen_port = listen_port;
+        }
     }
 }
 
@@ -525,10 +525,14 @@ pub fn apply_answer_overrides(
         config.broker.url = broker_url;
     }
     if let Some(target_host) = target_host {
-        config.tunnel.answer.target_host = target_host;
+        if let Some(answer) = first_answer_forward_mut(config) {
+            answer.target_host = target_host;
+        }
     }
     if let Some(target_port) = target_port {
-        config.tunnel.answer.target_port = target_port;
+        if let Some(answer) = first_answer_forward_mut(config) {
+            answer.target_port = target_port;
+        }
     }
 }
 
@@ -558,12 +562,9 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
     codec: &SignalCodec<'_>,
     transport: &mut T,
     ctx: &mut RuntimeContext<'_>,
-    mut client: OfferClient,
-    remote: &AuthorizedKey,
-    #[cfg(any(test, debug_assertions))] session_hook: Option<
-        mpsc::UnboundedSender<OfferSessionTestHandle>,
-    >,
+    io: OfferSessionIo<'_>,
 ) -> Result<(), DaemonError> {
+    let remote = io.remote;
     let peer = WebRtcPeer::new(&config.webrtc).await?;
     let session_id = SessionId::random();
     let mut session =
@@ -638,7 +639,7 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
     .await?;
 
     #[cfg(any(test, debug_assertions))]
-    if let Some(session_hook) = session_hook {
+    if let Some(session_hook) = io.session_hook {
         let _ = session_hook.send(OfferSessionTestHandle {
             session_id: session.session_id,
             ice_state_injector: session.peer.ice_state_injector_for_tests(),
@@ -646,11 +647,32 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
     }
 
     let mut tick = interval(Duration::from_secs(1));
-    let local_stream = client.take_stream()?;
-    let mut pending_stream = Some(local_stream);
+    let mut pending_client = Some(io.client);
+    let accepted_clients = io.accepted_clients;
     let result = async {
         loop {
-            maybe_start_offer_bridge(&mut session, &mut pending_stream, &config.tunnel);
+            if pending_client.is_some()
+                && session.data_channel.as_ref().is_some_and(|channel| channel.is_open())
+            {
+                write_daemon_status(
+                    ctx,
+                    StatusSnapshot {
+                        active_session_id: Some(session.session_id),
+                        current_state: DaemonState::TunnelOpen,
+                    },
+                )
+                .await;
+                session.bridge_state = BridgeSessionState::Active;
+                let channel =
+                    session.data_channel.clone().ok_or(DaemonError::MissingDataChannel)?;
+                return Ok(p2p_tunnel::run_multiplex_offer(
+                    channel,
+                    &config.tunnel,
+                    pending_client.take().ok_or(DaemonError::MissingDataChannel)?,
+                    accepted_clients,
+                )
+                .await?);
+            }
             tokio::select! {
                 _ = tick.tick() => {
                     retry_pending_acks(
@@ -733,7 +755,7 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
                                 return Err(DaemonError::IceFailed(ice_state));
                             }
                             session.bridge_state = BridgeSessionState::Reconnecting;
-                            if should_attempt_offer_reconnect(config, pending_stream.is_some(), session.bridge_state)
+                            if should_attempt_offer_reconnect(config, pending_client.is_some(), session.bridge_state)
                                 && attempt_offer_reconnect(
                                     ctx,
                                     codec,
@@ -770,25 +792,6 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
                             session.bridge_state = BridgeSessionState::Closed;
                             return Err(DaemonError::IceFailed(ice_state));
                         }
-                    }
-                }
-                data_event = async {
-                    if let Some(channel) = session.data_channel.as_ref() {
-                        channel.next_event().await
-                    } else {
-                        None
-                    }
-                }, if session.bridge_handle.is_none() => {
-                    if let Some(DataChannelEvent::Open) = data_event {
-                        write_daemon_status(
-                            ctx,
-                            StatusSnapshot {
-                                active_session_id: Some(session.session_id),
-                                current_state: DaemonState::TunnelOpen,
-                            },
-                        )
-                        .await;
-                        maybe_start_offer_bridge(&mut session, &mut pending_stream, &config.tunnel);
                     }
                 }
                 bridge_result = async {
@@ -1049,7 +1052,6 @@ async fn run_answer_session<T: DaemonSignalingTransport>(
     config: &AppConfig,
     codec: &SignalCodec<'_>,
     transport: &mut T,
-    connector: &AnswerTargetConnector,
     ctx: &mut RuntimeContext<'_>,
     mut session: ActiveSession,
 ) -> Result<(), DaemonError> {
@@ -1201,7 +1203,7 @@ async fn run_answer_session<T: DaemonSignalingTransport>(
                     }
                 }
                 incoming = session.peer.next_incoming_data_channel(), if session.data_channel.is_none() => {
-                    handle_answer_incoming_data_channel(&mut session, incoming, connector, &config.tunnel)?;
+                    handle_answer_incoming_data_channel(&mut session, incoming, config)?;
                 }
                 ice_state = session.peer.next_ice_state() => {
                     if let Some(ice_state) = ice_state {
@@ -1322,69 +1324,82 @@ async fn cleanup_active_session(session: &mut ActiveSession) {
     }
 }
 
-fn maybe_start_offer_bridge(
-    session: &mut ActiveSession,
-    pending_stream: &mut Option<TcpStream>,
-    tunnel: &p2p_core::TunnelConfig,
-) {
-    if session.bridge_handle.is_some() {
-        return;
-    }
-
-    let Some(channel) = session.data_channel.clone() else {
-        return;
-    };
-
-    if !channel.is_open() {
-        return;
-    }
-
-    let Some(stream) = pending_stream.take() else {
-        return;
-    };
-
-    let bridge = TunnelBridge::new(channel, tunnel);
-    session.bridge_state = BridgeSessionState::Active;
-    session.bridge_handle = Some(tokio::spawn(async move { bridge.run_offer(stream).await }));
-}
-
 fn handle_answer_incoming_data_channel(
     session: &mut ActiveSession,
     incoming: Option<Result<DataChannelHandle, p2p_webrtc::WebRtcError>>,
-    connector: &AnswerTargetConnector,
-    tunnel: &p2p_core::TunnelConfig,
+    config: &AppConfig,
 ) -> Result<(), DaemonError> {
     if let Some(channel) = incoming {
         let channel = channel?;
         session.data_channel = Some(channel.clone());
-        let bridge = TunnelBridge::new(channel, tunnel);
-        let connector = connector.clone();
+        let tunnel = config.tunnel.clone();
+        let forward_table = ForwardTable::new(&config.forwards);
+        let remote_peer_id = session.remote_peer_id.clone();
         session.bridge_state = BridgeSessionState::Active;
-        session.bridge_handle =
-            Some(tokio::spawn(async move { bridge.run_answer(&connector).await }));
+        session.bridge_handle = Some(tokio::spawn(async move {
+            p2p_tunnel::run_multiplex_answer(channel, &tunnel, forward_table, remote_peer_id).await
+        }));
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn spawn_offer_accept_loop(
     listener: OfferListener,
-) -> mpsc::Receiver<Result<OfferClient, DaemonError>> {
-    let (tx, rx) = mpsc::channel(1);
-    tokio::spawn(async move {
-        loop {
-            match listener.accept_client().await {
-                Ok(accepted) => {
-                    if tx.send(Ok(accepted)).await.is_err() {
-                        return;
+) -> mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>> {
+    spawn_offer_accept_loops(vec![listener])
+}
+
+async fn bind_offer_listeners(config: &AppConfig) -> Result<Vec<OfferListener>, DaemonError> {
+    let table = ForwardTable::new(&config.forwards);
+    let mut listeners = Vec::new();
+    for bind in table.offer_listeners().map_err(|error| {
+        DaemonError::Config(ConfigError::InvalidConfig(format!(
+            "invalid offer forward listeners: {error:?}"
+        )))
+    })? {
+        let offer =
+            ForwardOfferConfig { listen_host: bind.listen_host, listen_port: bind.listen_port };
+        let listener = OfferListener::bind(bind.forward_id, &offer).await?;
+        tracing::info!(
+            forward_id = listener.forward_id(),
+            local_addr = %listener.local_addr()?,
+            "listening for local forward clients"
+        );
+        listeners.push(listener);
+    }
+    Ok(listeners)
+}
+
+fn spawn_offer_accept_loops(
+    listeners: Vec<OfferListener>,
+) -> mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>> {
+    let (tx, rx) = mpsc::channel(64);
+    for listener in listeners {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match listener.accept_client().await {
+                    Ok(accepted) => match tx.try_send(Ok(accepted)) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(Ok(dropped))) => {
+                            tracing::warn!(
+                                forward_id = dropped.forward_id(),
+                                "offer pending client queue is full; closing local client"
+                            );
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => return,
+                        Err(mpsc::error::TrySendError::Full(Err(_))) => {}
+                    },
+                    Err(error) => {
+                        tracing::warn!(reason = %error, "offer accept loop hit recoverable listener error");
+                        sleep(DAEMON_RUNTIME_RETRY_DELAY).await;
                     }
                 }
-                Err(error) => {
-                    tracing::warn!(reason = %error, "offer accept loop hit recoverable listener error");
-                    sleep(DAEMON_RUNTIME_RETRY_DELAY).await;
-                }
             }
-        }
-    });
+        });
+    }
+    drop(tx);
     rx
 }
 
@@ -1876,7 +1891,11 @@ fn classify_active_busy_offer(
 }
 
 fn is_peer_allowed_for_active_busy_reply(config: &AppConfig, sender_peer_id: &PeerId) -> bool {
-    config.tunnel.answer.allow_remote_peers.contains(sender_peer_id)
+    config
+        .forwards
+        .iter()
+        .filter_map(|forward| forward.answer.as_ref())
+        .any(|answer| answer.allow_remote_peers.contains(sender_peer_id))
 }
 
 fn decode_idle_signaling_message<'a>(
@@ -1909,6 +1928,44 @@ fn can_attempt_same_session_ice_restart(session: &ActiveSession) -> bool {
     session.data_channel.as_ref().is_some_and(|channel| channel.is_open())
 }
 
+fn offer_remote_peer_id(config: &AppConfig) -> Result<PeerId, DaemonError> {
+    config.peer.as_ref().map(|peer| peer.remote_peer_id.clone()).ok_or_else(|| {
+        DaemonError::Config(ConfigError::InvalidConfig(
+            "[peer].remote_peer_id must be set for offer role".to_owned(),
+        ))
+    })
+}
+
+#[cfg(test)]
+fn first_offer_forward(config: &AppConfig) -> Result<(&str, &ForwardOfferConfig), DaemonError> {
+    config
+        .forwards
+        .iter()
+        .find_map(|forward| forward.offer.as_ref().map(|offer| (forward.id.as_str(), offer)))
+        .ok_or_else(|| {
+            DaemonError::Config(ConfigError::InvalidConfig(
+                "at least one [forwards.offer] rule is required".to_owned(),
+            ))
+        })
+}
+
+#[cfg(test)]
+fn first_answer_forward(config: &AppConfig) -> Result<&ForwardAnswerConfig, DaemonError> {
+    config.forwards.iter().find_map(|forward| forward.answer.as_ref()).ok_or_else(|| {
+        DaemonError::Config(ConfigError::InvalidConfig(
+            "at least one [forwards.answer] rule is required".to_owned(),
+        ))
+    })
+}
+
+fn first_offer_forward_mut(config: &mut AppConfig) -> Option<&mut ForwardOfferConfig> {
+    config.forwards.iter_mut().find_map(|forward| forward.offer.as_mut())
+}
+
+fn first_answer_forward_mut(config: &mut AppConfig) -> Option<&mut ForwardAnswerConfig> {
+    config.forwards.iter_mut().find_map(|forward| forward.answer.as_mut())
+}
+
 fn apply_override_pairs(
     config: &mut AppConfig,
     overrides: impl IntoIterator<Item = (String, String)>,
@@ -1920,13 +1977,21 @@ fn apply_override_pairs(
             "P2PTUNNEL_BROKER_PASSWORD_FILE" => config.broker.password_file = value.into(),
             "P2PTUNNEL_LISTEN_PORT" => {
                 if let Ok(port) = value.parse() {
-                    config.tunnel.offer.listen_port = port;
+                    if let Some(offer) = first_offer_forward_mut(config) {
+                        offer.listen_port = port;
+                    }
                 }
             }
-            "P2PTUNNEL_TARGET_HOST" => config.tunnel.answer.target_host = value,
+            "P2PTUNNEL_TARGET_HOST" => {
+                if let Some(answer) = first_answer_forward_mut(config) {
+                    answer.target_host = value;
+                }
+            }
             "P2PTUNNEL_TARGET_PORT" => {
                 if let Ok(port) = value.parse() {
-                    config.tunnel.answer.target_port = port;
+                    if let Some(answer) = first_answer_forward_mut(config) {
+                        answer.target_port = port;
+                    }
                 }
             }
             _ => {}
@@ -2217,15 +2282,16 @@ mod tests {
 
     use p2p_core::AppConfig;
     use p2p_core::{
-        ACK_RETRY_TIMEOUT_SECS, BrokerConfig, BrokerTlsConfig, FailureCode, HealthConfig,
-        LoggingConfig, NodeConfig, NodeRole, PeerId, ReconnectConfig, SecurityConfig, SessionId,
-        TunnelAnswerConfig, TunnelConfig, TunnelOfferConfig, WebRtcConfig,
+        ACK_RETRY_TIMEOUT_SECS, BrokerConfig, BrokerTlsConfig, FailureCode, ForwardAnswerConfig,
+        ForwardOfferConfig, ForwardRule, HealthConfig, LoggingConfig, NodeConfig, NodeRole,
+        PeerConfig, PeerId, ReconnectConfig, SecurityConfig, SessionId, TunnelConfig, WebRtcConfig,
     };
     use p2p_crypto::{AuthorizedKeys, generate_identity};
     use p2p_signaling::{
         AckBody, ErrorBody, InnerMessageBuilder, MessageBody, OfferBody, OuterEnvelope,
         ReplayCache, SignalCodec, SignalingError,
     };
+    use p2p_tunnel::TunnelBridge;
     use serde_json::Value;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -2234,14 +2300,14 @@ mod tests {
 
     use super::{
         ActiveBusyOfferAction, ActiveBusyOfferCache, ActiveBusyOfferKey, ActiveSession,
-        AnswerTargetConnector, BridgeSessionState, DaemonError, DaemonRuntimeState,
-        DaemonSignalingTransport, DaemonState, IceConnectionState, OfferListener,
-        OfferSessionPayloadOutcome, RuntimeContext, StatusSnapshot, StatusWriter, TunnelBridge,
-        WebRtcPeer, apply_answer_overrides, apply_offer_overrides, apply_override_pairs,
-        classify_active_busy_offer, compute_backoff_delay, decode_idle_signaling_message,
-        duplicate_active_session_ack_message, handle_answer_incoming_data_channel,
-        handle_answer_session_message, handle_offer_session_message, mark_transport_unusable,
-        mark_transport_usable, maybe_replace_pending_answer_session, process_offer_session_payload,
+        BridgeSessionState, DaemonError, DaemonRuntimeState, DaemonSignalingTransport, DaemonState,
+        IceConnectionState, OfferListener, OfferSessionPayloadOutcome, RuntimeContext,
+        StatusSnapshot, StatusWriter, WebRtcPeer, apply_answer_overrides, apply_offer_overrides,
+        apply_override_pairs, classify_active_busy_offer, compute_backoff_delay,
+        decode_idle_signaling_message, duplicate_active_session_ack_message,
+        handle_answer_incoming_data_channel, handle_answer_session_message,
+        handle_offer_session_message, mark_transport_unusable, mark_transport_usable,
+        maybe_replace_pending_answer_session, process_offer_session_payload,
         recover_daemon_after_session, replayed_active_busy_offer_key,
         run_offer_daemon_with_transport_and_test_hook, should_ack_idle_offer,
         should_attempt_offer_reconnect, should_continue_reconnect_attempt, spawn_offer_accept_loop,
@@ -2305,11 +2371,12 @@ mod tests {
 
     fn sample_config() -> AppConfig {
         AppConfig {
-            format: "p2ptunnel-config-v1".to_owned(),
+            format: "p2ptunnel-config-v2".to_owned(),
             node: NodeConfig {
                 peer_id: "offer-home".parse().expect("peer id"),
                 role: NodeRole::Offer,
             },
+            peer: Some(PeerConfig { remote_peer_id: "answer-office".parse().expect("peer id") }),
             paths: p2p_core::PathConfig {
                 identity: PathBuf::from("/tmp/identity"),
                 authorized_keys: PathBuf::from("/tmp/authorized_keys"),
@@ -2340,21 +2407,22 @@ mod tests {
                 enable_ice_restart: true,
             },
             tunnel: TunnelConfig {
-                stream_id: 1,
                 read_chunk_size: 1024,
                 local_eof_grace_ms: 250,
                 remote_eof_grace_ms: 250,
-                offer: TunnelOfferConfig {
+            },
+            forwards: vec![ForwardRule {
+                id: "ssh".to_owned(),
+                offer: Some(ForwardOfferConfig {
                     listen_host: "127.0.0.1".to_owned(),
                     listen_port: 5000,
-                    remote_peer_id: "answer-office".parse().expect("peer id"),
-                },
-                answer: TunnelAnswerConfig {
+                }),
+                answer: Some(ForwardAnswerConfig {
                     target_host: "127.0.0.1".to_owned(),
                     target_port: 22,
                     allow_remote_peers: vec!["offer-home".parse().expect("peer id")],
-                },
-            },
+                }),
+            }],
             reconnect: ReconnectConfig {
                 enable_auto_reconnect: true,
                 strategy: "exponential".to_owned(),
@@ -2438,14 +2506,6 @@ mod tests {
         DaemonRuntimeState::new_connected()
     }
 
-    fn answer_connector(port: u16) -> AnswerTargetConnector {
-        AnswerTargetConnector::new(&TunnelAnswerConfig {
-            target_host: "127.0.0.1".to_owned(),
-            target_port: port,
-            allow_remote_peers: vec!["offer-home".parse().expect("peer id")],
-        })
-    }
-
     async fn connected_channels(
         webrtc: &WebRtcConfig,
     ) -> (WebRtcPeer, WebRtcPeer, p2p_webrtc::DataChannelHandle, p2p_webrtc::DataChannelHandle)
@@ -2480,7 +2540,7 @@ mod tests {
         let mut config = sample_config();
         apply_offer_overrides(&mut config, Some("mqtts://override".to_owned()), Some(7777));
         assert_eq!(config.broker.url, "mqtts://override");
-        assert_eq!(config.tunnel.offer.listen_port, 7777);
+        assert_eq!(super::first_offer_forward(&config).expect("offer").1.listen_port, 7777);
     }
 
     #[test]
@@ -2493,8 +2553,9 @@ mod tests {
             Some(2222),
         );
         assert_eq!(config.broker.url, "mqtts://override");
-        assert_eq!(config.tunnel.answer.target_host, "10.0.0.5");
-        assert_eq!(config.tunnel.answer.target_port, 2222);
+        let answer = super::first_answer_forward(&config).expect("answer");
+        assert_eq!(answer.target_host, "10.0.0.5");
+        assert_eq!(answer.target_port, 2222);
     }
 
     #[test]
@@ -2509,8 +2570,8 @@ mod tests {
             ],
         );
         assert_eq!(config.broker.url, "mqtts://env");
-        assert_eq!(config.tunnel.offer.listen_port, 6000);
-        assert_eq!(config.tunnel.answer.target_port, 2022);
+        assert_eq!(super::first_offer_forward(&config).expect("offer").1.listen_port, 6000);
+        assert_eq!(super::first_answer_forward(&config).expect("answer").target_port, 2022);
     }
 
     #[test]
@@ -2834,16 +2895,11 @@ mod tests {
 
         let target_listener =
             TcpListener::bind(("127.0.0.1", 0)).await.expect("target listener should bind");
-        let connector =
-            answer_connector(target_listener.local_addr().expect("target local addr").port());
+        super::first_answer_forward_mut(&mut config).expect("answer forward").target_port =
+            target_listener.local_addr().expect("target local addr").port();
 
-        handle_answer_incoming_data_channel(
-            &mut session,
-            Some(Ok(answer_channel)),
-            &connector,
-            &config.tunnel,
-        )
-        .expect("incoming data channel should hand off to answer bridge");
+        handle_answer_incoming_data_channel(&mut session, Some(Ok(answer_channel)), &config)
+            .expect("incoming data channel should hand off to answer bridge");
 
         assert!(
             session.data_channel.is_some(),
@@ -2894,17 +2950,9 @@ mod tests {
             .expect("offer bridge should finish in time")
             .expect("offer bridge join should succeed")
             .expect("offer bridge should succeed");
-        timeout(
-            Duration::from_secs(10),
-            session.bridge_handle.take().expect("answer bridge handle should exist"),
-        )
-        .await
-        .expect("answer bridge should finish in time")
-        .expect("answer bridge join should succeed")
-        .expect("answer bridge should succeed");
-
         offer_peer.close().await.expect("offer peer should close");
         session.peer.close().await.expect("answer peer should close");
+        session.bridge_handle.take().expect("answer bridge handle should exist").abort();
     }
 
     #[tokio::test]
@@ -3081,7 +3129,7 @@ mod tests {
         config.node.peer_id = "answer-office".parse().expect("answer peer id");
         config.webrtc.stun_urls = Vec::new();
         config.webrtc.enable_trickle_ice = false;
-        config.tunnel.answer.allow_remote_peers =
+        super::first_answer_forward_mut(&mut config).expect("answer forward").allow_remote_peers =
             vec!["offer-home".parse().expect("offer peer id")];
 
         let offer = generate_identity("offer-home").expect("offer identity");
@@ -3407,11 +3455,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn offer_accept_loop_rejects_extra_clients_while_session_is_active() {
+    async fn offer_accept_loop_accepts_multiple_clients_for_session_queue() {
         let mut config = sample_config();
-        config.tunnel.offer.listen_port = 0;
+        super::first_offer_forward_mut(&mut config).expect("offer forward").listen_port = 0;
+        let (forward_id, offer_config) = super::first_offer_forward(&config).expect("offer");
         let listener =
-            OfferListener::bind(&config.tunnel.offer).await.expect("listener should bind");
+            OfferListener::bind(forward_id, offer_config).await.expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have local addr");
         let mut accepted_clients = spawn_offer_accept_loop(listener);
 
@@ -3425,13 +3474,12 @@ mod tests {
 
         let mut second_client = tokio::net::TcpStream::connect(addr)
             .await
-            .expect("second client should connect before prompt close");
-        let mut second_buffer = [0_u8; 1];
-        let second_read = timeout(Duration::from_secs(1), second_client.read(&mut second_buffer))
+            .expect("second client should connect for queueing");
+        let second_session = timeout(Duration::from_secs(1), accepted_clients.recv())
             .await
-            .expect("second client should be closed promptly")
-            .expect("second client read should complete");
-        assert_eq!(second_read, 0, "busy client should see immediate close");
+            .expect("accept loop should yield second session")
+            .expect("accept loop should stay alive")
+            .expect("second session should be accepted");
 
         let mut first_buffer = [0_u8; 1];
         assert!(
@@ -3440,8 +3488,16 @@ mod tests {
                 .is_err(),
             "active session client should remain connected while busy clients are rejected"
         );
+        let mut second_buffer = [0_u8; 1];
+        assert!(
+            timeout(Duration::from_millis(100), second_client.read(&mut second_buffer))
+                .await
+                .is_err(),
+            "queued session client should remain connected"
+        );
 
         drop(first_session);
+        drop(second_session);
 
         let _third_client = tokio::net::TcpStream::connect(addr)
             .await
@@ -3457,7 +3513,7 @@ mod tests {
     #[tokio::test]
     async fn offer_waiting_state_polls_idle_transport_and_recovers_status() {
         let mut config = sample_config();
-        config.tunnel.offer.listen_port = 0;
+        super::first_offer_forward_mut(&mut config).expect("offer forward").listen_port = 0;
         let status_path = std::env::temp_dir()
             .join(format!("p2ptunnel-daemon-status-offer-idle-{}.json", SessionId::random()));
         config.health.write_status_file = true;
