@@ -363,3 +363,6 @@
 ## 2026-05-13T20:20:53Z - GPT-5.5 - Multiplexed forwarding cleanup phase
 - Removed obsolete p2p-tunnel single-stream bridge/answer connector code after moving daemon and tunnel tests to the multiplexed runtime.
 - Updated README v2 config examples and migration notes for `[[forwards]]`, added configured forward IDs to status output, and expanded config/mux tests.
+## 2026-05-13T20:28:24Z - GPT-5.5 - Multiplexed forwarding final edge cases
+- Hardened multiplex stream dispatch so per-stream write queue overflow emits `queue_overflow` and closes only that stream.
+- Added final mux tests for OPEN ACK transition, unknown stream DATA, duplicate CLOSE, queue overflow isolation, simultaneous streams, and two forwards on one data channel.

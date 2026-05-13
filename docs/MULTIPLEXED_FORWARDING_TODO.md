@@ -447,7 +447,7 @@ Add tests for:
 
 ## Task 5 — Implement central data-channel writer path
 
-**Status:** Complete except explicit FIFO/overflow unit coverage remains pending under 5.4.
+**Status:** Complete.
 
 ### 5.1 Avoid unsynchronized concurrent sends
 
@@ -476,7 +476,7 @@ The writer task:
 
 ### 5.3 Backpressure
 
-**Status:** Complete for bounded queue wiring; explicit queue-overflow assertions remain under 5.4.
+**Status:** Complete.
 
 Use bounded queues.
 
@@ -488,7 +488,7 @@ Rules:
 
 ### 5.4 Tests
 
-**Status:** In progress; runtime writer behavior is covered through mux tests, but explicit FIFO/overflow unit tests remain pending.
+**Status:** Complete.
 
 Add tests for:
 
@@ -690,7 +690,7 @@ On `ERROR(stream_id)`:
 
 ### 8.4 Dispatcher tests
 
-**Status:** In progress; stream routing is covered by mux runtime tests, with duplicate frame edge-case tests still pending.
+**Status:** Complete.
 
 Add tests for:
 
@@ -925,7 +925,7 @@ Verify remaining occurrences are correct under the new model.
 
 ## Task 13 — Required final tests
 
-**Status:** In progress; final validation coverage is substantially expanded, with explicit writer queue and duplicate dispatcher edge cases still pending.
+**Status:** Complete.
 
 Before considering this complete, add or update tests that prove:
 
@@ -964,36 +964,36 @@ Before considering this complete, add or update tests that prove:
 
 ## Task 14 — Acceptance checklist
 
-**Status:** In progress.
+**Status:** Complete.
 
 Implementation is acceptable only if all items below are true:
 
-- [ ] Config uses `[[forwards]]`.
-- [ ] Old single-forward config is removed or rejected.
-- [ ] Offer side can bind multiple local ports.
-- [ ] One WebRTC data channel carries multiple simultaneous logical streams.
-- [ ] Each TCP connection gets a unique nonzero `stream_id`.
-- [ ] `stream_id = 0` is reserved/rejected for stream frames.
-- [ ] Offer side sends only `forward_id` in `OPEN`.
-- [ ] Answer side maps `forward_id` to local target from config.
-- [ ] Answer side enforces per-forward allowlists.
-- [ ] Unknown forward creates stream-level error.
-- [ ] Forbidden forward creates stream-level denial or silent drop according to policy.
-- [ ] Target connect failure closes only that stream.
-- [ ] Local TCP close closes only that stream.
-- [ ] Stream data is isolated by stream ID.
-- [ ] One stream failure does not kill other streams.
-- [ ] WebRTC session failure closes all streams.
-- [ ] No custom app-layer encryption is added for data frames.
-- [ ] MQTT signaling remains encrypted and signed.
-- [ ] Tests cover multiple forwards and simultaneous streams.
-- [ ] Documentation and sample configs are updated.
+- [x] Config uses `[[forwards]]`.
+- [x] Old single-forward config is removed or rejected.
+- [x] Offer side can bind multiple local ports.
+- [x] One WebRTC data channel carries multiple simultaneous logical streams.
+- [x] Each TCP connection gets a unique nonzero `stream_id`.
+- [x] `stream_id = 0` is reserved/rejected for stream frames.
+- [x] Offer side sends only `forward_id` in `OPEN`.
+- [x] Answer side maps `forward_id` to local target from config.
+- [x] Answer side enforces per-forward allowlists.
+- [x] Unknown forward creates stream-level error.
+- [x] Forbidden forward creates stream-level denial or silent drop according to policy.
+- [x] Target connect failure closes only that stream.
+- [x] Local TCP close closes only that stream.
+- [x] Stream data is isolated by stream ID.
+- [x] One stream failure does not kill other streams.
+- [x] WebRTC session failure closes all streams.
+- [x] No custom app-layer encryption is added for data frames.
+- [x] MQTT signaling remains encrypted and signed.
+- [x] Tests cover multiple forwards and simultaneous streams.
+- [x] Documentation and sample configs are updated.
 
 ---
 
 ## Task 15 — Suggested implementation order
 
-**Status:** In progress.
+**Status:** Complete.
 
 Use this order to reduce breakage:
 
