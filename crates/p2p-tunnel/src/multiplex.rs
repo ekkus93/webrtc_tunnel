@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use p2p_core::{
     FailureCode, ForwardLookupError, ForwardTable, PeerId, TunnelConfig, TunnelFrameType,
@@ -13,6 +14,7 @@ use crate::{ErrorPayload, OfferClient, OpenPayload, TunnelError, TunnelFrame, Tu
 
 pub const DEFAULT_STREAM_QUEUE_MESSAGES: usize = 64;
 pub const DEFAULT_WRITER_QUEUE_MESSAGES: usize = 256;
+pub const ANSWER_TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamLifecycle {
@@ -38,7 +40,69 @@ enum TcpWriteCommand {
 }
 
 struct RuntimeStream {
-    write_tx: mpsc::Sender<TcpWriteCommand>,
+    write_tx: Option<mpsc::Sender<TcpWriteCommand>>,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl RuntimeStream {
+    fn opening(task: JoinHandle<()>) -> Self {
+        Self { write_tx: None, tasks: vec![task] }
+    }
+
+    fn open(write_tx: mpsc::Sender<TcpWriteCommand>, tasks: Vec<JoinHandle<()>>) -> Self {
+        Self { write_tx: Some(write_tx), tasks }
+    }
+
+    fn write_tx(&self) -> Option<&mpsc::Sender<TcpWriteCommand>> {
+        self.write_tx.as_ref()
+    }
+
+    async fn close(mut self) {
+        if let Some(read_task) = self.tasks.first() {
+            read_task.abort();
+        }
+        let close_queued = self
+            .write_tx
+            .take()
+            .is_some_and(|write_tx| write_tx.try_send(TcpWriteCommand::Close).is_ok());
+        if self.tasks.len() > 1 {
+            let mut write_task = self.tasks.swap_remove(1);
+            if close_queued {
+                tokio::select! {
+                    _ = &mut write_task => {}
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                        write_task.abort();
+                    }
+                }
+            } else {
+                write_task.abort();
+            }
+        }
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+
+    fn abort_all(mut self) {
+        self.write_tx.take();
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for RuntimeStream {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+struct TargetConnectResult {
+    stream_id: u32,
+    forward_id: String,
+    result: Result<TcpStream, String>,
 }
 
 #[derive(Debug, Default)]
@@ -53,7 +117,8 @@ pub async fn run_multiplex_offer(
     accepted_clients: &mut mpsc::Receiver<Result<OfferClient, TunnelError>>,
 ) -> Result<(), TunnelError> {
     let (frame_tx, frame_rx) = mpsc::channel(DEFAULT_WRITER_QUEUE_MESSAGES);
-    let writer = spawn_writer_only(data_channel.clone(), frame_rx);
+    let (writer_failure_tx, mut writer_failure_rx) = mpsc::channel(1);
+    let writer = spawn_writer_only(data_channel.clone(), frame_rx, writer_failure_tx);
     let mut manager = StreamManager::new();
     let mut streams: HashMap<u32, RuntimeStream> = HashMap::new();
     let mut opening_streams: HashMap<u32, TcpStream> = HashMap::new();
@@ -91,6 +156,12 @@ pub async fn run_multiplex_offer(
                 };
                 frame_tx.send(frame).await.map_err(|_| TunnelError::WriterClosed)?;
             }
+            writer_error = writer_failure_rx.recv() => {
+                let Some(writer_error) = writer_error else {
+                    break Err(TunnelError::WriterClosed);
+                };
+                break Err(writer_error);
+            }
             event = data_channel.next_event() => {
                 match event {
                     Some(DataChannelEvent::Message(payload)) => {
@@ -115,6 +186,8 @@ pub async fn run_multiplex_offer(
         }
     };
 
+    cleanup_all_streams(&mut manager, &mut streams);
+    opening_streams.clear();
     writer.abort();
     result
 }
@@ -126,10 +199,12 @@ pub async fn run_multiplex_answer(
     remote_peer_id: PeerId,
 ) -> Result<(), TunnelError> {
     let (frame_tx, frame_rx) = mpsc::channel(DEFAULT_WRITER_QUEUE_MESSAGES);
-    let writer = spawn_writer_only(data_channel.clone(), frame_rx);
+    let (writer_failure_tx, mut writer_failure_rx) = mpsc::channel(1);
+    let writer = spawn_writer_only(data_channel.clone(), frame_rx, writer_failure_tx);
     let mut manager = StreamManager::new();
     let mut streams: HashMap<u32, RuntimeStream> = HashMap::new();
     let (tcp_frame_tx, mut tcp_frame_rx) = mpsc::channel(DEFAULT_WRITER_QUEUE_MESSAGES);
+    let (target_connect_tx, mut target_connect_rx) = mpsc::channel(DEFAULT_STREAM_QUEUE_MESSAGES);
 
     let result = loop {
         tokio::select! {
@@ -138,6 +213,25 @@ pub async fn run_multiplex_answer(
                     continue;
                 };
                 frame_tx.send(frame).await.map_err(|_| TunnelError::WriterClosed)?;
+            }
+            target_result = target_connect_rx.recv() => {
+                let Some(target_result) = target_result else {
+                    continue;
+                };
+                handle_target_connect_result(
+                    target_result,
+                    tunnel_config,
+                    &frame_tx,
+                    &tcp_frame_tx,
+                    &mut manager,
+                    &mut streams,
+                ).await?;
+            }
+            writer_error = writer_failure_rx.recv() => {
+                let Some(writer_error) = writer_error else {
+                    break Err(TunnelError::WriterClosed);
+                };
+                break Err(writer_error);
             }
             event = data_channel.next_event() => {
                 match event {
@@ -150,6 +244,7 @@ pub async fn run_multiplex_answer(
                             &remote_peer_id,
                             &frame_tx,
                             &tcp_frame_tx,
+                            &target_connect_tx,
                             &mut manager,
                             &mut streams,
                         ).await?;
@@ -161,6 +256,7 @@ pub async fn run_multiplex_answer(
         }
     };
 
+    cleanup_all_streams(&mut manager, &mut streams);
     writer.abort();
     result
 }
@@ -207,13 +303,31 @@ async fn handle_offer_frame(
             let Some(stream) = opening_streams.remove(&stream_id) else {
                 return Ok(());
             };
+            if !frame.payload.is_empty() {
+                manager.remove(stream_id);
+                send_stream_error(
+                    frame_tx,
+                    stream_id,
+                    "protocol_error",
+                    "OPEN ACK payload must be empty",
+                )
+                .await?;
+                return Ok(());
+            }
             manager.get_mut(stream_id)?.lifecycle = StreamLifecycle::Open;
             let runtime_stream = spawn_tcp_bridge(stream_id, stream, tunnel_config, tcp_frame_tx);
             streams.insert(stream_id, runtime_stream);
         }
         TunnelFrameType::Data => {
             if let Some(stream) = streams.get(&frame.stream_id) {
-                match stream.write_tx.try_send(TcpWriteCommand::Data(frame.payload)) {
+                let Some(write_tx) = stream.write_tx() else {
+                    tracing::debug!(
+                        stream_id = frame.stream_id,
+                        "ignoring DATA for opening stream"
+                    );
+                    return Ok(());
+                };
+                match write_tx.try_send(TcpWriteCommand::Data(frame.payload)) {
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         send_stream_error(
@@ -230,13 +344,7 @@ async fn handle_offer_frame(
                     }
                 }
             } else {
-                send_stream_error(
-                    frame_tx,
-                    frame.stream_id,
-                    "stream_not_found",
-                    "stream not found",
-                )
-                .await?;
+                tracing::debug!(stream_id = frame.stream_id, "ignoring DATA for unknown stream");
             }
         }
         TunnelFrameType::Close => {
@@ -261,11 +369,12 @@ async fn handle_offer_frame(
 #[allow(clippy::too_many_arguments)]
 async fn handle_answer_frame(
     frame: TunnelFrame,
-    tunnel_config: &TunnelConfig,
+    _tunnel_config: &TunnelConfig,
     forward_table: &ForwardTable,
     remote_peer_id: &PeerId,
     frame_tx: &mpsc::Sender<TunnelFrame>,
-    tcp_frame_tx: &mpsc::Sender<TunnelFrame>,
+    _tcp_frame_tx: &mpsc::Sender<TunnelFrame>,
+    target_connect_tx: &mpsc::Sender<TargetConnectResult>,
     manager: &mut StreamManager,
     streams: &mut HashMap<u32, RuntimeStream>,
 ) -> Result<(), TunnelError> {
@@ -315,36 +424,40 @@ async fn handle_answer_frame(
                     return Ok(());
                 }
             };
-            match TcpStream::connect((target.host.as_str(), target.port)).await {
-                Ok(stream) => {
-                    manager.register(StreamState {
-                        stream_id: frame.stream_id,
-                        forward_id: open.forward_id,
-                        lifecycle: StreamLifecycle::Open,
-                        remote_peer_id: remote_peer_id.clone(),
-                    })?;
-                    let runtime_stream =
-                        spawn_tcp_bridge(frame.stream_id, stream, tunnel_config, tcp_frame_tx);
-                    streams.insert(frame.stream_id, runtime_stream);
-                    frame_tx
-                        .send(TunnelFrame::open_ack(frame.stream_id))
-                        .await
-                        .map_err(|_| TunnelError::WriterClosed)?;
-                }
-                Err(_) => {
-                    send_stream_error(
-                        frame_tx,
-                        frame.stream_id,
-                        FailureCode::TargetConnectFailed.as_str(),
-                        "target connect failed",
-                    )
-                    .await?;
-                }
-            }
+            manager.register(StreamState {
+                stream_id: frame.stream_id,
+                forward_id: open.forward_id.clone(),
+                lifecycle: StreamLifecycle::Opening,
+                remote_peer_id: remote_peer_id.clone(),
+            })?;
+            let connect_tx = target_connect_tx.clone();
+            let stream_id = frame.stream_id;
+            let forward_id = open.forward_id;
+            let task = tokio::spawn(async move {
+                let result = tokio::time::timeout(
+                    ANSWER_TARGET_CONNECT_TIMEOUT,
+                    TcpStream::connect((target.host.as_str(), target.port)),
+                )
+                .await
+                .map_err(|_| "target connect timed out".to_owned())
+                .and_then(|connect_result| {
+                    connect_result.map_err(|error| format!("target connect failed: {error}"))
+                });
+                let _ =
+                    connect_tx.send(TargetConnectResult { stream_id, forward_id, result }).await;
+            });
+            streams.insert(frame.stream_id, RuntimeStream::opening(task));
         }
         TunnelFrameType::Data => {
             if let Some(stream) = streams.get(&frame.stream_id) {
-                match stream.write_tx.try_send(TcpWriteCommand::Data(frame.payload)) {
+                let Some(write_tx) = stream.write_tx() else {
+                    tracing::debug!(
+                        stream_id = frame.stream_id,
+                        "ignoring DATA for opening stream"
+                    );
+                    return Ok(());
+                };
+                match write_tx.try_send(TcpWriteCommand::Data(frame.payload)) {
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         send_stream_error(
@@ -361,13 +474,7 @@ async fn handle_answer_frame(
                     }
                 }
             } else {
-                send_stream_error(
-                    frame_tx,
-                    frame.stream_id,
-                    "stream_not_found",
-                    "stream not found",
-                )
-                .await?;
+                tracing::debug!(stream_id = frame.stream_id, "ignoring DATA for unknown stream");
             }
         }
         TunnelFrameType::Close => {
@@ -387,6 +494,49 @@ async fn handle_answer_frame(
     Ok(())
 }
 
+async fn handle_target_connect_result(
+    target_result: TargetConnectResult,
+    tunnel_config: &TunnelConfig,
+    frame_tx: &mpsc::Sender<TunnelFrame>,
+    tcp_frame_tx: &mpsc::Sender<TunnelFrame>,
+    manager: &mut StreamManager,
+    streams: &mut HashMap<u32, RuntimeStream>,
+) -> Result<(), TunnelError> {
+    let Ok(stream_state) = manager.get_mut(target_result.stream_id) else {
+        return Ok(());
+    };
+    if stream_state.lifecycle != StreamLifecycle::Opening {
+        return Ok(());
+    }
+
+    match target_result.result {
+        Ok(stream) => {
+            stream_state.lifecycle = StreamLifecycle::Open;
+            stream_state.forward_id = target_result.forward_id;
+            let runtime_stream =
+                spawn_tcp_bridge(target_result.stream_id, stream, tunnel_config, tcp_frame_tx);
+            streams.insert(target_result.stream_id, runtime_stream);
+            frame_tx
+                .send(TunnelFrame::open_ack(target_result.stream_id))
+                .await
+                .map_err(|_| TunnelError::WriterClosed)?;
+        }
+        Err(error) => {
+            manager.remove(target_result.stream_id);
+            streams.remove(&target_result.stream_id);
+            tracing::debug!(stream_id = target_result.stream_id, error, "target connect failed");
+            send_stream_error(
+                frame_tx,
+                target_result.stream_id,
+                FailureCode::TargetConnectFailed.as_str(),
+                "target connect failed",
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 fn spawn_tcp_bridge(
     stream_id: u32,
     stream: TcpStream,
@@ -397,7 +547,7 @@ fn spawn_tcp_bridge(
     let (write_tx, mut write_rx) = mpsc::channel::<TcpWriteCommand>(DEFAULT_STREAM_QUEUE_MESSAGES);
     let read_frame_tx = tcp_frame_tx.clone();
     let read_chunk_size = tunnel_config.read_chunk_size;
-    tokio::spawn(async move {
+    let read_task = tokio::spawn(async move {
         let mut buffer = vec![0_u8; read_chunk_size];
         loop {
             match reader.read(&mut buffer).await {
@@ -432,7 +582,7 @@ fn spawn_tcp_bridge(
             }
         }
     });
-    tokio::spawn(async move {
+    let write_task = tokio::spawn(async move {
         while let Some(command) = write_rx.recv().await {
             match command {
                 TcpWriteCommand::Data(payload) => {
@@ -447,7 +597,7 @@ fn spawn_tcp_bridge(
             }
         }
     });
-    RuntimeStream { write_tx }
+    RuntimeStream::open(write_tx, vec![read_task, write_task])
 }
 
 async fn close_stream(
@@ -457,9 +607,16 @@ async fn close_stream(
 ) -> Result<(), TunnelError> {
     manager.remove(stream_id);
     if let Some(stream) = streams.remove(&stream_id) {
-        let _ = stream.write_tx.try_send(TcpWriteCommand::Close);
+        stream.close().await;
     }
     Ok(())
+}
+
+fn cleanup_all_streams(manager: &mut StreamManager, streams: &mut HashMap<u32, RuntimeStream>) {
+    manager.clear();
+    for (_, stream) in streams.drain() {
+        stream.abort_all();
+    }
 }
 
 async fn send_stream_error(
@@ -532,6 +689,10 @@ impl StreamManager {
 
     pub fn active_count(&self) -> usize {
         self.streams.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.streams.clear();
     }
 }
 
@@ -627,11 +788,22 @@ fn spawn_writer(
 fn spawn_writer_only(
     data_channel: DataChannelHandle,
     mut outbound_rx: mpsc::Receiver<TunnelFrame>,
+    failure_tx: mpsc::Sender<TunnelError>,
 ) -> JoinHandle<Result<(), TunnelError>> {
     tokio::spawn(async move {
         while let Some(frame) = outbound_rx.recv().await {
-            let encoded = TunnelFrameCodec::encode(&frame)?;
-            data_channel.send(&encoded).await?;
+            let encoded = match TunnelFrameCodec::encode(&frame) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    let _ = failure_tx.send(error).await;
+                    return Err(TunnelError::WriterClosed);
+                }
+            };
+            if let Err(error) = data_channel.send(&encoded).await {
+                let tunnel_error = TunnelError::WebRtc(error);
+                let _ = failure_tx.send(tunnel_error).await;
+                return Err(TunnelError::WriterClosed);
+            }
         }
         Ok(())
     })
@@ -640,23 +812,25 @@ fn spawn_writer_only(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::future;
     use std::time::Duration;
 
     use p2p_core::{
         ForwardAnswerConfig, ForwardOfferConfig, ForwardRule, ForwardTable, TunnelConfig,
-        WebRtcConfig,
+        TunnelFrameType, WebRtcConfig,
     };
     use p2p_webrtc::WebRtcPeer;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
     use tokio::time::timeout;
 
     use super::{
         RuntimeStream, StreamIdAllocator, StreamLifecycle, StreamManager, StreamState,
-        TcpWriteCommand, handle_offer_frame, run_multiplex_answer, run_multiplex_offer,
+        TcpWriteCommand, close_stream, handle_answer_frame, handle_offer_frame,
+        run_multiplex_answer, run_multiplex_offer, spawn_writer_only,
     };
-    use crate::{OfferClient, TunnelError, TunnelFrame};
+    use crate::{OfferClient, OpenPayload, TunnelError, TunnelFrame};
 
     fn stream(stream_id: u32, forward_id: &str) -> StreamState {
         StreamState {
@@ -684,6 +858,21 @@ mod tests {
             }),
             answer: Some(ForwardAnswerConfig {
                 target_host: "127.0.0.1".to_owned(),
+                target_port,
+                allow_remote_peers: vec!["offer-home".parse().expect("peer id")],
+            }),
+        }])
+    }
+
+    fn forward_table_with_target(target_host: &str, target_port: u16) -> ForwardTable {
+        ForwardTable::new(&[ForwardRule {
+            id: "ssh".to_owned(),
+            offer: Some(ForwardOfferConfig {
+                listen_host: "127.0.0.1".to_owned(),
+                listen_port: 2223,
+            }),
+            answer: Some(ForwardAnswerConfig {
+                target_host: target_host.to_owned(),
                 target_port,
                 allow_remote_peers: vec!["offer-home".parse().expect("peer id")],
             }),
@@ -1085,7 +1274,172 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn data_to_unknown_stream_sends_stream_not_found_error() {
+    async fn offer_open_ack_rejects_non_empty_payload() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        let client = TcpStream::connect(listener.local_addr().expect("local addr"))
+            .await
+            .expect("client connect");
+        let (tcp_stream, _) = listener.accept().await.expect("accept");
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("register stream");
+        let mut opening_streams = HashMap::from([(1_u32, tcp_stream)]);
+        let mut streams = HashMap::new();
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+
+        handle_offer_frame(
+            TunnelFrame::open(1, OpenPayload { forward_id: "ssh".to_owned() })
+                .expect("malformed ack frame"),
+            &sample_tunnel_config(),
+            &frame_tx,
+            &tcp_frame_tx,
+            &mut manager,
+            &mut opening_streams,
+            &mut streams,
+        )
+        .await
+        .expect("malformed ack should be handled as stream error");
+
+        let error = frame_rx.recv().await.expect("protocol error");
+        assert_eq!(error.stream_id, 1);
+        assert_eq!(error.error_payload().expect("error payload").code, "protocol_error");
+        assert!(manager.get(1).is_err());
+        assert!(opening_streams.is_empty());
+        assert!(streams.is_empty());
+        drop(client);
+    }
+
+    #[tokio::test]
+    async fn duplicate_empty_open_ack_is_ignored() {
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("register stream");
+        manager.get_mut(1).expect("stream").lifecycle = StreamLifecycle::Open;
+        let mut opening_streams = HashMap::new();
+        let mut streams = HashMap::new();
+        let (frame_tx, mut frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+
+        handle_offer_frame(
+            TunnelFrame::open_ack(1),
+            &sample_tunnel_config(),
+            &frame_tx,
+            &tcp_frame_tx,
+            &mut manager,
+            &mut opening_streams,
+            &mut streams,
+        )
+        .await
+        .expect("duplicate ack should be ignored");
+
+        assert_eq!(manager.get(1).expect("stream").lifecycle, StreamLifecycle::Open);
+        assert!(frame_rx.try_recv().is_err());
+    }
+
+    struct DropNotifier(Option<oneshot::Sender<()>>);
+
+    impl Drop for DropNotifier {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_stream_cancels_owned_tasks() {
+        let (read_started_tx, read_started_rx) = oneshot::channel();
+        let (read_done_tx, read_done_rx) = oneshot::channel();
+        let read_task = tokio::spawn(async move {
+            let _notify = DropNotifier(Some(read_done_tx));
+            let _ = read_started_tx.send(());
+            future::pending::<()>().await;
+        });
+        let (write_started_tx, write_started_rx) = oneshot::channel();
+        let (write_done_tx, write_done_rx) = oneshot::channel();
+        let (write_tx, mut write_rx) = mpsc::channel(1);
+        let write_task = tokio::spawn(async move {
+            let _notify = DropNotifier(Some(write_done_tx));
+            let _ = write_started_tx.send(());
+            let _ = write_rx.recv().await;
+        });
+        read_started_rx.await.expect("read task started");
+        write_started_rx.await.expect("write task started");
+        let mut manager = StreamManager::new();
+        manager.register(stream(1, "ssh")).expect("register");
+        let mut streams =
+            HashMap::from([(1_u32, RuntimeStream::open(write_tx, vec![read_task, write_task]))]);
+
+        close_stream(1, &mut manager, &mut streams).await.expect("close stream");
+
+        timeout(Duration::from_secs(1), read_done_rx)
+            .await
+            .expect("read task should stop")
+            .expect("read notify");
+        timeout(Duration::from_secs(1), write_done_rx)
+            .await
+            .expect("write task should stop")
+            .expect("write notify");
+        assert_eq!(manager.active_count(), 0);
+        assert!(streams.is_empty());
+    }
+
+    #[tokio::test]
+    async fn answer_open_starts_target_connect_without_blocking_dispatcher() {
+        let table = forward_table_with_target("10.255.255.1", 65_000);
+        let mut manager = StreamManager::new();
+        let mut streams = HashMap::new();
+        let (frame_tx, _frame_rx) = mpsc::channel(4);
+        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
+        let (target_connect_tx, _target_connect_rx) = mpsc::channel(4);
+
+        timeout(
+            Duration::from_millis(100),
+            handle_answer_frame(
+                TunnelFrame::open(7, OpenPayload { forward_id: "ssh".to_owned() })
+                    .expect("open frame"),
+                &sample_tunnel_config(),
+                &table,
+                &"offer-home".parse().expect("peer id"),
+                &frame_tx,
+                &tcp_frame_tx,
+                &target_connect_tx,
+                &mut manager,
+                &mut streams,
+            ),
+        )
+        .await
+        .expect("OPEN handling must not wait for target connect")
+        .expect("OPEN should be accepted");
+
+        assert_eq!(manager.get(7).expect("stream").lifecycle, StreamLifecycle::Opening);
+        assert!(streams.contains_key(&7));
+        close_stream(7, &mut manager, &mut streams).await.expect("abort pending connect");
+    }
+
+    #[tokio::test]
+    async fn writer_encode_failure_notifies_runtime() {
+        let (offer_peer, answer_peer, offer_channel, _answer_channel) = connected_channels().await;
+        let (frame_tx, frame_rx) = mpsc::channel(1);
+        let (failure_tx, mut failure_rx) = mpsc::channel(1);
+        let writer = spawn_writer_only(offer_channel, frame_rx, failure_tx);
+
+        frame_tx
+            .send(TunnelFrame::new(TunnelFrameType::Data, 0, Vec::new()))
+            .await
+            .expect("send invalid frame to writer");
+        let error = timeout(Duration::from_secs(1), failure_rx.recv())
+            .await
+            .expect("writer failure should be reported")
+            .expect("writer failure should be present");
+        assert!(matches!(error, TunnelError::ReservedStreamId));
+
+        writer.abort();
+        offer_peer.close().await.expect("offer close");
+        answer_peer.close().await.expect("answer close");
+    }
+
+    #[tokio::test]
+    async fn data_to_unknown_stream_is_ignored() {
         let mut manager = StreamManager::new();
         let mut opening_streams = HashMap::new();
         let mut streams = HashMap::new();
@@ -1102,11 +1456,9 @@ mod tests {
             &mut streams,
         )
         .await
-        .expect("unknown data should produce stream error");
+        .expect("unknown data should be ignored");
 
-        let error = frame_rx.recv().await.expect("error frame");
-        assert_eq!(error.stream_id, 99);
-        assert_eq!(error.error_payload().expect("error payload").code, "stream_not_found");
+        assert!(frame_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -1144,8 +1496,8 @@ mod tests {
         assert!(full_tx.try_send(TcpWriteCommand::Data(b"queued".to_vec())).is_ok());
         let (other_tx, _other_rx) = mpsc::channel(1);
         let mut streams = HashMap::from([
-            (1_u32, RuntimeStream { write_tx: full_tx }),
-            (2_u32, RuntimeStream { write_tx: other_tx }),
+            (1_u32, RuntimeStream::open(full_tx, Vec::new())),
+            (2_u32, RuntimeStream::open(other_tx, Vec::new())),
         ]);
         let mut opening_streams = HashMap::new();
         let (frame_tx, mut frame_rx) = mpsc::channel(4);

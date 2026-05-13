@@ -379,3 +379,15 @@
 
 ## 2026-05-13T20:59:32Z - GPT-5.5 - RUST_WEBRTC_SPECS updated
 - Rewrote `docs/RUST_WEBRTC_SPECS.md` for the implemented v2 multiplexed forwarding model: `p2ptunnel-config-v2`, frame version 2, `[[forwards]]`, nested `[forwards.offer]`/`[forwards.answer]`, explicit allowlists, multiple logical streams, and current reconnect/status semantics.
+
+## 2026-05-13T21:29:19Z - GPT-5.5 - Multiplexed forwarding fix review triaged
+- Read `docs/MULTIPLEXED_FORWARDING_CODE_REVIEW.md` and `docs/MULTIPLEXED_FORWARDING_FIX_TODO.md`; the main real issues are stream task ownership/cancellation, writer failure propagation, inline answer-side target connect, non-empty OPEN ACK acceptance, first-forward-only overrides, and stale multiplexing docs.
+
+## 2026-05-13T21:32:17Z - GPT-5.5 - Multiplexed forwarding fix questions written
+- Wrote `docs/responses7.md` with the open implementation questions for ChatGPT: target-connect timeout value, late-DATA policy, first-forward-only override removal/rejection, `remote_io_error`, and listener shutdown wording.
+
+## 2026-05-13T21:35:33Z - GPT-5.5 - Multiplexed forwarding fix decisions frozen
+- Read `docs/replies7.md`; it freezes a hardcoded 10-second answer target-connect timeout, late DATA ignored for unknown/closed streams, removal of legacy first-forward CLI flags, startup rejection of legacy first-forward env vars, omitting `remote_io_error`, and keeping daemon-level offer listeners bound across session failures.
+
+## 2026-05-13T21:50:42Z - GPT-5.5 - Multiplexed runtime hardening phase
+- Implemented the first multiplexed forwarding hardening phase: runtime streams now retain task handles, stream/session cleanup cancels owned tasks, writer failures are reported to offer/answer loops, answer target connects run asynchronously with a 10-second timeout, late DATA is ignored, and non-empty OPEN ACKs are rejected.
