@@ -798,6 +798,20 @@ status_file = "{status_file}"
         .expect("ca");
     }
 
+    fn render_documented_sample(sample: &str, config_dir: &Path, state_dir: &Path) -> String {
+        sample
+            .replace("__IDENTITY__", &config_dir.join("identity").display().to_string())
+            .replace(
+                "__AUTHORIZED_KEYS__",
+                &config_dir.join("authorized_keys").display().to_string(),
+            )
+            .replace("__STATE_DIR__", &state_dir.display().to_string())
+            .replace("__LOG_DIR__", &state_dir.join("log").display().to_string())
+            .replace("__CA_FILE__", &config_dir.join("ca.crt").display().to_string())
+            .replace("__LOG_FILE__", &state_dir.join("log/p2ptunnel.log").display().to_string())
+            .replace("__STATUS_FILE__", &state_dir.join("status.json").display().to_string())
+    }
+
     #[test]
     fn config_loads_and_parses() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -812,6 +826,25 @@ status_file = "{status_file}"
 
         let config = AppConfig::load_from_file(&config_path).expect("config should load");
         assert_eq!(config.paths.identity, config_dir.join("identity"));
+    }
+
+    #[test]
+    fn documented_sample_configs_parse_and_validate() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        write_required_files(&config_dir);
+
+        for sample in [
+            include_str!("../../../docs/examples/offer-config.toml"),
+            include_str!("../../../docs/examples/answer-config.toml"),
+        ] {
+            let content = render_documented_sample(sample, &config_dir, &state_dir);
+            let mut config: AppConfig = toml::from_str(&content).expect("sample should parse");
+            config.expand_paths().expect("sample paths should expand");
+            config.validate().expect("sample should validate");
+        }
     }
 
     #[test]

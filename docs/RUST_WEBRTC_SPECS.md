@@ -879,18 +879,18 @@ Subcommands:
 ### `p2p-offer`
 
 ```text
-p2p-offer run [--config <path>] [--broker-url <url>] [--listen-port <port>]
+p2p-offer run [--config <path>] [--broker-url <url>]
 ```
 
-The `--listen-port` override updates the first configured offer forward. For multi-forward deployments, prefer editing `[[forwards]]`.
+Offer listen ports are configured per forward in `[[forwards]]`; v2 does not accept first-forward-only listen override flags.
 
 ### `p2p-answer`
 
 ```text
-p2p-answer run [--config <path>] [--broker-url <url>] [--target-host <host>] [--target-port <port>]
+p2p-answer run [--config <path>] [--broker-url <url>]
 ```
 
-The target overrides update the first configured answer forward. For multi-forward deployments, prefer editing `[[forwards]]`.
+Answer targets are configured per forward in `[[forwards]]`; v2 does not accept first-forward-only target override flags.
 
 ## 20. Operator workflow
 

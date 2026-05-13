@@ -391,3 +391,6 @@
 
 ## 2026-05-13T21:50:42Z - GPT-5.5 - Multiplexed runtime hardening phase
 - Implemented the first multiplexed forwarding hardening phase: runtime streams now retain task handles, stream/session cleanup cancels owned tasks, writer failures are reported to offer/answer loops, answer target connects run asynchronously with a 10-second timeout, late DATA is ignored, and non-empty OPEN ACKs are rejected.
+
+## 2026-05-13T21:57:18Z - GPT-5.5 - Multiplexed cleanup phase
+- Removed legacy first-forward-only CLI flags, made legacy first-forward env vars fail startup with clear config errors, removed unused `MultiplexedTunnel`, updated v2 docs/examples, and added parse/validate coverage for documented sample configs.

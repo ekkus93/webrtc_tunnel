@@ -124,6 +124,8 @@ The config format is `p2ptunnel-config-v2`.
 
 `~/.config/p2ptunnel/config.toml` must be a complete config file. `p2pctl check-config` does not accept isolated section snippets such as only `[broker]` or only one `[[forwards]]` block; it expects the top-level `format` field and all required sections.
 
+Parse-tested sample configs are maintained in `docs/examples/offer-config.toml` and `docs/examples/answer-config.toml`.
+
 ### Important sections
 
 - `[node]`: local `peer_id` and role (`offer` or `answer`)
@@ -385,17 +387,15 @@ p2pctl check-config --config ~/.config/p2ptunnel/config.toml
 p2p-answer run --config ~/.config/p2ptunnel/config.toml
 ```
 
-Optional runtime overrides:
+Optional global runtime override:
 
 ```bash
 p2p-answer run \
   --config ~/.config/p2ptunnel/config.toml \
-  --broker-url mqtts://broker.emqx.io:8883 \
-  --target-host 127.0.0.1 \
-  --target-port 22
+  --broker-url mqtts://broker.emqx.io:8883
 ```
 
-The target override updates the first configured answer forward. Prefer editing `[[forwards]]` for multi-forward deployments.
+Target host/port are configured per forward in `[[forwards]]`; v2 no longer accepts first-forward-only target override flags.
 
 ### Laptop offer daemon
 
@@ -403,16 +403,15 @@ The target override updates the first configured answer forward. Prefer editing 
 p2p-offer run --config ~/.config/p2ptunnel/config.toml
 ```
 
-Optional runtime overrides:
+Optional global runtime override:
 
 ```bash
 p2p-offer run \
   --config ~/.config/p2ptunnel/config.toml \
-  --broker-url mqtts://broker.emqx.io:8883 \
-  --listen-port 2223
+  --broker-url mqtts://broker.emqx.io:8883
 ```
 
-The listen-port override updates the first configured offer forward. Prefer editing `[[forwards]]` for multi-forward deployments.
+Listen ports are configured per forward in `[[forwards]]`; v2 no longer accepts first-forward-only listen override flags.
 
 Then point your local client at the offer listener, for example:
 

@@ -1,0 +1,96 @@
+format = "p2ptunnel-config-v2"
+
+[node]
+peer_id = "answer-office"
+role = "answer"
+
+[paths]
+identity = "__IDENTITY__"
+authorized_keys = "__AUTHORIZED_KEYS__"
+state_dir = "__STATE_DIR__"
+log_dir = "__LOG_DIR__"
+
+[broker]
+url = "mqtts://broker.example.com:8883"
+client_id = "answer-office"
+topic_prefix = "p2ptunnel"
+username = ""
+password_file = ""
+qos = 1
+keepalive_secs = 30
+clean_session = false
+connect_timeout_secs = 5
+session_expiry_secs = 0
+
+[broker.tls]
+ca_file = "__CA_FILE__"
+client_cert_file = ""
+client_key_file = ""
+insecure_skip_verify = false
+
+[webrtc]
+stun_urls = ["stun:stun.l.google.com:19302"]
+enable_trickle_ice = true
+enable_ice_restart = true
+
+[tunnel]
+read_chunk_size = 16384
+local_eof_grace_ms = 250
+remote_eof_grace_ms = 250
+
+[[forwards]]
+id = "ssh"
+
+[forwards.answer]
+target_host = "127.0.0.1"
+target_port = 22
+allow_remote_peers = ["offer-home"]
+
+[[forwards]]
+id = "web-ui"
+
+[forwards.answer]
+target_host = "127.0.0.1"
+target_port = 8080
+allow_remote_peers = ["offer-home"]
+
+[reconnect]
+enable_auto_reconnect = true
+strategy = "ice_then_renegotiate"
+ice_restart_timeout_secs = 8
+renegotiate_timeout_secs = 20
+backoff_initial_ms = 1000
+backoff_max_ms = 30000
+backoff_multiplier = 2.0
+jitter_ratio = 0.20
+max_attempts = 0
+hold_local_client_during_reconnect = false
+local_client_hold_secs = 0
+
+[security]
+require_mqtt_tls = true
+require_message_encryption = true
+require_message_signatures = true
+require_authorized_keys = true
+max_clock_skew_secs = 120
+max_message_age_secs = 300
+replay_cache_size = 10000
+reject_unknown_config_keys = true
+refuse_world_readable_identity = true
+refuse_world_writable_paths = true
+
+[logging]
+level = "info"
+format = "text"
+file_logging = true
+stdout_logging = true
+log_file = "__LOG_FILE__"
+redact_secrets = true
+redact_sdp = true
+redact_candidates = true
+log_rotation = "none"
+
+[health]
+status_socket = ""
+write_status_file = true
+status_file = "__STATUS_FILE__"

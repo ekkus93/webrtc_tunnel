@@ -20,10 +20,6 @@ enum Command {
         config: Option<PathBuf>,
         #[arg(long)]
         broker_url: Option<String>,
-        #[arg(long)]
-        target_host: Option<String>,
-        #[arg(long)]
-        target_port: Option<u16>,
     },
 }
 
@@ -36,10 +32,10 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let Command::Run { config, broker_url, target_host, target_port } = Cli::parse().command;
+    let Command::Run { config, broker_url } = Cli::parse().command;
     let mut config = load_config(config.as_deref())?;
-    apply_env_overrides(&mut config);
-    apply_answer_overrides(&mut config, broker_url, target_host, target_port);
+    apply_env_overrides(&mut config)?;
+    apply_answer_overrides(&mut config, broker_url);
     config.validate()?;
     config.ensure_runtime_dirs()?;
 

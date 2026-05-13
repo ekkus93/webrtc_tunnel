@@ -341,6 +341,8 @@ password_file = "~/.config/p2ptunnel/mqtt_password"
 qos = 1
 keepalive_secs = 30
 clean_session = false
+connect_timeout_secs = 5
+session_expiry_secs = 0
 
 [broker.tls]
 ca_file = "~/.config/p2ptunnel/ca.crt"
@@ -356,28 +358,27 @@ log_dir = "~/.local/state/p2ptunnel/log"
 
 [webrtc]
 stun_urls = ["stun:stun.l.google.com:19302"]
-turn_urls = []
 enable_trickle_ice = true
 enable_ice_restart = true
 
 [tunnel]
 read_chunk_size = 16384
+local_eof_grace_ms = 250
+remote_eof_grace_ms = 250
 
 [[forwards]]
 id = "ssh"
+
+[forwards.offer]
 listen_host = "127.0.0.1"
 listen_port = 2223
-target_host = ""
-target_port = 0
-allow_remote_peers = []
 
 [[forwards]]
 id = "web-ui"
+
+[forwards.offer]
 listen_host = "127.0.0.1"
 listen_port = 8080
-target_host = ""
-target_port = 0
-allow_remote_peers = []
 
 [reconnect]
 enable_auto_reconnect = true
@@ -389,6 +390,8 @@ backoff_max_ms = 30000
 backoff_multiplier = 2.0
 jitter_ratio = 0.20
 max_attempts = 0
+hold_local_client_during_reconnect = false
+local_client_hold_secs = 0
 
 [security]
 require_mqtt_tls = true
@@ -411,8 +414,10 @@ log_file = "~/.local/state/p2ptunnel/log/p2ptunnel.log"
 redact_secrets = true
 redact_sdp = true
 redact_candidates = true
+log_rotation = "none"
 
 [health]
+status_socket = ""
 write_status_file = true
 status_file = "~/.local/state/p2ptunnel/status.json"
 ```
@@ -441,6 +446,8 @@ password_file = "~/.config/p2ptunnel/mqtt_password"
 qos = 1
 keepalive_secs = 30
 clean_session = false
+connect_timeout_secs = 5
+session_expiry_secs = 0
 
 [broker.tls]
 ca_file = "~/.config/p2ptunnel/ca.crt"
@@ -450,25 +457,26 @@ insecure_skip_verify = false
 
 [webrtc]
 stun_urls = ["stun:stun.l.google.com:19302"]
-turn_urls = []
 enable_trickle_ice = true
 enable_ice_restart = true
 
 [tunnel]
 read_chunk_size = 16384
+local_eof_grace_ms = 250
+remote_eof_grace_ms = 250
 
 [[forwards]]
 id = "ssh"
-listen_host = ""
-listen_port = 0
+
+[forwards.answer]
 target_host = "127.0.0.1"
 target_port = 22
 allow_remote_peers = ["laptop"]
 
 [[forwards]]
 id = "web-ui"
-listen_host = ""
-listen_port = 0
+
+[forwards.answer]
 target_host = "127.0.0.1"
 target_port = 8080
 allow_remote_peers = ["laptop"]
@@ -483,6 +491,8 @@ backoff_max_ms = 30000
 backoff_multiplier = 2.0
 jitter_ratio = 0.20
 max_attempts = 0
+hold_local_client_during_reconnect = false
+local_client_hold_secs = 0
 
 [security]
 require_mqtt_tls = true
@@ -505,8 +515,10 @@ log_file = "~/.local/state/p2ptunnel/log/p2ptunnel.log"
 redact_secrets = true
 redact_sdp = true
 redact_candidates = true
+log_rotation = "none"
 
 [health]
+status_socket = ""
 write_status_file = true
 status_file = "~/.local/state/p2ptunnel/status.json"
 ```
@@ -650,7 +662,6 @@ stream_not_found
 stream_already_exists
 protocol_error
 local_io_error
-remote_io_error
 queue_overflow
 ```
 
@@ -664,25 +675,15 @@ Rules:
 
 ## 7. Runtime architecture
 
-### 7.1 Replace single-stream bridge
+### 7.1 Multiplex runtime owner
 
-The old bridge shape is effectively:
+The old bridge shape was effectively:
 
 ```text
 one TcpStream <-> one data channel stream id 1
 ```
 
-Replace it with a multiplexed tunnel manager:
-
-```rust
-pub struct MultiplexedTunnel {
-    data_channel: DataChannelHandle,
-    forward_table: ForwardTable,
-    streams: HashMap<StreamId, StreamState>,
-}
-```
-
-Names may differ, but the responsibilities must be equivalent.
+The production runtime is now the daemon-used `run_multiplex_offer` and `run_multiplex_answer` path in `p2p-tunnel`. That path owns stream ID allocation, stream state, writer queue and writer failure handling, per-stream task cancellation, forward lookup, frame dispatch, and session teardown. Do not leave a second production-looking multiplex manager beside that path.
 
 ### 7.2 Forward table
 

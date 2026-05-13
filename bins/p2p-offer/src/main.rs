@@ -20,8 +20,6 @@ enum Command {
         config: Option<PathBuf>,
         #[arg(long)]
         broker_url: Option<String>,
-        #[arg(long)]
-        listen_port: Option<u16>,
     },
 }
 
@@ -34,10 +32,10 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let Command::Run { config, broker_url, listen_port } = Cli::parse().command;
+    let Command::Run { config, broker_url } = Cli::parse().command;
     let mut config = load_config(config.as_deref())?;
-    apply_env_overrides(&mut config);
-    apply_offer_overrides(&mut config, broker_url, listen_port);
+    apply_env_overrides(&mut config)?;
+    apply_offer_overrides(&mut config, broker_url);
     config.validate()?;
     config.ensure_runtime_dirs()?;
 

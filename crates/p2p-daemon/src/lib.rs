@@ -1,9 +1,10 @@
-//! Daemon lifetime is intentionally longer than session lifetime in v1.
+//! Daemon lifetime is intentionally longer than session lifetime in v2.
 //!
 //! Each daemon process stays alive and repeatedly returns to its steady state
 //! (`Idle` for answer, `WaitingForLocalClient` for offer) after ordinary
-//! session failures. Sessions are single-use, single-stream, and are cleaned up
-//! deterministically before the daemon accepts the next session.
+//! session failures. One peer session may carry multiple multiplexed TCP
+//! streams, and session-owned streams are cleaned up deterministically before
+//! the daemon accepts the next session.
 //! Startup and security initialization failures remain fatal, while recoverable
 //! runtime transport turbulence updates local status truthfully before the
 //! daemon retries and returns to service.
@@ -17,8 +18,8 @@ use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use p2p_core::{
-    AppConfig, ConfigError, DaemonState, FailureCode, ForwardAnswerConfig, ForwardOfferConfig,
-    ForwardTable, Kid, MsgId, NodeRole, PeerId, SessionId,
+    AppConfig, ConfigError, DaemonState, FailureCode, ForwardOfferConfig, ForwardTable, Kid, MsgId,
+    NodeRole, PeerId, SessionId,
 };
 use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile, kid_from_signing_key};
 use p2p_signaling::{
@@ -498,43 +499,19 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
     }
 }
 
-pub fn apply_env_overrides(config: &mut AppConfig) {
-    apply_override_pairs(config, env::vars());
+pub fn apply_env_overrides(config: &mut AppConfig) -> Result<(), ConfigError> {
+    apply_override_pairs(config, env::vars())
 }
 
-pub fn apply_offer_overrides(
-    config: &mut AppConfig,
-    broker_url: Option<String>,
-    listen_port: Option<u16>,
-) {
+pub fn apply_offer_overrides(config: &mut AppConfig, broker_url: Option<String>) {
     if let Some(broker_url) = broker_url {
         config.broker.url = broker_url;
     }
-    if let Some(listen_port) = listen_port {
-        if let Some(offer) = first_offer_forward_mut(config) {
-            offer.listen_port = listen_port;
-        }
-    }
 }
 
-pub fn apply_answer_overrides(
-    config: &mut AppConfig,
-    broker_url: Option<String>,
-    target_host: Option<String>,
-    target_port: Option<u16>,
-) {
+pub fn apply_answer_overrides(config: &mut AppConfig, broker_url: Option<String>) {
     if let Some(broker_url) = broker_url {
         config.broker.url = broker_url;
-    }
-    if let Some(target_host) = target_host {
-        if let Some(answer) = first_answer_forward_mut(config) {
-            answer.target_host = target_host;
-        }
-    }
-    if let Some(target_port) = target_port {
-        if let Some(answer) = first_answer_forward_mut(config) {
-            answer.target_port = target_port;
-        }
     }
 }
 
@@ -1979,7 +1956,7 @@ fn first_offer_forward(config: &AppConfig) -> Result<(&str, &ForwardOfferConfig)
 }
 
 #[cfg(test)]
-fn first_answer_forward(config: &AppConfig) -> Result<&ForwardAnswerConfig, DaemonError> {
+fn first_answer_forward(config: &AppConfig) -> Result<&p2p_core::ForwardAnswerConfig, DaemonError> {
     config.forwards.iter().find_map(|forward| forward.answer.as_ref()).ok_or_else(|| {
         DaemonError::Config(ConfigError::InvalidConfig(
             "at least one [forwards.answer] rule is required".to_owned(),
@@ -1987,45 +1964,44 @@ fn first_answer_forward(config: &AppConfig) -> Result<&ForwardAnswerConfig, Daem
     })
 }
 
+#[cfg(test)]
 fn first_offer_forward_mut(config: &mut AppConfig) -> Option<&mut ForwardOfferConfig> {
     config.forwards.iter_mut().find_map(|forward| forward.offer.as_mut())
 }
 
-fn first_answer_forward_mut(config: &mut AppConfig) -> Option<&mut ForwardAnswerConfig> {
+#[cfg(test)]
+fn first_answer_forward_mut(config: &mut AppConfig) -> Option<&mut p2p_core::ForwardAnswerConfig> {
     config.forwards.iter_mut().find_map(|forward| forward.answer.as_mut())
 }
 
 fn apply_override_pairs(
     config: &mut AppConfig,
     overrides: impl IntoIterator<Item = (String, String)>,
-) {
+) -> Result<(), ConfigError> {
     for (key, value) in overrides {
         match key.as_str() {
             "P2PTUNNEL_BROKER_URL" => config.broker.url = value,
             "P2PTUNNEL_BROKER_USERNAME" => config.broker.username = value,
             "P2PTUNNEL_BROKER_PASSWORD_FILE" => config.broker.password_file = value.into(),
             "P2PTUNNEL_LISTEN_PORT" => {
-                if let Ok(port) = value.parse() {
-                    if let Some(offer) = first_offer_forward_mut(config) {
-                        offer.listen_port = port;
-                    }
-                }
+                return Err(legacy_forward_env_error(&key, "[forwards.offer].listen_port"));
             }
             "P2PTUNNEL_TARGET_HOST" => {
-                if let Some(answer) = first_answer_forward_mut(config) {
-                    answer.target_host = value;
-                }
+                return Err(legacy_forward_env_error(&key, "[forwards.answer].target_host"));
             }
             "P2PTUNNEL_TARGET_PORT" => {
-                if let Ok(port) = value.parse() {
-                    if let Some(answer) = first_answer_forward_mut(config) {
-                        answer.target_port = port;
-                    }
-                }
+                return Err(legacy_forward_env_error(&key, "[forwards.answer].target_port"));
             }
             _ => {}
         }
     }
+    Ok(())
+}
+
+fn legacy_forward_env_error(name: &str, replacement: &str) -> ConfigError {
+    ConfigError::InvalidConfig(format!(
+        "{name} is no longer supported in config v2. Use {replacement} in config.toml instead."
+    ))
 }
 
 fn candidate_from_body(body: &IceCandidateBody) -> IceCandidateSignal {
@@ -2567,41 +2543,46 @@ mod tests {
     #[test]
     fn apply_offer_cli_overrides() {
         let mut config = sample_config();
-        apply_offer_overrides(&mut config, Some("mqtts://override".to_owned()), Some(7777));
+        let original_port = super::first_offer_forward(&config).expect("offer").1.listen_port;
+        apply_offer_overrides(&mut config, Some("mqtts://override".to_owned()));
         assert_eq!(config.broker.url, "mqtts://override");
-        assert_eq!(super::first_offer_forward(&config).expect("offer").1.listen_port, 7777);
+        assert_eq!(
+            super::first_offer_forward(&config).expect("offer").1.listen_port,
+            original_port
+        );
     }
 
     #[test]
     fn apply_answer_cli_overrides() {
         let mut config = sample_config();
-        apply_answer_overrides(
-            &mut config,
-            Some("mqtts://override".to_owned()),
-            Some("10.0.0.5".to_owned()),
-            Some(2222),
-        );
+        let original_answer = super::first_answer_forward(&config).expect("answer").clone();
+        apply_answer_overrides(&mut config, Some("mqtts://override".to_owned()));
         assert_eq!(config.broker.url, "mqtts://override");
         let answer = super::first_answer_forward(&config).expect("answer");
-        assert_eq!(answer.target_host, "10.0.0.5");
-        assert_eq!(answer.target_port, 2222);
+        assert_eq!(answer.target_host, original_answer.target_host);
+        assert_eq!(answer.target_port, original_answer.target_port);
     }
 
     #[test]
-    fn env_overrides_update_config() {
+    fn env_overrides_update_global_config() {
         let mut config = sample_config();
 
         apply_override_pairs(
             &mut config,
-            [
-                ("P2PTUNNEL_BROKER_URL".to_owned(), "mqtts://env".to_owned()),
-                ("P2PTUNNEL_LISTEN_PORT".to_owned(), "6000".to_owned()),
-                ("P2PTUNNEL_TARGET_PORT".to_owned(), "2022".to_owned()),
-            ],
-        );
+            [("P2PTUNNEL_BROKER_URL".to_owned(), "mqtts://env".to_owned())],
+        )
+        .expect("global env override should apply");
         assert_eq!(config.broker.url, "mqtts://env");
-        assert_eq!(super::first_offer_forward(&config).expect("offer").1.listen_port, 6000);
-        assert_eq!(super::first_answer_forward(&config).expect("answer").target_port, 2022);
+    }
+
+    #[test]
+    fn legacy_first_forward_env_overrides_are_rejected() {
+        for key in ["P2PTUNNEL_LISTEN_PORT", "P2PTUNNEL_TARGET_HOST", "P2PTUNNEL_TARGET_PORT"] {
+            let mut config = sample_config();
+            let error = apply_override_pairs(&mut config, [(key.to_owned(), "ignored".to_owned())])
+                .expect_err("legacy first-forward env override should fail");
+            assert!(error.to_string().contains("no longer supported in config v2"));
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@ use p2p_core::{
 use p2p_webrtc::{DataChannelEvent, DataChannelHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::{ErrorPayload, OfferClient, OpenPayload, TunnelError, TunnelFrame, TunnelFrameCodec};
@@ -110,6 +110,9 @@ pub struct StreamIdAllocator {
     next: u32,
 }
 
+// The daemon uses these runtime functions directly. They are the production owner
+// for stream allocation, stream state, per-stream task cancellation, writer
+// failure propagation, frame dispatch, and session teardown.
 pub async fn run_multiplex_offer(
     data_channel: DataChannelHandle,
     tunnel_config: &TunnelConfig,
@@ -694,95 +697,6 @@ impl StreamManager {
     pub fn clear(&mut self) {
         self.streams.clear();
     }
-}
-
-pub struct MultiplexedTunnel {
-    forward_table: ForwardTable,
-    streams: StreamManager,
-    outbound_tx: mpsc::Sender<TunnelFrame>,
-    writer_handle: JoinHandle<Result<(), TunnelError>>,
-    writer_failure_rx: oneshot::Receiver<TunnelError>,
-}
-
-impl MultiplexedTunnel {
-    pub fn new(data_channel: DataChannelHandle, forward_table: ForwardTable) -> Self {
-        let (outbound_tx, outbound_rx) = mpsc::channel(DEFAULT_WRITER_QUEUE_MESSAGES);
-        let (failure_tx, writer_failure_rx) = oneshot::channel();
-        let writer_handle = spawn_writer(data_channel, outbound_rx, failure_tx);
-        Self {
-            forward_table,
-            streams: StreamManager::new(),
-            outbound_tx,
-            writer_handle,
-            writer_failure_rx,
-        }
-    }
-
-    pub fn forward_table(&self) -> &ForwardTable {
-        &self.forward_table
-    }
-
-    pub fn streams(&self) -> &StreamManager {
-        &self.streams
-    }
-
-    pub fn streams_mut(&mut self) -> &mut StreamManager {
-        &mut self.streams
-    }
-
-    pub async fn send_open(&self, stream_id: u32, forward_id: String) -> Result<(), TunnelError> {
-        self.enqueue(TunnelFrame::open(stream_id, OpenPayload { forward_id })?).await
-    }
-
-    pub async fn send_open_ack(&self, stream_id: u32) -> Result<(), TunnelError> {
-        self.enqueue(TunnelFrame::open_ack(stream_id)).await
-    }
-
-    pub async fn send_data(&self, stream_id: u32, payload: Vec<u8>) -> Result<(), TunnelError> {
-        self.enqueue(TunnelFrame::data(stream_id, payload)).await
-    }
-
-    pub async fn send_close(&self, stream_id: u32) -> Result<(), TunnelError> {
-        self.enqueue(TunnelFrame::close(stream_id)).await
-    }
-
-    pub async fn send_error(
-        &self,
-        stream_id: u32,
-        payload: ErrorPayload,
-    ) -> Result<(), TunnelError> {
-        self.enqueue(TunnelFrame::error(stream_id, payload)?).await
-    }
-
-    async fn enqueue(&self, frame: TunnelFrame) -> Result<(), TunnelError> {
-        self.outbound_tx.send(frame).await.map_err(|_| TunnelError::WriterClosed)
-    }
-
-    pub fn abort_writer(&self) {
-        self.writer_handle.abort();
-    }
-
-    pub fn try_writer_failure(&mut self) -> Option<TunnelError> {
-        self.writer_failure_rx.try_recv().ok()
-    }
-}
-
-fn spawn_writer(
-    data_channel: DataChannelHandle,
-    mut outbound_rx: mpsc::Receiver<TunnelFrame>,
-    failure_tx: oneshot::Sender<TunnelError>,
-) -> JoinHandle<Result<(), TunnelError>> {
-    tokio::spawn(async move {
-        while let Some(frame) = outbound_rx.recv().await {
-            let encoded = TunnelFrameCodec::encode(&frame)?;
-            if let Err(error) = data_channel.send(&encoded).await {
-                let tunnel_error = TunnelError::WebRtc(error);
-                let _ = failure_tx.send(TunnelError::DataChannelClosed);
-                return Err(tunnel_error);
-            }
-        }
-        Ok(())
-    })
 }
 
 fn spawn_writer_only(

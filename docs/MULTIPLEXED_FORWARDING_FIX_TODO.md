@@ -59,28 +59,28 @@ The purpose of this TODO is to harden the current implementation so it is safe a
 | 4.2 Offer-side ACK handling | Done | Non-empty `OPEN` ACK is rejected as `protocol_error`. |
 | 4.3 Answer-side ACK generation | Done | Answer side uses empty `TunnelFrame::open_ack`. |
 | 4.4 ACK tests | Done | Added empty, duplicate-empty, and non-empty ACK coverage. |
-| 5.1 Remove stale TURN examples | Pending |  |
-| 5.2 Remove old flat/dummy forward examples | Pending |  |
-| 5.3 Update migration docs | Pending |  |
-| 5.4 Update comments | Pending |  |
-| 5.5 Parse-test documented configs | Pending |  |
-| 6.1 Audit overrides | Pending |  |
-| 6.2 Remove first-forward overrides | Pending |  |
-| 6.3 Keep safe global overrides | Pending |  |
-| 6.4 Forward-scoped overrides | Pending | Not planned for this pass. |
-| 6.5 Override tests | Pending |  |
-| 7.1 Identify competing abstractions | Pending |  |
-| 7.2 Pick runtime owner | Pending |  |
-| 7.3 Make ownership explicit | Pending |  |
-| 7.4 Remove dead runtime path | Pending |  |
-| 7.5 Runtime ownership tests | Pending |  |
+| 5.1 Remove stale TURN examples | Done | Removed stale `turn_urls` examples from current v2 docs/examples. |
+| 5.2 Remove old flat/dummy forward examples | Done | Replaced with role-specific `[forwards.offer]` / `[forwards.answer]`. |
+| 5.3 Update migration docs | Done | README/spec now point users at role-specific `[[forwards]]`. |
+| 5.4 Update comments | Done | Updated stale daemon single-stream wording. |
+| 5.5 Parse-test documented configs | Done | Added parse/validate coverage for `docs/examples/*.toml`. |
+| 6.1 Audit overrides | Done | Found first-forward-only CLI flags and env vars. |
+| 6.2 Remove first-forward overrides | Done | Removed CLI flags and first-forward mutation behavior. |
+| 6.3 Keep safe global overrides | Done | Kept `--config`, `--broker-url`, and broker env overrides. |
+| 6.4 Forward-scoped overrides | Done | Deferred by decision; not added in this pass. |
+| 6.5 Override tests | Done | Added rejection coverage for legacy env vars and retained global override coverage. |
+| 7.1 Identify competing abstractions | Done | Found unused `MultiplexedTunnel` beside real runtime functions. |
+| 7.2 Pick runtime owner | Done | `run_multiplex_offer` / `run_multiplex_answer` are the production owner. |
+| 7.3 Make ownership explicit | Done | Added ownership comment to the runtime module. |
+| 7.4 Remove dead runtime path | Done | Removed unused `MultiplexedTunnel` abstraction. |
+| 7.5 Runtime ownership tests | Done | Existing daemon and tunnel tests exercise the real runtime path. |
 | 8.1 Multi-forward concurrent behavior | Pending |  |
 | 8.2 Multiple streams on one forward | Pending |  |
 | 8.3 Browser-like connection pattern | Pending |  |
 | 8.4 Target-connect isolation | Pending |  |
 | 8.5 Writer failure behavior | Pending |  |
 | 8.6 Session failure cleanup | Pending |  |
-| 8.7 Docs/sample parse tests | Pending |  |
+| 8.7 Docs/sample parse tests | Done | Covered by p2p-core documented sample config test. |
 | 9.1 Final stale search | Pending |  |
 | 9.2 Remove obsolete code/imports | Pending |  |
 | 9.3 Update docs index/README links | Pending |  |
