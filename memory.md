@@ -337,3 +337,7 @@
 ## 2026-05-13T17:59:22Z - GPT-5.5 - Copilot coauthor trailers removed from published history
 - Rewrote `master` from `37ba200` onward to remove the exact Copilot co-author trailer from the two affected commit messages, then force-pushed `master`.
 - Moved and force-pushed the annotated `v0.1` tag to the rewritten release commit `5d5366b`; rewritten commits are `4a2bd8c` for runtime dirs and `dd94936` for startup file errors/reconnect tests.
+
+## 2026-05-13T18:05:49Z - GPT-5.5 - macOS daemon test CA-path fix
+- Fixed the `active_offer_session_ignores_duplicate_signal_and_processes_later_valid_ack` unit test so it uses the existing in-memory `RecordingTransport` instead of building a real MQTT transport from `/etc/ssl/certs/ca-certificates.crt`, which does not exist on macOS CI runners.
+- Validated with `cargo fmt --all --check`, the focused daemon regression, `cargo test -p p2p-daemon --lib`, workspace clippy with `-D warnings`, and `cargo test --workspace --all-targets`.

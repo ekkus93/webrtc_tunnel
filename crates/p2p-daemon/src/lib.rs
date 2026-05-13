@@ -2235,14 +2235,13 @@ mod tests {
     use super::{
         ActiveBusyOfferAction, ActiveBusyOfferCache, ActiveBusyOfferKey, ActiveSession,
         AnswerTargetConnector, BridgeSessionState, DaemonError, DaemonRuntimeState,
-        DaemonSignalingTransport, DaemonState, IceConnectionState, MqttSignalingTransport,
-        OfferListener, OfferSessionPayloadOutcome, RuntimeContext, StatusSnapshot, StatusWriter,
-        TunnelBridge, WebRtcPeer, apply_answer_overrides, apply_offer_overrides,
-        apply_override_pairs, classify_active_busy_offer, compute_backoff_delay,
-        decode_idle_signaling_message, duplicate_active_session_ack_message,
-        handle_answer_incoming_data_channel, handle_answer_session_message,
-        handle_offer_session_message, mark_transport_unusable, mark_transport_usable,
-        maybe_replace_pending_answer_session, process_offer_session_payload,
+        DaemonSignalingTransport, DaemonState, IceConnectionState, OfferListener,
+        OfferSessionPayloadOutcome, RuntimeContext, StatusSnapshot, StatusWriter, TunnelBridge,
+        WebRtcPeer, apply_answer_overrides, apply_offer_overrides, apply_override_pairs,
+        classify_active_busy_offer, compute_backoff_delay, decode_idle_signaling_message,
+        duplicate_active_session_ack_message, handle_answer_incoming_data_channel,
+        handle_answer_session_message, handle_offer_session_message, mark_transport_unusable,
+        mark_transport_usable, maybe_replace_pending_answer_session, process_offer_session_payload,
         recover_daemon_after_session, replayed_active_busy_offer_key,
         run_offer_daemon_with_transport_and_test_hook, should_ack_idle_offer,
         should_attempt_offer_reconnect, should_continue_reconnect_attempt, spawn_offer_accept_loop,
@@ -2913,11 +2912,6 @@ mod tests {
         let mut config = sample_config();
         config.webrtc.stun_urls = Vec::new();
         config.webrtc.enable_trickle_ice = false;
-        config.broker.username.clear();
-        config.broker.password_file = PathBuf::new();
-        config.broker.tls.ca_file = PathBuf::from("/etc/ssl/certs/ca-certificates.crt");
-        config.broker.tls.client_cert_file = PathBuf::new();
-        config.broker.tls.client_key_file = PathBuf::new();
 
         let offer = generate_identity("offer-home").expect("offer identity");
         let answer = generate_identity("answer-office").expect("answer identity");
@@ -2938,8 +2932,7 @@ mod tests {
         let (path, writer) = status_writer_for_test(&mut config, "offer-duplicate-survival");
         let mut runtime = connected_runtime();
         let mut ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
-        let mut transport =
-            MqttSignalingTransport::connect(&config).expect("transport should build");
+        let mut transport = RecordingTransport::default();
 
         let outbound_message = InnerMessageBuilder::new(
             session_id,
