@@ -333,3 +333,7 @@
 
 ## 2026-05-13T17:55:46Z - GPT-5.5 - Copilot coauthor hook check-in
 - Preparing to check in the tracked `.githooks/commit-msg` blocker and memory notes so future checkouts can enable the same Copilot co-author trailer protection.
+
+## 2026-05-13T17:59:22Z - GPT-5.5 - Copilot coauthor trailers removed from published history
+- Rewrote `master` from `37ba200` onward to remove the exact Copilot co-author trailer from the two affected commit messages, then force-pushed `master`.
+- Moved and force-pushed the annotated `v0.1` tag to the rewritten release commit `5d5366b`; rewritten commits are `4a2bd8c` for runtime dirs and `dd94936` for startup file errors/reconnect tests.
