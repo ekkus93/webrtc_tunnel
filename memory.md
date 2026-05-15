@@ -440,3 +440,10 @@
 - Implemented the v0.3 hardening pass: answer routing now authenticates/decrypts once before typed session dispatch, daemon-level replay status preserves duplicate re-ACK behavior, session events carry generation tokens, and generic status/end events cannot re-key or remove newer sessions.
 - Status output now uses `DaemonState::Serving` while answer sessions are active, removes fake stream counts, and reports `configured_forward_ids`; docs and `V03_FIX_TODO.md` were updated to match the completed hardening pass.
 - Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T04:33:00Z - GPT-5.5 - Unit test TODO created
+- Created `docs/UNIT_TEST1_TODO.md` with a detailed test-only checklist for p2pctl status rendering, signaling replay-status behavior, same-peer replacement isolation, per-forward allowlist isolation, multi-session failure isolation, authenticated-routing edge cases, status schema regressions, and final validation.
+
+## 2026-05-15T04:42:40Z - GPT-5.5 - Unit test TODO implemented
+- Implemented `docs/UNIT_TEST1_TODO.md`: added p2pctl status rendering tests, direct signaling replay-status tests, daemon routing/status/replacement/failure-isolation unit tests, and two-node allowlist/failure-isolation integration coverage.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.

@@ -337,6 +337,60 @@ async fn connect_with_retry(port: u16) -> TcpStream {
     }
 }
 
+async fn assert_client_round_trip(
+    port: u16,
+    request: &'static [u8; 4],
+    response: &'static [u8; 4],
+) {
+    let mut client = connect_with_retry(port).await;
+    client.write_all(request).await.expect("client write");
+    let mut received = [0_u8; 4];
+    timeout(Duration::from_secs(10), client.read_exact(&mut received))
+        .await
+        .expect("client should receive response in time")
+        .expect("client should read response");
+    assert_eq!(&received, response);
+    client.shutdown().await.expect("client shutdown");
+}
+
+async fn assert_client_stream_fails(port: u16, request: &'static [u8; 4]) {
+    let mut client = connect_with_retry(port).await;
+    client.write_all(request).await.expect("client write");
+    let mut received = [0_u8; 4];
+    let result = timeout(Duration::from_secs(5), client.read_exact(&mut received)).await;
+    assert!(
+        !matches!(result, Ok(Ok(_))),
+        "denied stream unexpectedly returned bytes: {received:?}"
+    );
+}
+
+fn add_offer_forward(config: &mut AppConfig, id: &str, listen_port: u16, target_port: u16) {
+    config.forwards.push(ForwardRule {
+        id: id.to_owned(),
+        offer: Some(ForwardOfferConfig { listen_host: "127.0.0.1".to_owned(), listen_port }),
+        answer: Some(ForwardAnswerConfig {
+            target_host: "127.0.0.1".to_owned(),
+            target_port,
+            allow_remote_peers: vec![config.node.peer_id.clone()],
+        }),
+    });
+}
+
+fn add_answer_forward(config: &mut AppConfig, id: &str, target_port: u16, allow_remote_peer: &str) {
+    config.forwards.push(ForwardRule {
+        id: id.to_owned(),
+        offer: Some(ForwardOfferConfig {
+            listen_host: "127.0.0.1".to_owned(),
+            listen_port: unused_local_port(),
+        }),
+        answer: Some(ForwardAnswerConfig {
+            target_host: "127.0.0.1".to_owned(),
+            target_port,
+            allow_remote_peers: vec![allow_remote_peer.parse().expect("allowed peer id")],
+        }),
+    });
+}
+
 async fn wait_for_status(path: &Path, expected_state: &str) -> serde_json::Value {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -952,11 +1006,163 @@ async fn target_connect_failure_for_one_peer_does_not_break_another_peer() {
         .expect("good target should finish")
         .expect("good target should succeed");
 
+    let status = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(content) = tokio::fs::read_to_string(&answer_status).await
+                && let Ok(status) = serde_json::from_str::<serde_json::Value>(&content)
+            {
+                let sessions = status["sessions"].as_array().expect("sessions array");
+                if sessions.iter().any(|session| session["remote_peer_id"] == "offer-desktop") {
+                    break status;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "answer status did not retain the surviving peer"
+            );
+            sleep(Duration::from_millis(50)).await;
+        }
+    };
+    assert_eq!(status["current_state"], "serving");
+
     bad_offer_task.abort();
     good_offer_task.abort();
     answer_task.abort();
     let _ = bad_offer_task.await;
     let _ = good_offer_task.await;
+    let _ = answer_task.await;
+    let _ = tokio::fs::remove_file(offer_home_status).await;
+    let _ = tokio::fs::remove_file(offer_desktop_status).await;
+    let _ = tokio::fs::remove_file(answer_status).await;
+}
+
+#[tokio::test]
+async fn per_forward_allowlists_are_isolated_across_simultaneous_sessions() {
+    let offer_home = generate_identity("offer-home").expect("offer-home identity should build");
+    let offer_desktop =
+        generate_identity("offer-desktop").expect("offer-desktop identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+
+    let offer_home_keys = authorized_keys_for(&answer_identity);
+    let offer_desktop_keys = authorized_keys_for(&answer_identity);
+    let answer_keys = authorized_keys_for_many(&[&offer_home, &offer_desktop]);
+
+    let offer_home_status = unique_path("offer-home-allowlist-status.json");
+    let offer_desktop_status = unique_path("offer-desktop-allowlist-status.json");
+    let answer_status = unique_path("answer-allowlist-status.json");
+    let home_ssh_port = unused_local_port();
+    let home_web_port = unused_local_port();
+    let desktop_ssh_port = unused_local_port();
+    let desktop_web_port = unused_local_port();
+
+    let ssh_target = TcpListener::bind(("127.0.0.1", 0)).await.expect("ssh target should bind");
+    let web_target = TcpListener::bind(("127.0.0.1", 0)).await.expect("web target should bind");
+    let ssh_target_port = ssh_target.local_addr().expect("ssh target addr").port();
+    let web_target_port = web_target.local_addr().expect("web target addr").port();
+
+    let ssh_target_task = tokio::spawn(async move {
+        for expected in [b"ha01", b"ha02"] {
+            let (mut stream, _) = ssh_target.accept().await.expect("ssh target accept");
+            let mut request = [0_u8; 4];
+            stream.read_exact(&mut request).await.expect("ssh target read");
+            assert_eq!(&request, expected);
+            stream.write_all(b"SSH!").await.expect("ssh target write");
+            stream.shutdown().await.expect("ssh target shutdown");
+        }
+    });
+    let web_target_task = tokio::spawn(async move {
+        for expected in [b"db01", b"db02"] {
+            let (mut stream, _) = web_target.accept().await.expect("web target accept");
+            let mut request = [0_u8; 4];
+            stream.read_exact(&mut request).await.expect("web target read");
+            assert_eq!(&request, expected);
+            stream.write_all(b"WEB!").await.expect("web target write");
+            stream.shutdown().await.expect("web target shutdown");
+        }
+    });
+
+    let mut offer_home_config = sample_config_for(
+        NodeRole::Offer,
+        offer_home_status.clone(),
+        home_ssh_port,
+        ssh_target_port,
+        "offer-home",
+        vec!["offer-home"],
+    );
+    add_offer_forward(&mut offer_home_config, "web-ui", home_web_port, web_target_port);
+    let mut offer_desktop_config = sample_config_for(
+        NodeRole::Offer,
+        offer_desktop_status.clone(),
+        desktop_ssh_port,
+        ssh_target_port,
+        "offer-desktop",
+        vec!["offer-desktop"],
+    );
+    add_offer_forward(&mut offer_desktop_config, "web-ui", desktop_web_port, web_target_port);
+    let mut answer_config = sample_config_for(
+        NodeRole::Answer,
+        answer_status.clone(),
+        home_ssh_port,
+        ssh_target_port,
+        "answer-office",
+        vec!["offer-home"],
+    );
+    add_answer_forward(&mut answer_config, "web-ui", web_target_port, "offer-desktop");
+
+    let mut transports = transport_mesh(&["offer-home", "offer-desktop", "answer-office"]);
+    let offer_home_transport = transports.remove("offer-home").expect("offer-home transport");
+    let offer_desktop_transport =
+        transports.remove("offer-desktop").expect("offer-desktop transport");
+    let answer_transport = transports.remove("answer-office").expect("answer transport");
+
+    let offer_home_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        offer_home_config,
+        clone_identity(&offer_home.identity),
+        offer_home_keys,
+        offer_home_transport,
+        None,
+    ));
+    let offer_desktop_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        offer_desktop_config,
+        clone_identity(&offer_desktop.identity),
+        offer_desktop_keys,
+        offer_desktop_transport,
+        None,
+    ));
+    let answer_task = tokio::spawn(run_answer_daemon_with_transport(
+        answer_config,
+        clone_identity(&answer_identity.identity),
+        answer_keys,
+        answer_transport,
+    ));
+
+    assert_client_round_trip(home_ssh_port, b"ha01", b"SSH!").await;
+    assert_client_stream_fails(home_web_port, b"deny").await;
+    assert_client_round_trip(desktop_web_port, b"db01", b"WEB!").await;
+    assert_client_stream_fails(desktop_ssh_port, b"nope").await;
+    assert_client_round_trip(home_ssh_port, b"ha02", b"SSH!").await;
+    assert_client_round_trip(desktop_web_port, b"db02", b"WEB!").await;
+
+    timeout(Duration::from_secs(15), ssh_target_task)
+        .await
+        .expect("ssh target should finish")
+        .expect("ssh target task should succeed");
+    timeout(Duration::from_secs(15), web_target_task)
+        .await
+        .expect("web target should finish")
+        .expect("web target task should succeed");
+
+    let status = wait_for_session_count(&answer_status, 2).await;
+    let sessions = status["sessions"].as_array().expect("sessions array");
+    assert!(sessions.iter().any(|session| session["remote_peer_id"] == "offer-home"));
+    assert!(sessions.iter().any(|session| session["remote_peer_id"] == "offer-desktop"));
+
+    offer_home_task.abort();
+    offer_desktop_task.abort();
+    answer_task.abort();
+    let _ = offer_home_task.await;
+    let _ = offer_desktop_task.await;
     let _ = answer_task.await;
     let _ = tokio::fs::remove_file(offer_home_status).await;
     let _ = tokio::fs::remove_file(offer_desktop_status).await;
