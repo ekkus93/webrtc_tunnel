@@ -461,3 +461,10 @@
 
 ## 2026-05-15T07:00:15Z - GPT-5.5 - Integration test port flake fixed
 - Full validation initially exposed parallel `two_node_daemon` port-probe flakiness. Updated the integration test `unused_local_port()` helper to allocate unique candidate ports per test process, then full fmt, clippy, and workspace tests passed.
+
+## 2026-05-15T07:09:16Z - GPT-5.5 - Unit test TODO 2 created
+- Created `docs/UNIT_TEST2_TODO.md` with a detailed checklist for additional unit coverage around answer routing matrices, replay/ACK behavior, answer status, p2pctl rendering, canonical doc guards, harness helpers, and status schema compatibility.
+
+## 2026-05-15T08:28:46Z - GPT-5.5 - Unit test TODO 2 implemented
+- Implemented `docs/UNIT_TEST2_TODO.md`: added daemon routing matrix tests, replay/ACK duplicate coverage, answer status matrix tests, p2pctl partial/old status rendering tests, canonical doc guards, in-memory transport helper tests, and status schema invariant tests.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.

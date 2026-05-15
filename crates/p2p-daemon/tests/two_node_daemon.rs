@@ -896,6 +896,121 @@ async fn run_one_in_memory_session(
     let _ = tokio::fs::remove_file(answer_status_path).await;
 }
 
+#[test]
+fn decrement_fault_counts_down_and_removes_exhausted_route() {
+    let route = RouteKey::new("offer-home", "answer-office");
+    let unrelated = RouteKey::new("offer-home", "other-answer");
+    let mut faults = HashMap::new();
+    faults.insert(route.clone(), 2);
+    faults.insert(unrelated.clone(), 1);
+
+    assert!(decrement_fault(&mut faults, &route));
+    assert_eq!(faults.get(&route), Some(&1));
+    assert_eq!(faults.get(&unrelated), Some(&1));
+    assert!(decrement_fault(&mut faults, &route));
+    assert!(!faults.contains_key(&route));
+    assert!(decrement_fault(&mut faults, &unrelated));
+    assert!(!faults.contains_key(&unrelated));
+    assert!(!decrement_fault(&mut faults, &RouteKey::new("missing", "route")));
+}
+
+#[tokio::test]
+async fn in_memory_transport_trace_records_success_and_publish_failure() {
+    let mesh = InMemoryTransportMesh::new();
+    let mut offer_transport = mesh.add_transport("offer-home");
+    let mut answer_transport = mesh.add_transport("answer-office");
+    let control = mesh.control();
+    let trace = mesh.trace();
+    let answer_peer: p2p_core::PeerId = "answer-office".parse().expect("answer peer id");
+
+    offer_transport
+        .publish_signal(&answer_peer, "p2ptunnel-tests", b"first".to_vec())
+        .await
+        .expect("first publish should deliver");
+    assert_eq!(
+        answer_transport.poll_signal_payload().await.expect("poll should succeed"),
+        Some(b"first".to_vec())
+    );
+
+    control.fail_next_publish("offer-home", "answer-office", 1);
+    let error = offer_transport
+        .publish_signal(&answer_peer, "p2ptunnel-tests", b"second".to_vec())
+        .await
+        .expect_err("second publish should fail");
+    assert!(error.to_string().contains("injected publish failure"));
+
+    let attempts = trace.attempts();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].from_peer_id, "offer-home");
+    assert_eq!(attempts[0].to_peer_id, "answer-office");
+    assert_eq!(attempts[0].payload, b"first");
+    assert!(attempts[0].delivered);
+    assert_eq!(attempts[1].payload, b"second");
+    assert!(!attempts[1].delivered);
+    assert_eq!(trace.payloads_for("answer-office"), vec![b"first".to_vec(), b"second".to_vec()]);
+}
+
+#[tokio::test]
+async fn in_memory_transport_faults_are_route_scoped() {
+    let mesh = InMemoryTransportMesh::new();
+    let mut offer_transport = mesh.add_transport("offer-home");
+    let mut answer_transport = mesh.add_transport("answer-office");
+    let mut other_transport = mesh.add_transport("other-answer");
+    let control = mesh.control();
+    let answer_peer: p2p_core::PeerId = "answer-office".parse().expect("answer peer id");
+    let other_peer: p2p_core::PeerId = "other-answer".parse().expect("other peer id");
+
+    control.drop_next_delivery("offer-home", "answer-office", 1);
+    offer_transport
+        .publish_signal(&answer_peer, "p2ptunnel-tests", b"dropped".to_vec())
+        .await
+        .expect("dropped delivery still reports publish success");
+    assert!(
+        timeout(Duration::from_millis(50), answer_transport.poll_signal_payload()).await.is_err(),
+        "dropped answer route should not receive payload"
+    );
+
+    offer_transport
+        .publish_signal(&other_peer, "p2ptunnel-tests", b"other".to_vec())
+        .await
+        .expect("unrelated route should deliver");
+    assert_eq!(
+        other_transport.poll_signal_payload().await.expect("poll should succeed"),
+        Some(b"other".to_vec())
+    );
+
+    control.duplicate_next_delivery("offer-home", "answer-office", 1);
+    offer_transport
+        .publish_signal(&answer_peer, "p2ptunnel-tests", b"dupe".to_vec())
+        .await
+        .expect("duplicate delivery should publish");
+    assert_eq!(
+        answer_transport.poll_signal_payload().await.expect("first poll should succeed"),
+        Some(b"dupe".to_vec())
+    );
+    assert_eq!(
+        answer_transport.poll_signal_payload().await.expect("duplicate poll should succeed"),
+        Some(b"dupe".to_vec())
+    );
+}
+
+#[test]
+fn unused_local_port_returns_distinct_bindable_ports() {
+    let first = unused_local_port();
+    let second = unused_local_port();
+    let third = unused_local_port();
+
+    assert_ne!(first, second);
+    assert_ne!(second, third);
+    assert_ne!(first, third);
+    let _first_listener =
+        std::net::TcpListener::bind(("127.0.0.1", first)).expect("first port should bind");
+    let _second_listener =
+        std::net::TcpListener::bind(("127.0.0.1", second)).expect("second port should bind");
+    let _third_listener =
+        std::net::TcpListener::bind(("127.0.0.1", third)).expect("third port should bind");
+}
+
 #[tokio::test]
 async fn offer_and_answer_daemons_complete_one_in_memory_session() {
     run_one_in_memory_session(0, false, true, true).await;

@@ -242,4 +242,152 @@ mod tests {
         assert!(!content.contains("\"open_forward_ids\""));
         let _ = tokio::fs::remove_file(PathBuf::from(&temp_path)).await;
     }
+
+    #[test]
+    fn current_status_schema_exposes_only_stable_public_fields() {
+        let status = DaemonStatus::with_sessions(
+            "answer-office".parse().expect("peer id"),
+            NodeRole::Answer,
+            true,
+            DaemonState::Serving,
+            vec!["ssh".to_owned(), "web-ui".to_owned()],
+            16,
+            vec![SessionStatus::new(
+                p2p_core::SessionId::new([8_u8; 16]),
+                "offer-home".parse().expect("remote peer id"),
+                DaemonState::TunnelOpen,
+                true,
+                vec!["ssh".to_owned()],
+            )],
+        );
+
+        let json = serde_json::to_value(status).expect("status should serialize");
+        for field in [
+            "peer_id",
+            "role",
+            "mqtt_connected",
+            "active_session_id",
+            "current_state",
+            "active_session_count",
+            "session_capacity",
+            "sessions",
+            "configured_forwards",
+        ] {
+            assert!(json.get(field).is_some(), "missing status field {field}");
+        }
+        assert!(json.get("active_stream_count").is_none());
+        assert!(json.get("open_forward_ids").is_none());
+
+        let session = &json["sessions"][0];
+        for field in
+            ["session_id", "remote_peer_id", "state", "data_channel_open", "configured_forward_ids"]
+        {
+            assert!(session.get(field).is_some(), "missing session field {field}");
+        }
+        assert!(session.get("active_stream_count").is_none());
+        assert!(session.get("open_forward_ids").is_none());
+    }
+
+    #[test]
+    fn active_session_id_is_only_populated_for_exactly_one_session() {
+        let zero = DaemonStatus::with_sessions(
+            "answer-office".parse().expect("peer id"),
+            NodeRole::Answer,
+            true,
+            DaemonState::Serving,
+            vec!["ssh".to_owned()],
+            16,
+            Vec::new(),
+        );
+        assert!(zero.active_session_id.is_none());
+        assert_eq!(zero.active_session_count, 0);
+
+        let one_session_id = p2p_core::SessionId::new([8_u8; 16]);
+        let one = DaemonStatus::with_sessions(
+            "answer-office".parse().expect("peer id"),
+            NodeRole::Answer,
+            true,
+            DaemonState::Serving,
+            vec!["ssh".to_owned()],
+            16,
+            vec![SessionStatus::new(
+                one_session_id,
+                "offer-home".parse().expect("remote peer id"),
+                DaemonState::TunnelOpen,
+                true,
+                vec!["ssh".to_owned()],
+            )],
+        );
+        let one_session_id_text = one_session_id.to_string();
+        assert_eq!(one.active_session_id.as_deref(), Some(one_session_id_text.as_str()));
+        assert_eq!(one.active_session_count, 1);
+
+        let many = DaemonStatus::with_sessions(
+            "answer-office".parse().expect("peer id"),
+            NodeRole::Answer,
+            true,
+            DaemonState::Serving,
+            vec!["ssh".to_owned()],
+            16,
+            vec![
+                SessionStatus::new(
+                    p2p_core::SessionId::new([8_u8; 16]),
+                    "offer-home".parse().expect("remote peer id"),
+                    DaemonState::TunnelOpen,
+                    true,
+                    vec!["ssh".to_owned()],
+                ),
+                SessionStatus::new(
+                    p2p_core::SessionId::new([9_u8; 16]),
+                    "offer-desktop".parse().expect("remote peer id"),
+                    DaemonState::TunnelOpen,
+                    true,
+                    vec!["ssh".to_owned()],
+                ),
+            ],
+        );
+        assert!(many.active_session_id.is_none());
+        assert_eq!(many.active_session_count, 2);
+    }
+
+    #[test]
+    fn status_schema_handles_zero_forwards_and_disconnected_active_sessions() {
+        let zero_forwards = DaemonStatus::with_sessions(
+            "answer-office".parse().expect("peer id"),
+            NodeRole::Answer,
+            true,
+            DaemonState::Serving,
+            Vec::new(),
+            16,
+            Vec::new(),
+        );
+        let json = serde_json::to_value(zero_forwards).expect("status should serialize");
+        assert!(
+            json["configured_forwards"]
+                .as_array()
+                .expect("configured_forwards should be an array")
+                .is_empty()
+        );
+        assert_eq!(json["active_session_count"], 0);
+
+        let disconnected = DaemonStatus::with_sessions(
+            "answer-office".parse().expect("peer id"),
+            NodeRole::Answer,
+            false,
+            DaemonState::TunnelOpen,
+            vec!["ssh".to_owned()],
+            16,
+            vec![SessionStatus::new(
+                p2p_core::SessionId::new([8_u8; 16]),
+                "offer-home".parse().expect("remote peer id"),
+                DaemonState::TunnelOpen,
+                true,
+                vec!["ssh".to_owned()],
+            )],
+        );
+        let json = serde_json::to_value(disconnected).expect("status should serialize");
+        assert_eq!(json["mqtt_connected"], false);
+        assert_eq!(json["active_session_count"], 1);
+        assert_eq!(json["sessions"][0]["configured_forward_ids"][0], "ssh");
+    }
 }

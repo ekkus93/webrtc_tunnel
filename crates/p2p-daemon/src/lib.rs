@@ -2914,13 +2914,14 @@ mod tests {
     use p2p_core::AppConfig;
     use p2p_core::{
         ACK_RETRY_TIMEOUT_SECS, BrokerConfig, BrokerTlsConfig, FailureCode, ForwardAnswerConfig,
-        ForwardOfferConfig, ForwardRule, HealthConfig, LoggingConfig, NodeConfig, NodeRole,
+        ForwardOfferConfig, ForwardRule, HealthConfig, LoggingConfig, MsgId, NodeConfig, NodeRole,
         PeerConfig, PeerId, ReconnectConfig, SecurityConfig, SessionId, TunnelConfig, WebRtcConfig,
     };
     use p2p_crypto::{AuthorizedKeys, generate_identity};
     use p2p_signaling::{
-        AckBody, ErrorBody, InnerMessageBuilder, MessageBody, OfferBody, OuterEnvelope,
-        ReplayCache, SignalCodec, SignalingError,
+        AckBody, AnswerBody, CloseBody, EndOfCandidatesBody, ErrorBody, IceCandidateBody,
+        InnerMessageBuilder, MessageBody, OfferBody, OuterEnvelope, PingBody,
+        RenegotiateRequestBody, ReplayCache, ReplayStatus, SignalCodec, SignalingError,
     };
     use p2p_tunnel::OfferClient;
     use serde_json::Value;
@@ -3165,6 +3166,197 @@ mod tests {
         let status = test_session_status(session_id, generation, remote_peer_id.clone(), state);
         let task = tokio::spawn(async { pending::<()>().await });
         (AnswerSessionHandle { generation, remote_peer_id, inbound: tx, status, task }, rx)
+    }
+
+    struct AnswerRoutingFixture {
+        config: Arc<AppConfig>,
+        local_identity: Arc<p2p_crypto::IdentityFile>,
+        authorized_keys: Arc<AuthorizedKeys>,
+        offer_identity: p2p_crypto::GeneratedIdentity,
+        offer_keys: AuthorizedKeys,
+        active_session: SessionId,
+        sessions_by_id: HashMap<SessionId, AnswerSessionHandle>,
+        session_by_peer: HashMap<PeerId, SessionId>,
+        receiver: mpsc::Receiver<p2p_signaling::DecodedSignal>,
+        transport: RecordingTransport,
+        replay_cache: ReplayCache,
+        next_generation: u64,
+    }
+
+    impl AnswerRoutingFixture {
+        fn new() -> Self {
+            let mut config = sample_config();
+            config.node.role = NodeRole::Answer;
+            config.node.peer_id = "answer-office".parse().expect("answer peer id");
+            config.health.write_status_file = false;
+            let config = Arc::new(config);
+            let answer = generate_identity("answer-office").expect("answer identity");
+            let offer_identity = generate_identity("offer-home").expect("offer identity");
+            let authorized_keys = Arc::new(
+                AuthorizedKeys::parse(&offer_identity.public_identity.render())
+                    .expect("answer keys"),
+            );
+            let offer_keys =
+                AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+            let local_identity = Arc::new(answer.identity);
+            let active_session = SessionId::random();
+            let (handle, receiver) = test_answer_handle(
+                active_session,
+                SessionGeneration(1),
+                offer_identity.identity.peer_id.clone(),
+                DaemonState::TunnelOpen,
+            );
+            let mut sessions_by_id = HashMap::new();
+            sessions_by_id.insert(active_session, handle);
+            let mut session_by_peer = HashMap::new();
+            session_by_peer.insert(offer_identity.identity.peer_id.clone(), active_session);
+            Self {
+                config,
+                local_identity,
+                authorized_keys,
+                offer_identity,
+                offer_keys,
+                active_session,
+                sessions_by_id,
+                session_by_peer,
+                receiver,
+                transport: RecordingTransport::default(),
+                replay_cache: ReplayCache::new(64),
+                next_generation: 1,
+            }
+        }
+
+        fn unknown_session_non_offer_bodies() -> Vec<(&'static str, MessageBody)> {
+            vec![
+                ("answer", MessageBody::Answer(AnswerBody { sdp: "answer-sdp".to_owned() })),
+                (
+                    "ice_candidate",
+                    MessageBody::IceCandidate(IceCandidateBody {
+                        candidate: None,
+                        sdp_mid: None,
+                        sdp_mline_index: None,
+                    }),
+                ),
+                ("ack", MessageBody::Ack(AckBody { ack_msg_id: MsgId::random().into_bytes() })),
+                ("ping", MessageBody::Ping(PingBody { seq: 1 })),
+                ("pong", MessageBody::Pong(PingBody { seq: 2 })),
+                (
+                    "close",
+                    MessageBody::Close(CloseBody {
+                        reason_code: "test_close".to_owned(),
+                        message: None,
+                    }),
+                ),
+                (
+                    "error",
+                    MessageBody::Error(ErrorBody {
+                        code: FailureCode::ProtocolError.as_str().to_owned(),
+                        message: "test error".to_owned(),
+                        fatal: false,
+                    }),
+                ),
+                ("ice_restart_request", MessageBody::IceRestartRequest),
+                (
+                    "renegotiate_request",
+                    MessageBody::RenegotiateRequest(RenegotiateRequestBody {
+                        reason: "test".to_owned(),
+                    }),
+                ),
+                ("end_of_candidates", MessageBody::EndOfCandidates(EndOfCandidatesBody::default())),
+            ]
+        }
+
+        fn ack_required_duplicate_bodies() -> Vec<(&'static str, MessageBody)> {
+            vec![
+                ("offer", MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() })),
+                ("answer", MessageBody::Answer(AnswerBody { sdp: "answer-sdp".to_owned() })),
+                (
+                    "ice_candidate",
+                    MessageBody::IceCandidate(IceCandidateBody {
+                        candidate: None,
+                        sdp_mid: None,
+                        sdp_mline_index: None,
+                    }),
+                ),
+                (
+                    "close",
+                    MessageBody::Close(CloseBody { reason_code: "done".to_owned(), message: None }),
+                ),
+                (
+                    "error",
+                    MessageBody::Error(ErrorBody {
+                        code: FailureCode::ProtocolError.as_str().to_owned(),
+                        message: "duplicate retry".to_owned(),
+                        fatal: true,
+                    }),
+                ),
+                ("ice_restart_request", MessageBody::IceRestartRequest),
+                (
+                    "renegotiate_request",
+                    MessageBody::RenegotiateRequest(RenegotiateRequestBody {
+                        reason: "duplicate retry".to_owned(),
+                    }),
+                ),
+            ]
+        }
+
+        fn non_ack_required_duplicate_bodies() -> Vec<(&'static str, MessageBody)> {
+            vec![
+                ("ack", MessageBody::Ack(AckBody { ack_msg_id: MsgId::random().into_bytes() })),
+                ("ping", MessageBody::Ping(PingBody { seq: 1 })),
+                ("pong", MessageBody::Pong(PingBody { seq: 2 })),
+                ("end_of_candidates", MessageBody::EndOfCandidates(EndOfCandidatesBody::default())),
+            ]
+        }
+
+        fn encode_from_offer(&self, session_id: SessionId, body: MessageBody) -> Vec<u8> {
+            let offer_codec =
+                SignalCodec::new(&self.offer_identity.identity, &self.offer_keys, 120, 300);
+            let message = InnerMessageBuilder::new(
+                session_id,
+                self.offer_identity.identity.peer_id.clone(),
+                self.local_identity.peer_id.clone(),
+            )
+            .build(body);
+            let (_envelope, payload) = offer_codec
+                .encode_for_peer(
+                    self.offer_keys
+                        .get_by_peer_id(&self.local_identity.peer_id)
+                        .expect("answer key"),
+                    &message,
+                    false,
+                )
+                .expect("payload encodes");
+            payload
+        }
+
+        async fn handle_payload(&mut self, payload: Vec<u8>) {
+            let codec = SignalCodec::new(&self.local_identity, &self.authorized_keys, 120, 300);
+            let status = StatusWriter::new(&self.config);
+            let mut runtime = connected_runtime();
+            let mut ctx =
+                RuntimeContext { config: &self.config, status: &status, runtime: &mut runtime };
+            let (event_tx, _event_rx) = mpsc::channel(4);
+            handle_answer_daemon_payload(
+                &self.config,
+                &self.local_identity,
+                &self.authorized_keys,
+                &codec,
+                &mut self.transport,
+                &mut ctx,
+                &event_tx,
+                &mut self.replay_cache,
+                &mut self.sessions_by_id,
+                &mut self.session_by_peer,
+                &mut self.next_generation,
+                payload,
+            )
+            .await;
+        }
+
+        async fn published_len(&self) -> usize {
+            self.transport.published.lock().await.len()
+        }
     }
 
     async fn connected_channels(
@@ -3599,10 +3791,65 @@ mod tests {
             "canonical specs should document the current per-peer session limit"
         );
         assert!(
+            specs.contains("multiple simultaneous authorized `p2p-offer` peers")
+                || specs.contains("Multiple simultaneous authorized offer peer sessions"),
+            "canonical specs should document multiple authorized offer peers per answer daemon"
+        );
+        assert!(
+            specs.contains("If the `session_id` is unknown and the message is not an `offer`"),
+            "canonical specs should document unknown-session non-offer routing policy"
+        );
+        assert!(
             specs.contains(
                 "daemon-level `current_state` reports `serving` with zero or more active sessions"
             ),
             "canonical specs should document answer Serving status semantics"
+        );
+    }
+
+    #[test]
+    fn canonical_readme_documents_current_multi_peer_answer_behavior() {
+        let readme = include_str!("../../../README.md");
+        assert!(
+            readme.contains(
+                "One answer daemon can serve multiple authorized offer peers concurrently"
+            ),
+            "README should document current multi-peer answer behavior"
+        );
+        assert!(
+            readme.contains("at most one active WebRTC session per `peer_id`"),
+            "README should document the per-peer active session limit"
+        );
+        assert!(
+            !readme.contains("Multiple simultaneous WebRTC peer sessions"),
+            "README must not present multi-peer sessions as out of scope"
+        );
+        assert!(
+            !readme.contains("One active peer tunnel session at a time"),
+            "README must not present the stale global single-session rule as current"
+        );
+    }
+
+    #[test]
+    fn canonical_v03_spec_documents_current_answer_routing_and_status_policy() {
+        let spec = include_str!("../../../docs/V03_SPEC.md");
+        assert!(
+            spec.contains(
+                "one `p2p-answer` process to host multiple simultaneous active peer sessions"
+            ),
+            "V03 spec should retain multi-session answer behavior"
+        );
+        assert!(
+            spec.contains(
+                "daemon-level `current_state` reports `serving` with zero or more active sessions"
+            ),
+            "V03 spec should document answer serving with zero or more sessions"
+        );
+        assert!(
+            spec.contains(
+                "If it does not match an existing session and the message type is `offer`"
+            ) && spec.contains("If it does not match and is not a valid new-session entry point"),
+            "V03 spec should document unknown-session non-offer routing policy"
         );
     }
 
@@ -3905,6 +4152,10 @@ mod tests {
         let status = read_status_file(&path).await;
         assert_eq!(status["current_state"], "serving");
         assert_eq!(status["active_session_count"], 1);
+        assert_eq!(
+            status["active_session_id"],
+            sessions_by_id.keys().next().expect("one session").to_string()
+        );
         assert!(status["active_stream_count"].is_null());
         assert!(status["sessions"][0]["configured_forward_ids"].is_array());
         assert!(status["sessions"][0]["open_forward_ids"].is_null());
@@ -3927,7 +4178,41 @@ mod tests {
         assert_eq!(status["current_state"], "serving");
         assert_eq!(status["role"], "answer");
         assert_eq!(status["active_session_count"], 0);
+        assert!(status["active_session_id"].is_null());
         assert!(status["sessions"].as_array().expect("sessions should be an array").is_empty());
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn answer_registry_reports_serving_with_multiple_sessions() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        let (path, status_writer) = status_writer_for_test(&mut config, "serving-multi-registry");
+        let config = Arc::new(config);
+        let mut runtime = connected_runtime();
+        let ctx = RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+        let mut sessions_by_id = HashMap::new();
+        for (idx, peer_id) in ["offer-a", "offer-b"].into_iter().enumerate() {
+            let (handle, _rx) = test_answer_handle(
+                SessionId::random(),
+                SessionGeneration(idx as u64 + 1),
+                peer_id.parse().expect("remote peer"),
+                DaemonState::TunnelOpen,
+            );
+            sessions_by_id.insert(handle.status.session_id, handle);
+        }
+
+        write_answer_registry_status(&ctx, &sessions_by_id).await;
+
+        let status = read_status_file(&path).await;
+        assert_eq!(status["current_state"], "serving");
+        assert_eq!(status["role"], "answer");
+        assert_eq!(
+            status["active_session_count"],
+            status["sessions"].as_array().expect("sessions should be an array").len()
+        );
+        assert_eq!(status["active_session_count"], 2);
+        assert!(status["active_session_id"].is_null());
         let _ = tokio::fs::remove_file(&path).await;
     }
 
@@ -4070,6 +4355,75 @@ mod tests {
             "unknown-session non-offer must not receive accepted-message ACK"
         );
         assert_eq!(sessions_by_id[&active_session].status.state, DaemonState::TunnelOpen);
+    }
+
+    #[tokio::test]
+    async fn answer_daemon_ignores_every_unknown_session_non_offer_without_ack() {
+        for (name, body) in AnswerRoutingFixture::unknown_session_non_offer_bodies() {
+            let mut fixture = AnswerRoutingFixture::new();
+            let original_session = fixture.active_session;
+            let payload = fixture.encode_from_offer(SessionId::random(), body);
+
+            fixture.handle_payload(payload).await;
+
+            assert!(fixture.receiver.try_recv().is_err(), "{name} must not fallback-route by peer");
+            assert_eq!(
+                fixture.published_len().await,
+                0,
+                "{name} must not receive accepted-message ACK"
+            );
+            assert_eq!(fixture.sessions_by_id.len(), 1, "{name} must not create a session");
+            assert!(
+                fixture.sessions_by_id.contains_key(&original_session),
+                "{name} must leave the active session map unchanged"
+            );
+            assert_eq!(
+                fixture.sessions_by_id[&original_session].status.state,
+                DaemonState::TunnelOpen,
+                "{name} must leave active session status unchanged"
+            );
+            assert_eq!(
+                fixture.session_by_peer.get(&fixture.offer_identity.identity.peer_id),
+                Some(&original_session),
+                "{name} must leave the peer index unchanged"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_daemon_routes_representative_known_session_messages() {
+        let cases = [
+            ("ack", MessageBody::Ack(AckBody { ack_msg_id: MsgId::new([9_u8; 16]).into_bytes() })),
+            (
+                "ice_candidate",
+                MessageBody::IceCandidate(IceCandidateBody {
+                    candidate: Some("candidate:1 1 UDP 1 127.0.0.1 9 typ host".to_owned()),
+                    sdp_mid: Some("0".to_owned()),
+                    sdp_mline_index: Some(0),
+                }),
+            ),
+            (
+                "close",
+                MessageBody::Close(CloseBody {
+                    reason_code: "done".to_owned(),
+                    message: Some("test close".to_owned()),
+                }),
+            ),
+        ];
+
+        for (name, body) in cases {
+            let mut fixture = AnswerRoutingFixture::new();
+            let payload = fixture.encode_from_offer(fixture.active_session, body);
+
+            fixture.handle_payload(payload).await;
+
+            let routed = fixture.receiver.try_recv().expect("known-session message should route");
+            assert_eq!(routed.message.session_id, fixture.active_session, "{name} routed session");
+            assert!(
+                fixture.sessions_by_id.contains_key(&fixture.active_session),
+                "{name} must leave the session registered"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4562,6 +4916,334 @@ mod tests {
             ack.body,
             MessageBody::Ack(AckBody { ack_msg_id }) if ack_msg_id == envelope.msg_id.into_bytes()
         ));
+    }
+
+    #[test]
+    fn duplicate_active_session_message_ack_policy_matches_message_type() {
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let session_id = SessionId::random();
+        let duplicate_error = SignalingError::Protocol("duplicate message detected".to_owned());
+        let answer_remote = answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key");
+        let offer_remote = offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key");
+
+        for (name, body) in AnswerRoutingFixture::ack_required_duplicate_bodies() {
+            let message = InnerMessageBuilder::new(
+                session_id,
+                offer.identity.peer_id.clone(),
+                answer.identity.peer_id.clone(),
+            )
+            .build(body);
+            let (envelope, payload) = offer_codec
+                .encode_for_peer(offer_remote, &message, false)
+                .expect("message encodes");
+
+            let ack = duplicate_active_session_ack_message(
+                &answer_codec,
+                session_id,
+                answer_remote,
+                &offer.identity.peer_id,
+                &payload,
+                &duplicate_error,
+            )
+            .unwrap_or_else(|| panic!("{name} duplicate should be re-acknowledged"));
+
+            assert!(matches!(
+                ack.body,
+                MessageBody::Ack(AckBody { ack_msg_id }) if ack_msg_id == envelope.msg_id.into_bytes()
+            ));
+        }
+
+        for (name, body) in AnswerRoutingFixture::non_ack_required_duplicate_bodies() {
+            let message = InnerMessageBuilder::new(
+                session_id,
+                offer.identity.peer_id.clone(),
+                answer.identity.peer_id.clone(),
+            )
+            .build(body);
+            let (_envelope, payload) = offer_codec
+                .encode_for_peer(offer_remote, &message, false)
+                .expect("message encodes");
+
+            let ack = duplicate_active_session_ack_message(
+                &answer_codec,
+                session_id,
+                answer_remote,
+                &offer.identity.peer_id,
+                &payload,
+                &duplicate_error,
+            );
+
+            assert!(ack.is_none(), "{name} duplicate must not be re-acknowledged");
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_session_reacks_duplicate_same_session_ack_required_messages() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.webrtc.stun_urls = Vec::new();
+        config.webrtc.enable_trickle_ice = false;
+        config.health.write_status_file = false;
+        let config = Arc::new(config);
+
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_identity = Arc::new(answer.identity);
+        let answer_keys = Arc::new(answer_keys);
+        let answer_codec = SignalCodec::new(&answer_identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let transport = RecordingTransport::default();
+        let transport_for_task = transport.clone();
+        let config_for_task = Arc::clone(&config);
+        let answer_identity_for_task = Arc::clone(&answer_identity);
+        let answer_keys_for_task = Arc::clone(&answer_keys);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let event_task = tokio::spawn(async move {
+            let status = StatusWriter::new(&config_for_task);
+            let mut runtime = connected_runtime();
+            let mut ctx =
+                RuntimeContext { config: &config_for_task, status: &status, runtime: &mut runtime };
+            let codec =
+                SignalCodec::new(&answer_identity_for_task, &answer_keys_for_task, 120, 300);
+            let mut transport = transport_for_task;
+            let mut sessions_by_id = HashMap::new();
+            let mut session_by_peer = HashMap::new();
+            while let Some(event) = event_rx.recv().await {
+                handle_answer_session_event(
+                    &mut ctx,
+                    &codec,
+                    &mut transport,
+                    &mut sessions_by_id,
+                    &mut session_by_peer,
+                    event,
+                )
+                .await;
+            }
+        });
+
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("answer peer should build");
+        let session_id = SessionId::random();
+        let mut session = ActiveSession::new(
+            session_id,
+            answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key").clone(),
+            peer,
+            config.security.replay_cache_size,
+        );
+        session.state = DaemonState::TunnelOpen;
+        session.bridge_state = BridgeSessionState::Active;
+        let original_state = session.state;
+        let original_bridge_state = session.bridge_state;
+        let mut replay_cache = ReplayCache::new(64);
+
+        for (name, body) in AnswerRoutingFixture::ack_required_duplicate_bodies() {
+            let message = InnerMessageBuilder::new(
+                session_id,
+                offer.identity.peer_id.clone(),
+                answer_identity.peer_id.clone(),
+            )
+            .build(body);
+            let (envelope, payload) = offer_codec
+                .encode_for_peer(
+                    offer_keys.get_by_peer_id(&answer_identity.peer_id).expect("answer key"),
+                    &message,
+                    false,
+                )
+                .expect("message encodes");
+            let mut decoded = answer_codec
+                .decode_with_replay_status(&payload, &mut replay_cache, None)
+                .expect("message decodes");
+            decoded.replay_status = ReplayStatus::DuplicateSameSession;
+
+            process_answer_session_signal(
+                &config,
+                &answer_codec,
+                &event_tx,
+                SessionGeneration(1),
+                &mut session,
+                decoded,
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{name} duplicate should be handled"));
+
+            let published = transport.published.lock().await.clone();
+            let (_peer, ack_payload) = published.last().expect("duplicate should publish ACK");
+            let mut offer_replay = ReplayCache::new(64);
+            let (_ack_envelope, ack_message, _sender) = offer_codec
+                .decode(ack_payload, &mut offer_replay, None)
+                .expect("offer should decode ACK");
+            assert!(matches!(
+                ack_message.body,
+                MessageBody::Ack(AckBody { ack_msg_id }) if ack_msg_id == envelope.msg_id.into_bytes()
+            ));
+            assert_eq!(session.state, original_state, "{name} duplicate must not mutate state");
+            assert_eq!(
+                session.bridge_state, original_bridge_state,
+                "{name} duplicate must not mutate bridge state"
+            );
+        }
+
+        event_task.abort();
+        let _ = event_task.await;
+        session.peer.close().await.expect("answer peer should close");
+    }
+
+    #[tokio::test]
+    async fn answer_session_ignores_duplicate_different_session_before_ack() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.webrtc.stun_urls = Vec::new();
+        config.webrtc.enable_trickle_ice = false;
+        config.health.write_status_file = false;
+
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("answer peer should build");
+        let session_id = SessionId::random();
+        let mut session = ActiveSession::new(
+            session_id,
+            answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key").clone(),
+            peer,
+            config.security.replay_cache_size,
+        );
+        session.state = DaemonState::TunnelOpen;
+        session.bridge_state = BridgeSessionState::Active;
+        let original_state = session.state;
+        let original_bridge_state = session.bridge_state;
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+
+        let message = InnerMessageBuilder::new(
+            session_id,
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: FailureCode::ProtocolError.as_str().to_owned(),
+            message: "different-session duplicate".to_owned(),
+            fatal: true,
+        }));
+        let (_envelope, payload) = offer_codec
+            .encode_for_peer(
+                offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("message encodes");
+        let mut replay_cache = ReplayCache::new(64);
+        let mut decoded = answer_codec
+            .decode_with_replay_status(&payload, &mut replay_cache, None)
+            .expect("message decodes");
+        decoded.replay_status = ReplayStatus::DuplicateDifferentSession;
+
+        process_answer_session_signal(
+            &config,
+            &answer_codec,
+            &event_tx,
+            SessionGeneration(1),
+            &mut session,
+            decoded,
+        )
+        .await
+        .expect("different-session duplicate should be ignored");
+
+        assert!(event_rx.try_recv().is_err(), "different-session duplicate must not ACK");
+        assert_eq!(session.state, original_state);
+        assert_eq!(session.bridge_state, original_bridge_state);
+        session.peer.close().await.expect("answer peer should close");
+    }
+
+    #[tokio::test]
+    async fn answer_session_ping_pong_do_not_emit_normal_acks() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.webrtc.stun_urls = Vec::new();
+        config.webrtc.enable_trickle_ice = false;
+        config.health.write_status_file = false;
+
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("answer peer should build");
+        let session_id = SessionId::random();
+        let mut session = ActiveSession::new(
+            session_id,
+            answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key").clone(),
+            peer,
+            config.security.replay_cache_size,
+        );
+        session.state = DaemonState::TunnelOpen;
+        let original_state = session.state;
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let mut replay_cache = ReplayCache::new(64);
+
+        for body in [MessageBody::Ping(PingBody { seq: 1 }), MessageBody::Pong(PingBody { seq: 2 })]
+        {
+            let message = InnerMessageBuilder::new(
+                session_id,
+                offer.identity.peer_id.clone(),
+                answer.identity.peer_id.clone(),
+            )
+            .build(body);
+            let (_envelope, payload) = offer_codec
+                .encode_for_peer(
+                    offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
+                    &message,
+                    false,
+                )
+                .expect("message encodes");
+            let decoded = answer_codec
+                .decode_with_replay_status(&payload, &mut replay_cache, None)
+                .expect("message decodes");
+            assert!(
+                !decoded.message.message_type.requires_ack(),
+                "ping/pong must remain non-ACK-required"
+            );
+
+            timeout(
+                Duration::from_secs(5),
+                process_answer_session_signal(
+                    &config,
+                    &answer_codec,
+                    &event_tx,
+                    SessionGeneration(1),
+                    &mut session,
+                    decoded,
+                ),
+            )
+            .await
+            .expect("ping/pong handling should finish")
+            .expect("ping/pong should be ignored without ACK");
+            assert!(
+                matches!(event_rx.try_recv(), Ok(AnswerSessionEvent::Status(_))),
+                "ping/pong should only emit status updates"
+            );
+        }
+
+        assert!(event_rx.try_recv().is_err(), "ping/pong must not publish normal ACKs");
+        assert_eq!(session.state, original_state);
+        assert!(session.signaling.ack_tracker.expired().is_empty());
     }
 
     #[tokio::test]
@@ -5210,6 +5892,32 @@ mod tests {
         let status = read_status_file(&path).await;
         assert_eq!(status["mqtt_connected"], false);
         assert_eq!(status["current_state"], "serving");
+        assert_eq!(status["active_session_count"], 0);
+        assert!(status["active_session_id"].is_null());
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn answer_zero_session_transport_recovery_stays_serving() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        let (path, writer) = status_writer_for_test(&mut config, "answer-zero-transport-recovered");
+        let mut runtime = connected_runtime();
+        runtime.mqtt_connected = false;
+        let mut ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
+
+        mark_transport_usable(
+            &mut ctx,
+            StatusSnapshot { active_session_id: None, current_state: DaemonState::Serving },
+        )
+        .await;
+
+        let status = read_status_file(&path).await;
+        assert_eq!(status["mqtt_connected"], true);
+        assert_eq!(status["current_state"], "serving");
+        assert_eq!(status["active_session_count"], 0);
+        assert!(status["active_session_id"].is_null());
+        assert!(status["sessions"].as_array().expect("sessions should be an array").is_empty());
         let _ = tokio::fs::remove_file(&path).await;
     }
 
