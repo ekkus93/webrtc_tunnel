@@ -12,5 +12,7 @@ pub use messages::{
     AckBody, AnswerBody, CloseBody, EndOfCandidatesBody, ErrorBody, HelloBody, IceCandidateBody,
     InnerMessage, InnerMessageBuilder, MessageBody, OfferBody, PingBody, RenegotiateRequestBody,
 };
-pub use replay::{ReplayCache, ReplayCheck};
-pub use transport::{MqttSignalingTransport, SignalCodec, SignalingSession, signal_topic};
+pub use replay::{ReplayCache, ReplayCheck, ReplayStatus};
+pub use transport::{
+    DecodedSignal, MqttSignalingTransport, SignalCodec, SignalingSession, signal_topic,
+};

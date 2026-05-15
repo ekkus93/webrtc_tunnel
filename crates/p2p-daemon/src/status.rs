@@ -25,8 +25,7 @@ pub struct SessionStatus {
     pub remote_peer_id: PeerId,
     pub state: DaemonState,
     pub data_channel_open: bool,
-    pub active_stream_count: usize,
-    pub open_forward_ids: Vec<String>,
+    pub configured_forward_ids: Vec<String>,
 }
 
 impl SessionStatus {
@@ -35,16 +34,14 @@ impl SessionStatus {
         remote_peer_id: PeerId,
         state: DaemonState,
         data_channel_open: bool,
-        active_stream_count: usize,
-        open_forward_ids: Vec<String>,
+        configured_forward_ids: Vec<String>,
     ) -> Self {
         Self {
             session_id: session_id.to_string(),
             remote_peer_id,
             state,
             data_channel_open,
-            active_stream_count,
-            open_forward_ids,
+            configured_forward_ids,
         }
     }
 }
@@ -65,7 +62,6 @@ impl DaemonStatus {
                     peer_id.clone(),
                     current_state,
                     matches!(current_state, DaemonState::TunnelOpen),
-                    0,
                     configured_forwards.clone(),
                 )]
             })
@@ -182,7 +178,6 @@ mod tests {
                     "offer-home".parse().expect("remote peer id"),
                     DaemonState::TunnelOpen,
                     true,
-                    2,
                     vec!["ssh".to_owned()],
                 )],
             ))

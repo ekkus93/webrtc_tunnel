@@ -501,11 +501,11 @@ async fn run_one_in_memory_session(
     }
 
     let offer_status = wait_for_status(&offer_status_path, "tunnel_open").await;
-    let answer_status = wait_for_status(&answer_status_path, "connecting_data_channel").await;
+    let answer_status = wait_for_status(&answer_status_path, "serving").await;
     assert_eq!(offer_status["current_state"], "tunnel_open");
     assert_eq!(offer_status["role"], "offer");
     assert_eq!(offer_status["mqtt_connected"], true);
-    assert_eq!(answer_status["current_state"], "connecting_data_channel");
+    assert_eq!(answer_status["current_state"], "serving");
     assert_eq!(answer_status["role"], "answer");
     assert_eq!(answer_status["mqtt_connected"], true);
 
@@ -696,7 +696,7 @@ async fn offer_and_answer_daemons_handle_two_forwards_concurrently() {
     let forwards = offer_status["configured_forwards"].as_array().expect("configured forwards");
     assert!(forwards.iter().any(|forward| forward == "ssh"));
     assert!(forwards.iter().any(|forward| forward == "web-ui"));
-    let _ = wait_for_status(&answer_status_path, "connecting_data_channel").await;
+    let _ = wait_for_status(&answer_status_path, "serving").await;
 
     offer_task.abort();
     answer_task.abort();

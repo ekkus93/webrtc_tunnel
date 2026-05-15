@@ -15,7 +15,7 @@ use crate::ack::AckTracker;
 use crate::envelope::{EnvelopeFlags, OuterEnvelope};
 use crate::error::SignalingError;
 use crate::messages::{InnerMessage, InnerMessageBuilder};
-use crate::replay::{ReplayCache, ReplayCheck};
+use crate::replay::{ReplayCache, ReplayCheck, ReplayStatus};
 
 pub fn signal_topic(prefix: &str, peer_id: &PeerId) -> String {
     format!("{prefix}/v1/nodes/{peer_id}/signal")
@@ -26,6 +26,13 @@ pub struct SignalCodec<'a> {
     authorized_keys: &'a AuthorizedKeys,
     max_clock_skew_secs: u64,
     max_message_age_secs: u64,
+}
+
+pub struct DecodedSignal {
+    pub envelope: OuterEnvelope,
+    pub message: InnerMessage,
+    pub sender: AuthorizedKey,
+    pub replay_status: ReplayStatus,
 }
 
 impl<'a> SignalCodec<'a> {
@@ -93,6 +100,24 @@ impl<'a> SignalCodec<'a> {
         replay_cache: &mut ReplayCache,
         expected_session: Option<SessionId>,
     ) -> Result<(OuterEnvelope, InnerMessage, AuthorizedKey), SignalingError> {
+        let decoded = self.decode_with_replay_status(payload, replay_cache, expected_session)?;
+        match decoded.replay_status {
+            ReplayStatus::Fresh => Ok((decoded.envelope, decoded.message, decoded.sender)),
+            ReplayStatus::DuplicateSameSession => {
+                Err(SignalingError::Protocol("duplicate message detected".to_owned()))
+            }
+            ReplayStatus::DuplicateDifferentSession => Err(SignalingError::Protocol(
+                "duplicate msg_id received for a different session".to_owned(),
+            )),
+        }
+    }
+
+    pub fn decode_with_replay_status(
+        &self,
+        payload: &[u8],
+        replay_cache: &mut ReplayCache,
+        expected_session: Option<SessionId>,
+    ) -> Result<DecodedSignal, SignalingError> {
         let envelope = OuterEnvelope::decode(payload)?;
         let local_kid = self.local_identity.signing_kid();
         if envelope.recipient_kid != local_kid {
@@ -144,7 +169,7 @@ impl<'a> SignalCodec<'a> {
                 "inner recipient peer_id does not match local peer_id".to_owned(),
             ));
         }
-        replay_cache.check_and_record(
+        let replay_status = replay_cache.check_and_record_status(
             envelope.sender_kid,
             envelope.msg_id,
             ReplayCheck {
@@ -157,7 +182,7 @@ impl<'a> SignalCodec<'a> {
             },
         )?;
 
-        Ok((envelope, message, sender))
+        Ok(DecodedSignal { envelope, message, sender, replay_status })
     }
 
     pub fn build_ack(

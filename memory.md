@@ -428,3 +428,15 @@
 - Implemented the v0.3 answer-daemon multi-session manager with centralized MQTT polling, per-peer session routing, one active session per peer, internal session capacity, session-local task cleanup, same-peer pending replacement, multi-session status JSON, and readable `p2pctl status` output.
 - Added daemon integration coverage for two authorized offer peers served concurrently and for target-connect failure in one peer session not breaking another peer, then marked `docs/V03_TODO.md` complete.
 - Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T03:22:24Z - GPT-5.5 - v0.3 hardening review read
+- Read `docs/V03_CODE_REVIEW.md` and `docs/V03_FIX_TODO.md` without making code changes.
+- The fix pass focuses on authenticated routing before session dispatch, stale event isolation, honest status fields, explicit same-peer replacement semantics, canonical doc cleanup, and expanded multi-session tests.
+
+## 2026-05-15T03:38:08Z - GPT-5.5 - v0.3 hardening decisions frozen
+- Read `docs/replies9.md`; the v0.3 hardening pass should simplify status honestly with `configured_forward_ids` and no fake stream counts, add `DaemonState::Serving`, centrally authenticate/decrypt once before routing typed signals, require session generation tokens on session-owned events, and treat `V03_FIX_TODO.md` as the active checklist while leaving `V03_TODO.md` historical.
+
+## 2026-05-15T03:55:06Z - GPT-5.5 - v0.3 hardening implemented
+- Implemented the v0.3 hardening pass: answer routing now authenticates/decrypts once before typed session dispatch, daemon-level replay status preserves duplicate re-ACK behavior, session events carry generation tokens, and generic status/end events cannot re-key or remove newer sessions.
+- Status output now uses `DaemonState::Serving` while answer sessions are active, removes fake stream counts, and reports `configured_forward_ids`; docs and `V03_FIX_TODO.md` were updated to match the completed hardening pass.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.

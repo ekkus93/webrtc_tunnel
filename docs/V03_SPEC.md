@@ -339,8 +339,11 @@ Recommended per-session status fields:
 - `remote_peer_id`
 - `state`
 - `data_channel_open`
-- `active_stream_count`
-- `open_forward_ids`
+- `configured_forward_ids`
+
+`active_stream_count` is omitted until it can be populated from real multiplex-runtime state. Configured forward IDs must not be labeled as open/active forward IDs.
+
+When one or more answer-side sessions are active, daemon-level `current_state` reports `serving`; individual session lifecycle details remain in the per-session entries.
 
 Status output must remain local-only and must not publish plaintext status over MQTT.
 

@@ -230,7 +230,8 @@ p2p-tunnel/
 - Waits for valid encrypted offers from authorized peers.
 - Creates answer and sends encrypted answer/candidates back.
 - On `OPEN(stream_id, { forward_id })`, checks per-forward authorization and connects to the configured target host/port.
-- Returns to idle after session close/failure.
+- May serve multiple simultaneous authorized offer peers, with one active WebRTC session per remote `peer_id`.
+- Returns to service after a session close/failure without tearing down unrelated sessions.
 - Does not initiate a fresh session on its own.
 
 ## 8. MQTT topic layout
@@ -817,11 +818,12 @@ allow_remote_peers = ["offer-home"]
 
 ### Busy/session policy
 
-- One active peer tunnel session at a time.
-- Multiple TCP streams are allowed within that active session.
+- One active peer tunnel session per remote `peer_id`; multiple authorized offer peers may be served concurrently.
+- Multiple TCP streams are allowed within each active session.
 - During offer negotiation, extra local clients enter a bounded pending queue; overflow closes the new client with no banner.
 - During a pending answer-side session that has not opened the tunnel yet, a replacement offer from the same authorized peer may replace the pending session.
 - During an active answer session, a second offer from a fully allowed peer is rejected with encrypted `error` code `busy`.
+- Same-peer replacement is scoped to that peer and must not disturb unrelated active peers.
 - Unauthorized or disallowed active-answer peers receive no response.
 - Busy-offer dedupe is per active answer session and keyed by at least `(sender_kid, msg_id)`.
 
@@ -863,7 +865,7 @@ The daemon writes local status JSON when enabled. Current fields include:
 - `sessions`
 - `configured_forwards`
 
-Each entry in `sessions` includes the session ID, remote peer ID, session state, data-channel-open flag, active stream count, and open/configured forward IDs. The answer daemon may report multiple concurrent sessions, one per active authorized offer peer.
+Each entry in `sessions` includes the session ID, remote peer ID, session state, data-channel-open flag, and honestly named configured forward IDs. The answer daemon may report multiple concurrent sessions, one per active authorized offer peer. When any answer-side sessions are active, daemon-level `current_state` reports `serving`; per-session states carry the individual lifecycle detail.
 
 `mqtt_connected` is a best-effort latest-known signaling transport usability flag. Recoverable poll/publish failures should flip it to `false` before retry/backoff; later successful transport activity should flip it back to `true`.
 

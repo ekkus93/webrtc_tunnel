@@ -160,7 +160,7 @@ fn status(path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
         Some(sessions) => {
             println!("sessions:");
             for session in sessions {
-                let forwards = session["open_forward_ids"]
+                let forwards = session["configured_forward_ids"]
                     .as_array()
                     .map(|values| {
                         values
@@ -171,12 +171,11 @@ fn status(path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .unwrap_or_default();
                 println!(
-                    "  {} peer={} state={} data_channel_open={} active_streams={} forwards={}",
+                    "  {} peer={} state={} data_channel_open={} configured_forwards={}",
                     session["session_id"].as_str().unwrap_or("unknown"),
                     session["remote_peer_id"].as_str().unwrap_or("unknown"),
                     session["state"].as_str().unwrap_or("unknown"),
                     session["data_channel_open"].as_bool().unwrap_or(false),
-                    session["active_stream_count"].as_u64().unwrap_or(0),
                     forwards
                 );
             }

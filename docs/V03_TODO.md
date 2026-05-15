@@ -2,6 +2,8 @@
 
 This checklist tracks the work required to implement `docs/V03_SPEC.md`.
 
+Historical note: the initial v0.3 implementation was followed by the hardening pass tracked in `docs/V03_FIX_TODO.md`, which corrected authenticated routing, stale event isolation, and honest status field names.
+
 Scope summary:
 
 - one `p2p-answer` daemon must support multiple simultaneous authorized `p2p-offer` peers,
@@ -191,8 +193,8 @@ Scope summary:
   - [x] `remote_peer_id`,
   - [x] `state`,
   - [x] `data_channel_open`,
-  - [x] `active_stream_count`,
-  - [x] `open_forward_ids`.
+  - [x] `configured_forward_ids`.
+  - [x] `active_stream_count` removed until backed by real multiplex-runtime state.
 - [x] Ensure status writes remain best-effort local output only.
 - [x] Ensure status serialization tolerates concurrent session changes without partial-invalid semantics.
 
