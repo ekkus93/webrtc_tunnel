@@ -744,6 +744,29 @@ fn decode_signal_records(
         .collect()
 }
 
+fn count_records_from(
+    records: &[DecodedSignalRecord],
+    sender_peer_id: &str,
+    message_type: MessageType,
+) -> usize {
+    records
+        .iter()
+        .filter(|record| {
+            record.sender_peer_id.as_str() == sender_peer_id && record.message_type == message_type
+        })
+        .count()
+}
+
+fn assert_answer_trace_is_passive(records: &[DecodedSignalRecord]) {
+    assert!(
+        !records.iter().any(|record| matches!(
+            record.message_type,
+            MessageType::Offer | MessageType::IceRestartRequest | MessageType::RenegotiateRequest
+        )),
+        "answer side must not initiate fresh-session or reconnect signaling"
+    );
+}
+
 fn clone_identity(identity: &IdentityFile) -> IdentityFile {
     IdentityFile::from_toml(&identity.render_toml()).expect("identity clone should parse")
 }
@@ -1032,6 +1055,186 @@ async fn active_session_ice_restart_recovers_pending_local_client() {
 }
 
 #[tokio::test]
+async fn simultaneous_offer_peer_reconnects_stay_session_local_and_answer_passive() {
+    let offer_home = generate_identity("offer-home").expect("offer-home identity should build");
+    let offer_desktop =
+        generate_identity("offer-desktop").expect("offer-desktop identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+
+    let offer_home_keys = authorized_keys_for(&answer_identity);
+    let offer_desktop_keys = authorized_keys_for(&answer_identity);
+    let answer_keys = authorized_keys_for_many(&[&offer_home, &offer_desktop]);
+    let home_codec = SignalCodec::new(&offer_home.identity, &offer_home_keys, 120, 300);
+    let desktop_codec = SignalCodec::new(&offer_desktop.identity, &offer_desktop_keys, 120, 300);
+    let answer_codec = SignalCodec::new(&answer_identity.identity, &answer_keys, 120, 300);
+
+    let offer_home_status = unique_path("offer-home-simultaneous-reconnect-status.json");
+    let offer_desktop_status = unique_path("offer-desktop-simultaneous-reconnect-status.json");
+    let answer_status = unique_path("answer-simultaneous-reconnect-status.json");
+    let offer_home_port = unused_local_port();
+    let offer_desktop_port = unused_local_port();
+    let (target_port, target_task, accepted) = spawn_echo_target(2).await;
+
+    let mut offer_home_config = sample_config_for(
+        NodeRole::Offer,
+        offer_home_status.clone(),
+        offer_home_port,
+        target_port,
+        "offer-home",
+        vec!["offer-home"],
+    );
+    let mut offer_desktop_config = sample_config_for(
+        NodeRole::Offer,
+        offer_desktop_status.clone(),
+        offer_desktop_port,
+        target_port,
+        "offer-desktop",
+        vec!["offer-desktop"],
+    );
+    let mut answer_config = sample_config_for(
+        NodeRole::Answer,
+        answer_status.clone(),
+        offer_home_port,
+        target_port,
+        "answer-office",
+        vec!["offer-home", "offer-desktop"],
+    );
+    offer_home_config.webrtc.enable_ice_restart = true;
+    offer_desktop_config.webrtc.enable_ice_restart = true;
+    answer_config.webrtc.enable_ice_restart = true;
+
+    let mesh = InMemoryTransportMesh::new();
+    let control = mesh.control();
+    control.delay_next_delivery("answer-office", "offer-home", 300);
+    control.delay_next_delivery("answer-office", "offer-desktop", 300);
+    let offer_home_transport = mesh.add_transport("offer-home");
+    let offer_desktop_transport = mesh.add_transport("offer-desktop");
+    let answer_transport = mesh.add_transport("answer-office");
+    let (home_hook_tx, mut home_hook_rx) = mpsc::unbounded_channel();
+    let (desktop_hook_tx, mut desktop_hook_rx) = mpsc::unbounded_channel();
+
+    let offer_home_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        offer_home_config,
+        clone_identity(&offer_home.identity),
+        offer_home_keys.clone(),
+        offer_home_transport,
+        Some(home_hook_tx),
+    ));
+    let offer_desktop_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        offer_desktop_config,
+        clone_identity(&offer_desktop.identity),
+        offer_desktop_keys.clone(),
+        offer_desktop_transport,
+        Some(desktop_hook_tx),
+    ));
+    let answer_task = tokio::spawn(run_answer_daemon_with_transport(
+        answer_config,
+        clone_identity(&answer_identity.identity),
+        answer_keys.clone(),
+        answer_transport,
+    ));
+
+    let mut home_client = connect_with_retry(offer_home_port).await;
+    let mut desktop_client = connect_with_retry(offer_desktop_port).await;
+    let home_handle = timeout(Duration::from_secs(10), home_hook_rx.recv())
+        .await
+        .expect("home hook should arrive")
+        .expect("home hook should include handle");
+    let desktop_handle = timeout(Duration::from_secs(10), desktop_hook_rx.recv())
+        .await
+        .expect("desktop hook should arrive")
+        .expect("desktop hook should include handle");
+    home_handle
+        .ice_state_injector
+        .inject(IceConnectionState::Disconnected)
+        .await
+        .expect("home ICE disconnect should inject");
+    desktop_handle
+        .ice_state_injector
+        .inject(IceConnectionState::Disconnected)
+        .await
+        .expect("desktop ICE disconnect should inject");
+
+    home_client.write_all(b"home").await.expect("home client write");
+    desktop_client.write_all(b"desk").await.expect("desktop client write");
+    let mut home_response = [0_u8; 4];
+    let mut desktop_response = [0_u8; 4];
+    timeout(Duration::from_secs(20), home_client.read_exact(&mut home_response))
+        .await
+        .expect("home client should receive response")
+        .expect("home client should read response");
+    timeout(Duration::from_secs(20), desktop_client.read_exact(&mut desktop_response))
+        .await
+        .expect("desktop client should receive response")
+        .expect("desktop client should read response");
+    assert_eq!(&home_response, b"home");
+    assert_eq!(&desktop_response, b"desk");
+    home_client.shutdown().await.expect("home client shutdown");
+    desktop_client.shutdown().await.expect("desktop client shutdown");
+
+    timeout(Duration::from_secs(15), target_task)
+        .await
+        .expect("target should finish")
+        .expect("target should succeed");
+    assert_eq!(accepted.load(Ordering::SeqCst), 2);
+
+    let status = wait_for_status_matching(&answer_status, "two recovered sessions", |status| {
+        session_count_is(2)(status)
+            && has_remote_peer("offer-home")(status)
+            && has_remote_peer("offer-desktop")(status)
+    })
+    .await;
+    assert_status_schema_is_consistent(&status);
+    wait_for_status(&offer_home_status, "tunnel_open").await;
+    wait_for_status(&offer_desktop_status, "tunnel_open").await;
+
+    let offer_to_answer =
+        decode_signal_records(&mesh.trace().payloads_for("answer-office"), &answer_codec);
+    assert!(
+        count_records_from(&offer_to_answer, "offer-home", MessageType::Offer) >= 2,
+        "home offer side should publish a replacement offer"
+    );
+    assert!(
+        count_records_from(&offer_to_answer, "offer-desktop", MessageType::Offer) >= 2,
+        "desktop offer side should publish a replacement offer"
+    );
+    assert!(
+        offer_to_answer.iter().any(|record| {
+            record.sender_peer_id.as_str() == "offer-home"
+                && record.message_type == MessageType::Offer
+                && record.session_id != home_handle.session_id
+        }),
+        "home recovery should use a replacement session id"
+    );
+    assert!(
+        offer_to_answer.iter().any(|record| {
+            record.sender_peer_id.as_str() == "offer-desktop"
+                && record.message_type == MessageType::Offer
+                && record.session_id != desktop_handle.session_id
+        }),
+        "desktop recovery should use a replacement session id"
+    );
+    assert_answer_trace_is_passive(&decode_signal_records(
+        &mesh.trace().payloads_for("offer-home"),
+        &home_codec,
+    ));
+    assert_answer_trace_is_passive(&decode_signal_records(
+        &mesh.trace().payloads_for("offer-desktop"),
+        &desktop_codec,
+    ));
+
+    offer_home_task.abort();
+    offer_desktop_task.abort();
+    answer_task.abort();
+    let _ = offer_home_task.await;
+    let _ = offer_desktop_task.await;
+    let _ = answer_task.await;
+    let _ = tokio::fs::remove_file(offer_home_status).await;
+    let _ = tokio::fs::remove_file(offer_desktop_status).await;
+    let _ = tokio::fs::remove_file(answer_status).await;
+}
+
+#[tokio::test]
 async fn active_answer_poll_failure_flips_status_and_recovers() {
     let offer_identity = generate_identity("offer-home").expect("offer identity should build");
     let answer_identity = generate_identity("answer-office").expect("answer identity should build");
@@ -1083,6 +1286,110 @@ async fn active_answer_poll_failure_flips_status_and_recovers() {
     control.inject_payload("answer-office", vec![0_u8]);
     wait_for_status_matching(&answer_status_path, "mqtt recovered", mqtt_connected_is(true)).await;
     assert!(!answer_task.is_finished(), "answer daemon should remain alive");
+
+    offer_task.abort();
+    answer_task.abort();
+    let _ = offer_task.await;
+    let _ = answer_task.await;
+    let _ = tokio::fs::remove_file(offer_status_path).await;
+    let _ = tokio::fs::remove_file(answer_status_path).await;
+}
+
+#[tokio::test]
+async fn signaling_turbulence_does_not_interrupt_active_tcp_stream() {
+    let offer_identity = generate_identity("offer-home").expect("offer identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+    let offer_keys = authorized_keys_for(&answer_identity);
+    let answer_keys = authorized_keys_for(&offer_identity);
+    let answer_codec = SignalCodec::new(&answer_identity.identity, &answer_keys, 120, 300);
+
+    let offer_status_path = unique_path("offer-stream-turbulence-status.json");
+    let answer_status_path = unique_path("answer-stream-turbulence-status.json");
+    let offer_port = unused_local_port();
+    let target_listener =
+        TcpListener::bind(("127.0.0.1", 0)).await.expect("target listener should bind");
+    let target_port = target_listener.local_addr().expect("target local addr").port();
+
+    let offer_config =
+        sample_config(NodeRole::Offer, offer_status_path.clone(), offer_port, target_port);
+    let answer_config =
+        sample_config(NodeRole::Answer, answer_status_path.clone(), offer_port, target_port);
+    let mesh = InMemoryTransportMesh::new();
+    let control = mesh.control();
+    let offer_transport = mesh.add_transport("offer-home");
+    let answer_transport = mesh.add_transport("answer-office");
+
+    let target_task = tokio::spawn(async move {
+        let (mut stream, _) = target_listener.accept().await.expect("target accept");
+        for expected in [*b"a001", *b"a002", *b"a003"] {
+            let mut request = [0_u8; 4];
+            stream.read_exact(&mut request).await.expect("target read");
+            assert_eq!(request, expected);
+            stream.write_all(&request).await.expect("target write");
+        }
+        stream.shutdown().await.expect("target shutdown");
+    });
+    let offer_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        offer_config,
+        clone_identity(&offer_identity.identity),
+        offer_keys,
+        offer_transport,
+        None,
+    ));
+    let answer_task = tokio::spawn(run_answer_daemon_with_transport(
+        answer_config,
+        clone_identity(&answer_identity.identity),
+        answer_keys.clone(),
+        answer_transport,
+    ));
+
+    let mut client = connect_with_retry(offer_port).await;
+    for payload in [*b"a001", *b"a002", *b"a003"] {
+        if payload == *b"a002" {
+            control.inject_poll_failure("answer-office");
+            wait_for_status_matching(
+                &answer_status_path,
+                "answer mqtt disconnected while stream remains open",
+                mqtt_connected_is(false),
+            )
+            .await;
+        }
+        client.write_all(&payload).await.expect("client write");
+        let mut response = [0_u8; 4];
+        timeout(Duration::from_secs(10), client.read_exact(&mut response))
+            .await
+            .expect("client should receive response")
+            .expect("client read");
+        assert_eq!(response, payload);
+        if payload == *b"a002" {
+            control.inject_payload("answer-office", vec![0_u8]);
+            wait_for_status_matching(
+                &answer_status_path,
+                "answer mqtt recovered while stream remains open",
+                mqtt_connected_is(true),
+            )
+            .await;
+        }
+    }
+    client.shutdown().await.expect("client shutdown");
+    timeout(Duration::from_secs(10), target_task)
+        .await
+        .expect("target should finish")
+        .expect("target should succeed");
+
+    let status =
+        wait_for_status_matching(&answer_status_path, "serving after turbulence", |status| {
+            current_state_is("serving")(status) && mqtt_connected_is(true)(status)
+        })
+        .await;
+    assert_status_schema_is_consistent(&status);
+    let offer_records =
+        decode_signal_records(&mesh.trace().payloads_for("answer-office"), &answer_codec);
+    assert_eq!(
+        count_records_from(&offer_records, "offer-home", MessageType::Offer),
+        1,
+        "signaling-only turbulence must not create a duplicate session"
+    );
 
     offer_task.abort();
     answer_task.abort();
@@ -1293,7 +1600,7 @@ async fn answer_daemon_serves_two_offer_peers_concurrently() {
     let offer_home_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
         offer_home_config,
         clone_identity(&offer_home.identity),
-        offer_home_keys,
+        offer_home_keys.clone(),
         offer_home_transport,
         None,
     ));
@@ -1408,7 +1715,7 @@ async fn delayed_and_duplicate_delivery_do_not_cross_mutate_active_sessions() {
     let offer_home_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
         offer_home_config,
         clone_identity(&offer_home.identity),
-        offer_home_keys,
+        offer_home_keys.clone(),
         offer_home_transport,
         None,
     ));
@@ -1422,7 +1729,7 @@ async fn delayed_and_duplicate_delivery_do_not_cross_mutate_active_sessions() {
     let answer_task = tokio::spawn(run_answer_daemon_with_transport(
         answer_config,
         clone_identity(&answer_identity.identity),
-        answer_keys,
+        answer_keys.clone(),
         answer_transport,
     ));
 
@@ -1458,6 +1765,153 @@ async fn delayed_and_duplicate_delivery_do_not_cross_mutate_active_sessions() {
             "signaling payloads must remain encrypted binary envelopes"
         );
     }
+
+    offer_home_task.abort();
+    offer_desktop_task.abort();
+    answer_task.abort();
+    let _ = offer_home_task.await;
+    let _ = offer_desktop_task.await;
+    let _ = answer_task.await;
+    let _ = tokio::fs::remove_file(offer_home_status).await;
+    let _ = tokio::fs::remove_file(offer_desktop_status).await;
+    let _ = tokio::fs::remove_file(answer_status).await;
+}
+
+#[tokio::test]
+async fn route_scoped_drop_duplicate_stress_is_peer_isolated() {
+    let offer_home = generate_identity("offer-home").expect("offer-home identity should build");
+    let offer_desktop =
+        generate_identity("offer-desktop").expect("offer-desktop identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+
+    let offer_home_keys = authorized_keys_for(&answer_identity);
+    let offer_desktop_keys = authorized_keys_for(&answer_identity);
+    let answer_keys = authorized_keys_for_many(&[&offer_home, &offer_desktop]);
+    let answer_codec = SignalCodec::new(&answer_identity.identity, &answer_keys, 120, 300);
+
+    let offer_home_status = unique_path("offer-home-retransmit-status.json");
+    let offer_desktop_status = unique_path("offer-desktop-retransmit-status.json");
+    let answer_status = unique_path("answer-retransmit-status.json");
+    let offer_home_port = unused_local_port();
+    let offer_desktop_port = unused_local_port();
+    let (target_port, target_task, accepted) = spawn_echo_target(2).await;
+
+    let offer_home_config = sample_config_for(
+        NodeRole::Offer,
+        offer_home_status.clone(),
+        offer_home_port,
+        target_port,
+        "offer-home",
+        vec!["offer-home"],
+    );
+    let offer_desktop_config = sample_config_for(
+        NodeRole::Offer,
+        offer_desktop_status.clone(),
+        offer_desktop_port,
+        target_port,
+        "offer-desktop",
+        vec!["offer-desktop"],
+    );
+    let answer_config = sample_config_for(
+        NodeRole::Answer,
+        answer_status.clone(),
+        offer_home_port,
+        target_port,
+        "answer-office",
+        vec!["offer-home", "offer-desktop"],
+    );
+
+    let mesh = InMemoryTransportMesh::new();
+    let control = mesh.control();
+    control.drop_next_delivery("offer-home", "answer-office", 1);
+    control.duplicate_next_delivery("answer-office", "offer-desktop", 1);
+    let offer_home_transport = mesh.add_transport("offer-home");
+    let offer_desktop_transport = mesh.add_transport("offer-desktop");
+    let answer_transport = mesh.add_transport("answer-office");
+
+    let offer_home_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        offer_home_config,
+        clone_identity(&offer_home.identity),
+        offer_home_keys.clone(),
+        offer_home_transport,
+        None,
+    ));
+    let offer_desktop_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        offer_desktop_config,
+        clone_identity(&offer_desktop.identity),
+        offer_desktop_keys,
+        offer_desktop_transport,
+        None,
+    ));
+    let answer_task = tokio::spawn(run_answer_daemon_with_transport(
+        answer_config,
+        clone_identity(&answer_identity.identity),
+        answer_keys.clone(),
+        answer_transport,
+    ));
+
+    let home_client = tokio::spawn(assert_client_round_trip(offer_home_port, b"rt01", b"rt01"));
+    let desktop_client =
+        tokio::spawn(assert_client_round_trip(offer_desktop_port, b"rt02", b"rt02"));
+    timeout(Duration::from_secs(20), home_client)
+        .await
+        .expect("home client should finish")
+        .expect("home client should succeed");
+    timeout(Duration::from_secs(20), desktop_client)
+        .await
+        .expect("desktop client should finish")
+        .expect("desktop client should succeed");
+    timeout(Duration::from_secs(15), target_task)
+        .await
+        .expect("target should finish")
+        .expect("target should succeed");
+    assert_eq!(accepted.load(Ordering::SeqCst), 2);
+
+    let status =
+        wait_for_status_matching(&answer_status, "two active sessions after retry", |status| {
+            session_count_is(2)(status)
+                && has_remote_peer("offer-home")(status)
+                && has_remote_peer("offer-desktop")(status)
+        })
+        .await;
+    assert_status_schema_is_consistent(&status);
+    let offer_records =
+        decode_signal_records(&mesh.trace().payloads_for("answer-office"), &answer_codec);
+    assert!(
+        count_records_from(&offer_records, "offer-home", MessageType::Offer) >= 1,
+        "home route should publish at least one offer"
+    );
+    assert_eq!(
+        count_records_from(&offer_records, "offer-desktop", MessageType::Offer),
+        1,
+        "desktop duplicate handling must not create another offer-side session"
+    );
+
+    let attempts = mesh.trace().attempts();
+    let _dropped_home_payload = attempts
+        .iter()
+        .find(|attempt| {
+            attempt.from_peer_id == "offer-home"
+                && attempt.to_peer_id == "answer-office"
+                && !attempt.delivered
+        })
+        .expect("home route should record a dropped offer-side publish");
+    assert!(
+        attempts.iter().any(|attempt| {
+            attempt.from_peer_id == "offer-home"
+                && attempt.to_peer_id == "answer-office"
+                && attempt.delivered
+        }),
+        "home route should recover with a later delivered publish"
+    );
+    assert!(
+        attempts.iter().any(|attempt| {
+            attempt.from_peer_id == "answer-office"
+                && attempt.to_peer_id == "offer-desktop"
+                && attempt.delivered
+        }),
+        "desktop route should keep delivering while home route retries"
+    );
 
     offer_home_task.abort();
     offer_desktop_task.abort();
@@ -2295,6 +2749,208 @@ async fn answer_daemon_restart_with_same_identity_accepts_fresh_offer_side_sessi
     let _ = restarted_offer_task.await;
     let _ = restarted_answer_task.await;
     let _ = tokio::fs::remove_file(offer_status).await;
+    let _ = tokio::fs::remove_file(answer_status).await;
+}
+
+#[tokio::test]
+async fn multi_peer_answer_restart_accepts_fresh_offer_side_sessions() {
+    let offer_home = generate_identity("offer-home").expect("offer-home identity should build");
+    let offer_desktop =
+        generate_identity("offer-desktop").expect("offer-desktop identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+
+    let offer_home_keys = authorized_keys_for(&answer_identity);
+    let offer_desktop_keys = authorized_keys_for(&answer_identity);
+    let answer_keys = authorized_keys_for_many(&[&offer_home, &offer_desktop]);
+    let home_codec = SignalCodec::new(&offer_home.identity, &offer_home_keys, 120, 300);
+    let desktop_codec = SignalCodec::new(&offer_desktop.identity, &offer_desktop_keys, 120, 300);
+    let answer_codec = SignalCodec::new(&answer_identity.identity, &answer_keys, 120, 300);
+
+    let home_status = unique_path("offer-home-multi-restart-status.json");
+    let desktop_status = unique_path("offer-desktop-multi-restart-status.json");
+    let answer_status = unique_path("answer-multi-restart-status.json");
+    let home_port = unused_local_port();
+    let desktop_port = unused_local_port();
+    let (target_port, target_task, accepted) = spawn_echo_target(4).await;
+
+    let home_config = sample_config_for(
+        NodeRole::Offer,
+        home_status.clone(),
+        home_port,
+        target_port,
+        "offer-home",
+        vec!["offer-home"],
+    );
+    let desktop_config = sample_config_for(
+        NodeRole::Offer,
+        desktop_status.clone(),
+        desktop_port,
+        target_port,
+        "offer-desktop",
+        vec!["offer-desktop"],
+    );
+    let answer_config = sample_config_for(
+        NodeRole::Answer,
+        answer_status.clone(),
+        home_port,
+        target_port,
+        "answer-office",
+        vec!["offer-home", "offer-desktop"],
+    );
+
+    let mesh = InMemoryTransportMesh::new();
+    let home_transport = mesh.add_transport("offer-home");
+    let desktop_transport = mesh.add_transport("offer-desktop");
+    let answer_transport = mesh.add_transport("answer-office");
+    let home_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        home_config.clone(),
+        clone_identity(&offer_home.identity),
+        offer_home_keys.clone(),
+        home_transport,
+        None,
+    ));
+    let desktop_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        desktop_config.clone(),
+        clone_identity(&offer_desktop.identity),
+        offer_desktop_keys.clone(),
+        desktop_transport,
+        None,
+    ));
+    let answer_task = tokio::spawn(run_answer_daemon_with_transport(
+        answer_config.clone(),
+        clone_identity(&answer_identity.identity),
+        answer_keys.clone(),
+        answer_transport,
+    ));
+
+    assert_client_round_trip(home_port, b"hr01", b"hr01").await;
+    assert_client_round_trip(desktop_port, b"dr01", b"dr01").await;
+    wait_for_session_count(&answer_status, 2).await;
+    let first_records =
+        decode_signal_records(&mesh.trace().payloads_for("answer-office"), &answer_codec);
+    let first_home_session = first_records
+        .iter()
+        .find(|record| {
+            record.sender_peer_id.as_str() == "offer-home"
+                && record.message_type == MessageType::Offer
+        })
+        .expect("initial home offer should be recorded")
+        .session_id;
+    let first_desktop_session = first_records
+        .iter()
+        .find(|record| {
+            record.sender_peer_id.as_str() == "offer-desktop"
+                && record.message_type == MessageType::Offer
+        })
+        .expect("initial desktop offer should be recorded")
+        .session_id;
+
+    answer_task.abort();
+    home_task.abort();
+    desktop_task.abort();
+    let _ = answer_task.await;
+    let _ = home_task.await;
+    let _ = desktop_task.await;
+
+    let restarted_home_port = unused_local_port();
+    let restarted_desktop_port = unused_local_port();
+    let restarted_home_config = sample_config_for(
+        NodeRole::Offer,
+        home_status.clone(),
+        restarted_home_port,
+        target_port,
+        "offer-home",
+        vec!["offer-home"],
+    );
+    let restarted_desktop_config = sample_config_for(
+        NodeRole::Offer,
+        desktop_status.clone(),
+        restarted_desktop_port,
+        target_port,
+        "offer-desktop",
+        vec!["offer-desktop"],
+    );
+    let restarted_answer_config = sample_config_for(
+        NodeRole::Answer,
+        answer_status.clone(),
+        restarted_home_port,
+        target_port,
+        "answer-office",
+        vec!["offer-home", "offer-desktop"],
+    );
+    let restarted_home_transport = mesh.add_transport("offer-home");
+    let restarted_desktop_transport = mesh.add_transport("offer-desktop");
+    let restarted_answer_transport = mesh.add_transport("answer-office");
+    let restarted_home_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        restarted_home_config,
+        clone_identity(&offer_home.identity),
+        offer_home_keys.clone(),
+        restarted_home_transport,
+        None,
+    ));
+    let restarted_desktop_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        restarted_desktop_config,
+        clone_identity(&offer_desktop.identity),
+        offer_desktop_keys.clone(),
+        restarted_desktop_transport,
+        None,
+    ));
+    let restarted_answer_task = tokio::spawn(run_answer_daemon_with_transport(
+        restarted_answer_config,
+        clone_identity(&answer_identity.identity),
+        answer_keys.clone(),
+        restarted_answer_transport,
+    ));
+
+    assert_client_round_trip(restarted_home_port, b"hr02", b"hr02").await;
+    assert_client_round_trip(restarted_desktop_port, b"dr02", b"dr02").await;
+    let status = wait_for_session_count(&answer_status, 2).await;
+    assert_status_schema_is_consistent(&status);
+
+    let all_records =
+        decode_signal_records(&mesh.trace().payloads_for("answer-office"), &answer_codec);
+    assert!(
+        all_records.iter().any(|record| {
+            record.sender_peer_id.as_str() == "offer-home"
+                && record.message_type == MessageType::Offer
+                && record.session_id != first_home_session
+        }),
+        "home peer should establish a fresh post-restart session"
+    );
+    assert!(
+        all_records.iter().any(|record| {
+            record.sender_peer_id.as_str() == "offer-desktop"
+                && record.message_type == MessageType::Offer
+                && record.session_id != first_desktop_session
+        }),
+        "desktop peer should establish a fresh post-restart session"
+    );
+    assert_answer_trace_is_passive(&decode_signal_records(
+        &mesh.trace().payloads_for("offer-home"),
+        &home_codec,
+    ));
+    assert_answer_trace_is_passive(&decode_signal_records(
+        &mesh.trace().payloads_for("offer-desktop"),
+        &desktop_codec,
+    ));
+    for attempt in mesh.trace().attempts() {
+        assert!(!attempt.payload.starts_with(b"{"));
+    }
+
+    timeout(Duration::from_secs(15), target_task)
+        .await
+        .expect("target should finish")
+        .expect("target should succeed");
+    assert_eq!(accepted.load(Ordering::SeqCst), 4);
+
+    restarted_home_task.abort();
+    restarted_desktop_task.abort();
+    restarted_answer_task.abort();
+    let _ = restarted_home_task.await;
+    let _ = restarted_desktop_task.await;
+    let _ = restarted_answer_task.await;
+    let _ = tokio::fs::remove_file(home_status).await;
+    let _ = tokio::fs::remove_file(desktop_status).await;
     let _ = tokio::fs::remove_file(answer_status).await;
 }
 

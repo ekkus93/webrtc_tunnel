@@ -468,3 +468,10 @@
 ## 2026-05-15T08:28:46Z - GPT-5.5 - Unit test TODO 2 implemented
 - Implemented `docs/UNIT_TEST2_TODO.md`: added daemon routing matrix tests, replay/ACK duplicate coverage, answer status matrix tests, p2pctl partial/old status rendering tests, canonical doc guards, in-memory transport helper tests, and status schema invariant tests.
 - Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T09:13:02Z - GPT-5.5 - Integration test TODO 2 created
+- Created `docs/INT_TEST2_TODO.md` with a detailed checklist for multi-peer integration coverage around simultaneous reconnect pressure, answer daemon restart, signaling turbulence during active streams, same-peer replacement isolation, status churn, malformed authenticated traffic under load, and route-scoped replay stress.
+
+## 2026-05-15T09:24:26Z - GPT-5.5 - Integration test TODO 2 implemented
+- Implemented `docs/INT_TEST2_TODO.md`: added two-node integration coverage for simultaneous multi-peer reconnect pressure, multi-peer answer restart with fresh sessions, signaling turbulence during an active TCP stream, and route-scoped drop/duplicate stress, while reusing existing same-peer replacement, status churn, and malformed authenticated signaling coverage.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
