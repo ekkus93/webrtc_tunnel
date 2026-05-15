@@ -447,3 +447,10 @@
 ## 2026-05-15T04:42:40Z - GPT-5.5 - Unit test TODO implemented
 - Implemented `docs/UNIT_TEST1_TODO.md`: added p2pctl status rendering tests, direct signaling replay-status tests, daemon routing/status/replacement/failure-isolation unit tests, and two-node allowlist/failure-isolation integration coverage.
 - Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T04:47:27Z - GPT-5.5 - Integration test TODO created
+- Created `docs/INT_TEST1_TODO.md` with a detailed integration-test checklist for transport turbulence, answer daemon restart/recovery, long-lived stream churn, same-peer connection pressure, malformed authenticated signaling, status-file churn stability, harness expansion, and final validation.
+
+## 2026-05-15T06:07:08Z - GPT-5.5 - Integration test TODO implemented
+- Implemented `docs/INT_TEST1_TODO.md`: expanded the in-memory integration harness with route-scoped fault injection and added multi-session tests for transport turbulence, restart, stream churn, same-peer pressure, malformed authenticated signaling, and status-file churn.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
