@@ -458,3 +458,6 @@
 ## 2026-05-15T06:55:50Z - GPT-5.5 - V03 FIX2 implemented
 - Implemented `docs/V03_FIX2_TODO.md`: unknown-session non-offer messages no longer peer-fallback route, healthy answer steady-state status reports `serving`, and canonical docs now describe current v0.3 multi-session behavior.
 - Added focused daemon, p2pctl, and canonical-doc guard tests. Full workspace validation passed with fmt, clippy `-D warnings`, and all workspace tests.
+
+## 2026-05-15T07:00:15Z - GPT-5.5 - Integration test port flake fixed
+- Full validation initially exposed parallel `two_node_daemon` port-probe flakiness. Updated the integration test `unused_local_port()` helper to allocate unique candidate ports per test process, then full fmt, clippy, and workspace tests passed.

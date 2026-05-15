@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -462,11 +462,14 @@ fn authorized_keys_for_many(remotes: &[&GeneratedIdentity]) -> AuthorizedKeys {
 }
 
 fn unused_local_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("port probe should bind")
-        .local_addr()
-        .expect("port probe local addr")
-        .port()
+    static NEXT_TEST_PORT: AtomicU16 = AtomicU16::new(30_000);
+    loop {
+        let port = NEXT_TEST_PORT.fetch_add(1, Ordering::SeqCst);
+        assert!(port < 60_000, "test port range exhausted");
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 async fn connect_with_retry(port: u16) -> TcpStream {
