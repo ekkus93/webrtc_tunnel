@@ -1026,13 +1026,73 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
                 session.bridge_state = BridgeSessionState::Active;
                 let channel =
                     session.data_channel.clone().ok_or(DaemonError::MissingDataChannel)?;
-                return Ok(p2p_tunnel::run_multiplex_offer(
-                    channel,
-                    &config.tunnel,
-                    pending_client.take().ok_or(DaemonError::MissingDataChannel)?,
-                    accepted_clients,
-                )
-                .await?);
+                let tunnel_config = config.tunnel.clone();
+                let initial_client = pending_client.take().ok_or(DaemonError::MissingDataChannel)?;
+                let bridge =
+                    p2p_tunnel::run_multiplex_offer(channel, &tunnel_config, initial_client, accepted_clients);
+                tokio::pin!(bridge);
+                loop {
+                    tokio::select! {
+                        result = &mut bridge => {
+                            session.bridge_state = BridgeSessionState::Closed;
+                            let _ = publish_message(
+                                ctx,
+                                codec,
+                                transport,
+                                StatusSnapshot {
+                                    active_session_id: Some(session.session_id),
+                                    current_state: session.state,
+                                },
+                                Some(&mut session.signaling),
+                                remote,
+                                OutgoingSignal {
+                                    message: InnerMessageBuilder::new(
+                                        session.session_id,
+                                        config.node.peer_id.clone(),
+                                        session.remote_peer_id.clone(),
+                                    )
+                                    .build(MessageBody::Close(CloseBody {
+                                        reason_code: "session_closed".to_owned(),
+                                        message: None,
+                                    })),
+                                    response: false,
+                                },
+                            )
+                            .await;
+                            result?;
+                            return Ok(());
+                        }
+                        ice_state = session.peer.next_ice_state() => {
+                            if let Some(ice_state) = ice_state {
+                                if matches!(ice_state, IceConnectionState::Failed | IceConnectionState::Disconnected) {
+                                    publish_message(
+                                        ctx,
+                                        codec,
+                                        transport,
+                                        StatusSnapshot {
+                                            active_session_id: Some(session.session_id),
+                                            current_state: session.state,
+                                        },
+                                        Some(&mut session.signaling),
+                                        remote,
+                                        OutgoingSignal {
+                                            message: build_error_message(
+                                                &config.node.peer_id,
+                                                &session.remote_peer_id,
+                                                session.session_id,
+                                                FailureCode::IceFailed,
+                                                "ice connection failed",
+                                            ),
+                                            response: false,
+                                        },
+                                    ).await?;
+                                    session.bridge_state = BridgeSessionState::Closed;
+                                    return Err(DaemonError::IceFailed(ice_state));
+                                }
+                            }
+                        }
+                    }
+                }
             }
             tokio::select! {
                 _ = tick.tick() => {

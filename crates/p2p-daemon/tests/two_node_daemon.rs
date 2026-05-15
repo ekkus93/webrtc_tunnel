@@ -22,7 +22,7 @@ use p2p_signaling::{
 use p2p_webrtc::IceConnectionState;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
@@ -652,6 +652,28 @@ async fn wait_for_status_matching(
     }
 }
 
+async fn wait_for_failed_publish_attempt(
+    trace: &TransportTrace,
+    from_peer_id: &str,
+    to_peer_id: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if trace.attempts().iter().any(|attempt| {
+            attempt.from_peer_id == from_peer_id
+                && attempt.to_peer_id == to_peer_id
+                && !attempt.delivered
+        }) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "failed publish attempt from {from_peer_id} to {to_peer_id} not observed in time"
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
 fn session_count_is(expected_count: usize) -> impl Fn(&serde_json::Value) -> bool {
     move |status| status["active_session_count"] == expected_count
 }
@@ -1052,6 +1074,119 @@ async fn offer_side_drives_reconnect_after_injected_disconnect() {
 #[tokio::test]
 async fn active_session_ice_restart_recovers_pending_local_client() {
     run_one_in_memory_session(0, true, true, true).await;
+}
+
+#[tokio::test]
+async fn offer_daemon_accepts_next_client_after_active_connection_loss() {
+    let offer_identity = generate_identity("offer-home").expect("offer identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+    let offer_keys = authorized_keys_for(&answer_identity);
+    let answer_keys = authorized_keys_for(&offer_identity);
+
+    let offer_status_path = unique_path("offer-active-drop-status.json");
+    let answer_status_path = unique_path("answer-active-drop-status.json");
+    let offer_port = unused_local_port();
+    let target_listener =
+        TcpListener::bind(("127.0.0.1", 0)).await.expect("target listener should bind");
+    let target_port = target_listener.local_addr().expect("target local addr").port();
+
+    let offer_config =
+        sample_config(NodeRole::Offer, offer_status_path.clone(), offer_port, target_port);
+    let answer_config =
+        sample_config(NodeRole::Answer, answer_status_path.clone(), offer_port, target_port);
+    let mesh = InMemoryTransportMesh::new();
+    let offer_transport = mesh.add_transport("offer-home");
+    let answer_transport = mesh.add_transport("answer-office");
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    let (release_first_target, release_first_target_rx) = oneshot::channel();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let accepted_for_target = Arc::clone(&accepted);
+
+    let target_task = tokio::spawn(async move {
+        let (mut first_stream, _) = target_listener.accept().await.expect("first target accept");
+        let accepted_for_first = Arc::clone(&accepted_for_target);
+        let first_task = tokio::spawn(async move {
+            let mut request = [0_u8; 4];
+            first_stream.read_exact(&mut request).await.expect("first target read");
+            assert_eq!(&request, b"hold");
+            first_stream.write_all(&request).await.expect("first target write");
+            accepted_for_first.fetch_add(1, Ordering::SeqCst);
+            let _ = release_first_target_rx.await;
+            let _ = first_stream.shutdown().await;
+        });
+
+        let (mut second_stream, _) = target_listener.accept().await.expect("second target accept");
+        let mut request = [0_u8; 4];
+        second_stream.read_exact(&mut request).await.expect("second target read");
+        assert_eq!(&request, b"next");
+        second_stream.write_all(&request).await.expect("second target write");
+        second_stream.shutdown().await.expect("second target shutdown");
+        accepted_for_target.fetch_add(1, Ordering::SeqCst);
+        first_task.await.expect("first target task should join");
+    });
+
+    let offer_task = tokio::spawn(run_offer_daemon_with_transport_and_test_hook(
+        offer_config,
+        clone_identity(&offer_identity.identity),
+        offer_keys,
+        offer_transport,
+        Some(hook_tx),
+    ));
+    let answer_task = tokio::spawn(run_answer_daemon_with_transport(
+        answer_config,
+        clone_identity(&answer_identity.identity),
+        answer_keys,
+        answer_transport,
+    ));
+
+    let mut first_client = connect_with_retry(offer_port).await;
+    first_client.write_all(b"hold").await.expect("first client write");
+    let mut first_response = [0_u8; 4];
+    timeout(Duration::from_secs(10), first_client.read_exact(&mut first_response))
+        .await
+        .expect("first client should receive response")
+        .expect("first client read");
+    assert_eq!(&first_response, b"hold");
+    wait_for_status(&offer_status_path, "tunnel_open").await;
+
+    let first_handle = timeout(Duration::from_secs(10), hook_rx.recv())
+        .await
+        .expect("first offer hook should arrive")
+        .expect("first offer hook should contain handle");
+    first_handle
+        .ice_state_injector
+        .inject(IceConnectionState::Disconnected)
+        .await
+        .expect("active ICE disconnect should inject");
+    wait_for_status(&offer_status_path, "waiting_for_local_client").await;
+
+    let mut second_client = connect_with_retry(offer_port).await;
+    second_client.write_all(b"next").await.expect("second client write");
+    let mut second_response = [0_u8; 4];
+    timeout(Duration::from_secs(10), second_client.read_exact(&mut second_response))
+        .await
+        .expect("second client should receive response")
+        .expect("second client read");
+    assert_eq!(&second_response, b"next");
+    second_client.shutdown().await.expect("second client shutdown");
+    wait_for_status(&offer_status_path, "tunnel_open").await;
+    assert!(!offer_task.is_finished(), "offer daemon should remain alive after active drop");
+    assert!(!answer_task.is_finished(), "answer daemon should remain alive after active drop");
+
+    let _ = release_first_target.send(());
+    first_client.shutdown().await.expect("first client shutdown");
+    timeout(Duration::from_secs(10), target_task)
+        .await
+        .expect("target task should finish")
+        .expect("target task should join");
+    assert_eq!(accepted.load(Ordering::SeqCst), 2);
+
+    offer_task.abort();
+    answer_task.abort();
+    let _ = offer_task.await;
+    let _ = answer_task.await;
+    let _ = tokio::fs::remove_file(offer_status_path).await;
+    let _ = tokio::fs::remove_file(answer_status_path).await;
 }
 
 #[tokio::test]
@@ -2032,8 +2167,7 @@ async fn route_scoped_publish_failure_does_not_break_other_active_peer() {
 
     control.fail_next_publish("answer-office", "offer-home", 1);
     control.inject_payload("answer-office", payload);
-    wait_for_status_matching(&answer_status, "route publish failure", mqtt_connected_is(false))
-        .await;
+    wait_for_failed_publish_attempt(&mesh.trace(), "answer-office", "offer-home").await;
     assert!(
         mesh.trace().attempts().iter().any(|attempt| {
             attempt.from_peer_id == "answer-office"

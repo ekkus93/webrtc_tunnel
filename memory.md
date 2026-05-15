@@ -475,3 +475,10 @@
 ## 2026-05-15T09:24:26Z - GPT-5.5 - Integration test TODO 2 implemented
 - Implemented `docs/INT_TEST2_TODO.md`: added two-node integration coverage for simultaneous multi-peer reconnect pressure, multi-peer answer restart with fresh sessions, signaling turbulence during an active TCP stream, and route-scoped drop/duplicate stress, while reusing existing same-peer replacement, status churn, and malformed authenticated signaling coverage.
 - Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T09:30:18Z - GPT-5.5 - Observed p2p-offer reconnect issue
+- User reported seeing cases where a lost connection required restarting `p2p-offer`, and restarting `p2p-offer` fixed the issue. Logs were not saved, so future reconnect investigation should add coverage for established-session loss cleanup and next-client recovery without process restart.
+
+## 2026-05-15T09:37:02Z - GPT-5.5 - Active offer connection-loss recovery fixed
+- Added a two-node regression test proving `p2p-offer` accepts a later local client after an established tunnel sees an injected ICE disconnect, without restarting the process.
+- Fixed offer-session active tunnel handling so the offer side continues watching ICE state while `run_multiplex_offer` is active and returns to waiting after an active connection-loss failure.
