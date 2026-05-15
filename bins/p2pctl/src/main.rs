@@ -140,25 +140,31 @@ fn status(path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
 
     let content = fs::read_to_string(status_file)?;
     let status: serde_json::Value = serde_json::from_str(&content)?;
-    println!(
-        "peer_id={} role={} mqtt_connected={} state={}",
+    print!("{}", render_status(&status));
+    Ok(())
+}
+
+fn render_status(status: &serde_json::Value) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "peer_id={} role={} mqtt_connected={} state={}\n",
         status["peer_id"].as_str().unwrap_or("unknown"),
         status["role"].as_str().unwrap_or("unknown"),
         status["mqtt_connected"].as_bool().unwrap_or(false),
         status["current_state"].as_str().unwrap_or("unknown")
-    );
+    ));
     if let Some(count) = status["active_session_count"].as_u64() {
         let capacity = status["session_capacity"]
             .as_u64()
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unknown".to_owned());
-        println!("sessions={count}/{capacity}");
+        output.push_str(&format!("sessions={count}/{capacity}\n"));
     }
     match status["sessions"].as_array() {
-        Some(sessions) if sessions.is_empty() => println!("sessions: none"),
-        None => println!("sessions: none"),
+        Some(sessions) if sessions.is_empty() => output.push_str("sessions: none\n"),
+        None => output.push_str("sessions: none\n"),
         Some(sessions) => {
-            println!("sessions:");
+            output.push_str("sessions:\n");
             for session in sessions {
                 let forwards = session["configured_forward_ids"]
                     .as_array()
@@ -170,18 +176,18 @@ fn status(path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
                             .join(",")
                     })
                     .unwrap_or_default();
-                println!(
-                    "  {} peer={} state={} data_channel_open={} configured_forwards={}",
+                output.push_str(&format!(
+                    "  {} peer={} state={} data_channel_open={} configured_forwards={}\n",
                     session["session_id"].as_str().unwrap_or("unknown"),
                     session["remote_peer_id"].as_str().unwrap_or("unknown"),
                     session["state"].as_str().unwrap_or("unknown"),
                     session["data_channel_open"].as_bool().unwrap_or(false),
                     forwards
-                );
+                ));
             }
         }
     }
-    Ok(())
+    output
 }
 
 fn load_config(path: Option<&Path>) -> Result<AppConfig, Box<dyn std::error::Error>> {
@@ -204,8 +210,9 @@ fn default_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use p2p_crypto::generate_identity;
+    use serde_json::json;
 
-    use super::write_identity_files;
+    use super::{render_status, write_identity_files};
 
     #[test]
     fn keygen_refuses_to_overwrite_without_force() {
@@ -237,5 +244,90 @@ mod tests {
                 .expect("public identity content")
                 .contains("offer-home")
         );
+    }
+
+    #[test]
+    fn status_rendering_handles_zero_sessions() {
+        let output = render_status(&json!({
+            "peer_id": "answer-office",
+            "role": "answer",
+            "mqtt_connected": true,
+            "current_state": "idle",
+            "active_session_count": 0,
+            "session_capacity": 16,
+            "sessions": [],
+            "configured_forwards": ["ssh"]
+        }));
+
+        assert!(
+            output.contains("peer_id=answer-office role=answer mqtt_connected=true state=idle")
+        );
+        assert!(output.contains("sessions=0/16"));
+        assert!(output.contains("sessions: none"));
+        assert!(!output.contains("active_stream_count"));
+        assert!(!output.contains("open_forward_ids"));
+    }
+
+    #[test]
+    fn status_rendering_handles_one_session() {
+        let output = render_status(&json!({
+            "peer_id": "answer-office",
+            "role": "answer",
+            "mqtt_connected": true,
+            "current_state": "serving",
+            "active_session_count": 1,
+            "session_capacity": 16,
+            "sessions": [{
+                "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "remote_peer_id": "offer-home",
+                "state": "tunnel_open",
+                "data_channel_open": true,
+                "configured_forward_ids": ["ssh", "web-ui"]
+            }]
+        }));
+
+        assert!(output.contains("state=serving"));
+        assert!(output.contains("sessions=1/16"));
+        assert!(output.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(output.contains("peer=offer-home"));
+        assert!(output.contains("state=tunnel_open"));
+        assert!(output.contains("data_channel_open=true"));
+        assert!(output.contains("configured_forwards=ssh,web-ui"));
+    }
+
+    #[test]
+    fn status_rendering_handles_multiple_sessions() {
+        let output = render_status(&json!({
+            "peer_id": "answer-office",
+            "role": "answer",
+            "mqtt_connected": true,
+            "current_state": "serving",
+            "active_session_count": 2,
+            "session_capacity": 16,
+            "sessions": [
+                {
+                    "session_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "remote_peer_id": "offer-desktop",
+                    "state": "tunnel_open",
+                    "data_channel_open": true,
+                    "configured_forward_ids": ["web-ui"]
+                },
+                {
+                    "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "remote_peer_id": "offer-home",
+                    "state": "connecting_data_channel",
+                    "data_channel_open": false,
+                    "configured_forward_ids": ["ssh"]
+                }
+            ]
+        }));
+
+        assert!(output.contains("sessions=2/16"));
+        assert!(output.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb peer=offer-desktop"));
+        assert!(output.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa peer=offer-home"));
+        assert!(output.contains("configured_forwards=web-ui"));
+        assert!(output.contains("configured_forwards=ssh"));
+        assert!(!output.contains("active_stream_count"));
+        assert!(!output.contains("open_forward_ids"));
     }
 }

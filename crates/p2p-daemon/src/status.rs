@@ -156,6 +156,8 @@ mod tests {
         assert!(content.contains("\"active_session_count\""));
         assert!(content.contains("\"sessions\""));
         assert!(content.contains("\"ssh\""));
+        assert!(!content.contains("\"active_stream_count\""));
+        assert!(!content.contains("\"open_forward_ids\""));
         assert!(!content.contains("private"));
         let _ = tokio::fs::remove_file(PathBuf::from(&temp_path)).await;
     }
@@ -184,9 +186,60 @@ mod tests {
             .await
             .expect("status file should write");
         let content = tokio::fs::read_to_string(&temp_path).await.expect("status file should read");
-        assert!(content.contains("\"active_session_count\": 1"));
-        assert!(content.contains("\"session_capacity\": 16"));
-        assert!(content.contains("\"remote_peer_id\""));
+        let json: serde_json::Value = serde_json::from_str(&content).expect("status json");
+        assert_eq!(json["active_session_count"], 1);
+        assert_eq!(json["session_capacity"], 16);
+        assert_eq!(json["active_session_id"], p2p_core::SessionId::new([8_u8; 16]).to_string());
+        assert_eq!(json["sessions"][0]["remote_peer_id"], "offer-home");
+        assert_eq!(json["sessions"][0]["configured_forward_ids"][0], "ssh");
+        assert!(json["sessions"][0]["active_stream_count"].is_null());
+        assert!(json["sessions"][0]["open_forward_ids"].is_null());
+        let _ = tokio::fs::remove_file(PathBuf::from(&temp_path)).await;
+    }
+
+    #[tokio::test]
+    async fn writes_multi_session_aggregate_without_single_active_session_id() {
+        let temp_path = std::env::temp_dir()
+            .join(format!("p2ptunnel-status-aggregate-{}.json", std::process::id()));
+        let writer = StatusWriter { enabled: true, path: temp_path.clone() };
+        writer
+            .write(DaemonStatus::with_sessions(
+                "answer-office".parse().expect("peer id"),
+                NodeRole::Answer,
+                true,
+                DaemonState::Serving,
+                vec!["ssh".to_owned(), "web-ui".to_owned()],
+                16,
+                vec![
+                    SessionStatus::new(
+                        p2p_core::SessionId::new([8_u8; 16]),
+                        "offer-home".parse().expect("remote peer id"),
+                        DaemonState::TunnelOpen,
+                        true,
+                        vec!["ssh".to_owned()],
+                    ),
+                    SessionStatus::new(
+                        p2p_core::SessionId::new([9_u8; 16]),
+                        "offer-desktop".parse().expect("remote peer id"),
+                        DaemonState::ConnectingDataChannel,
+                        false,
+                        vec!["web-ui".to_owned()],
+                    ),
+                ],
+            ))
+            .await
+            .expect("status file should write");
+
+        let content = tokio::fs::read_to_string(&temp_path).await.expect("status file should read");
+        let json: serde_json::Value = serde_json::from_str(&content).expect("status json");
+        let sessions = json["sessions"].as_array().expect("sessions");
+        assert_eq!(json["current_state"], "serving");
+        assert_eq!(json["active_session_count"], sessions.len());
+        assert!(json["active_session_id"].is_null());
+        assert_eq!(sessions.len(), 2);
+        assert!(content.contains("\"configured_forward_ids\""));
+        assert!(!content.contains("\"active_stream_count\""));
+        assert!(!content.contains("\"open_forward_ids\""));
         let _ = tokio::fs::remove_file(PathBuf::from(&temp_path)).await;
     }
 }
