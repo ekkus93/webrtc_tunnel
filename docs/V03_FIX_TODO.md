@@ -418,7 +418,7 @@ Status: complete.
 
 Update:
 
-- `docs/RUST_WEBRTC_SPECS.md`
+- `docs/SPECS.md`
 - `docs/V03_SPEC.md` if needed
 - README if needed
 

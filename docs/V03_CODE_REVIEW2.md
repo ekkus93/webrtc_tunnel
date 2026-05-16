@@ -186,7 +186,7 @@ p2p-answer is up and ready to serve authorized offer peers.
 
 ## Problem
 
-`docs/RUST_WEBRTC_SPECS.md` still contains v2/single-session language that conflicts with v0.3 behavior, such as:
+`docs/SPECS.md` still contains v2/single-session language that conflicts with v0.3 behavior, such as:
 
 - "One active peer tunnel session at a time"
 - "Multiple simultaneous WebRTC peer sessions" listed as out of scope
@@ -204,7 +204,7 @@ Update canonical docs so they clearly distinguish:
 - current v0.3 behavior,
 - future/out-of-scope features.
 
-`docs/RUST_WEBRTC_SPECS.md` must not contain unqualified claims that the product supports only one active peer tunnel session at a time.
+`docs/SPECS.md` must not contain unqualified claims that the product supports only one active peer tunnel session at a time.
 
 Acceptable approaches:
 

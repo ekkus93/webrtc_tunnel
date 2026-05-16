@@ -9,8 +9,8 @@ The current v0.3 tunnel supports:
 - multiple configured forwards,
 - one local listener per configured offer-side forward,
 - one always-on `p2p-answer` daemon serving multiple simultaneous authorized `p2p-offer` peers,
-- at most one active unrelated WebRTC peer session per authenticated `peer_id`,
-- one reliable ordered WebRTC data channel named `tunnel`,
+- at most one active WebRTC peer session per authenticated `peer_id`,
+- one reliable ordered WebRTC data channel named `tunnel` per peer session,
 - many simultaneous logical TCP streams multiplexed over that data channel,
 - answer-side ownership of target host/port mappings,
 - per-forward authorization.
@@ -31,9 +31,9 @@ The offer side sends only a `forward_id` for each logical stream. It never choos
 - STUN support
 - No TURN support
 - Multiple simultaneous authorized offer peer sessions per answer daemon
-- At most one active unrelated session per authenticated `peer_id`
+- At most one active session per authenticated `peer_id`
 - Multiple logical TCP streams inside each active peer session
-- Always-on answer daemon waiting for offers
+- Always-on answer daemon serving while waiting for offers
 - Stream-level target connection and error handling
 - Reconnect/recovery driven by the offer side
 
@@ -224,7 +224,7 @@ p2p-tunnel/
 - After the data channel opens, each accepted local TCP client opens a new logical stream over the active data channel.
 - Sends encrypted/signaled offer and ICE candidates over MQTT.
 - Sends only `forward_id` in tunnel `OPEN` frames.
-- Owns reconnect and renegotiation in v2.
+- Owns reconnect and renegotiation in v0.2.
 
 ### Answer node
 
@@ -893,7 +893,7 @@ Subcommands:
 p2p-offer run [--config <path>] [--broker-url <url>]
 ```
 
-Offer listen ports are configured per forward in `[[forwards]]`; v2 does not accept first-forward-only listen override flags.
+Offer listen ports are configured per forward in `[[forwards]]`; v0.2 does not accept first-forward-only listen override flags.
 
 ### `p2p-answer`
 
@@ -901,7 +901,7 @@ Offer listen ports are configured per forward in `[[forwards]]`; v2 does not acc
 p2p-answer run [--config <path>] [--broker-url <url>]
 ```
 
-Answer targets are configured per forward in `[[forwards]]`; v2 does not accept first-forward-only target override flags.
+Answer targets are configured per forward in `[[forwards]]`; v0.2 does not accept first-forward-only target override flags.
 
 ## 20. Operator workflow
 
@@ -938,10 +938,10 @@ Answer targets are configured per forward in `[[forwards]]`; v2 does not accept 
 - Broker TLS is required.
 - STUN only.
 - No TURN support.
-- One active unrelated peer tunnel session per authenticated `peer_id`.
+- One active peer tunnel session per authenticated `peer_id`.
 - Multiple authorized offer peers may be served concurrently by one answer daemon.
 - Multiple logical streams may run within each active peer session.
-- One reliable ordered WebRTC data channel labeled `tunnel`.
+- One reliable ordered WebRTC data channel labeled `tunnel` per peer session.
 - Offer side sends only `forward_id`; answer side owns target mapping.
 - `allow_remote_peers` uses explicit peer IDs only.
 - Stream errors are isolated whenever possible.

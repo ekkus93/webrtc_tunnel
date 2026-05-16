@@ -2,9 +2,9 @@
 
 ## 1. Purpose
 
-This document specifies the next runtime evolution after the current v2 multiplexed forwarding model: one always-on `p2p-answer` daemon must be able to serve **multiple simultaneous `p2p-offer` clients** at the same time.
+This document specifies the next runtime evolution after the current v0.2 multiplexed forwarding model: one always-on `p2p-answer` daemon must be able to serve **multiple simultaneous `p2p-offer` clients** at the same time.
 
-Today, v2 supports:
+Today, v0.2 supports:
 
 - multiple configured forwards,
 - one local listener per configured offer-side forward,
@@ -30,7 +30,7 @@ many multiplexed logical TCP streams per active session
 
 1. Allow one `p2p-answer` process to host multiple simultaneous active peer sessions.
 2. Allow different authorized offer peers to connect concurrently.
-3. Preserve the v2 multiplexed forwarding model inside each session.
+3. Preserve the v0.2 multiplexed forwarding model inside each session.
 4. Keep signaling encrypted, signed, replay-protected, and session-bound.
 5. Keep per-forward authorization enforced on the answer side.
 6. Keep offer-side reconnect ownership.
@@ -68,7 +68,7 @@ This is primarily a **daemon/runtime architecture** change, not a crypto or wire
 
 The minimum viable v0.3 design should keep the existing `p2ptunnel-config-v2` config shape.
 
-No new public config fields are required for the first correct implementation. Current v2 config already expresses:
+No new public config fields are required for the first correct implementation. Current v0.2 config already expresses:
 
 - multiple trusted peers via `authorized_keys`,
 - per-forward allowlists via `allow_remote_peers`,
@@ -449,7 +449,7 @@ No new per-client config shape should be required for the minimum pass.
 
 ### 15.2 Backward compatibility
 
-Because the first pass keeps the signaling and tunnel wire formats stable, an updated answer daemon should continue to interoperate with existing v2 offer daemons, while simply allowing more than one of them to be active at once.
+Because the first pass keeps the signaling and tunnel wire formats stable, an updated answer daemon should continue to interoperate with existing v0.2 offer daemons, while simply allowing more than one of them to be active at once.
 
 ## 16. Completion criteria
 

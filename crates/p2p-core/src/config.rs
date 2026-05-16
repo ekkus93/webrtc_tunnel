@@ -67,7 +67,7 @@ impl AppConfig {
 
         if !self.security.require_mqtt_tls {
             return Err(ConfigError::InvalidConfig(
-                "security.require_mqtt_tls must remain enabled in v2".to_owned(),
+                "security.require_mqtt_tls must remain enabled in v0.2".to_owned(),
             ));
         }
         if !self.broker.url.starts_with("mqtts://") {
@@ -77,12 +77,12 @@ impl AppConfig {
         }
         if !self.security.require_message_encryption {
             return Err(ConfigError::InvalidConfig(
-                "security.require_message_encryption must remain enabled in v2".to_owned(),
+                "security.require_message_encryption must remain enabled in v0.2".to_owned(),
             ));
         }
         if !self.security.require_message_signatures {
             return Err(ConfigError::InvalidConfig(
-                "security.require_message_signatures must remain enabled in v2".to_owned(),
+                "security.require_message_signatures must remain enabled in v0.2".to_owned(),
             ));
         }
         if self.security.replay_cache_size == 0 {
@@ -92,39 +92,39 @@ impl AppConfig {
         }
         if !self.security.require_authorized_keys {
             return Err(ConfigError::InvalidConfig(
-                "security.require_authorized_keys must remain enabled in v2".to_owned(),
+                "security.require_authorized_keys must remain enabled in v0.2".to_owned(),
             ));
         }
         if !self.security.reject_unknown_config_keys {
             return Err(ConfigError::InvalidConfig(
-                "security.reject_unknown_config_keys must remain enabled in v2".to_owned(),
+                "security.reject_unknown_config_keys must remain enabled in v0.2".to_owned(),
             ));
         }
         if !self.security.refuse_world_readable_identity {
             return Err(ConfigError::InvalidConfig(
-                "security.refuse_world_readable_identity must remain enabled in v2".to_owned(),
+                "security.refuse_world_readable_identity must remain enabled in v0.2".to_owned(),
             ));
         }
         if !self.security.refuse_world_writable_paths {
             return Err(ConfigError::InvalidConfig(
-                "security.refuse_world_writable_paths must remain enabled in v2".to_owned(),
+                "security.refuse_world_writable_paths must remain enabled in v0.2".to_owned(),
             ));
         }
         if self.broker.connect_timeout_secs != 5 {
             return Err(ConfigError::InvalidConfig(
-                "broker.connect_timeout_secs must remain 5 in v2 because the current MQTT transport does not expose a configurable connect timeout"
+                "broker.connect_timeout_secs must remain 5 in v0.2 because the current MQTT transport does not expose a configurable connect timeout"
                     .to_owned(),
             ));
         }
         if self.broker.session_expiry_secs != 0 {
             return Err(ConfigError::InvalidConfig(
-                "broker.session_expiry_secs must remain 0 in v2 because the current signaling transport uses MQTT v4 semantics"
+                "broker.session_expiry_secs must remain 0 in v0.2 because the current signaling transport uses MQTT v4 semantics"
                     .to_owned(),
             ));
         }
         if self.broker.username.is_empty() && !self.broker.password_file.as_os_str().is_empty() {
             return Err(ConfigError::InvalidConfig(
-                "broker.password_file requires broker.username in v2".to_owned(),
+                "broker.password_file requires broker.username in v0.2".to_owned(),
             ));
         }
         if self.broker.url.starts_with("mqtts://") {
@@ -135,7 +135,7 @@ impl AppConfig {
             }
             if self.broker.tls.insecure_skip_verify {
                 return Err(ConfigError::InvalidConfig(
-                    "broker.tls.insecure_skip_verify is unsupported in v2".to_owned(),
+                    "broker.tls.insecure_skip_verify is unsupported in v0.2".to_owned(),
                 ));
             }
             let client_cert_set = !self.broker.tls.client_cert_file.as_os_str().is_empty();
@@ -155,22 +155,22 @@ impl AppConfig {
         }
         if self.logging.log_rotation != "none" {
             return Err(ConfigError::InvalidConfig(
-                "logging.log_rotation is unsupported in v2; use 'none'".to_owned(),
+                "logging.log_rotation is unsupported in v0.2; use 'none'".to_owned(),
             ));
         }
         if !self.health.status_socket.as_os_str().is_empty() {
             return Err(ConfigError::InvalidConfig(
-                "health.status_socket is unsupported in v2".to_owned(),
+                "health.status_socket is unsupported in v0.2".to_owned(),
             ));
         }
         if self.reconnect.hold_local_client_during_reconnect {
             return Err(ConfigError::InvalidConfig(
-                "reconnect.hold_local_client_during_reconnect is unsupported in v2".to_owned(),
+                "reconnect.hold_local_client_during_reconnect is unsupported in v0.2".to_owned(),
             ));
         }
         if self.reconnect.local_client_hold_secs != 0 {
             return Err(ConfigError::InvalidConfig(
-                "reconnect.local_client_hold_secs is unsupported in v2".to_owned(),
+                "reconnect.local_client_hold_secs is unsupported in v0.2".to_owned(),
             ));
         }
         validate_required_file(&self.paths.identity, "identity")?;

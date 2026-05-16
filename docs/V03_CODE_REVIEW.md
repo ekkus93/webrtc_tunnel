@@ -424,7 +424,7 @@ This conflicts with v0.3.
 Update canonical docs:
 
 - `README.md`
-- `docs/RUST_WEBRTC_SPECS.md`
+- `docs/SPECS.md`
 - `docs/V03_SPEC.md` if needed
 
 Historical review files may keep old text if clearly historical, but canonical docs must not contradict current behavior.

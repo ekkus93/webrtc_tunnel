@@ -272,7 +272,7 @@ mod tests {
         assert!(spec.contains(
             "Malformed answer-side `OPEN` request payloads are stream-local protocol errors"
         ));
-        assert!(spec.contains("The v2 multiplexed session is persistent"));
+        assert!(spec.contains("The v0.2 multiplexed session is persistent"));
         assert!(spec.contains("Zero active streams alone must not close the session"));
         assert!(!spec.contains("OPEN(stream_id, { \"ok\": true })"));
         assert!(!spec.contains("OPEN(stream_id, empty_payload)` or"));

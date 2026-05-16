@@ -286,7 +286,7 @@ Scope summary:
   - [x] explain each offer machine needs its own identity,
   - [x] explain one active session per peer,
   - [x] explain that multiple streams still multiplex inside each session.
-- [x] Update `docs/RUST_WEBRTC_SPECS.md` to reflect v0.3 behavior.
+- [x] Update `docs/SPECS.md` to reflect v0.3 behavior.
 - [x] Update any stale review/spec/todo docs that still say "one active peer session at a time" after implementation.
 - [x] Add/update sample configs only if operator-visible config changes are introduced.
 - [x] Document local status output changes.

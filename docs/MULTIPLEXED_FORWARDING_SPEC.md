@@ -6,7 +6,7 @@
 
 This document specifies the implemented multiplexed tunnel upgrade for the Rust WebRTC/MQTT port-forwarding application.
 
-The original v1 implementation was effectively a single TCP stream / single configured forward model. That worked reasonably for SSH, but it was too limited for general-purpose forwarding. The v2 design supports:
+The original v0.1 implementation was effectively a single TCP stream / single configured forward model. That worked reasonably for SSH, but it was too limited for general-purpose forwarding. The v0.2 design supports:
 
 - multiple configured local forwards,
 - one local listener per configured forward on the offer/client side,
@@ -104,7 +104,7 @@ If any check fails, the answer side must reject the stream without exposing targ
 
 ## 4. Product model
 
-The v2 product model is:
+The v0.2 product model is:
 
 ```text
 one authorized peer session
@@ -156,7 +156,7 @@ Replace it with a list of forwarding rules.
 
 ### 5.2 New forward rule config
 
-Use this v2 shape:
+Use this v0.2 shape:
 
 ```toml
 [peer]
@@ -297,7 +297,7 @@ Rules:
 - do not interpret empty list as "allow everyone",
 - if a future "all authorized peers" behavior is wanted, use an explicit sentinel such as `["*"]`, but do not implement that sentinel in this pass unless intentionally specified.
 
-For v2, require explicit peer IDs.
+For v0.2, require explicit peer IDs.
 
 ### 5.4 Config validation rules
 
@@ -525,7 +525,7 @@ status_file = "~/.local/state/p2ptunnel/status.json"
 
 ---
 
-## 6. Tunnel protocol v2
+## 6. v0.2 tunnel protocol, frame version 2
 
 ### 6.1 Frame header
 
@@ -602,7 +602,7 @@ Rules:
 - `forward_id` must refer to a locally configured forward on the answer side,
 - payload must not contain `target_host`,
 - payload must not contain `target_port`,
-- unknown fields should be rejected for v2.
+- unknown fields should be rejected for v0.2.
 
 ### 6.5 `OPEN` acknowledgment
 
@@ -813,7 +813,7 @@ Every stream must use bounded buffering.
 
 Do not let one slow stream create unbounded memory growth.
 
-Recommended v2 defaults:
+Recommended v0.2 defaults:
 
 ```text
 per_stream_queue_messages = 64
@@ -837,7 +837,7 @@ Important rule:
 
 ### 8.3 Fairness
 
-For v2, simple FIFO across a central outbound queue is acceptable.
+For v0.2, simple FIFO across a central outbound queue is acceptable.
 
 Do not implement complex fair scheduling unless needed later.
 
@@ -865,7 +865,7 @@ A single stream failure must not cause renegotiation.
 
 ### 9.3 Persistent session after streams close
 
-The v2 multiplexed session is persistent. After the last logical stream closes, the WebRTC peer connection and data channel remain open so future accepted local clients can open new logical streams over the same existing session.
+The v0.2 multiplexed session is persistent. After the last logical stream closes, the WebRTC peer connection and data channel remain open so future accepted local clients can open new logical streams over the same existing session.
 
 Zero active streams alone must not close the session. The offer runtime exits only when the local accepted-client channel closes, the data channel/WebRTC session fails or closes, the central writer fails, daemon shutdown occurs, or a fatal protocol/session error occurs.
 
@@ -923,7 +923,7 @@ This is optional for the multiplexing pass. Do not block the main implementation
 
 This is a protocol-breaking tunnel change if the old implementation only supports `ACTIVE_STREAM_ID = 1`.
 
-For v2:
+For v0.2:
 
 - do not attempt to interoperate with old single-stream tunnel peers unless explicit negotiation already exists,
 - bump config format to `p2ptunnel-config-v2` if the config shape changes incompatibly,
@@ -1027,7 +1027,7 @@ allow_remote_peers = ["laptop"]
 If implementing migration tooling, provide:
 
 ```bash
-p2pctl migrate-config --from config-v1.toml --to config-v2.toml
+p2pctl migrate-config --from config-v0.1.toml --to config-v0.2.toml
 ```
 
 Migration tooling is optional. Clear documentation is sufficient for this pass.

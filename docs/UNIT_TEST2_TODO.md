@@ -254,11 +254,11 @@ Assert:
 
 - [x] Review:
   - [x] `README.md`,
-  - [x] `docs/RUST_WEBRTC_SPECS.md`,
+  - [x] `docs/SPECS.md`,
   - [x] `docs/V03_SPEC.md`.
 - [x] Identify phrases that would contradict current v0.3 behavior if presented as current.
 
-## 5.2 Guard `docs/RUST_WEBRTC_SPECS.md`
+## 5.2 Guard `docs/SPECS.md`
 
 - [x] Keep the existing stale-string guard.
 - [x] Expand it to assert current behavior is present:

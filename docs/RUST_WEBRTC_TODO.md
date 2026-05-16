@@ -1,8 +1,8 @@
 # TODO.md - Secure Rust P2P Tunnel Implementation Plan
 
 > Historical note: this checklist records the original v1/single-stream implementation pass.
-> The current implemented design is the v2 multiplexed forwarding model described in
-> `docs/RUST_WEBRTC_SPECS.md` and `docs/MULTIPLEXED_FORWARDING_SPEC.md`.
+> The current implemented design is the v0.2 multiplexed forwarding model described in
+> `docs/SPECS.md` and `docs/MULTIPLEXED_FORWARDING_SPEC.md`.
 
 This TODO list is intended for implementation by GitHub Copilot or another coding agent. It assumes the design in `SPECS.md` is authoritative.
 

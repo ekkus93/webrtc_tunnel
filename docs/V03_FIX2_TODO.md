@@ -245,14 +245,14 @@ all streams close
 Focus especially on:
 
 ```text
-docs/RUST_WEBRTC_SPECS.md
+docs/SPECS.md
 docs/V03_SPEC.md
 README.md
 ```
 
 Historical review docs may keep old wording if clearly historical.
 
-## 3.2 Update `docs/RUST_WEBRTC_SPECS.md`
+## 3.2 Update `docs/SPECS.md`
 
 Ensure this file no longer presents v2 single-session rules as current behavior.
 
@@ -303,7 +303,7 @@ are the current status fields.
 
 Add a test or validation check for canonical docs.
 
-The test should fail if `docs/RUST_WEBRTC_SPECS.md` contains unqualified current-behavior claims like:
+The test should fail if `docs/SPECS.md` contains unqualified current-behavior claims like:
 
 ```text
 One active peer tunnel session at a time
@@ -393,7 +393,7 @@ Mark this TODO complete only when all items below are true.
 
 ## Docs
 
-- [x] `docs/RUST_WEBRTC_SPECS.md` no longer presents single-session v2 behavior as current.
+- [x] `docs/SPECS.md` no longer presents single-session v2 behavior as current.
 - [x] v0.3 multi-session answer behavior is documented.
 - [x] Unknown-session non-offer routing policy is documented.
 - [x] Answer `Serving` status semantics are documented.

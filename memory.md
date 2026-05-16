@@ -103,11 +103,11 @@
 - The CI badge URL now explicitly targets `master` so the README points at the intended branch status.
 
 ## 2026-04-30T10:59:16Z - GPT-5.4 - Spec refreshed
-- `docs/RUST_WEBRTC_SPECS.md` had a few stale operator-facing details: it still implied `hello` was part of the required offer lifecycle, documented `p2pctl keygen --peer-id <peer_id>` instead of the real positional CLI syntax, and stated the single-session rule less precisely than the implemented offer/answer busy behavior.
+- `docs/SPECS.md` had a few stale operator-facing details: it still implied `hello` was part of the required offer lifecycle, documented `p2pctl keygen --peer-id <peer_id>` instead of the real positional CLI syntax, and stated the single-session rule less precisely than the implemented offer/answer busy behavior.
 - The spec now says `hello` is optional in v1, shows `keygen <peer_id>`, and aligns the single-session wording with the actual offer-side immediate-close and answer-side encrypted-`busy` behavior.
 
 ## 2026-04-30T11:02:11Z - GPT-5.4 - Project baseline refreshed
-- Re-read `README.md`, `docs/RUST_WEBRTC_SPECS.md`, and `memory.md` to refresh the active project baseline before further work.
+- Re-read `README.md`, `docs/SPECS.md`, and `memory.md` to refresh the active project baseline before further work.
 - The current baseline remains: CLI-only Rust secure TCP tunnel over a reliable ordered WebRTC data channel, MQTT treated as untrusted transport, all signaling encrypted and signed, SSH-like identity workflow, STUN-only v1, and one active tunnel session at a time with offer-side immediate local close while busy and answer-side encrypted `busy` only for allowed peers.
 
 ## 2026-04-30T11:10:32Z - GPT-5.4 - Workspace validation rerun passed
@@ -390,11 +390,11 @@
 ## 2026-05-13T20:53:22Z - GPT-5.5 - README updated
 - Updated README reconnect and status wording so it matches the current v2 multiplexed forwarding implementation.
 
-## 2026-05-13T20:55:04Z - GPT-5.5 - RUST_WEBRTC_SPECS audit
-- `docs/RUST_WEBRTC_SPECS.md` is stale after the v2 multiplexed forwarding work; it still describes v1 single-stream config, frame, and scope details.
+## 2026-05-13T20:55:04Z - GPT-5.5 - SPECS audit
+- `docs/SPECS.md` is stale after the v2 multiplexed forwarding work; it still describes v1 single-stream config, frame, and scope details.
 
-## 2026-05-13T20:59:32Z - GPT-5.5 - RUST_WEBRTC_SPECS updated
-- Rewrote `docs/RUST_WEBRTC_SPECS.md` for the implemented v2 multiplexed forwarding model: `p2ptunnel-config-v2`, frame version 2, `[[forwards]]`, nested `[forwards.offer]`/`[forwards.answer]`, explicit allowlists, multiple logical streams, and current reconnect/status semantics.
+## 2026-05-13T20:59:32Z - GPT-5.5 - SPECS updated
+- Rewrote `docs/SPECS.md` for the implemented v2 multiplexed forwarding model: `p2ptunnel-config-v2`, frame version 2, `[[forwards]]`, nested `[forwards.offer]`/`[forwards.answer]`, explicit allowlists, multiple logical streams, and current reconnect/status semantics.
 
 ## 2026-05-13T21:29:19Z - GPT-5.5 - Multiplexed forwarding fix review triaged
 - Read `docs/MULTIPLEXED_FORWARDING_CODE_REVIEW.md` and `docs/MULTIPLEXED_FORWARDING_FIX_TODO.md`; the main real issues are stream task ownership/cancellation, writer failure propagation, inline answer-side target connect, non-empty OPEN ACK acceptance, first-forward-only overrides, and stale multiplexing docs.
@@ -511,3 +511,18 @@
 ## 2026-05-16T22:29:48Z - GPT-5.5 - Master merge validation passed
 - After resolving the `master` into `v0.3_dev` merge, full local validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
 - Validation output ended with `Finished dev profile [unoptimized + debuginfo] target(s) in 7.15s`, `Finished test profile [unoptimized + debuginfo] target(s) in 37.29s`, and all test result lines were `ok`, including 74 p2p-daemon lib tests and 25 two-node daemon integration tests.
+
+## 2026-05-16T22:37:41Z - GPT-5.5 - v0.2 wording cleanup
+- Cleaned current operator/canonical documentation and user-facing config errors to use `v0.2` for release prose while preserving literal identifiers such as `p2ptunnel-config-v2` and explicit tunnel frame version 2 terminology.
+- Full validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`; the final test output ended with all workspace test result lines `ok`.
+
+## 2026-05-16T22:42:47Z - GPT-5.5 - Canonical spec clarity pass
+- Tightened `docs/SPECS.md` current v0.3 wording so the data channel is explicitly per peer session, the active-session limit is stated per authenticated peer ID, and the answer daemon is described as serving while waiting for offers.
+- Relevant spec guard tests passed: `cargo test -p p2p-daemon canonical_specs_do_not_present_stale_single_session_rules_as_current`, `cargo test -p p2p-daemon canonical_v03_spec_documents_current_answer_routing_and_status_policy`, and `cargo test -p p2p-tunnel multiplex_spec_documents_only_empty_open_ack`.
+
+## 2026-05-16T22:46:21Z - GPT-5.5 - Canonical spec renamed
+- Renamed the main design spec to `docs/SPECS.md` and updated repository references, including Copilot instructions, TODO/review docs, and daemon doc guard include paths.
+
+## 2026-05-16T22:47:44Z - GPT-5.5 - Full validation passed after spec rename
+- Full local validation passed after the documentation rename and wording cleanup with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+- Clippy ended with `Finished dev profile [unoptimized + debuginfo] target(s) in 5.05s`; tests ended with `Finished test profile [unoptimized + debuginfo] target(s) in 0.70s`, and all test result lines were `ok`.

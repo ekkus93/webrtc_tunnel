@@ -2730,7 +2730,7 @@ fn apply_override_pairs(
 
 fn legacy_forward_env_error(name: &str, replacement: &str) -> ConfigError {
     ConfigError::InvalidConfig(format!(
-        "{name} is no longer supported in config v2. Use {replacement} in config.toml instead."
+        "{name} is no longer supported in v0.2 config. Use {replacement} in config.toml instead."
     ))
 }
 
@@ -3536,7 +3536,7 @@ mod tests {
             let mut config = sample_config();
             let error = apply_override_pairs(&mut config, [(key.to_owned(), "ignored".to_owned())])
                 .expect_err("legacy first-forward env override should fail");
-            assert!(error.to_string().contains("no longer supported in config v2"));
+            assert!(error.to_string().contains("no longer supported in v0.2 config"));
         }
     }
 
@@ -3884,7 +3884,7 @@ mod tests {
 
     #[test]
     fn canonical_specs_do_not_present_stale_single_session_rules_as_current() {
-        let specs = include_str!("../../../docs/RUST_WEBRTC_SPECS.md");
+        let specs = include_str!("../../../docs/SPECS.md");
         assert!(
             !specs.contains("One active peer tunnel session at a time"),
             "canonical specs must not present the old global single-session rule as current"
@@ -3894,7 +3894,7 @@ mod tests {
             "canonical specs must not list current v0.3 multi-peer sessions as out of scope"
         );
         assert!(
-            specs.contains("One active unrelated peer tunnel session per authenticated `peer_id`."),
+            specs.contains("One active peer tunnel session per authenticated `peer_id`."),
             "canonical specs should document the current per-peer session limit"
         );
         assert!(
