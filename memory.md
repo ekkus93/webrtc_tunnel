@@ -1,3 +1,7 @@
+## 2026-05-16T21:01:14Z - GPT-5.4 - Duplicate active-session re-ACKs are now bounded
+- Active sessions now keep a bounded per-session cache of duplicate inbound signaling `msg_id`s that have already been re-ACKed, so the daemon only sends one re-ACK per duplicate message instead of replying to every replay while the peer is down or retrying.
+- Added a focused daemon regression that proves the same duplicate active-session message only produces one re-ACK publish.
+
 ## 2026-05-15T20:56:02Z - GPT-5.4 - Tagged releases publish GitHub assets
 - The CI workflow now gives tagged pushes `contents: write`, builds release tarballs for the supported OS matrix, and publishes those tarballs as GitHub release assets instead of only keeping them as Actions artifacts.
 - README now states that tagged pushes build release tarballs and publish them as GitHub release assets.

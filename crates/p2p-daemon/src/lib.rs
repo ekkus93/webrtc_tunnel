@@ -150,6 +150,33 @@ impl ActiveBusyOfferCache {
     }
 }
 
+#[derive(Debug)]
+struct DuplicateActiveAckCache {
+    capacity: usize,
+    order: VecDeque<MsgId>,
+    seen: HashSet<MsgId>,
+}
+
+impl DuplicateActiveAckCache {
+    fn new(capacity: usize) -> Self {
+        Self { capacity: capacity.max(1), order: VecDeque::new(), seen: HashSet::new() }
+    }
+
+    fn record_if_new(&mut self, msg_id: MsgId) -> bool {
+        if self.seen.contains(&msg_id) {
+            return false;
+        }
+        if self.order.len() == self.capacity {
+            if let Some(expired) = self.order.pop_front() {
+                self.seen.remove(&expired);
+            }
+        }
+        self.order.push_back(msg_id);
+        self.seen.insert(msg_id);
+        true
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DaemonRuntimeState {
     mqtt_connected: bool,
@@ -194,6 +221,7 @@ pub struct ActiveSession {
     bridge_handle: Option<JoinHandle<Result<(), p2p_tunnel::TunnelError>>>,
     bridge_state: BridgeSessionState,
     active_busy_offers: ActiveBusyOfferCache,
+    duplicate_active_acks: DuplicateActiveAckCache,
     signaling: SignalingSession,
 }
 
@@ -214,6 +242,7 @@ impl ActiveSession {
             bridge_handle: None,
             bridge_state: BridgeSessionState::Pending,
             active_busy_offers: ActiveBusyOfferCache::new(replay_cache_size),
+            duplicate_active_acks: DuplicateActiveAckCache::new(replay_cache_size),
             signaling: SignalingSession::new(replay_cache_size),
         }
     }
@@ -1138,7 +1167,7 @@ async fn run_answer_session<T: DaemonSignalingTransport>(
                                     ctx,
                                     codec,
                                     transport,
-                                    &session,
+                                    &mut session,
                                     &payload,
                                     &error,
                                 )
@@ -1819,11 +1848,11 @@ async fn maybe_ack_duplicate_active_session_message<T: DaemonSignalingTransport>
     ctx: &mut RuntimeContext<'_>,
     codec: &SignalCodec<'_>,
     transport: &mut T,
-    session: &ActiveSession,
+    session: &mut ActiveSession,
     payload: &[u8],
     error: &SignalingError,
 ) -> Result<bool, DaemonError> {
-    let Some(ack_message) = duplicate_active_session_ack_message(
+    let Some((duplicate_msg_id, ack_message)) = duplicate_active_session_ack_message(
         codec,
         session.session_id,
         &session.remote_authorized,
@@ -1833,6 +1862,16 @@ async fn maybe_ack_duplicate_active_session_message<T: DaemonSignalingTransport>
     ) else {
         return Ok(false);
     };
+
+    if !session.duplicate_active_acks.record_if_new(duplicate_msg_id) {
+        tracing::info!(
+            session_id = %session.session_id,
+            duplicate_msg_id = %duplicate_msg_id,
+            role = ?ctx.config.node.role,
+            "suppressing repeated duplicate active-session re-ack"
+        );
+        return Ok(true);
+    }
 
     let envelope = OuterEnvelope::decode(payload)
         .map_err(|error| DaemonError::Signaling(SignalingError::Protocol(error.to_string())))?;
@@ -1867,7 +1906,7 @@ fn duplicate_active_session_ack_message(
     remote_peer_id: &PeerId,
     payload: &[u8],
     error: &SignalingError,
-) -> Option<InnerMessage> {
+) -> Option<(MsgId, InnerMessage)> {
     let SignalingError::Protocol(message) = error else {
         return None;
     };
@@ -1885,7 +1924,7 @@ fn duplicate_active_session_ack_message(
         return None;
     }
 
-    Some(codec.build_ack(remote_peer_id.clone(), session_id, envelope.msg_id))
+    Some((envelope.msg_id, codec.build_ack(remote_peer_id.clone(), session_id, envelope.msg_id)))
 }
 
 fn replayed_active_busy_offer_key(
@@ -2368,11 +2407,11 @@ mod tests {
         decode_idle_signaling_message, duplicate_active_session_ack_message,
         handle_answer_incoming_data_channel, handle_answer_session_message,
         handle_offer_session_message, mark_transport_unusable, mark_transport_usable,
-        maybe_replace_pending_answer_session, process_offer_session_payload,
-        recover_daemon_after_session, replayed_active_busy_offer_key,
-        run_offer_daemon_with_transport_and_test_hook, should_ack_idle_offer,
-        should_attempt_offer_reconnect, should_continue_reconnect_attempt, spawn_offer_accept_loop,
-        steady_state_for_role, write_steady_state_status,
+        maybe_ack_duplicate_active_session_message, maybe_replace_pending_answer_session,
+        process_offer_session_payload, recover_daemon_after_session,
+        replayed_active_busy_offer_key, run_offer_daemon_with_transport_and_test_hook,
+        should_ack_idle_offer, should_attempt_offer_reconnect, should_continue_reconnect_attempt,
+        spawn_offer_accept_loop, steady_state_for_role, write_steady_state_status,
     };
 
     type PublishedSignals = std::sync::Arc<Mutex<Vec<(PeerId, Vec<u8>)>>>;
@@ -2837,7 +2876,7 @@ mod tests {
             )
             .expect("message encodes");
 
-        let ack = duplicate_active_session_ack_message(
+        let (_duplicate_msg_id, ack) = duplicate_active_session_ack_message(
             &answer_codec,
             session_id,
             answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),
@@ -2923,7 +2962,7 @@ mod tests {
             .expect("duplicate inbound encodes");
         let duplicate_error = SignalingError::Protocol("duplicate message detected".to_owned());
 
-        let reack = duplicate_active_session_ack_message(
+        let (_duplicate_msg_id, reack) = duplicate_active_session_ack_message(
             &offer_codec,
             session_id,
             &session.remote_authorized,
@@ -2956,6 +2995,84 @@ mod tests {
             "retired pending message should not linger as expired"
         );
 
+        session.peer.close().await.expect("offer peer should close");
+    }
+
+    #[tokio::test]
+    async fn duplicate_active_session_message_is_reacked_only_once_per_msg_id() {
+        let mut config = sample_config();
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let remote = offer_keys
+            .get_by_peer_id(&answer.identity.peer_id)
+            .cloned()
+            .expect("answer authorized key");
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("offer peer should build");
+        let session_id = SessionId::random();
+        let mut session =
+            ActiveSession::new(session_id, remote.clone(), peer, config.security.replay_cache_size);
+        let (path, writer) = status_writer_for_test(&mut config, "offer-duplicate-reack-once");
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
+        let mut transport = RecordingTransport::default();
+
+        let duplicate_inbound = InnerMessageBuilder::new(
+            session_id,
+            answer.identity.peer_id.clone(),
+            offer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::IceCandidate(p2p_signaling::IceCandidateBody {
+            candidate: Some("candidate:1 1 udp 2130706431 127.0.0.1 3478 typ host".to_owned()),
+            sdp_mid: Some("0".to_owned()),
+            sdp_mline_index: Some(0),
+        }));
+        let (_duplicate_envelope, duplicate_payload) = answer_codec
+            .encode_for_peer(
+                answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),
+                &duplicate_inbound,
+                false,
+            )
+            .expect("duplicate inbound encodes");
+        let duplicate_error = SignalingError::Protocol("duplicate message detected".to_owned());
+
+        let first = maybe_ack_duplicate_active_session_message(
+            &mut ctx,
+            &offer_codec,
+            &mut transport,
+            &mut session,
+            &duplicate_payload,
+            &duplicate_error,
+        )
+        .await
+        .expect("first duplicate should be re-acknowledged");
+        assert!(first);
+
+        let second = maybe_ack_duplicate_active_session_message(
+            &mut ctx,
+            &offer_codec,
+            &mut transport,
+            &mut session,
+            &duplicate_payload,
+            &duplicate_error,
+        )
+        .await
+        .expect("second duplicate should be suppressed");
+        assert!(second);
+
+        let published = transport.published.lock().await.clone();
+        assert_eq!(
+            published.len(),
+            1,
+            "only one re-ack should be published for the same duplicate msg_id"
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
         session.peer.close().await.expect("offer peer should close");
     }
 
