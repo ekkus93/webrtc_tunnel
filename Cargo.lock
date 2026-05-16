@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-answer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "p2p-core",
@@ -1596,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rand_core 0.6.4",
  "serde",
@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "p2p-core",
  "p2p-crypto",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-offer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "p2p-core",
@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-signaling"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "p2p-core",
@@ -1679,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-tunnel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "p2p-core",
@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-webrtc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "p2pctl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "p2p-core",

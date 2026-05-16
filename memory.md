@@ -1,3 +1,7 @@
+## 2026-05-16T21:06:08Z - GPT-5.4 - Workspace version bumped to v0.2.0
+- Updated the root workspace package version from `0.1.0` to `0.2.0` so Cargo build output and compiled crate metadata match the `v0.2` release tag.
+- Rebuilt both dev and release workspace targets and confirmed Cargo now reports every crate and binary as `v0.2.0`.
+
 ## 2026-05-16T21:01:14Z - GPT-5.4 - Duplicate active-session re-ACKs are now bounded
 - Active sessions now keep a bounded per-session cache of duplicate inbound signaling `msg_id`s that have already been re-ACKed, so the daemon only sends one re-ACK per duplicate message instead of replying to every replay while the peer is down or retrying.
 - Added a focused daemon regression that proves the same duplicate active-session message only produces one re-ACK publish.
