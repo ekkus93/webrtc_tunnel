@@ -630,13 +630,13 @@ Precedence:
 The config format is:
 
 ```toml
-format = "p2ptunnel-config-v2"
+format = "p2ptunnel-config-v3"
 ```
 
 ### Example offer config
 
 ```toml
-format = "p2ptunnel-config-v2"
+format = "p2ptunnel-config-v3"
 
 [node]
 peer_id = "offer-home"
@@ -738,7 +738,7 @@ status_file = "~/.local/state/p2ptunnel/status.json"
 ### Example answer config differences
 
 ```toml
-format = "p2ptunnel-config-v2"
+format = "p2ptunnel-config-v3"
 
 [node]
 peer_id = "answer-office"
@@ -763,7 +763,7 @@ allow_remote_peers = ["offer-home"]
 
 ### Config rules
 
-- `format` must be `p2ptunnel-config-v2`.
+- `format` must be `p2ptunnel-config-v3`.
 - `[peer].remote_peer_id` is required for role `offer` and must exist in `authorized_keys`.
 - `[[forwards]].id` is required, unique, non-empty, max 64 characters, and limited to ASCII letters, digits, dash, underscore, and dot.
 - Forward IDs must not contain whitespace, `/`, `\`, `:`, or control characters.

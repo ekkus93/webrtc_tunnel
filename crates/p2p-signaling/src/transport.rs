@@ -934,7 +934,7 @@ mod tests {
 
     fn sample_config(base: &std::path::Path) -> AppConfig {
         AppConfig {
-            format: "p2ptunnel-config-v2".to_owned(),
+            format: "p2ptunnel-config-v3".to_owned(),
             node: NodeConfig {
                 peer_id: "answer-office".parse().expect("peer id"),
                 role: NodeRole::Answer,
