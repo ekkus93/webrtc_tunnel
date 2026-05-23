@@ -15,6 +15,7 @@ pub const END_OF_CANDIDATES_MESSAGE_TYPE: u8 = 12;
 #[serde(rename_all = "snake_case")]
 pub enum DaemonState {
     Idle,
+    Serving,
     WaitingForLocalClient,
     Negotiating,
     ConnectingDataChannel,

@@ -23,6 +23,13 @@ pub struct ReplayCache {
     capacity: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayStatus {
+    Fresh,
+    DuplicateSameSession,
+    DuplicateDifferentSession,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ReplayCheck {
     pub session_id: SessionId,
@@ -44,6 +51,23 @@ impl ReplayCache {
         msg_id: MsgId,
         check: ReplayCheck,
     ) -> Result<(), SignalingError> {
+        match self.check_and_record_status(sender_kid, msg_id, check)? {
+            ReplayStatus::Fresh => Ok(()),
+            ReplayStatus::DuplicateSameSession => {
+                Err(SignalingError::Protocol("duplicate message detected".to_owned()))
+            }
+            ReplayStatus::DuplicateDifferentSession => Err(SignalingError::Protocol(
+                "duplicate msg_id received for a different session".to_owned(),
+            )),
+        }
+    }
+
+    pub fn check_and_record_status(
+        &mut self,
+        sender_kid: Kid,
+        msg_id: MsgId,
+        check: ReplayCheck,
+    ) -> Result<ReplayStatus, SignalingError> {
         let max_clock_skew_ms = check.max_clock_skew_secs.saturating_mul(1_000);
         let max_message_age_ms = check.max_message_age_secs.saturating_mul(1_000);
         if check.timestamp_ms.saturating_add(max_message_age_ms) < check.now_ms {
@@ -65,11 +89,9 @@ impl ReplayCache {
         let key = ReplayKey { sender_kid, msg_id };
         if let Some(existing) = self.entries.get(&key) {
             if existing.session_id == check.session_id {
-                return Err(SignalingError::Protocol("duplicate message detected".to_owned()));
+                return Ok(ReplayStatus::DuplicateSameSession);
             }
-            return Err(SignalingError::Protocol(
-                "duplicate msg_id received for a different session".to_owned(),
-            ));
+            return Ok(ReplayStatus::DuplicateDifferentSession);
         }
 
         self.entries.insert(
@@ -78,7 +100,7 @@ impl ReplayCache {
         );
         self.order.push_back((key, check.timestamp_ms));
         self.prune(check.now_ms, max_message_age_ms);
-        Ok(())
+        Ok(ReplayStatus::Fresh)
     }
 
     fn prune(&mut self, now_ms: u64, max_message_age_ms: u64) {

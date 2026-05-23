@@ -1,3 +1,25 @@
+## 2026-05-23T10:39:57Z - Claude Sonnet 4.6 - Config format identifier bumped to v3; skip Co-authored-by trailer
+- Bumped `p2ptunnel-config-v2` → `p2ptunnel-config-v3` everywhere: validator in `p2p-core/config.rs`, test fixtures in `p2p-daemon`, `p2p-signaling`, `two_node_daemon`, example configs, SPECS.md, README.md, and both live temp configs.
+- User requested skipping the `Co-authored-by: Copilot` trailer on commits — repo has a hook that rejects it.
+- Current working branch is `v0.3_dev` (not `master`); commits should be pushed to `v0.3_dev`.
+- Always rebuild affected binaries before running `p2pctl check-config` to avoid stale binary false errors.
+
+## 2026-05-16T21:06:08Z - GPT-5.4 - Workspace version bumped to v0.2.0
+- Updated the root workspace package version from `0.1.0` to `0.2.0` so Cargo build output and compiled crate metadata match the `v0.2` release tag.
+- Rebuilt both dev and release workspace targets and confirmed Cargo now reports every crate and binary as `v0.2.0`.
+
+## 2026-05-16T21:01:14Z - GPT-5.4 - Duplicate active-session re-ACKs are now bounded
+- Active sessions now keep a bounded per-session cache of duplicate inbound signaling `msg_id`s that have already been re-ACKed, so the daemon only sends one re-ACK per duplicate message instead of replying to every replay while the peer is down or retrying.
+- Added a focused daemon regression that proves the same duplicate active-session message only produces one re-ACK publish.
+
+## 2026-05-15T20:56:02Z - GPT-5.4 - Tagged releases publish GitHub assets
+- The CI workflow now gives tagged pushes `contents: write`, builds release tarballs for the supported OS matrix, and publishes those tarballs as GitHub release assets instead of only keeping them as Actions artifacts.
+- README now states that tagged pushes build release tarballs and publish them as GitHub release assets.
+
+## 2026-05-15T17:24:33Z - GPT-5.4 - Offer active ICE failure recovery fixed
+- The offer daemon now keeps its active multiplex bridge under the session loop instead of handing off control inline, so an active ICE disconnect or failure tears down the current client/session cleanly and returns the offer daemon to `waiting_for_local_client` instead of getting stuck.
+- Added a focused two-node regression that opens a live tunnel, injects an offer-side ICE disconnect after the tunnel is active, verifies the client is dropped, and checks that offer/answer daemons recover to `waiting_for_local_client` and `idle`.
+
 ## 2026-04-08T01:22:52Z - GPT-5.4 - Tag-only GitHub Actions artifacts
 - The GitHub Actions workflow should run normal lint/test CI on branch and pull request builds, but only create and upload release artifacts for tagged pushes.
 
@@ -87,11 +109,11 @@
 - The CI badge URL now explicitly targets `master` so the README points at the intended branch status.
 
 ## 2026-04-30T10:59:16Z - GPT-5.4 - Spec refreshed
-- `docs/RUST_WEBRTC_SPECS.md` had a few stale operator-facing details: it still implied `hello` was part of the required offer lifecycle, documented `p2pctl keygen --peer-id <peer_id>` instead of the real positional CLI syntax, and stated the single-session rule less precisely than the implemented offer/answer busy behavior.
+- `docs/SPECS.md` had a few stale operator-facing details: it still implied `hello` was part of the required offer lifecycle, documented `p2pctl keygen --peer-id <peer_id>` instead of the real positional CLI syntax, and stated the single-session rule less precisely than the implemented offer/answer busy behavior.
 - The spec now says `hello` is optional in v1, shows `keygen <peer_id>`, and aligns the single-session wording with the actual offer-side immediate-close and answer-side encrypted-`busy` behavior.
 
 ## 2026-04-30T11:02:11Z - GPT-5.4 - Project baseline refreshed
-- Re-read `README.md`, `docs/RUST_WEBRTC_SPECS.md`, and `memory.md` to refresh the active project baseline before further work.
+- Re-read `README.md`, `docs/SPECS.md`, and `memory.md` to refresh the active project baseline before further work.
 - The current baseline remains: CLI-only Rust secure TCP tunnel over a reliable ordered WebRTC data channel, MQTT treated as untrusted transport, all signaling encrypted and signed, SSH-like identity workflow, STUN-only v1, and one active tunnel session at a time with offer-side immediate local close while busy and answer-side encrypted `busy` only for allowed peers.
 
 ## 2026-04-30T11:10:32Z - GPT-5.4 - Workspace validation rerun passed
@@ -374,11 +396,11 @@
 ## 2026-05-13T20:53:22Z - GPT-5.5 - README updated
 - Updated README reconnect and status wording so it matches the current v2 multiplexed forwarding implementation.
 
-## 2026-05-13T20:55:04Z - GPT-5.5 - RUST_WEBRTC_SPECS audit
-- `docs/RUST_WEBRTC_SPECS.md` is stale after the v2 multiplexed forwarding work; it still describes v1 single-stream config, frame, and scope details.
+## 2026-05-13T20:55:04Z - GPT-5.5 - SPECS audit
+- `docs/SPECS.md` is stale after the v2 multiplexed forwarding work; it still describes v1 single-stream config, frame, and scope details.
 
-## 2026-05-13T20:59:32Z - GPT-5.5 - RUST_WEBRTC_SPECS updated
-- Rewrote `docs/RUST_WEBRTC_SPECS.md` for the implemented v2 multiplexed forwarding model: `p2ptunnel-config-v2`, frame version 2, `[[forwards]]`, nested `[forwards.offer]`/`[forwards.answer]`, explicit allowlists, multiple logical streams, and current reconnect/status semantics.
+## 2026-05-13T20:59:32Z - GPT-5.5 - SPECS updated
+- Rewrote `docs/SPECS.md` for the implemented v2 multiplexed forwarding model: `p2ptunnel-config-v2`, frame version 2, `[[forwards]]`, nested `[forwards.offer]`/`[forwards.answer]`, explicit allowlists, multiple logical streams, and current reconnect/status semantics.
 
 ## 2026-05-13T21:29:19Z - GPT-5.5 - Multiplexed forwarding fix review triaged
 - Read `docs/MULTIPLEXED_FORWARDING_CODE_REVIEW.md` and `docs/MULTIPLEXED_FORWARDING_FIX_TODO.md`; the main real issues are stream task ownership/cancellation, writer failure propagation, inline answer-side target connect, non-empty OPEN ACK acceptance, first-forward-only overrides, and stale multiplexing docs.
@@ -415,3 +437,115 @@
 
 ## 2026-05-13T23:09:55Z - GPT-5.5 - Multiplexed forwarding fix3 completed
 - Implemented Fix 3: malformed answer-side OPEN is stream-local protocol_error, offer sessions persist across zero streams until accepted-client shutdown, docs/guards were updated, and Fix 3 TODO checklist was completed.
+
+## 2026-05-14T23:12:23Z - GPT-5.5 - Baseline reread refreshed
+- Re-read `README.md` and `memory.md` to refresh the current project baseline before further work.
+- The active baseline remains: CLI-only Rust secure TCP tunnel, one reliable ordered WebRTC data channel named `tunnel`, MQTT treated as untrusted signaling transport, encrypted and signed signaling, SSH-like identity plus `authorized_keys` workflow, STUN-only, v2 multiplexed forwarding over one active tunnel session, and latest-known `mqtt_connected` status semantics.
+
+## 2026-05-14T23:13:51Z - GPT-5.5 - v0.3 docs reread
+- Read `docs/V03_SPEC.md` and `docs/V03_TODO.md`.
+- v0.3 target is multiple simultaneous authorized offer-peer sessions served by one answer daemon, with one session per peer, unchanged signaling/tunnel wire formats and config shape, per-session failure isolation, centralized MQTT polling, multi-session status/logging, and preserved offer-side reconnect ownership.
+
+## 2026-05-14T23:31:44Z - GPT-5.5 - v0.3 multi-session answer implemented
+- Implemented the v0.3 answer-daemon multi-session manager with centralized MQTT polling, per-peer session routing, one active session per peer, internal session capacity, session-local task cleanup, same-peer pending replacement, multi-session status JSON, and readable `p2pctl status` output.
+- Added daemon integration coverage for two authorized offer peers served concurrently and for target-connect failure in one peer session not breaking another peer, then marked `docs/V03_TODO.md` complete.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T03:22:24Z - GPT-5.5 - v0.3 hardening review read
+- Read `docs/V03_CODE_REVIEW.md` and `docs/V03_FIX_TODO.md` without making code changes.
+- The fix pass focuses on authenticated routing before session dispatch, stale event isolation, honest status fields, explicit same-peer replacement semantics, canonical doc cleanup, and expanded multi-session tests.
+
+## 2026-05-15T03:38:08Z - GPT-5.5 - v0.3 hardening decisions frozen
+- Read `docs/replies9.md`; the v0.3 hardening pass should simplify status honestly with `configured_forward_ids` and no fake stream counts, add `DaemonState::Serving`, centrally authenticate/decrypt once before routing typed signals, require session generation tokens on session-owned events, and treat `V03_FIX_TODO.md` as the active checklist while leaving `V03_TODO.md` historical.
+
+## 2026-05-15T03:55:06Z - GPT-5.5 - v0.3 hardening implemented
+- Implemented the v0.3 hardening pass: answer routing now authenticates/decrypts once before typed session dispatch, daemon-level replay status preserves duplicate re-ACK behavior, session events carry generation tokens, and generic status/end events cannot re-key or remove newer sessions.
+- Status output now uses `DaemonState::Serving` while answer sessions are active, removes fake stream counts, and reports `configured_forward_ids`; docs and `V03_FIX_TODO.md` were updated to match the completed hardening pass.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T04:33:00Z - GPT-5.5 - Unit test TODO created
+- Created `docs/UNIT_TEST1_TODO.md` with a detailed test-only checklist for p2pctl status rendering, signaling replay-status behavior, same-peer replacement isolation, per-forward allowlist isolation, multi-session failure isolation, authenticated-routing edge cases, status schema regressions, and final validation.
+
+## 2026-05-15T04:42:40Z - GPT-5.5 - Unit test TODO implemented
+- Implemented `docs/UNIT_TEST1_TODO.md`: added p2pctl status rendering tests, direct signaling replay-status tests, daemon routing/status/replacement/failure-isolation unit tests, and two-node allowlist/failure-isolation integration coverage.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T04:47:27Z - GPT-5.5 - Integration test TODO created
+- Created `docs/INT_TEST1_TODO.md` with a detailed integration-test checklist for transport turbulence, answer daemon restart/recovery, long-lived stream churn, same-peer connection pressure, malformed authenticated signaling, status-file churn stability, harness expansion, and final validation.
+
+## 2026-05-15T06:07:08Z - GPT-5.5 - Integration test TODO implemented
+- Implemented `docs/INT_TEST1_TODO.md`: expanded the in-memory integration harness with route-scoped fault injection and added multi-session tests for transport turbulence, restart, stream churn, same-peer pressure, malformed authenticated signaling, and status-file churn.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T06:55:50Z - GPT-5.5 - V03 FIX2 implemented
+- Implemented `docs/V03_FIX2_TODO.md`: unknown-session non-offer messages no longer peer-fallback route, healthy answer steady-state status reports `serving`, and canonical docs now describe current v0.3 multi-session behavior.
+- Added focused daemon, p2pctl, and canonical-doc guard tests. Full workspace validation passed with fmt, clippy `-D warnings`, and all workspace tests.
+
+## 2026-05-15T07:00:15Z - GPT-5.5 - Integration test port flake fixed
+- Full validation initially exposed parallel `two_node_daemon` port-probe flakiness. Updated the integration test `unused_local_port()` helper to allocate unique candidate ports per test process, then full fmt, clippy, and workspace tests passed.
+
+## 2026-05-15T07:09:16Z - GPT-5.5 - Unit test TODO 2 created
+- Created `docs/UNIT_TEST2_TODO.md` with a detailed checklist for additional unit coverage around answer routing matrices, replay/ACK behavior, answer status, p2pctl rendering, canonical doc guards, harness helpers, and status schema compatibility.
+
+## 2026-05-15T08:28:46Z - GPT-5.5 - Unit test TODO 2 implemented
+- Implemented `docs/UNIT_TEST2_TODO.md`: added daemon routing matrix tests, replay/ACK duplicate coverage, answer status matrix tests, p2pctl partial/old status rendering tests, canonical doc guards, in-memory transport helper tests, and status schema invariant tests.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T09:13:02Z - GPT-5.5 - Integration test TODO 2 created
+- Created `docs/INT_TEST2_TODO.md` with a detailed checklist for multi-peer integration coverage around simultaneous reconnect pressure, answer daemon restart, signaling turbulence during active streams, same-peer replacement isolation, status churn, malformed authenticated traffic under load, and route-scoped replay stress.
+
+## 2026-05-15T09:24:26Z - GPT-5.5 - Integration test TODO 2 implemented
+- Implemented `docs/INT_TEST2_TODO.md`: added two-node integration coverage for simultaneous multi-peer reconnect pressure, multi-peer answer restart with fresh sessions, signaling turbulence during an active TCP stream, and route-scoped drop/duplicate stress, while reusing existing same-peer replacement, status churn, and malformed authenticated signaling coverage.
+- Full workspace validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+
+## 2026-05-15T09:30:18Z - GPT-5.5 - Observed p2p-offer reconnect issue
+- User reported seeing cases where a lost connection required restarting `p2p-offer`, and restarting `p2p-offer` fixed the issue. Logs were not saved, so future reconnect investigation should add coverage for established-session loss cleanup and next-client recovery without process restart.
+
+## 2026-05-15T09:37:02Z - GPT-5.5 - Active offer connection-loss recovery fixed
+- Added a two-node regression test proving `p2p-offer` accepts a later local client after an established tunnel sees an injected ICE disconnect, without restarting the process.
+- Fixed offer-session active tunnel handling so the offer side continues watching ICE state while `run_multiplex_offer` is active and returns to waiting after an active connection-loss failure.
+
+## 2026-05-15T09:55:39Z - GPT-5.5 - Daemon comment refreshed and validation output recorded
+- Updated the `crates/p2p-daemon/src/lib.rs` module comment to describe current v0.3 daemon lifetime semantics: answer steady state is `Serving`, offer steady state is `WaitingForLocalClient`, answer daemons can serve multiple authorized peers, and offer-side sessions can carry multiple multiplexed streams.
+- Local validation output: `cargo fmt --all --check` produced no diff/output and exited successfully; `cargo clippy --workspace --all-targets --all-features -- -D warnings` ended with `Finished dev profile [unoptimized + debuginfo] target(s) in 5.59s`; `cargo test --workspace --all-targets` ended with `Finished test profile [unoptimized + debuginfo] target(s) in 13.85s` and all test result lines were `ok` across p2p-answer, p2p-core, p2p-crypto, identity parsing, p2p-daemon lib, two_node_daemon, p2p-offer, p2p-signaling lib, mock_mqtt_roundtrip, p2p-tunnel, p2p-webrtc, and p2pctl.
+- Final rerun output at 2026-05-15T09:56:24Z: `cargo fmt --all --check`, workspace clippy with `-D warnings`, and `cargo test --workspace --all-targets` passed again; clippy ended with `Finished dev profile [unoptimized + debuginfo] target(s) in 0.62s`, tests ended with `Finished test profile [unoptimized + debuginfo] target(s) in 0.40s`, and every test result line was `ok`.
+
+## 2026-05-16T22:28:35Z - GPT-5.5 - Master merge reviewed for v0.3
+- Reviewed `master` commits before merging into `v0.3_dev`: tagged release asset publishing, workspace version bump to 0.2.0, duplicate MQTT re-ACK throttling, and offer ICE failure recovery.
+- During conflict resolution, preserved v0.3 centralized answer routing/status semantics, adapted duplicate active-session ACK throttling to v0.3 decoded answer-session dispatch, and kept the stronger v0.3 active connection-loss regression that proves a later local client works without restarting `p2p-offer`.
+
+## 2026-05-16T22:29:48Z - GPT-5.5 - Master merge validation passed
+- After resolving the `master` into `v0.3_dev` merge, full local validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+- Validation output ended with `Finished dev profile [unoptimized + debuginfo] target(s) in 7.15s`, `Finished test profile [unoptimized + debuginfo] target(s) in 37.29s`, and all test result lines were `ok`, including 74 p2p-daemon lib tests and 25 two-node daemon integration tests.
+
+## 2026-05-16T22:37:41Z - GPT-5.5 - v0.2 wording cleanup
+- Cleaned current operator/canonical documentation and user-facing config errors to use `v0.2` for release prose while preserving literal identifiers such as `p2ptunnel-config-v2` and explicit tunnel frame version 2 terminology.
+- Full validation passed with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`; the final test output ended with all workspace test result lines `ok`.
+
+## 2026-05-16T22:42:47Z - GPT-5.5 - Canonical spec clarity pass
+- Tightened `docs/SPECS.md` current v0.3 wording so the data channel is explicitly per peer session, the active-session limit is stated per authenticated peer ID, and the answer daemon is described as serving while waiting for offers.
+- Relevant spec guard tests passed: `cargo test -p p2p-daemon canonical_specs_do_not_present_stale_single_session_rules_as_current`, `cargo test -p p2p-daemon canonical_v03_spec_documents_current_answer_routing_and_status_policy`, and `cargo test -p p2p-tunnel multiplex_spec_documents_only_empty_open_ack`.
+
+## 2026-05-16T22:46:21Z - GPT-5.5 - Canonical spec renamed
+- Renamed the main design spec to `docs/SPECS.md` and updated repository references, including Copilot instructions, TODO/review docs, and daemon doc guard include paths.
+
+## 2026-05-16T22:47:44Z - GPT-5.5 - Full validation passed after spec rename
+- Full local validation passed after the documentation rename and wording cleanup with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
+- Clippy ended with `Finished dev profile [unoptimized + debuginfo] target(s) in 5.05s`; tests ended with `Finished test profile [unoptimized + debuginfo] target(s) in 0.70s`, and all test result lines were `ok`.
+
+## 2026-05-23T10:17:56Z - GPT-5.4 - README and memory baseline refreshed
+- Re-read `README.md` and the recent `memory.md` history to refresh the current project baseline before further work.
+- Current understanding: runtime behavior is the v0.3 multi-session/multi-stream model (multiplexed logical streams per peer session, answer steady state `Serving`, one active session per authenticated peer ID, multiple authorized peers concurrently), while some operator-facing README/version wording still intentionally references the v0.2 release/config line such as `p2ptunnel-config-v2`.
+
+## 2026-05-23T10:22:00Z - GPT-5.4 - User temp configs migrated to current schema
+- Updated `/home/phil/work/rust_webrtc/tmp/p2ptunnel_answer/p2ptunnel/config.toml` and `/home/phil/work/rust_webrtc/tmp/p2ptunnel_offer/p2ptunnel/config.toml` so they validate against the current config schema with `p2pctl check-config`.
+- The answer config was already close to current but had stale `/home/jovyan/...` paths; the offer config needed the old single-tunnel v1 layout replaced with `format = "p2ptunnel-config-v2"`, a `[peer]` section, and `[[forwards]]` / `[forwards.offer]` entries.
+
+## 2026-05-23T10:28:11Z - GPT-5.4 - Answer temp config stale path corrected
+- Re-checked `/home/phil/work/rust_webrtc/tmp/p2ptunnel_answer/p2ptunnel/config.toml` and found it still pointed `paths.identity` and `paths.authorized_keys` at a stale `/home/jovyan/...` tree.
+- Updated those two fields to `/home/phil/work/rust_webrtc/tmp/p2ptunnel_answer/p2ptunnel/...` and revalidated successfully with `cargo run --quiet --bin p2pctl -- check-config --config /home/phil/work/rust_webrtc/tmp/p2ptunnel_answer/p2ptunnel/config.toml`.
+
+## 2026-05-23T11:00:31Z - Claude Sonnet 4.6 - Added web-ui forward to offer config
+- User had port 8080 not working; answer config already had `[[forwards]] id = "web-ui"` targeting 127.0.0.1:8080, but offer config was missing the matching `[[forwards]] id = "web-ui"` with listen_port = 8080
+- Added the missing forward to `tmp/p2ptunnel_offer/p2ptunnel/config.toml`
+- Also diagnosed earlier "Address already in use" error as a stale process holding port 2223, not a code bug

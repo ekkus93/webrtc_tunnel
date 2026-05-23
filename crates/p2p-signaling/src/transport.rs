@@ -15,7 +15,7 @@ use crate::ack::AckTracker;
 use crate::envelope::{EnvelopeFlags, OuterEnvelope};
 use crate::error::SignalingError;
 use crate::messages::{InnerMessage, InnerMessageBuilder};
-use crate::replay::{ReplayCache, ReplayCheck};
+use crate::replay::{ReplayCache, ReplayCheck, ReplayStatus};
 
 pub fn signal_topic(prefix: &str, peer_id: &PeerId) -> String {
     format!("{prefix}/v1/nodes/{peer_id}/signal")
@@ -26,6 +26,13 @@ pub struct SignalCodec<'a> {
     authorized_keys: &'a AuthorizedKeys,
     max_clock_skew_secs: u64,
     max_message_age_secs: u64,
+}
+
+pub struct DecodedSignal {
+    pub envelope: OuterEnvelope,
+    pub message: InnerMessage,
+    pub sender: AuthorizedKey,
+    pub replay_status: ReplayStatus,
 }
 
 impl<'a> SignalCodec<'a> {
@@ -44,7 +51,16 @@ impl<'a> SignalCodec<'a> {
         message: &InnerMessage,
         response: bool,
     ) -> Result<(OuterEnvelope, Vec<u8>), SignalingError> {
-        let msg_id = MsgId::random();
+        self.encode_for_peer_with_msg_id(recipient, message, response, MsgId::random())
+    }
+
+    fn encode_for_peer_with_msg_id(
+        &self,
+        recipient: &AuthorizedKey,
+        message: &InnerMessage,
+        response: bool,
+        msg_id: MsgId,
+    ) -> Result<(OuterEnvelope, Vec<u8>), SignalingError> {
         let sender_kid = self.local_identity.signing_kid();
         let recipient_kid = kid_from_signing_key(&recipient.public_identity.sign_public);
         let eph_secret = generate_ephemeral_secret();
@@ -93,6 +109,24 @@ impl<'a> SignalCodec<'a> {
         replay_cache: &mut ReplayCache,
         expected_session: Option<SessionId>,
     ) -> Result<(OuterEnvelope, InnerMessage, AuthorizedKey), SignalingError> {
+        let decoded = self.decode_with_replay_status(payload, replay_cache, expected_session)?;
+        match decoded.replay_status {
+            ReplayStatus::Fresh => Ok((decoded.envelope, decoded.message, decoded.sender)),
+            ReplayStatus::DuplicateSameSession => {
+                Err(SignalingError::Protocol("duplicate message detected".to_owned()))
+            }
+            ReplayStatus::DuplicateDifferentSession => Err(SignalingError::Protocol(
+                "duplicate msg_id received for a different session".to_owned(),
+            )),
+        }
+    }
+
+    pub fn decode_with_replay_status(
+        &self,
+        payload: &[u8],
+        replay_cache: &mut ReplayCache,
+        expected_session: Option<SessionId>,
+    ) -> Result<DecodedSignal, SignalingError> {
         let envelope = OuterEnvelope::decode(payload)?;
         let local_kid = self.local_identity.signing_kid();
         if envelope.recipient_kid != local_kid {
@@ -144,7 +178,7 @@ impl<'a> SignalCodec<'a> {
                 "inner recipient peer_id does not match local peer_id".to_owned(),
             ));
         }
-        replay_cache.check_and_record(
+        let replay_status = replay_cache.check_and_record_status(
             envelope.sender_kid,
             envelope.msg_id,
             ReplayCheck {
@@ -157,7 +191,7 @@ impl<'a> SignalCodec<'a> {
             },
         )?;
 
-        Ok((envelope, message, sender))
+        Ok(DecodedSignal { envelope, message, sender, replay_status })
     }
 
     pub fn build_ack(
@@ -384,7 +418,7 @@ mod tests {
 
     use p2p_core::{
         AppConfig, BrokerConfig, BrokerTlsConfig, ForwardAnswerConfig, ForwardRule, HealthConfig,
-        LoggingConfig, NodeConfig, NodeRole, ReconnectConfig, SecurityConfig, TunnelConfig,
+        LoggingConfig, MsgId, NodeConfig, NodeRole, ReconnectConfig, SecurityConfig, TunnelConfig,
         WebRtcConfig,
     };
     use p2p_core::{MessageType, SessionId};
@@ -394,7 +428,7 @@ mod tests {
 
     use super::{
         EnvelopeFlags, InnerMessageBuilder, MqttSignalingTransport, OuterEnvelope, ReplayCache,
-        SignalCodec, buffer_pending_own_topic_publish, build_mqtt_options,
+        ReplayStatus, SignalCodec, buffer_pending_own_topic_publish, build_mqtt_options,
         own_topic_publish_payload, signal_topic,
     };
     use crate::{ErrorBody, MessageBody, OfferBody, SignalingError};
@@ -541,6 +575,147 @@ mod tests {
         let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
         answer_codec.decode(&payload, &mut replay_cache, None).expect("first decode");
         assert!(answer_codec.decode(&payload, &mut replay_cache, None).is_err());
+    }
+
+    #[test]
+    fn decode_with_replay_status_reports_fresh_and_duplicate_same_session() {
+        let (offer, answer, offer_keys, answer_keys) = codecs();
+        let codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let session_id = SessionId::random();
+        let message = InnerMessageBuilder::new(
+            session_id,
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: "busy".to_owned(),
+            message: "already in use".to_owned(),
+            fatal: true,
+        }));
+        let (_envelope, payload) = codec
+            .encode_for_peer(
+                &offer_keys
+                    .get_by_peer_id(&answer.identity.peer_id)
+                    .expect("answer peer exists")
+                    .clone(),
+                &message,
+                false,
+            )
+            .expect("encode");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let mut replay_cache = ReplayCache::new(32);
+
+        let fresh = answer_codec
+            .decode_with_replay_status(&payload, &mut replay_cache, None)
+            .expect("fresh decode");
+        assert_eq!(fresh.replay_status, ReplayStatus::Fresh);
+        assert_eq!(fresh.sender.peer_id, offer.identity.peer_id);
+        assert_eq!(fresh.message.session_id, session_id);
+
+        let duplicate = answer_codec
+            .decode_with_replay_status(&payload, &mut replay_cache, None)
+            .expect("duplicate decode still authenticates");
+        assert_eq!(duplicate.replay_status, ReplayStatus::DuplicateSameSession);
+        assert_eq!(duplicate.sender.peer_id, offer.identity.peer_id);
+        assert_eq!(duplicate.message.session_id, session_id);
+
+        let mut legacy_replay = ReplayCache::new(32);
+        answer_codec.decode(&payload, &mut legacy_replay, None).expect("legacy first decode");
+        assert!(matches!(
+            answer_codec.decode(&payload, &mut legacy_replay, None),
+            Err(SignalingError::Protocol(message)) if message.contains("duplicate message detected")
+        ));
+    }
+
+    #[test]
+    fn decode_with_replay_status_reports_duplicate_different_session() {
+        let (offer, answer, offer_keys, answer_keys) = codecs();
+        let codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let answer_key = offer_keys
+            .get_by_peer_id(&answer.identity.peer_id)
+            .expect("answer peer exists")
+            .clone();
+        let reused_msg_id = MsgId::new([7_u8; 16]);
+        let first = InnerMessageBuilder::new(
+            SessionId::random(),
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: "busy".to_owned(),
+            message: "first".to_owned(),
+            fatal: true,
+        }));
+        let second = InnerMessageBuilder::new(
+            SessionId::random(),
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: "busy".to_owned(),
+            message: "second".to_owned(),
+            fatal: true,
+        }));
+        let (_first_envelope, first_payload) = codec
+            .encode_for_peer_with_msg_id(&answer_key, &first, false, reused_msg_id)
+            .expect("first encodes");
+        let (_second_envelope, second_payload) = codec
+            .encode_for_peer_with_msg_id(&answer_key, &second, false, reused_msg_id)
+            .expect("second encodes");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let mut replay_cache = ReplayCache::new(32);
+
+        let fresh = answer_codec
+            .decode_with_replay_status(&first_payload, &mut replay_cache, None)
+            .expect("first decode");
+        assert_eq!(fresh.replay_status, ReplayStatus::Fresh);
+        let duplicate = answer_codec
+            .decode_with_replay_status(&second_payload, &mut replay_cache, None)
+            .expect("second decode");
+        assert_eq!(duplicate.replay_status, ReplayStatus::DuplicateDifferentSession);
+
+        let mut legacy_replay = ReplayCache::new(32);
+        answer_codec.decode(&first_payload, &mut legacy_replay, None).expect("legacy first decode");
+        assert!(matches!(
+            answer_codec.decode(&second_payload, &mut legacy_replay, None),
+            Err(SignalingError::Protocol(message))
+                if message.contains("different session")
+        ));
+    }
+
+    #[test]
+    fn decode_with_replay_status_rejects_expected_session_mismatch_before_status() {
+        let (offer, answer, offer_keys, answer_keys) = codecs();
+        let codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let stale_session = SessionId::random();
+        let expected_session = SessionId::random();
+        let message = InnerMessageBuilder::new(
+            stale_session,
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+        let (_envelope, payload) = codec
+            .encode_for_peer(
+                &offer_keys
+                    .get_by_peer_id(&answer.identity.peer_id)
+                    .expect("answer peer exists")
+                    .clone(),
+                &message,
+                false,
+            )
+            .expect("encode");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let mut replay_cache = ReplayCache::new(32);
+
+        assert!(matches!(
+            answer_codec.decode_with_replay_status(
+                &payload,
+                &mut replay_cache,
+                Some(expected_session)
+            ),
+            Err(SignalingError::Protocol(message)) if message.contains("active session")
+        ));
     }
 
     #[test]
@@ -759,7 +934,7 @@ mod tests {
 
     fn sample_config(base: &std::path::Path) -> AppConfig {
         AppConfig {
-            format: "p2ptunnel-config-v2".to_owned(),
+            format: "p2ptunnel-config-v3".to_owned(),
             node: NodeConfig {
                 peer_id: "answer-office".parse().expect("peer id"),
                 role: NodeRole::Answer,

@@ -4,12 +4,13 @@
 
 This project is a **CLI-only Rust application** that creates a secure TCP tunnel over a WebRTC data channel. MQTT is used only for signaling and control, and the MQTT broker is **not trusted**. All MQTT signaling messages are encrypted end-to-end and signed.
 
-The v2 tunnel supports:
+The current v0.3 tunnel supports:
 
 - multiple configured forwards,
 - one local listener per configured offer-side forward,
-- one WebRTC peer connection per authorized peer session,
-- one reliable ordered WebRTC data channel named `tunnel`,
+- one always-on `p2p-answer` daemon serving multiple simultaneous authorized `p2p-offer` peers,
+- at most one active WebRTC peer session per authenticated `peer_id`,
+- one reliable ordered WebRTC data channel named `tunnel` per peer session,
 - many simultaneous logical TCP streams multiplexed over that data channel,
 - answer-side ownership of target host/port mappings,
 - per-forward authorization.
@@ -18,7 +19,7 @@ The offer side sends only a `forward_id` for each logical stream. It never choos
 
 ## 2. Scope and non-goals
 
-### In scope for v2
+### In scope for current v0.3
 
 - Rust implementation
 - Command-line/headless operation only
@@ -29,18 +30,19 @@ The offer side sends only a `forward_id` for each logical stream. It never choos
 - Broker TLS
 - STUN support
 - No TURN support
-- One active peer tunnel session at a time
-- Multiple logical TCP streams inside the active session
-- Always-on answer daemon waiting for offers
+- Multiple simultaneous authorized offer peer sessions per answer daemon
+- At most one active session per authenticated `peer_id`
+- Multiple logical TCP streams inside each active peer session
+- Always-on answer daemon serving while waiting for offers
 - Stream-level target connection and error handling
 - Reconnect/recovery driven by the offer side
 
-### Out of scope for v2
+### Out of scope for current v0.3
 
 - GUI
 - Browser support
 - TURN fallback
-- Multiple simultaneous WebRTC peer sessions
+- Multiple unrelated sessions for the same authenticated `peer_id`
 - Multiple WebRTC data channels for forwarding
 - SOCKS, dynamic forwarding, or transparent proxying
 - Arbitrary target selection by the offer side
@@ -108,6 +110,8 @@ A signaling message is accepted only if:
 - message passes timestamp and replay checks,
 - message session matches the expected active session when applicable,
 - the peer is permitted by role/config policy.
+
+Answer-side signaling routing is based on authenticated/decrypted message contents, not broker metadata. If an authenticated `session_id` matches an existing session, the message routes only to that session. If the `session_id` is unknown and the message is an `offer`, the answer daemon evaluates new-session, same-peer replacement, same-peer busy, and capacity policy. If the `session_id` is unknown and the message is not an `offer`, the daemon ignores or rejects it at the routing layer and does not route it by peer fallback.
 
 Any mismatch is a hard protocol error: reject, log locally, and do not process further.
 
@@ -220,7 +224,7 @@ p2p-tunnel/
 - After the data channel opens, each accepted local TCP client opens a new logical stream over the active data channel.
 - Sends encrypted/signaled offer and ICE candidates over MQTT.
 - Sends only `forward_id` in tunnel `OPEN` frames.
-- Owns reconnect and renegotiation in v2.
+- Owns reconnect and renegotiation in v0.2.
 
 ### Answer node
 
@@ -230,7 +234,8 @@ p2p-tunnel/
 - Waits for valid encrypted offers from authorized peers.
 - Creates answer and sends encrypted answer/candidates back.
 - On `OPEN(stream_id, { forward_id })`, checks per-forward authorization and connects to the configured target host/port.
-- Returns to idle after session close/failure.
+- May serve multiple simultaneous authorized offer peers, with one active WebRTC session per remote `peer_id`.
+- Returns to service after a session close/failure without tearing down unrelated sessions.
 - Does not initiate a fresh session on its own.
 
 ## 8. MQTT topic layout
@@ -625,13 +630,13 @@ Precedence:
 The config format is:
 
 ```toml
-format = "p2ptunnel-config-v2"
+format = "p2ptunnel-config-v3"
 ```
 
 ### Example offer config
 
 ```toml
-format = "p2ptunnel-config-v2"
+format = "p2ptunnel-config-v3"
 
 [node]
 peer_id = "offer-home"
@@ -733,7 +738,7 @@ status_file = "~/.local/state/p2ptunnel/status.json"
 ### Example answer config differences
 
 ```toml
-format = "p2ptunnel-config-v2"
+format = "p2ptunnel-config-v3"
 
 [node]
 peer_id = "answer-office"
@@ -758,7 +763,7 @@ allow_remote_peers = ["offer-home"]
 
 ### Config rules
 
-- `format` must be `p2ptunnel-config-v2`.
+- `format` must be `p2ptunnel-config-v3`.
 - `[peer].remote_peer_id` is required for role `offer` and must exist in `authorized_keys`.
 - `[[forwards]].id` is required, unique, non-empty, max 64 characters, and limited to ASCII letters, digits, dash, underscore, and dot.
 - Forward IDs must not contain whitespace, `/`, `\`, `:`, or control characters.
@@ -796,13 +801,13 @@ allow_remote_peers = ["offer-home"]
 7. Wait for data channel open.
 8. Send `OPEN(stream_id, { forward_id })` for each accepted local TCP client.
 9. On stream ACK, bridge that TCP client over the logical stream.
-10. When all streams close, close the session and return to waiting.
+10. When all streams close, keep the session and data channel available for future local clients from that peer until explicit close or failure.
 
 ### Answer daemon lifecycle
 
 1. Load config/keys and validate role/config/authorized peers.
 2. Connect to MQTT broker and subscribe to own signal topic.
-3. Remain connected and idle waiting for valid offers.
+3. Remain connected and serving while waiting for valid offers.
 4. On valid encrypted offer from an authorized and allowed peer:
    - create new session,
    - create PeerConnection,
@@ -813,15 +818,16 @@ allow_remote_peers = ["offer-home"]
 6. On `OPEN`, enforce `forward_id` and peer authorization.
 7. Connect to the configured target for that forward.
 8. Send empty `OPEN` ACK on success, or stream-level `ERROR` on failure.
-9. On close or failure, tear down the WebRTC session and return to idle.
+9. On one session's close or failure, tear down that session only and continue serving other or future peer sessions.
 
 ### Busy/session policy
 
-- One active peer tunnel session at a time.
-- Multiple TCP streams are allowed within that active session.
+- One active peer tunnel session per remote `peer_id`; multiple authorized offer peers may be served concurrently.
+- Multiple TCP streams are allowed within each active session.
 - During offer negotiation, extra local clients enter a bounded pending queue; overflow closes the new client with no banner.
 - During a pending answer-side session that has not opened the tunnel yet, a replacement offer from the same authorized peer may replace the pending session.
 - During an active answer session, a second offer from a fully allowed peer is rejected with encrypted `error` code `busy`.
+- Same-peer replacement is scoped to that peer and must not disturb unrelated active peers.
 - Unauthorized or disallowed active-answer peers receive no response.
 - Busy-offer dedupe is per active answer session and keyed by at least `(sender_kid, msg_id)`.
 
@@ -858,7 +864,12 @@ The daemon writes local status JSON when enabled. Current fields include:
 - `mqtt_connected`
 - `active_session_id`
 - `current_state`
+- `active_session_count`
+- `session_capacity`
+- `sessions`
 - `configured_forwards`
+
+Each entry in `sessions` includes the session ID, remote peer ID, session state, data-channel-open flag, and honestly named configured forward IDs. The answer daemon may report multiple concurrent sessions, one per active authorized offer peer. For a healthy answer daemon, daemon-level `current_state` reports `serving` with zero or more active sessions; per-session states carry the individual lifecycle detail.
 
 `mqtt_connected` is a best-effort latest-known signaling transport usability flag. Recoverable poll/publish failures should flip it to `false` before retry/backoff; later successful transport activity should flip it back to `true`.
 
@@ -882,7 +893,7 @@ Subcommands:
 p2p-offer run [--config <path>] [--broker-url <url>]
 ```
 
-Offer listen ports are configured per forward in `[[forwards]]`; v2 does not accept first-forward-only listen override flags.
+Offer listen ports are configured per forward in `[[forwards]]`; v0.2 does not accept first-forward-only listen override flags.
 
 ### `p2p-answer`
 
@@ -890,7 +901,7 @@ Offer listen ports are configured per forward in `[[forwards]]`; v2 does not acc
 p2p-answer run [--config <path>] [--broker-url <url>]
 ```
 
-Answer targets are configured per forward in `[[forwards]]`; v2 does not accept first-forward-only target override flags.
+Answer targets are configured per forward in `[[forwards]]`; v0.2 does not accept first-forward-only target override flags.
 
 ## 20. Operator workflow
 
@@ -915,7 +926,7 @@ Answer targets are configured per forward in `[[forwards]]`; v2 does not accept 
 - tunnel auto-negotiates over encrypted MQTT,
 - forwarded TCP data flows over WebRTC DTLS/SCTP.
 
-## 21. Explicit v2 decisions frozen
+## 21. Core decisions frozen for the current CLI product
 
 - CLI/headless only.
 - No GUI.
@@ -927,9 +938,10 @@ Answer targets are configured per forward in `[[forwards]]`; v2 does not accept 
 - Broker TLS is required.
 - STUN only.
 - No TURN support.
-- One active peer tunnel session at a time.
-- Multiple logical streams may run within that active session.
-- One reliable ordered WebRTC data channel labeled `tunnel`.
+- One active peer tunnel session per authenticated `peer_id`.
+- Multiple authorized offer peers may be served concurrently by one answer daemon.
+- Multiple logical streams may run within each active peer session.
+- One reliable ordered WebRTC data channel labeled `tunnel` per peer session.
 - Offer side sends only `forward_id`; answer side owns target mapping.
 - `allow_remote_peers` uses explicit peer IDs only.
 - Stream errors are isolated whenever possible.

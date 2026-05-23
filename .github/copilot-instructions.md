@@ -12,7 +12,7 @@ The primary operator workflow should feel like **SSH**, not PEM/PuTTY:
 
 ## Authoritative design sources
 
-- `docs/RUST_WEBRTC_SPECS.md` is the main design spec.
+- `docs/SPECS.md` is the main design spec.
 - `docs/RUST_WEBRTC_TODO.md` is the implementation checklist and suggested sequencing.
 - When generating code, follow the spec's crate boundaries and protocol rules instead of inventing alternate architecture.
 

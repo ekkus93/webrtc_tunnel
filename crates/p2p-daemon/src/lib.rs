@@ -1,10 +1,11 @@
-//! Daemon lifetime is intentionally longer than session lifetime in v2.
+//! Daemon lifetime is intentionally longer than session lifetime in v0.3.
 //!
 //! Each daemon process stays alive and repeatedly returns to its steady state
-//! (`Idle` for answer, `WaitingForLocalClient` for offer) after ordinary
-//! session failures. One peer session may carry multiple multiplexed TCP
-//! streams, and session-owned streams are cleaned up deterministically before
-//! the daemon accepts the next session.
+//! (`Serving` for answer, `WaitingForLocalClient` for offer) after ordinary
+//! session failures. Answer daemons can serve multiple authorized peers, while
+//! each offer-side peer session may carry multiple multiplexed TCP streams.
+//! Session-owned streams are cleaned up deterministically before the daemon
+//! accepts follow-on work.
 //! Startup and security initialization failures remain fatal, while recoverable
 //! runtime transport turbulence updates local status truthfully before the
 //! daemon retries and returns to service.
@@ -13,8 +14,11 @@ mod error;
 mod logging;
 mod status;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use p2p_core::{
@@ -23,19 +27,19 @@ use p2p_core::{
 };
 use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile, kid_from_signing_key};
 use p2p_signaling::{
-    AckBody, AnswerBody, CloseBody, EndOfCandidatesBody, ErrorBody, IceCandidateBody, InnerMessage,
-    InnerMessageBuilder, MessageBody, MqttSignalingTransport, OfferBody, OuterEnvelope,
-    SignalCodec, SignalingError, SignalingSession,
+    AckBody, AnswerBody, CloseBody, DecodedSignal, EndOfCandidatesBody, ErrorBody,
+    IceCandidateBody, InnerMessage, InnerMessageBuilder, MessageBody, MqttSignalingTransport,
+    OfferBody, OuterEnvelope, ReplayStatus, SignalCodec, SignalingError, SignalingSession,
 };
 use p2p_tunnel::{OfferClient, OfferListener};
 use p2p_webrtc::{DataChannelHandle, IceCandidateSignal, IceConnectionState, WebRtcPeer};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
 pub use error::DaemonError;
 pub use logging::{redact_candidate, redact_sdp, redact_secret, setup_logging};
-pub use status::{DaemonStatus, StatusWriter};
+pub use status::{DaemonStatus, SessionStatus, StatusWriter};
 
 #[cfg(any(test, debug_assertions))]
 #[derive(Clone)]
@@ -52,7 +56,18 @@ struct OfferSessionIo<'a> {
     session_hook: Option<mpsc::UnboundedSender<OfferSessionTestHandle>>,
 }
 
+type OfferAcceptedClients<'a> =
+    &'a mut mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>>;
+type OfferBridgeFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = (Result<(), p2p_tunnel::TunnelError>, OfferAcceptedClients<'a>)>
+            + Send
+            + 'a,
+    >,
+>;
+
 const DAEMON_RUNTIME_RETRY_DELAY: Duration = Duration::from_secs(1);
+const ANSWER_SESSION_CAPACITY: usize = 16;
 
 #[allow(async_fn_in_trait)]
 pub trait DaemonSignalingTransport {
@@ -96,6 +111,7 @@ enum BridgeSessionState {
 }
 
 #[derive(Clone, Debug)]
+#[cfg(test)]
 enum ActiveBusyOfferAction {
     Ignore,
     ReplyBusy { key: ActiveBusyOfferKey, session_id: SessionId, sender: Box<AuthorizedKey> },
@@ -133,8 +149,36 @@ impl ActiveBusyOfferCache {
         true
     }
 
+    #[cfg(test)]
     fn contains(&self, key: &ActiveBusyOfferKey) -> bool {
         self.seen.contains(key)
+    }
+}
+
+#[derive(Debug)]
+struct DuplicateActiveAckCache {
+    capacity: usize,
+    order: VecDeque<MsgId>,
+    seen: HashSet<MsgId>,
+}
+
+impl DuplicateActiveAckCache {
+    fn new(capacity: usize) -> Self {
+        Self { capacity: capacity.max(1), order: VecDeque::new(), seen: HashSet::new() }
+    }
+
+    fn record_if_new(&mut self, msg_id: MsgId) -> bool {
+        if self.seen.contains(&msg_id) {
+            return false;
+        }
+        if self.order.len() == self.capacity {
+            if let Some(expired) = self.order.pop_front() {
+                self.seen.remove(&expired);
+            }
+        }
+        self.order.push_back(msg_id);
+        self.seen.insert(msg_id);
+        true
     }
 }
 
@@ -155,6 +199,59 @@ struct StatusSnapshot {
     current_state: DaemonState,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+struct SessionGeneration(u64);
+
+#[derive(Clone, Debug)]
+struct SessionStatusSnapshot {
+    session_id: SessionId,
+    generation: SessionGeneration,
+    remote_peer_id: PeerId,
+    state: DaemonState,
+    data_channel_open: bool,
+    configured_forward_ids: Vec<String>,
+}
+
+impl SessionStatusSnapshot {
+    fn from_session(
+        config: &AppConfig,
+        session: &ActiveSession,
+        generation: SessionGeneration,
+    ) -> Self {
+        Self {
+            session_id: session.session_id,
+            generation,
+            remote_peer_id: session.remote_peer_id.clone(),
+            state: session.state,
+            data_channel_open: session
+                .data_channel
+                .as_ref()
+                .is_some_and(|channel| channel.is_open()),
+            configured_forward_ids: config
+                .forwards
+                .iter()
+                .map(|forward| forward.id.clone())
+                .collect(),
+        }
+    }
+
+    fn to_status(&self) -> SessionStatus {
+        SessionStatus::new(
+            self.session_id,
+            self.remote_peer_id.clone(),
+            self.state,
+            self.data_channel_open,
+            self.configured_forward_ids.clone(),
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AnswerStatusSnapshot {
+    current_state: DaemonState,
+    sessions: Vec<SessionStatusSnapshot>,
+}
+
 struct RuntimeContext<'a> {
     config: &'a AppConfig,
     status: &'a StatusWriter,
@@ -164,6 +261,51 @@ struct RuntimeContext<'a> {
 struct OutgoingSignal {
     message: InnerMessage,
     response: bool,
+}
+
+struct PublishRequest {
+    recipient: AuthorizedKey,
+    outgoing: OutgoingSignal,
+    status: SessionStatusSnapshot,
+    result: oneshot::Sender<Result<PublishedSignal, DaemonError>>,
+}
+
+struct PublishedSignal {
+    msg_id: MsgId,
+    message_type: p2p_core::MessageType,
+    payload: Vec<u8>,
+}
+
+enum AnswerSessionEvent {
+    Publish(Box<PublishRequest>),
+    RawPublish {
+        peer_id: PeerId,
+        payload: Vec<u8>,
+        status: SessionStatusSnapshot,
+        result: oneshot::Sender<Result<(), DaemonError>>,
+    },
+    Status(SessionStatusSnapshot),
+    Replaced {
+        old_session_id: SessionId,
+        new_session_id: SessionId,
+        remote_peer_id: PeerId,
+        generation: SessionGeneration,
+        status: SessionStatusSnapshot,
+    },
+    Ended {
+        session_id: SessionId,
+        generation: SessionGeneration,
+        remote_peer_id: PeerId,
+        result: Result<(), DaemonError>,
+    },
+}
+
+struct AnswerSessionHandle {
+    generation: SessionGeneration,
+    remote_peer_id: PeerId,
+    inbound: mpsc::Sender<DecodedSignal>,
+    status: SessionStatusSnapshot,
+    task: JoinHandle<()>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -182,6 +324,7 @@ pub struct ActiveSession {
     bridge_handle: Option<JoinHandle<Result<(), p2p_tunnel::TunnelError>>>,
     bridge_state: BridgeSessionState,
     active_busy_offers: ActiveBusyOfferCache,
+    duplicate_active_acks: DuplicateActiveAckCache,
     signaling: SignalingSession,
 }
 
@@ -202,6 +345,7 @@ impl ActiveSession {
             bridge_handle: None,
             bridge_state: BridgeSessionState::Pending,
             active_busy_offers: ActiveBusyOfferCache::new(replay_cache_size),
+            duplicate_active_acks: DuplicateActiveAckCache::new(replay_cache_size),
             signaling: SignalingSession::new(replay_cache_size),
         }
     }
@@ -370,6 +514,9 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
     mut transport: T,
 ) -> Result<(), DaemonError> {
     validate_config_authorized_peers(&config, &authorized_keys)?;
+    let config = Arc::new(config);
+    let local_identity = Arc::new(local_identity);
+    let authorized_keys = Arc::new(authorized_keys);
     let codec = SignalCodec::new(
         &local_identity,
         &authorized_keys,
@@ -380,120 +527,49 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
     let status = StatusWriter::new(&config);
     let mut runtime = DaemonRuntimeState::new_connected();
     let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
-    write_steady_state_status(&ctx).await;
+    let (event_tx, mut event_rx) = mpsc::channel(128);
+    let mut sessions_by_id: HashMap<SessionId, AnswerSessionHandle> = HashMap::new();
+    let mut session_by_peer: HashMap<PeerId, SessionId> = HashMap::new();
+    let mut next_generation = 1_u64;
+    write_answer_registry_status(&ctx, &sessions_by_id).await;
 
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
 
     loop {
-        let Some(payload) = poll_idle_signal_payload(&mut ctx, &mut transport).await else {
-            continue;
-        };
-
-        tracing::debug!(
-            payload_len = payload.len(),
-            role = ?config.node.role,
-            "received signaling payload while idle"
-        );
-
-        let decode_result = decode_idle_signaling_message(&codec, &payload, &mut replay_cache);
-
-        let (envelope, message, sender) = match decode_result {
-            Ok(decoded) => decoded,
-            Err(error) => {
-                tracing::warn!(reason = %error, "rejecting signaling message");
-                continue;
-            }
-        };
-
-        tracing::debug!(
-            session_id = %message.session_id,
-            sender_peer_id = %sender.peer_id,
-            sender_kid = %envelope.sender_kid,
-            message_type = ?message.message_type,
-            role = ?config.node.role,
-            "decoded idle signaling message"
-        );
-
-        match &message.body {
-            MessageBody::Hello(_) => {
-                tracing::info!("received optional hello from {}", sender.peer_id);
-            }
-            MessageBody::Offer(offer) => {
-                let peer_allowed = is_peer_allowed_for_active_busy_reply(&config, &sender.peer_id);
-                tracing::debug!(
-                    session_id = %message.session_id,
-                    sender_peer_id = %sender.peer_id,
-                    peer_allowed,
-                    sdp_len = offer.sdp.len(),
-                    "received idle offer"
-                );
-                if !peer_allowed {
-                    tracing::warn!(peer_id = %sender.peer_id, "rejecting unauthorized peer");
+        tokio::select! {
+            payload = poll_idle_signal_payload(&mut ctx, &mut transport) => {
+                let Some(payload) = payload else {
                     continue;
-                }
-                let session_result = async {
-                    if should_ack_idle_offer(peer_allowed, message.message_type.requires_ack()) {
-                        publish_message(
-                            &mut ctx,
-                            &codec,
-                            &mut transport,
-                            StatusSnapshot {
-                                active_session_id: Some(message.session_id),
-                                current_state: DaemonState::Negotiating,
-                            },
-                            None,
-                            &sender,
-                            OutgoingSignal {
-                                message: codec.build_ack(
-                                    sender.peer_id.clone(),
-                                    message.session_id,
-                                    envelope.msg_id,
-                                ),
-                                response: true,
-                            },
-                        )
-                        .await?;
-                    }
-                    let peer = WebRtcPeer::new(&config.webrtc).await?;
-                    peer.apply_remote_offer(&offer.sdp).await?;
-                    let mut session = ActiveSession::new(
-                        message.session_id,
-                        sender.clone(),
-                        peer,
-                        config.security.replay_cache_size,
-                    );
-                    let answer_sdp = session.peer.create_answer().await?;
-                    publish_message(
-                        &mut ctx,
-                        &codec,
-                        &mut transport,
-                        StatusSnapshot {
-                            active_session_id: Some(session.session_id),
-                            current_state: DaemonState::Negotiating,
-                        },
-                        Some(&mut session.signaling),
-                        &session.remote_authorized,
-                        OutgoingSignal {
-                            message: InnerMessageBuilder::new(
-                                session.session_id,
-                                config.node.peer_id.clone(),
-                                session.remote_peer_id.clone(),
-                            )
-                            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp })),
-                            response: false,
-                        },
-                    )
-                    .await?;
-
-                    session.state = DaemonState::ConnectingDataChannel;
-                    run_answer_session(&config, &codec, &mut transport, &mut ctx, session).await
-                }
+                };
+                handle_answer_daemon_payload(
+                    &config,
+                    &local_identity,
+                    &authorized_keys,
+                    &codec,
+                    &mut transport,
+                    &mut ctx,
+                    &event_tx,
+                    &mut replay_cache,
+                    &mut sessions_by_id,
+                    &mut session_by_peer,
+                    &mut next_generation,
+                    payload,
+                )
                 .await;
-                recover_daemon_after_session(&ctx, session_result).await;
-                tracing::info!("answer daemon returned to idle state");
             }
-            _ => {
-                tracing::warn!("ignoring unexpected idle message {:?}", message.message_type);
+            event = event_rx.recv() => {
+                let Some(event) = event else {
+                    return Err(DaemonError::Logging("answer session event channel closed".to_owned()));
+                };
+                handle_answer_session_event(
+                    &mut ctx,
+                    &codec,
+                    &mut transport,
+                    &mut sessions_by_id,
+                    &mut session_by_peer,
+                    event,
+                )
+                .await;
             }
         }
     }
@@ -501,6 +577,354 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
 
 pub fn apply_env_overrides(config: &mut AppConfig) -> Result<(), ConfigError> {
     apply_override_pairs(config, env::vars())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_answer_daemon_payload<T: DaemonSignalingTransport>(
+    config: &Arc<AppConfig>,
+    local_identity: &Arc<IdentityFile>,
+    authorized_keys: &Arc<AuthorizedKeys>,
+    codec: &SignalCodec<'_>,
+    transport: &mut T,
+    ctx: &mut RuntimeContext<'_>,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    replay_cache: &mut p2p_signaling::ReplayCache,
+    sessions_by_id: &mut HashMap<SessionId, AnswerSessionHandle>,
+    session_by_peer: &mut HashMap<PeerId, SessionId>,
+    next_generation: &mut u64,
+    payload: Vec<u8>,
+) {
+    tracing::debug!(
+        payload_len = payload.len(),
+        role = ?config.node.role,
+        "received signaling payload in answer daemon"
+    );
+
+    let decoded = match codec.decode_with_replay_status(&payload, replay_cache, None) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            tracing::warn!(reason = %error, "rejecting signaling message");
+            return;
+        }
+    };
+
+    tracing::debug!(
+        session_id = %decoded.message.session_id,
+        sender_peer_id = %decoded.sender.peer_id,
+        sender_kid = %decoded.envelope.sender_kid,
+        message_type = ?decoded.message.message_type,
+        replay_status = ?decoded.replay_status,
+        role = ?config.node.role,
+        "decoded answer-daemon signaling message"
+    );
+
+    if let Some(handle) = sessions_by_id.get(&decoded.message.session_id) {
+        if handle.remote_peer_id != decoded.sender.peer_id {
+            tracing::warn!(
+                session_id = %decoded.message.session_id,
+                sender_peer_id = %decoded.sender.peer_id,
+                expected_peer_id = %handle.remote_peer_id,
+                "ignoring signaling message whose authenticated sender does not own the session"
+            );
+            return;
+        }
+        route_authenticated_signal(handle, decoded).await;
+        return;
+    }
+
+    if matches!(decoded.message.body, MessageBody::Offer(_))
+        && let Some(existing_session_id) = session_by_peer.get(&decoded.sender.peer_id).copied()
+        && let Some(handle) = sessions_by_id.get(&existing_session_id)
+    {
+        route_authenticated_signal(handle, decoded).await;
+        return;
+    }
+
+    match &decoded.message.body {
+        MessageBody::Hello(_) => {
+            tracing::info!("received optional hello from {}", decoded.sender.peer_id);
+        }
+        MessageBody::Offer(offer) => {
+            let offer = offer.clone();
+            if decoded.replay_status != ReplayStatus::Fresh {
+                tracing::info!(
+                    session_id = %decoded.message.session_id,
+                    sender_peer_id = %decoded.sender.peer_id,
+                    "ignoring replayed offer for unknown session"
+                );
+                return;
+            }
+            if !is_peer_allowed_for_active_busy_reply(config, &decoded.sender.peer_id) {
+                tracing::warn!(peer_id = %decoded.sender.peer_id, "rejecting unauthorized peer");
+                return;
+            }
+            if session_by_peer.contains_key(&decoded.sender.peer_id)
+                || sessions_by_id.len() >= ANSWER_SESSION_CAPACITY
+            {
+                let _ = publish_message(
+                    ctx,
+                    codec,
+                    transport,
+                    StatusSnapshot {
+                        active_session_id: Some(decoded.message.session_id),
+                        current_state: DaemonState::ConnectingDataChannel,
+                    },
+                    None,
+                    &decoded.sender,
+                    OutgoingSignal {
+                        message: build_error_message(
+                            &config.node.peer_id,
+                            &decoded.sender.peer_id,
+                            decoded.message.session_id,
+                            FailureCode::Busy,
+                            "answer daemon session capacity reached",
+                        ),
+                        response: true,
+                    },
+                )
+                .await;
+                return;
+            }
+            let generation = SessionGeneration(*next_generation);
+            *next_generation = next_generation.saturating_add(1);
+            if let Err(error) = start_answer_session_from_offer(
+                config,
+                local_identity,
+                authorized_keys,
+                codec,
+                transport,
+                ctx,
+                event_tx,
+                sessions_by_id,
+                session_by_peer,
+                generation,
+                decoded.envelope,
+                decoded.message,
+                decoded.sender,
+                &offer,
+            )
+            .await
+            {
+                recover_daemon_after_session(ctx, Err(error)).await;
+            }
+            write_answer_registry_status(ctx, sessions_by_id).await;
+        }
+        _ => {
+            tracing::warn!(
+                "ignoring unexpected answer-daemon message {:?}",
+                decoded.message.message_type
+            );
+        }
+    }
+}
+
+async fn route_authenticated_signal(handle: &AnswerSessionHandle, decoded: DecodedSignal) {
+    if let Err(error) = handle.inbound.send(decoded).await {
+        tracing::warn!(
+            reason = %error,
+            session_id = %handle.status.session_id,
+            peer_id = %handle.remote_peer_id,
+            "failed to route authenticated signaling message to answer session"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_answer_session_from_offer<T: DaemonSignalingTransport>(
+    config: &Arc<AppConfig>,
+    local_identity: &Arc<IdentityFile>,
+    authorized_keys: &Arc<AuthorizedKeys>,
+    codec: &SignalCodec<'_>,
+    transport: &mut T,
+    ctx: &mut RuntimeContext<'_>,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    sessions_by_id: &mut HashMap<SessionId, AnswerSessionHandle>,
+    session_by_peer: &mut HashMap<PeerId, SessionId>,
+    generation: SessionGeneration,
+    envelope: OuterEnvelope,
+    message: InnerMessage,
+    sender: AuthorizedKey,
+    offer: &OfferBody,
+) -> Result<(), DaemonError> {
+    if should_ack_idle_offer(true, message.message_type.requires_ack()) {
+        publish_message(
+            ctx,
+            codec,
+            transport,
+            StatusSnapshot {
+                active_session_id: Some(message.session_id),
+                current_state: DaemonState::Negotiating,
+            },
+            None,
+            &sender,
+            OutgoingSignal {
+                message: codec.build_ack(
+                    sender.peer_id.clone(),
+                    message.session_id,
+                    envelope.msg_id,
+                ),
+                response: true,
+            },
+        )
+        .await?;
+    }
+
+    let peer = WebRtcPeer::new(&config.webrtc).await?;
+    peer.apply_remote_offer(&offer.sdp).await?;
+    let mut session = ActiveSession::new(
+        message.session_id,
+        sender.clone(),
+        peer,
+        config.security.replay_cache_size,
+    );
+    let answer_sdp = session.peer.create_answer().await?;
+    publish_message(
+        ctx,
+        codec,
+        transport,
+        StatusSnapshot {
+            active_session_id: Some(session.session_id),
+            current_state: DaemonState::Negotiating,
+        },
+        Some(&mut session.signaling),
+        &session.remote_authorized,
+        OutgoingSignal {
+            message: InnerMessageBuilder::new(
+                session.session_id,
+                config.node.peer_id.clone(),
+                session.remote_peer_id.clone(),
+            )
+            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp })),
+            response: false,
+        },
+    )
+    .await?;
+
+    session.state = DaemonState::ConnectingDataChannel;
+    let (inbound_tx, inbound_rx) = mpsc::channel(128);
+    let status = SessionStatusSnapshot::from_session(config, &session, generation);
+    let session_id = session.session_id;
+    let remote_peer_id = session.remote_peer_id.clone();
+    let task = tokio::spawn(run_answer_session_task(
+        Arc::clone(config),
+        Arc::clone(local_identity),
+        Arc::clone(authorized_keys),
+        event_tx.clone(),
+        inbound_rx,
+        generation,
+        session,
+    ));
+    sessions_by_id.insert(
+        session_id,
+        AnswerSessionHandle {
+            generation,
+            remote_peer_id: remote_peer_id.clone(),
+            inbound: inbound_tx,
+            status,
+            task,
+        },
+    );
+    session_by_peer.insert(remote_peer_id, session_id);
+    Ok(())
+}
+
+async fn handle_answer_session_event<T: DaemonSignalingTransport>(
+    ctx: &mut RuntimeContext<'_>,
+    codec: &SignalCodec<'_>,
+    transport: &mut T,
+    sessions_by_id: &mut HashMap<SessionId, AnswerSessionHandle>,
+    session_by_peer: &mut HashMap<PeerId, SessionId>,
+    event: AnswerSessionEvent,
+) {
+    match event {
+        AnswerSessionEvent::Publish(request) => {
+            publish_answer_session_request(ctx, codec, transport, *request).await;
+        }
+        AnswerSessionEvent::RawPublish { peer_id, payload, status, result } => {
+            let publish_result = match transport
+                .publish_signal(&peer_id, &ctx.config.broker.topic_prefix, payload)
+                .await
+            {
+                Ok(()) => {
+                    mark_transport_usable(
+                        ctx,
+                        StatusSnapshot {
+                            active_session_id: Some(status.session_id),
+                            current_state: status.state,
+                        },
+                    )
+                    .await;
+                    Ok(())
+                }
+                Err(error) => {
+                    mark_transport_unusable(
+                        ctx,
+                        StatusSnapshot {
+                            active_session_id: Some(status.session_id),
+                            current_state: status.state,
+                        },
+                        &error,
+                    )
+                    .await;
+                    Err(error.into())
+                }
+            };
+            let _ = result.send(publish_result);
+        }
+        AnswerSessionEvent::Status(status) => {
+            if let Some(handle) = sessions_by_id.get_mut(&status.session_id) {
+                if handle.generation == status.generation {
+                    handle.status = status;
+                } else {
+                    tracing::warn!(
+                        session_id = %status.session_id,
+                        "ignoring stale answer-session status event"
+                    );
+                }
+            }
+            write_answer_registry_status(ctx, sessions_by_id).await;
+        }
+        AnswerSessionEvent::Replaced {
+            old_session_id,
+            new_session_id,
+            remote_peer_id,
+            generation,
+            status,
+        } => {
+            if let Some(mut handle) = sessions_by_id.remove(&old_session_id) {
+                if handle.generation == generation && handle.remote_peer_id == remote_peer_id {
+                    session_by_peer.insert(remote_peer_id.clone(), new_session_id);
+                    handle.status = status;
+                    sessions_by_id.insert(new_session_id, handle);
+                } else {
+                    sessions_by_id.insert(old_session_id, handle);
+                    tracing::warn!(
+                        old_session_id = %old_session_id,
+                        new_session_id = %new_session_id,
+                        "ignoring stale answer-session replacement event"
+                    );
+                }
+            }
+            write_answer_registry_status(ctx, sessions_by_id).await;
+        }
+        AnswerSessionEvent::Ended { session_id, generation, remote_peer_id, result } => {
+            if let Some(handle) = sessions_by_id.get(&session_id) {
+                if handle.generation == generation && handle.remote_peer_id == remote_peer_id {
+                    let handle = sessions_by_id.remove(&session_id).expect("checked above");
+                    handle.task.abort();
+                    session_by_peer.remove(&handle.remote_peer_id);
+                    recover_daemon_after_session(ctx, result).await;
+                } else {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        remote_peer_id = %remote_peer_id,
+                        "ignoring stale answer-session end event"
+                    );
+                }
+            }
+            write_answer_registry_status(ctx, sessions_by_id).await;
+        }
+    }
 }
 
 pub fn apply_offer_overrides(config: &mut AppConfig, broker_url: Option<String>) {
@@ -536,12 +960,12 @@ pub fn compute_backoff_delay(config: &AppConfig, attempt: u32) -> Duration {
     Duration::from_millis(base_ms.saturating_add_signed(jitter))
 }
 
-async fn run_offer_session<T: DaemonSignalingTransport>(
-    config: &AppConfig,
+async fn run_offer_session<'a, T: DaemonSignalingTransport>(
+    config: &'a AppConfig,
     codec: &SignalCodec<'_>,
     transport: &mut T,
     ctx: &mut RuntimeContext<'_>,
-    io: OfferSessionIo<'_>,
+    io: OfferSessionIo<'a>,
 ) -> Result<(), DaemonError> {
     let remote = io.remote;
     let peer = WebRtcPeer::new(&config.webrtc).await?;
@@ -627,11 +1051,13 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
 
     let mut tick = interval(Duration::from_secs(1));
     let mut pending_client = Some(io.client);
-    let accepted_clients = io.accepted_clients;
+    let mut accepted_clients = Some(io.accepted_clients);
+    let mut offer_bridge: Option<OfferBridgeFuture<'a>> = None;
     let result = async {
         loop {
             if pending_client.is_some()
                 && session.data_channel.as_ref().is_some_and(|channel| channel.is_open())
+                && offer_bridge.is_none()
             {
                 write_daemon_status(
                     ctx,
@@ -644,13 +1070,19 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
                 session.bridge_state = BridgeSessionState::Active;
                 let channel =
                     session.data_channel.clone().ok_or(DaemonError::MissingDataChannel)?;
-                return Ok(p2p_tunnel::run_multiplex_offer(
-                    channel,
-                    &config.tunnel,
-                    pending_client.take().ok_or(DaemonError::MissingDataChannel)?,
-                    accepted_clients,
-                )
-                .await?);
+                let active_clients = accepted_clients.take().ok_or_else(|| {
+                    DaemonError::Logging(
+                        "offer session lost accepted-client queue while bridge was starting"
+                            .to_owned(),
+                    )
+                })?;
+                let client = pending_client.take().ok_or(DaemonError::MissingDataChannel)?;
+                offer_bridge = Some(Box::pin(async move {
+                    let result =
+                        p2p_tunnel::run_multiplex_offer(channel, &config.tunnel, client, active_clients)
+                            .await;
+                    (result, active_clients)
+                }));
             }
             tokio::select! {
                 _ = tick.tick() => {
@@ -704,6 +1136,7 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
                 ice_state = session.peer.next_ice_state() => {
                     if let Some(ice_state) = ice_state {
                         if matches!(ice_state, IceConnectionState::Failed | IceConnectionState::Disconnected) {
+                            offer_bridge = None;
                             if let Some(handle) = session.bridge_handle.take() {
                                 handle.abort();
                             }
@@ -808,6 +1241,41 @@ async fn run_offer_session<T: DaemonSignalingTransport>(
                     result?;
                     return Ok(());
                 }
+                bridge_result = async {
+                    let bridge = offer_bridge.as_mut().expect("guarded by select");
+                    bridge.as_mut().await
+                }, if offer_bridge.is_some() => {
+                    offer_bridge = None;
+                    let (bridge_result, returned_clients) = bridge_result;
+                    accepted_clients = Some(returned_clients);
+                    session.bridge_state = BridgeSessionState::Closed;
+                    let _ = publish_message(
+                        ctx,
+                        codec,
+                        transport,
+                        StatusSnapshot {
+                            active_session_id: Some(session.session_id),
+                            current_state: session.state,
+                        },
+                        Some(&mut session.signaling),
+                        remote,
+                        OutgoingSignal {
+                            message: InnerMessageBuilder::new(
+                                session.session_id,
+                                config.node.peer_id.clone(),
+                                session.remote_peer_id.clone(),
+                            )
+                            .build(MessageBody::Close(CloseBody {
+                                reason_code: "session_closed".to_owned(),
+                                message: None,
+                            })),
+                            response: false,
+                        },
+                    )
+                    .await;
+                    bridge_result?;
+                    return Ok(());
+                }
             }
         }
     }
@@ -873,61 +1341,7 @@ async fn handle_answer_session_message(
     Ok(())
 }
 
-async fn handle_active_answer_offer<T: DaemonSignalingTransport>(
-    config: &AppConfig,
-    codec: &SignalCodec<'_>,
-    transport: &mut T,
-    ctx: &mut RuntimeContext<'_>,
-    session: &mut ActiveSession,
-    offer: &OfferBody,
-) -> Result<(), DaemonError> {
-    session.state = DaemonState::Negotiating;
-    write_daemon_status(
-        ctx,
-        StatusSnapshot {
-            active_session_id: Some(session.session_id),
-            current_state: session.state,
-        },
-    )
-    .await;
-
-    session.peer.apply_remote_offer(&offer.sdp).await?;
-    let answer_sdp = session.peer.create_answer().await?;
-    publish_message(
-        ctx,
-        codec,
-        transport,
-        StatusSnapshot {
-            active_session_id: Some(session.session_id),
-            current_state: session.state,
-        },
-        Some(&mut session.signaling),
-        &session.remote_authorized,
-        OutgoingSignal {
-            message: InnerMessageBuilder::new(
-                session.session_id,
-                config.node.peer_id.clone(),
-                session.remote_peer_id.clone(),
-            )
-            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp })),
-            response: false,
-        },
-    )
-    .await?;
-
-    session.state = DaemonState::ConnectingDataChannel;
-    write_daemon_status(
-        ctx,
-        StatusSnapshot {
-            active_session_id: Some(session.session_id),
-            current_state: session.state,
-        },
-    )
-    .await;
-
-    Ok(())
-}
-
+#[cfg(test)]
 async fn maybe_replace_pending_answer_session<T: DaemonSignalingTransport>(
     config: &AppConfig,
     codec: &SignalCodec<'_>,
@@ -1027,264 +1441,171 @@ async fn maybe_replace_pending_answer_session<T: DaemonSignalingTransport>(
     Ok(true)
 }
 
-async fn run_answer_session<T: DaemonSignalingTransport>(
-    config: &AppConfig,
-    codec: &SignalCodec<'_>,
-    transport: &mut T,
-    ctx: &mut RuntimeContext<'_>,
+async fn run_answer_session_task(
+    config: Arc<AppConfig>,
+    local_identity: Arc<IdentityFile>,
+    authorized_keys: Arc<AuthorizedKeys>,
+    event_tx: mpsc::Sender<AnswerSessionEvent>,
+    mut inbound: mpsc::Receiver<DecodedSignal>,
+    generation: SessionGeneration,
     mut session: ActiveSession,
-) -> Result<(), DaemonError> {
-    write_daemon_status(
-        ctx,
-        StatusSnapshot {
-            active_session_id: Some(session.session_id),
-            current_state: session.state,
-        },
+) {
+    let result = run_answer_session_task_inner(
+        &config,
+        &local_identity,
+        &authorized_keys,
+        &event_tx,
+        &mut inbound,
+        generation,
+        &mut session,
     )
     .await;
+    if let Err(error) = &result {
+        tracing::warn!(
+            reason = %error,
+            session_id = %session.session_id,
+            remote_peer_id = %session.remote_peer_id,
+            "answer session failed"
+        );
+    }
+    cleanup_active_session(&mut session).await;
+    let _ = event_tx
+        .send(AnswerSessionEvent::Ended {
+            session_id: session.session_id,
+            generation,
+            remote_peer_id: session.remote_peer_id.clone(),
+            result,
+        })
+        .await;
+}
+
+async fn run_answer_session_task_inner(
+    config: &AppConfig,
+    local_identity: &IdentityFile,
+    authorized_keys: &AuthorizedKeys,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    inbound: &mut mpsc::Receiver<DecodedSignal>,
+    generation: SessionGeneration,
+    session: &mut ActiveSession,
+) -> Result<(), DaemonError> {
+    let codec = SignalCodec::new(
+        local_identity,
+        authorized_keys,
+        config.security.max_clock_skew_secs,
+        config.security.max_message_age_secs,
+    );
+    send_answer_session_status(config, event_tx, generation, session).await?;
 
     let mut tick = interval(Duration::from_secs(1));
-    let result = async {
-        loop {
-            tokio::select! {
-                _ = tick.tick() => {
-                    retry_pending_acks(
-                        ctx,
-                        transport,
-                        StatusSnapshot {
-                            active_session_id: Some(session.session_id),
-                            current_state: session.state,
-                        },
-                        &mut session,
-                    )
-                    .await?;
-                    if !session.signaling.ack_tracker.expired().is_empty() {
-                        return Err(DaemonError::AckTimeout);
-                    }
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                retry_pending_answer_session_acks(config, event_tx, generation, session).await?;
+                if !session.signaling.ack_tracker.expired().is_empty() {
+                    return Err(DaemonError::AckTimeout);
                 }
-                payload = poll_session_signal_payload(
-                    ctx,
-                    transport,
-                    StatusSnapshot {
-                        active_session_id: Some(session.session_id),
-                        current_state: session.state,
-                    },
-                ) => {
-                    if let Some(payload) = payload? {
-                        let decoded = match codec.decode(
-                            &payload,
-                            &mut session.signaling.replay_cache,
-                            Some(session.session_id),
-                        ) {
-                            Ok(decoded) => decoded,
-                            Err(error) => {
-                                if maybe_ack_duplicate_active_session_message(
-                                    ctx,
-                                    codec,
-                                    transport,
-                                    &session,
-                                    &payload,
-                                    &error,
-                                )
-                                .await?
-                                {
-                                    continue;
-                                }
-                                if maybe_replace_pending_answer_session(
-                                    config,
-                                    codec,
-                                    transport,
-                                    ctx,
-                                    &mut session,
-                                    &payload,
-                                )
-                                .await?
-                                {
-                                    continue;
-                                }
-                                if maybe_handle_active_busy_offer(
-                                    ctx,
-                                    codec,
-                                    transport,
-                                    &mut session.active_busy_offers,
-                                    &payload,
-                                    session.session_id,
-                                    config.security.replay_cache_size,
-                                )
-                                .await?
-                                {
-                                    continue;
-                                }
-                                tracing::warn!(
-                                    reason = %error,
-                                    session_id = %session.session_id,
-                                    "rejecting signaling message during active answer session"
-                                );
-                                continue;
-                            }
-                        };
-                        let (envelope, message, sender) = decoded;
-                        if sender.peer_id != session.remote_peer_id {
-                            tracing::warn!(
-                                peer_id = %sender.peer_id,
-                                expected_peer_id = %session.remote_peer_id,
-                                "ignoring message from unexpected peer"
-                            );
-                            continue;
-                        }
-                        if message.message_type.requires_ack() {
-                            publish_message(
-                                ctx,
-                                codec,
-                                transport,
-                                StatusSnapshot {
-                                    active_session_id: Some(session.session_id),
-                                    current_state: session.state,
-                                },
-                                None,
-                                &sender,
-                                OutgoingSignal {
-                                    message: codec.build_ack(
-                                        sender.peer_id.clone(),
-                                        message.session_id,
-                                        envelope.msg_id,
-                                    ),
-                                    response: true,
-                                },
-                            ).await?;
-                        }
-                        if let MessageBody::Offer(offer) = &message.body {
-                            handle_active_answer_offer(
-                                config,
-                                codec,
-                                transport,
-                                ctx,
-                                &mut session,
-                                offer,
-                            )
-                            .await?;
-                        } else {
-                            handle_answer_session_message(&message, &mut session).await?;
-                        }
-                    }
+            }
+            signal = inbound.recv() => {
+                let Some(signal) = signal else {
+                    return Ok(());
+                };
+                process_answer_session_signal(config, &codec, event_tx, generation, session, signal).await?;
+            }
+            candidate = session.peer.next_local_candidate() => {
+                if let Some(candidate) = candidate {
+                    send_answer_session_local_candidate(config, event_tx, generation, session, candidate).await?;
                 }
-                candidate = session.peer.next_local_candidate() => {
-                    if let Some(candidate) = candidate {
-                        let remote = session.remote_authorized.clone();
-                        send_local_candidate(
-                            ctx,
-                            codec,
-                            transport,
-                            &mut session,
-                            &remote,
-                            candidate,
-                        ).await?;
-                    }
-                }
-                incoming = session.peer.next_incoming_data_channel(), if session.data_channel.is_none() => {
-                    handle_answer_incoming_data_channel(&mut session, incoming, config)?;
-                }
-                ice_state = session.peer.next_ice_state() => {
-                    if let Some(ice_state) = ice_state {
-                        if matches!(ice_state, IceConnectionState::Failed | IceConnectionState::Disconnected) {
-                            publish_message(
-                                ctx,
-                                codec,
-                                transport,
-                                StatusSnapshot {
-                                    active_session_id: Some(session.session_id),
-                                    current_state: session.state,
-                                },
-                                Some(&mut session.signaling),
-                                &session.remote_authorized,
-                                OutgoingSignal {
-                                    message: build_error_message(
-                                        &config.node.peer_id,
-                                        &session.remote_peer_id,
-                                        session.session_id,
-                                        FailureCode::IceFailed,
-                                        "ice connection failed",
-                                    ),
-                                    response: false,
-                                },
-                            ).await?;
-                            if let Some(handle) = session.bridge_handle.take() {
-                                handle.abort();
-                            }
-                            session.bridge_state = BridgeSessionState::Closed;
-                            return Err(DaemonError::IceFailed(ice_state));
-                        }
-                    }
-                }
-                bridge_result = async {
-                    let handle = session.bridge_handle.as_mut().expect("guarded by select");
-                    handle.await
-                }, if session.bridge_handle.is_some() => {
-                    let result = bridge_result
-                        .map_err(|error| DaemonError::Logging(format!("bridge task join error: {error}")))?;
-                    session.bridge_handle = None;
-                    session.bridge_state = BridgeSessionState::Closed;
-                    if let Err(p2p_tunnel::TunnelError::TargetConnectFailed(message)) = &result {
-                        let _ = publish_message(
-                            ctx,
-                            codec,
-                            transport,
-                            StatusSnapshot {
-                                active_session_id: Some(session.session_id),
-                                current_state: session.state,
-                            },
-                            Some(&mut session.signaling),
-                            &session.remote_authorized,
+            }
+            incoming = session.peer.next_incoming_data_channel(), if session.data_channel.is_none() => {
+                handle_answer_incoming_data_channel(session, incoming, config)?;
+                send_answer_session_status(config, event_tx, generation, session).await?;
+            }
+            ice_state = session.peer.next_ice_state() => {
+                if let Some(ice_state) = ice_state {
+                    if matches!(ice_state, IceConnectionState::Failed | IceConnectionState::Disconnected) {
+                        publish_from_answer_session(
+                            config,
+                            event_tx,
+                            session,
+                            generation,
+                            session.remote_authorized.clone(),
                             OutgoingSignal {
                                 message: build_error_message(
                                     &config.node.peer_id,
                                     &session.remote_peer_id,
                                     session.session_id,
-                                    FailureCode::TargetConnectFailed,
-                                    message,
+                                    FailureCode::IceFailed,
+                                    "ice connection failed",
                                 ),
                                 response: false,
                             },
+                            true,
                         )
-                        .await;
+                        .await?;
+                        if let Some(handle) = session.bridge_handle.take() {
+                            handle.abort();
+                        }
+                        session.bridge_state = BridgeSessionState::Closed;
+                        return Err(DaemonError::IceFailed(ice_state));
                     }
-                    let _ = publish_message(
-                        ctx,
-                        codec,
-                        transport,
-                        StatusSnapshot {
-                            active_session_id: Some(session.session_id),
-                            current_state: session.state,
-                        },
-                        Some(&mut session.signaling),
-                        &session.remote_authorized,
+                }
+            }
+            bridge_result = async {
+                let handle = session.bridge_handle.as_mut().expect("guarded by select");
+                handle.await
+            }, if session.bridge_handle.is_some() => {
+                let result = bridge_result
+                    .map_err(|error| DaemonError::Logging(format!("bridge task join error: {error}")))?;
+                session.bridge_handle = None;
+                session.bridge_state = BridgeSessionState::Closed;
+                send_answer_session_status(config, event_tx, generation, session).await?;
+                if let Err(p2p_tunnel::TunnelError::TargetConnectFailed(message)) = &result {
+                    let _ = publish_from_answer_session(
+                        config,
+                        event_tx,
+                        session,
+                        generation,
+                        session.remote_authorized.clone(),
                         OutgoingSignal {
-                            message: InnerMessageBuilder::new(
+                            message: build_error_message(
+                                &config.node.peer_id,
+                                &session.remote_peer_id,
                                 session.session_id,
-                                config.node.peer_id.clone(),
-                                session.remote_peer_id.clone(),
-                            )
-                            .build(MessageBody::Close(CloseBody {
-                                reason_code: "session_closed".to_owned(),
-                                message: None,
-                            })),
+                                FailureCode::TargetConnectFailed,
+                                message,
+                            ),
                             response: false,
                         },
+                        true,
                     )
                     .await;
-                    result?;
-                    return Ok(());
                 }
+                let _ = publish_from_answer_session(
+                    config,
+                    event_tx,
+                    session,
+                    generation,
+                    session.remote_authorized.clone(),
+                    OutgoingSignal {
+                        message: InnerMessageBuilder::new(
+                            session.session_id,
+                            config.node.peer_id.clone(),
+                            session.remote_peer_id.clone(),
+                        )
+                        .build(MessageBody::Close(CloseBody {
+                            reason_code: "session_closed".to_owned(),
+                            message: None,
+                        })),
+                        response: false,
+                    },
+                    true,
+                )
+                .await;
+                result?;
+                return Ok(());
             }
         }
     }
-    .await;
-
-    if let Err(error) = &result {
-        tracing::warn!(reason = %error, session_id = %session.session_id, "answer session failed");
-    }
-    cleanup_active_session(&mut session).await;
-    result
 }
 
 async fn cleanup_active_session(session: &mut ActiveSession) {
@@ -1301,6 +1622,344 @@ async fn cleanup_active_session(session: &mut ActiveSession) {
             "failed to close session peer during cleanup"
         );
     }
+}
+
+async fn send_answer_session_status(
+    config: &AppConfig,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    generation: SessionGeneration,
+    session: &ActiveSession,
+) -> Result<(), DaemonError> {
+    event_tx
+        .send(AnswerSessionEvent::Status(SessionStatusSnapshot::from_session(
+            config, session, generation,
+        )))
+        .await
+        .map_err(|_| DaemonError::Logging("answer session event loop stopped".to_owned()))
+}
+
+async fn publish_from_answer_session(
+    config: &AppConfig,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    session: &mut ActiveSession,
+    generation: SessionGeneration,
+    recipient: AuthorizedKey,
+    outgoing: OutgoingSignal,
+    track_ack: bool,
+) -> Result<(), DaemonError> {
+    if let Some(published) = request_session_publish(
+        event_tx,
+        recipient,
+        outgoing,
+        track_ack,
+        SessionStatusSnapshot::from_session(config, session, generation),
+    )
+    .await?
+    {
+        session.signaling.ack_tracker.register(
+            published.msg_id,
+            published.message_type,
+            published.payload,
+            current_time_ms(),
+        );
+    }
+    Ok(())
+}
+
+async fn retry_pending_answer_session_acks(
+    config: &AppConfig,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    generation: SessionGeneration,
+    session: &mut ActiveSession,
+) -> Result<(), DaemonError> {
+    let mut retries = session.signaling.ack_tracker.retry_due(current_time_ms());
+    while let Some((_msg_id, payload)) = retries.pop() {
+        request_raw_session_publish(
+            event_tx,
+            session.remote_peer_id.clone(),
+            payload,
+            SessionStatusSnapshot::from_session(config, session, generation),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn send_answer_session_local_candidate(
+    config: &AppConfig,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    generation: SessionGeneration,
+    session: &mut ActiveSession,
+    candidate: IceCandidateSignal,
+) -> Result<(), DaemonError> {
+    let body = if candidate.candidate.is_some() {
+        MessageBody::IceCandidate(IceCandidateBody {
+            candidate: candidate.candidate,
+            sdp_mid: candidate.sdp_mid,
+            sdp_mline_index: candidate.sdp_mline_index,
+        })
+    } else {
+        MessageBody::EndOfCandidates(EndOfCandidatesBody::default())
+    };
+    publish_from_answer_session(
+        config,
+        event_tx,
+        session,
+        generation,
+        session.remote_authorized.clone(),
+        OutgoingSignal {
+            message: InnerMessageBuilder::new(
+                session.session_id,
+                config.node.peer_id.clone(),
+                session.remote_peer_id.clone(),
+            )
+            .build(body),
+            response: false,
+        },
+        true,
+    )
+    .await
+}
+
+async fn process_answer_session_signal(
+    config: &AppConfig,
+    codec: &SignalCodec<'_>,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    generation: SessionGeneration,
+    session: &mut ActiveSession,
+    signal: DecodedSignal,
+) -> Result<(), DaemonError> {
+    let DecodedSignal { envelope, message, sender, replay_status } = signal;
+    if sender.peer_id != session.remote_peer_id {
+        tracing::warn!(
+            peer_id = %sender.peer_id,
+            expected_peer_id = %session.remote_peer_id,
+            session_id = %session.session_id,
+            "ignoring message from unexpected peer"
+        );
+        return Ok(());
+    }
+    if replay_status == ReplayStatus::DuplicateDifferentSession {
+        tracing::warn!(
+            session_id = %message.session_id,
+            remote_peer_id = %session.remote_peer_id,
+            "ignoring signaling message with duplicate msg_id for a different session"
+        );
+        return Ok(());
+    }
+    if replay_status == ReplayStatus::DuplicateSameSession
+        && !session.duplicate_active_acks.record_if_new(envelope.msg_id)
+    {
+        tracing::info!(
+            session_id = %message.session_id,
+            duplicate_msg_id = %envelope.msg_id,
+            "suppressing repeated duplicate active-session re-ack"
+        );
+        return Ok(());
+    }
+    if message.message_type.requires_ack() {
+        publish_from_answer_session(
+            config,
+            event_tx,
+            session,
+            generation,
+            sender.clone(),
+            OutgoingSignal {
+                message: codec.build_ack(
+                    sender.peer_id.clone(),
+                    message.session_id,
+                    envelope.msg_id,
+                ),
+                response: true,
+            },
+            false,
+        )
+        .await?;
+    }
+    if replay_status == ReplayStatus::DuplicateSameSession {
+        tracing::info!(
+            session_id = %message.session_id,
+            duplicate_msg_id = %envelope.msg_id,
+            "re-acknowledged duplicate active-session signaling message"
+        );
+        return Ok(());
+    }
+    if let MessageBody::Offer(offer) = message.body.clone() {
+        if message.session_id == session.session_id {
+            handle_active_answer_offer_via_events(config, event_tx, generation, session, &offer)
+                .await?;
+        } else {
+            maybe_replace_pending_same_peer_session(
+                config, event_tx, generation, session, envelope, message, sender, &offer,
+            )
+            .await?;
+        }
+    } else {
+        if message.session_id != session.session_id {
+            tracing::warn!(
+                session_id = %message.session_id,
+                active_session_id = %session.session_id,
+                "ignoring non-offer signaling message for a different session"
+            );
+            return Ok(());
+        }
+        handle_answer_session_message(&message, session).await?;
+    }
+    send_answer_session_status(config, event_tx, generation, session).await?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn maybe_replace_pending_same_peer_session(
+    config: &AppConfig,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    generation: SessionGeneration,
+    session: &mut ActiveSession,
+    envelope: OuterEnvelope,
+    message: InnerMessage,
+    sender: AuthorizedKey,
+    offer: &OfferBody,
+) -> Result<(), DaemonError> {
+    // v0.3 permits same-peer replacement only while the existing session has not
+    // reached data-channel/tunnel activity. Unrelated second active sessions are
+    // rejected with encrypted busy and must not disturb other peers.
+    if session.bridge_state != BridgeSessionState::Pending {
+        publish_busy_for_same_peer_offer(
+            config,
+            event_tx,
+            generation,
+            session,
+            &sender,
+            message.session_id,
+            envelope.msg_id,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    if let Some(handle) = session.bridge_handle.take() {
+        handle.abort();
+        let _ = handle.await;
+    }
+    session.data_channel = None;
+    let _ = session.peer.close().await;
+
+    let peer = WebRtcPeer::new(&config.webrtc).await?;
+    peer.apply_remote_offer(&offer.sdp).await?;
+    let mut replacement = ActiveSession::new(
+        message.session_id,
+        sender.clone(),
+        peer,
+        config.security.replay_cache_size,
+    );
+    let answer_sdp = replacement.peer.create_answer().await?;
+    let replacement_session_id = replacement.session_id;
+    let replacement_remote = replacement.remote_authorized.clone();
+    let replacement_remote_peer_id = replacement.remote_peer_id.clone();
+    publish_from_answer_session(
+        config,
+        event_tx,
+        &mut replacement,
+        generation,
+        replacement_remote,
+        OutgoingSignal {
+            message: InnerMessageBuilder::new(
+                replacement_session_id,
+                config.node.peer_id.clone(),
+                replacement_remote_peer_id,
+            )
+            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp })),
+            response: false,
+        },
+        true,
+    )
+    .await?;
+    replacement.state = DaemonState::ConnectingDataChannel;
+    let old_session_id = session.session_id;
+    *session = replacement;
+    let status = SessionStatusSnapshot::from_session(config, session, generation);
+    event_tx
+        .send(AnswerSessionEvent::Replaced {
+            old_session_id,
+            new_session_id: session.session_id,
+            remote_peer_id: session.remote_peer_id.clone(),
+            generation,
+            status,
+        })
+        .await
+        .map_err(|_| DaemonError::Logging("answer session event loop stopped".to_owned()))?;
+    Ok(())
+}
+
+async fn publish_busy_for_same_peer_offer(
+    config: &AppConfig,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    generation: SessionGeneration,
+    session: &mut ActiveSession,
+    sender: &AuthorizedKey,
+    rejected_session_id: SessionId,
+    msg_id: MsgId,
+) -> Result<(), DaemonError> {
+    let key = ActiveBusyOfferKey {
+        sender_kid: kid_from_signing_key(&sender.public_identity.sign_public),
+        msg_id,
+    };
+    if !session.active_busy_offers.record_if_new(key) {
+        return Ok(());
+    }
+    publish_from_answer_session(
+        config,
+        event_tx,
+        session,
+        generation,
+        sender.clone(),
+        OutgoingSignal {
+            message: build_error_message(
+                &config.node.peer_id,
+                &sender.peer_id,
+                rejected_session_id,
+                FailureCode::Busy,
+                "answer daemon already has an active session for this peer",
+            ),
+            response: true,
+        },
+        false,
+    )
+    .await
+}
+
+async fn handle_active_answer_offer_via_events(
+    config: &AppConfig,
+    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    generation: SessionGeneration,
+    session: &mut ActiveSession,
+    offer: &OfferBody,
+) -> Result<(), DaemonError> {
+    session.state = DaemonState::Negotiating;
+    send_answer_session_status(config, event_tx, generation, session).await?;
+    session.peer.apply_remote_offer(&offer.sdp).await?;
+    let answer_sdp = session.peer.create_answer().await?;
+    publish_from_answer_session(
+        config,
+        event_tx,
+        session,
+        generation,
+        session.remote_authorized.clone(),
+        OutgoingSignal {
+            message: InnerMessageBuilder::new(
+                session.session_id,
+                config.node.peer_id.clone(),
+                session.remote_peer_id.clone(),
+            )
+            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp })),
+            response: false,
+        },
+        true,
+    )
+    .await?;
+    session.state = DaemonState::ConnectingDataChannel;
+    send_answer_session_status(config, event_tx, generation, session).await?;
+    Ok(())
 }
 
 fn handle_answer_incoming_data_channel(
@@ -1385,7 +2044,7 @@ fn spawn_offer_accept_loops(
 fn steady_state_for_role(role: &NodeRole) -> DaemonState {
     match role {
         NodeRole::Offer => DaemonState::WaitingForLocalClient,
-        NodeRole::Answer => DaemonState::Idle,
+        NodeRole::Answer => DaemonState::Serving,
     }
 }
 
@@ -1402,6 +2061,34 @@ async fn write_daemon_status(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot)
         ),
     )
     .await;
+}
+
+async fn write_answer_status(ctx: &RuntimeContext<'_>, snapshot: AnswerStatusSnapshot) {
+    write_status_or_log(
+        ctx.status,
+        DaemonStatus::with_sessions(
+            ctx.config.node.peer_id.clone(),
+            ctx.config.node.role.clone(),
+            ctx.runtime.mqtt_connected,
+            snapshot.current_state,
+            ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
+            ANSWER_SESSION_CAPACITY,
+            snapshot.sessions.iter().map(SessionStatusSnapshot::to_status).collect(),
+        ),
+    )
+    .await;
+}
+
+async fn write_answer_registry_status(
+    ctx: &RuntimeContext<'_>,
+    sessions: &HashMap<SessionId, AnswerSessionHandle>,
+) {
+    let mut session_statuses =
+        sessions.values().map(|session| session.status.clone()).collect::<Vec<_>>();
+    session_statuses.sort_by_key(|status| status.session_id.to_string());
+    let current_state = DaemonState::Serving;
+    write_answer_status(ctx, AnswerStatusSnapshot { current_state, sessions: session_statuses })
+        .await;
 }
 
 async fn write_steady_state_status(ctx: &RuntimeContext<'_>) {
@@ -1602,6 +2289,108 @@ async fn publish_message<T: DaemonSignalingTransport>(
     Ok(())
 }
 
+async fn publish_answer_session_request<T: DaemonSignalingTransport>(
+    ctx: &mut RuntimeContext<'_>,
+    codec: &SignalCodec<'_>,
+    transport: &mut T,
+    request: PublishRequest,
+) {
+    let message_type = request.outgoing.message.message_type;
+    let session_id = request.outgoing.message.session_id;
+    let recipient_peer_id = request.recipient.peer_id.clone();
+    let encoded = codec.encode_for_peer(
+        &request.recipient,
+        &request.outgoing.message,
+        request.outgoing.response,
+    );
+    let result = match encoded {
+        Ok((envelope, payload)) => {
+            tracing::debug!(
+                session_id = %session_id,
+                recipient_peer_id = %recipient_peer_id,
+                sender_kid = %envelope.sender_kid,
+                recipient_kid = %envelope.recipient_kid,
+                msg_id = %envelope.msg_id,
+                message_type = ?message_type,
+                payload_len = payload.len(),
+                response = request.outgoing.response,
+                "publishing answer-session signaling message"
+            );
+            match transport
+                .publish_signal(
+                    &recipient_peer_id,
+                    &ctx.config.broker.topic_prefix,
+                    payload.clone(),
+                )
+                .await
+            {
+                Ok(()) => {
+                    mark_transport_usable(
+                        ctx,
+                        StatusSnapshot {
+                            active_session_id: Some(request.status.session_id),
+                            current_state: request.status.state,
+                        },
+                    )
+                    .await;
+                    Ok(PublishedSignal { msg_id: envelope.msg_id, message_type, payload })
+                }
+                Err(error) => {
+                    mark_transport_unusable(
+                        ctx,
+                        StatusSnapshot {
+                            active_session_id: Some(request.status.session_id),
+                            current_state: request.status.state,
+                        },
+                        &error,
+                    )
+                    .await;
+                    Err(error.into())
+                }
+            }
+        }
+        Err(error) => Err(error.into()),
+    };
+    let _ = request.result.send(result);
+}
+
+async fn request_session_publish(
+    tx: &mpsc::Sender<AnswerSessionEvent>,
+    recipient: AuthorizedKey,
+    outgoing: OutgoingSignal,
+    track_ack: bool,
+    status: SessionStatusSnapshot,
+) -> Result<Option<PublishedSignal>, DaemonError> {
+    let (result_tx, result_rx) = oneshot::channel();
+    tx.send(AnswerSessionEvent::Publish(Box::new(PublishRequest {
+        recipient,
+        outgoing,
+        status,
+        result: result_tx,
+    })))
+    .await
+    .map_err(|_| DaemonError::Logging("answer session event loop stopped".to_owned()))?;
+    let published = result_rx.await.map_err(|_| {
+        DaemonError::Logging("answer session publish response dropped".to_owned())
+    })??;
+    Ok(track_ack.then_some(published))
+}
+
+async fn request_raw_session_publish(
+    tx: &mpsc::Sender<AnswerSessionEvent>,
+    peer_id: PeerId,
+    payload: Vec<u8>,
+    status: SessionStatusSnapshot,
+) -> Result<(), DaemonError> {
+    let (result_tx, result_rx) = oneshot::channel();
+    tx.send(AnswerSessionEvent::RawPublish { peer_id, payload, status, result: result_tx })
+        .await
+        .map_err(|_| DaemonError::Logging("answer session event loop stopped".to_owned()))?;
+    result_rx
+        .await
+        .map_err(|_| DaemonError::Logging("answer raw publish response dropped".to_owned()))?
+}
+
 async fn retry_pending_acks<T: DaemonSignalingTransport>(
     ctx: &mut RuntimeContext<'_>,
     transport: &mut T,
@@ -1688,86 +2477,15 @@ async fn process_offer_session_payload<T: DaemonSignalingTransport>(
     Ok(OfferSessionPayloadOutcome::Handled)
 }
 
-async fn maybe_handle_active_busy_offer<T: DaemonSignalingTransport>(
-    ctx: &mut RuntimeContext<'_>,
-    codec: &SignalCodec<'_>,
-    transport: &mut T,
-    active_busy_offers: &mut ActiveBusyOfferCache,
-    payload: &[u8],
-    active_session_id: SessionId,
-    replay_cache_size: usize,
-) -> Result<bool, DaemonError> {
-    if let Some(key) = replayed_active_busy_offer_key(payload, active_busy_offers) {
-        tracing::info!(
-            active_session_id = %active_session_id,
-            duplicate_msg_id = %key.msg_id,
-            "suppressing replayed offer before active-session busy reclassification"
-        );
-        return Ok(true);
-    }
-    let Some(action) = classify_active_busy_offer(
-        ctx.config,
-        codec,
-        payload,
-        active_session_id,
-        replay_cache_size,
-    ) else {
-        return Ok(false);
-    };
-    match action {
-        ActiveBusyOfferAction::Ignore => {}
-        ActiveBusyOfferAction::ReplyBusy { key, session_id, sender } => {
-            if !active_busy_offers.record_if_new(key) {
-                tracing::info!(
-                    peer_id = %sender.peer_id,
-                    active_session_id = %active_session_id,
-                    duplicate_msg_id = %key.msg_id,
-                    "suppressing duplicate busy reply for replayed offer during active answer session"
-                );
-                return Ok(true);
-            }
-            tracing::info!(
-                peer_id = %sender.peer_id,
-                active_session_id = %active_session_id,
-                rejected_session_id = %session_id,
-                "rejecting new offer with busy because answer daemon already has an active allowed session"
-            );
-            publish_message(
-                ctx,
-                codec,
-                transport,
-                StatusSnapshot {
-                    active_session_id: Some(active_session_id),
-                    current_state: DaemonState::ConnectingDataChannel,
-                },
-                None,
-                &sender,
-                OutgoingSignal {
-                    message: build_error_message(
-                        &ctx.config.node.peer_id,
-                        &sender.peer_id,
-                        session_id,
-                        FailureCode::Busy,
-                        "answer daemon already has an active session",
-                    ),
-                    response: true,
-                },
-            )
-            .await?;
-        }
-    }
-    Ok(true)
-}
-
 async fn maybe_ack_duplicate_active_session_message<T: DaemonSignalingTransport>(
     ctx: &mut RuntimeContext<'_>,
     codec: &SignalCodec<'_>,
     transport: &mut T,
-    session: &ActiveSession,
+    session: &mut ActiveSession,
     payload: &[u8],
     error: &SignalingError,
 ) -> Result<bool, DaemonError> {
-    let Some(ack_message) = duplicate_active_session_ack_message(
+    let Some((duplicate_msg_id, ack_message)) = duplicate_active_session_ack_message(
         codec,
         session.session_id,
         &session.remote_authorized,
@@ -1777,6 +2495,16 @@ async fn maybe_ack_duplicate_active_session_message<T: DaemonSignalingTransport>
     ) else {
         return Ok(false);
     };
+
+    if !session.duplicate_active_acks.record_if_new(duplicate_msg_id) {
+        tracing::info!(
+            session_id = %session.session_id,
+            duplicate_msg_id = %duplicate_msg_id,
+            role = ?ctx.config.node.role,
+            "suppressing repeated duplicate active-session re-ack"
+        );
+        return Ok(true);
+    }
 
     let envelope = OuterEnvelope::decode(payload)
         .map_err(|error| DaemonError::Signaling(SignalingError::Protocol(error.to_string())))?;
@@ -1811,7 +2539,7 @@ fn duplicate_active_session_ack_message(
     remote_peer_id: &PeerId,
     payload: &[u8],
     error: &SignalingError,
-) -> Option<InnerMessage> {
+) -> Option<(MsgId, InnerMessage)> {
     let SignalingError::Protocol(message) = error else {
         return None;
     };
@@ -1829,9 +2557,10 @@ fn duplicate_active_session_ack_message(
         return None;
     }
 
-    Some(codec.build_ack(remote_peer_id.clone(), session_id, envelope.msg_id))
+    Some((envelope.msg_id, codec.build_ack(remote_peer_id.clone(), session_id, envelope.msg_id)))
 }
 
+#[cfg(test)]
 fn replayed_active_busy_offer_key(
     payload: &[u8],
     active_busy_offers: &ActiveBusyOfferCache,
@@ -1841,6 +2570,7 @@ fn replayed_active_busy_offer_key(
     active_busy_offers.contains(&key).then_some(key)
 }
 
+#[cfg(test)]
 fn classify_active_busy_offer(
     config: &AppConfig,
     codec: &SignalCodec<'_>,
@@ -2000,7 +2730,7 @@ fn apply_override_pairs(
 
 fn legacy_forward_env_error(name: &str, replacement: &str) -> ConfigError {
     ConfigError::InvalidConfig(format!(
-        "{name} is no longer supported in config v2. Use {replacement} in config.toml instead."
+        "{name} is no longer supported in v0.2 config. Use {replacement} in config.toml instead."
     ))
 }
 
@@ -2280,21 +3010,24 @@ fn current_time_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::future::pending;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use p2p_core::AppConfig;
     use p2p_core::{
         ACK_RETRY_TIMEOUT_SECS, BrokerConfig, BrokerTlsConfig, FailureCode, ForwardAnswerConfig,
-        ForwardOfferConfig, ForwardRule, HealthConfig, LoggingConfig, NodeConfig, NodeRole,
+        ForwardOfferConfig, ForwardRule, HealthConfig, LoggingConfig, MsgId, NodeConfig, NodeRole,
         PeerConfig, PeerId, ReconnectConfig, SecurityConfig, SessionId, TunnelConfig, WebRtcConfig,
     };
     use p2p_crypto::{AuthorizedKeys, generate_identity};
     use p2p_signaling::{
-        AckBody, ErrorBody, InnerMessageBuilder, MessageBody, OfferBody, OuterEnvelope,
-        ReplayCache, SignalCodec, SignalingError,
+        AckBody, AnswerBody, CloseBody, EndOfCandidatesBody, ErrorBody, IceCandidateBody,
+        InnerMessageBuilder, MessageBody, OfferBody, OuterEnvelope, PingBody,
+        RenegotiateRequestBody, ReplayCache, ReplayStatus, SignalCodec, SignalingError,
     };
     use p2p_tunnel::OfferClient;
     use serde_json::Value;
@@ -2305,18 +3038,21 @@ mod tests {
 
     use super::{
         ActiveBusyOfferAction, ActiveBusyOfferCache, ActiveBusyOfferKey, ActiveSession,
-        BridgeSessionState, DaemonError, DaemonRuntimeState, DaemonSignalingTransport, DaemonState,
-        IceConnectionState, OfferListener, OfferSessionPayloadOutcome, RuntimeContext,
-        StatusSnapshot, StatusWriter, WebRtcPeer, apply_answer_overrides, apply_offer_overrides,
-        apply_override_pairs, classify_active_busy_offer, compute_backoff_delay,
-        decode_idle_signaling_message, duplicate_active_session_ack_message,
-        handle_answer_incoming_data_channel, handle_answer_session_message,
-        handle_offer_session_message, mark_transport_unusable, mark_transport_usable,
-        maybe_replace_pending_answer_session, process_offer_session_payload,
-        recover_daemon_after_session, replayed_active_busy_offer_key,
-        run_offer_daemon_with_transport_and_test_hook, should_ack_idle_offer,
-        should_attempt_offer_reconnect, should_continue_reconnect_attempt, spawn_offer_accept_loop,
-        steady_state_for_role, write_steady_state_status,
+        AnswerSessionEvent, AnswerSessionHandle, BridgeSessionState, DaemonError,
+        DaemonRuntimeState, DaemonSignalingTransport, DaemonState, IceConnectionState,
+        OfferListener, OfferSessionPayloadOutcome, RuntimeContext, SessionGeneration,
+        SessionStatusSnapshot, StatusSnapshot, StatusWriter, WebRtcPeer, apply_answer_overrides,
+        apply_offer_overrides, apply_override_pairs, classify_active_busy_offer,
+        compute_backoff_delay, decode_idle_signaling_message, duplicate_active_session_ack_message,
+        handle_answer_daemon_payload, handle_answer_incoming_data_channel,
+        handle_answer_session_event, handle_answer_session_message, handle_offer_session_message,
+        mark_transport_unusable, mark_transport_usable, maybe_ack_duplicate_active_session_message,
+        maybe_replace_pending_answer_session, process_answer_session_signal,
+        process_offer_session_payload, recover_daemon_after_session,
+        replayed_active_busy_offer_key, run_offer_daemon_with_transport_and_test_hook,
+        should_ack_idle_offer, should_attempt_offer_reconnect, should_continue_reconnect_attempt,
+        spawn_offer_accept_loop, steady_state_for_role, write_answer_registry_status,
+        write_steady_state_status,
     };
 
     type PublishedSignals = std::sync::Arc<Mutex<Vec<(PeerId, Vec<u8>)>>>;
@@ -2376,7 +3112,7 @@ mod tests {
 
     fn sample_config() -> AppConfig {
         AppConfig {
-            format: "p2ptunnel-config-v2".to_owned(),
+            format: "p2ptunnel-config-v3".to_owned(),
             node: NodeConfig {
                 peer_id: "offer-home".parse().expect("peer id"),
                 role: NodeRole::Offer,
@@ -2511,6 +3247,225 @@ mod tests {
         DaemonRuntimeState::new_connected()
     }
 
+    fn test_session_status(
+        session_id: SessionId,
+        generation: SessionGeneration,
+        remote_peer_id: PeerId,
+        state: DaemonState,
+    ) -> SessionStatusSnapshot {
+        SessionStatusSnapshot {
+            session_id,
+            generation,
+            remote_peer_id,
+            state,
+            data_channel_open: matches!(state, DaemonState::TunnelOpen),
+            configured_forward_ids: vec!["ssh".to_owned()],
+        }
+    }
+
+    fn test_answer_handle(
+        session_id: SessionId,
+        generation: SessionGeneration,
+        remote_peer_id: PeerId,
+        state: DaemonState,
+    ) -> (AnswerSessionHandle, mpsc::Receiver<p2p_signaling::DecodedSignal>) {
+        let (tx, rx) = mpsc::channel(4);
+        let status = test_session_status(session_id, generation, remote_peer_id.clone(), state);
+        let task = tokio::spawn(async { pending::<()>().await });
+        (AnswerSessionHandle { generation, remote_peer_id, inbound: tx, status, task }, rx)
+    }
+
+    struct AnswerRoutingFixture {
+        config: Arc<AppConfig>,
+        local_identity: Arc<p2p_crypto::IdentityFile>,
+        authorized_keys: Arc<AuthorizedKeys>,
+        offer_identity: p2p_crypto::GeneratedIdentity,
+        offer_keys: AuthorizedKeys,
+        active_session: SessionId,
+        sessions_by_id: HashMap<SessionId, AnswerSessionHandle>,
+        session_by_peer: HashMap<PeerId, SessionId>,
+        receiver: mpsc::Receiver<p2p_signaling::DecodedSignal>,
+        transport: RecordingTransport,
+        replay_cache: ReplayCache,
+        next_generation: u64,
+    }
+
+    impl AnswerRoutingFixture {
+        fn new() -> Self {
+            let mut config = sample_config();
+            config.node.role = NodeRole::Answer;
+            config.node.peer_id = "answer-office".parse().expect("answer peer id");
+            config.health.write_status_file = false;
+            let config = Arc::new(config);
+            let answer = generate_identity("answer-office").expect("answer identity");
+            let offer_identity = generate_identity("offer-home").expect("offer identity");
+            let authorized_keys = Arc::new(
+                AuthorizedKeys::parse(&offer_identity.public_identity.render())
+                    .expect("answer keys"),
+            );
+            let offer_keys =
+                AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+            let local_identity = Arc::new(answer.identity);
+            let active_session = SessionId::random();
+            let (handle, receiver) = test_answer_handle(
+                active_session,
+                SessionGeneration(1),
+                offer_identity.identity.peer_id.clone(),
+                DaemonState::TunnelOpen,
+            );
+            let mut sessions_by_id = HashMap::new();
+            sessions_by_id.insert(active_session, handle);
+            let mut session_by_peer = HashMap::new();
+            session_by_peer.insert(offer_identity.identity.peer_id.clone(), active_session);
+            Self {
+                config,
+                local_identity,
+                authorized_keys,
+                offer_identity,
+                offer_keys,
+                active_session,
+                sessions_by_id,
+                session_by_peer,
+                receiver,
+                transport: RecordingTransport::default(),
+                replay_cache: ReplayCache::new(64),
+                next_generation: 1,
+            }
+        }
+
+        fn unknown_session_non_offer_bodies() -> Vec<(&'static str, MessageBody)> {
+            vec![
+                ("answer", MessageBody::Answer(AnswerBody { sdp: "answer-sdp".to_owned() })),
+                (
+                    "ice_candidate",
+                    MessageBody::IceCandidate(IceCandidateBody {
+                        candidate: None,
+                        sdp_mid: None,
+                        sdp_mline_index: None,
+                    }),
+                ),
+                ("ack", MessageBody::Ack(AckBody { ack_msg_id: MsgId::random().into_bytes() })),
+                ("ping", MessageBody::Ping(PingBody { seq: 1 })),
+                ("pong", MessageBody::Pong(PingBody { seq: 2 })),
+                (
+                    "close",
+                    MessageBody::Close(CloseBody {
+                        reason_code: "test_close".to_owned(),
+                        message: None,
+                    }),
+                ),
+                (
+                    "error",
+                    MessageBody::Error(ErrorBody {
+                        code: FailureCode::ProtocolError.as_str().to_owned(),
+                        message: "test error".to_owned(),
+                        fatal: false,
+                    }),
+                ),
+                ("ice_restart_request", MessageBody::IceRestartRequest),
+                (
+                    "renegotiate_request",
+                    MessageBody::RenegotiateRequest(RenegotiateRequestBody {
+                        reason: "test".to_owned(),
+                    }),
+                ),
+                ("end_of_candidates", MessageBody::EndOfCandidates(EndOfCandidatesBody::default())),
+            ]
+        }
+
+        fn ack_required_duplicate_bodies() -> Vec<(&'static str, MessageBody)> {
+            vec![
+                ("offer", MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() })),
+                ("answer", MessageBody::Answer(AnswerBody { sdp: "answer-sdp".to_owned() })),
+                (
+                    "ice_candidate",
+                    MessageBody::IceCandidate(IceCandidateBody {
+                        candidate: None,
+                        sdp_mid: None,
+                        sdp_mline_index: None,
+                    }),
+                ),
+                (
+                    "close",
+                    MessageBody::Close(CloseBody { reason_code: "done".to_owned(), message: None }),
+                ),
+                (
+                    "error",
+                    MessageBody::Error(ErrorBody {
+                        code: FailureCode::ProtocolError.as_str().to_owned(),
+                        message: "duplicate retry".to_owned(),
+                        fatal: true,
+                    }),
+                ),
+                ("ice_restart_request", MessageBody::IceRestartRequest),
+                (
+                    "renegotiate_request",
+                    MessageBody::RenegotiateRequest(RenegotiateRequestBody {
+                        reason: "duplicate retry".to_owned(),
+                    }),
+                ),
+            ]
+        }
+
+        fn non_ack_required_duplicate_bodies() -> Vec<(&'static str, MessageBody)> {
+            vec![
+                ("ack", MessageBody::Ack(AckBody { ack_msg_id: MsgId::random().into_bytes() })),
+                ("ping", MessageBody::Ping(PingBody { seq: 1 })),
+                ("pong", MessageBody::Pong(PingBody { seq: 2 })),
+                ("end_of_candidates", MessageBody::EndOfCandidates(EndOfCandidatesBody::default())),
+            ]
+        }
+
+        fn encode_from_offer(&self, session_id: SessionId, body: MessageBody) -> Vec<u8> {
+            let offer_codec =
+                SignalCodec::new(&self.offer_identity.identity, &self.offer_keys, 120, 300);
+            let message = InnerMessageBuilder::new(
+                session_id,
+                self.offer_identity.identity.peer_id.clone(),
+                self.local_identity.peer_id.clone(),
+            )
+            .build(body);
+            let (_envelope, payload) = offer_codec
+                .encode_for_peer(
+                    self.offer_keys
+                        .get_by_peer_id(&self.local_identity.peer_id)
+                        .expect("answer key"),
+                    &message,
+                    false,
+                )
+                .expect("payload encodes");
+            payload
+        }
+
+        async fn handle_payload(&mut self, payload: Vec<u8>) {
+            let codec = SignalCodec::new(&self.local_identity, &self.authorized_keys, 120, 300);
+            let status = StatusWriter::new(&self.config);
+            let mut runtime = connected_runtime();
+            let mut ctx =
+                RuntimeContext { config: &self.config, status: &status, runtime: &mut runtime };
+            let (event_tx, _event_rx) = mpsc::channel(4);
+            handle_answer_daemon_payload(
+                &self.config,
+                &self.local_identity,
+                &self.authorized_keys,
+                &codec,
+                &mut self.transport,
+                &mut ctx,
+                &event_tx,
+                &mut self.replay_cache,
+                &mut self.sessions_by_id,
+                &mut self.session_by_peer,
+                &mut self.next_generation,
+                payload,
+            )
+            .await;
+        }
+
+        async fn published_len(&self) -> usize {
+            self.transport.published.lock().await.len()
+        }
+    }
+
     async fn connected_channels(
         webrtc: &WebRtcConfig,
     ) -> (WebRtcPeer, WebRtcPeer, p2p_webrtc::DataChannelHandle, p2p_webrtc::DataChannelHandle)
@@ -2581,7 +3536,7 @@ mod tests {
             let mut config = sample_config();
             let error = apply_override_pairs(&mut config, [(key.to_owned(), "ignored".to_owned())])
                 .expect_err("legacy first-forward env override should fail");
-            assert!(error.to_string().contains("no longer supported in config v2"));
+            assert!(error.to_string().contains("no longer supported in v0.2 config"));
         }
     }
 
@@ -2745,10 +3700,1280 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn answer_daemon_routes_only_authenticated_sender_and_session() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.health.write_status_file = false;
+        config.forwards[0].answer.as_mut().expect("answer forward").allow_remote_peers =
+            vec!["offer-a".parse().expect("peer a"), "offer-b".parse().expect("peer b")];
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer_a = generate_identity("offer-a").expect("offer a identity");
+        let offer_b = generate_identity("offer-b").expect("offer b identity");
+        let answer_keys = AuthorizedKeys::parse(&format!(
+            "{}\n{}",
+            offer_a.public_identity.render(),
+            offer_b.public_identity.render()
+        ))
+        .expect("answer keys");
+        let offer_b_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer b keys");
+        let local_identity = Arc::new(answer.identity);
+        let authorized_keys = Arc::new(answer_keys);
+        let codec = SignalCodec::new(&local_identity, &authorized_keys, 120, 300);
+        let offer_b_codec = SignalCodec::new(&offer_b.identity, &offer_b_keys, 120, 300);
+        let mut transport = RecordingTransport::default();
+        let status = StatusWriter::new(&config);
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
+        let (event_tx, _event_rx) = mpsc::channel(4);
+        let mut replay_cache = ReplayCache::new(64);
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let mut next_generation = 1_u64;
+        let session_a = SessionId::random();
+        let session_b = SessionId::random();
+        let (handle_a, mut rx_a) = test_answer_handle(
+            session_a,
+            SessionGeneration(1),
+            offer_a.identity.peer_id.clone(),
+            DaemonState::TunnelOpen,
+        );
+        let (handle_b, mut rx_b) = test_answer_handle(
+            session_b,
+            SessionGeneration(2),
+            offer_b.identity.peer_id.clone(),
+            DaemonState::TunnelOpen,
+        );
+        sessions_by_id.insert(session_a, handle_a);
+        sessions_by_id.insert(session_b, handle_b);
+        session_by_peer.insert(offer_a.identity.peer_id.clone(), session_a);
+        session_by_peer.insert(offer_b.identity.peer_id.clone(), session_b);
+
+        let message = InnerMessageBuilder::new(
+            session_b,
+            offer_b.identity.peer_id.clone(),
+            local_identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: FailureCode::ProtocolError.as_str().to_owned(),
+            message: "route me".to_owned(),
+            fatal: false,
+        }));
+        let (_envelope, payload) = offer_b_codec
+            .encode_for_peer(
+                offer_b_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("payload encodes");
+
+        handle_answer_daemon_payload(
+            &config,
+            &local_identity,
+            &authorized_keys,
+            &codec,
+            &mut transport,
+            &mut ctx,
+            &event_tx,
+            &mut replay_cache,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            &mut next_generation,
+            payload,
+        )
+        .await;
+
+        assert!(rx_a.try_recv().is_err());
+        let routed = rx_b.try_recv().expect("session b should receive authenticated signal");
+        assert_eq!(routed.sender.peer_id, offer_b.identity.peer_id);
+        assert_eq!(routed.message.session_id, session_b);
+    }
+
+    #[tokio::test]
+    async fn forged_outer_sender_kid_is_not_routed_to_matching_peer_session() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.health.write_status_file = false;
+        config.forwards[0].answer.as_mut().expect("answer forward").allow_remote_peers =
+            vec!["offer-a".parse().expect("peer a"), "offer-b".parse().expect("peer b")];
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer_a = generate_identity("offer-a").expect("offer a identity");
+        let offer_b = generate_identity("offer-b").expect("offer b identity");
+        let authorized_keys = Arc::new(
+            AuthorizedKeys::parse(&format!(
+                "{}\n{}",
+                offer_a.public_identity.render(),
+                offer_b.public_identity.render()
+            ))
+            .expect("answer keys"),
+        );
+        let offer_b_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer b keys");
+        let local_identity = Arc::new(answer.identity);
+        let codec = SignalCodec::new(&local_identity, &authorized_keys, 120, 300);
+        let offer_b_codec = SignalCodec::new(&offer_b.identity, &offer_b_keys, 120, 300);
+        let mut transport = RecordingTransport::default();
+        let status = StatusWriter::new(&config);
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
+        let (event_tx, _event_rx) = mpsc::channel(4);
+        let mut replay_cache = ReplayCache::new(64);
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let mut next_generation = 1_u64;
+        let session_a = SessionId::random();
+        let (handle_a, mut rx_a) = test_answer_handle(
+            session_a,
+            SessionGeneration(1),
+            offer_a.identity.peer_id.clone(),
+            DaemonState::TunnelOpen,
+        );
+        sessions_by_id.insert(session_a, handle_a);
+        session_by_peer.insert(offer_a.identity.peer_id.clone(), session_a);
+
+        let message = InnerMessageBuilder::new(
+            session_a,
+            offer_b.identity.peer_id.clone(),
+            local_identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: FailureCode::ProtocolError.as_str().to_owned(),
+            message: "forged route".to_owned(),
+            fatal: false,
+        }));
+        let (mut envelope, _payload) = offer_b_codec
+            .encode_for_peer(
+                offer_b_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("payload encodes");
+        envelope.sender_kid =
+            p2p_crypto::kid_from_signing_key(&offer_a.public_identity.sign_public);
+        let forged_payload = envelope.encode().expect("forged envelope encodes");
+
+        handle_answer_daemon_payload(
+            &config,
+            &local_identity,
+            &authorized_keys,
+            &codec,
+            &mut transport,
+            &mut ctx,
+            &event_tx,
+            &mut replay_cache,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            &mut next_generation,
+            forged_payload,
+        )
+        .await;
+
+        assert!(rx_a.try_recv().is_err());
+    }
+
     #[test]
     fn steady_state_matches_v1_role_policy() {
         assert_eq!(steady_state_for_role(&NodeRole::Offer), DaemonState::WaitingForLocalClient);
-        assert_eq!(steady_state_for_role(&NodeRole::Answer), DaemonState::Idle);
+        assert_eq!(steady_state_for_role(&NodeRole::Answer), DaemonState::Serving);
+    }
+
+    #[test]
+    fn canonical_specs_do_not_present_stale_single_session_rules_as_current() {
+        let specs = include_str!("../../../docs/SPECS.md");
+        assert!(
+            !specs.contains("One active peer tunnel session at a time"),
+            "canonical specs must not present the old global single-session rule as current"
+        );
+        assert!(
+            !specs.contains("Multiple simultaneous WebRTC peer sessions"),
+            "canonical specs must not list current v0.3 multi-peer sessions as out of scope"
+        );
+        assert!(
+            specs.contains("One active peer tunnel session per authenticated `peer_id`."),
+            "canonical specs should document the current per-peer session limit"
+        );
+        assert!(
+            specs.contains("multiple simultaneous authorized `p2p-offer` peers")
+                || specs.contains("Multiple simultaneous authorized offer peer sessions"),
+            "canonical specs should document multiple authorized offer peers per answer daemon"
+        );
+        assert!(
+            specs.contains("If the `session_id` is unknown and the message is not an `offer`"),
+            "canonical specs should document unknown-session non-offer routing policy"
+        );
+        assert!(
+            specs.contains(
+                "daemon-level `current_state` reports `serving` with zero or more active sessions"
+            ),
+            "canonical specs should document answer Serving status semantics"
+        );
+    }
+
+    #[test]
+    fn canonical_readme_documents_current_multi_peer_answer_behavior() {
+        let readme = include_str!("../../../README.md");
+        assert!(
+            readme.contains(
+                "One answer daemon can serve multiple authorized offer peers concurrently"
+            ),
+            "README should document current multi-peer answer behavior"
+        );
+        assert!(
+            readme.contains("at most one active WebRTC session per `peer_id`"),
+            "README should document the per-peer active session limit"
+        );
+        assert!(
+            !readme.contains("Multiple simultaneous WebRTC peer sessions"),
+            "README must not present multi-peer sessions as out of scope"
+        );
+        assert!(
+            !readme.contains("One active peer tunnel session at a time"),
+            "README must not present the stale global single-session rule as current"
+        );
+    }
+
+    #[test]
+    fn canonical_v03_spec_documents_current_answer_routing_and_status_policy() {
+        let spec = include_str!("../../../docs/V03_SPEC.md");
+        assert!(
+            spec.contains(
+                "one `p2p-answer` process to host multiple simultaneous active peer sessions"
+            ),
+            "V03 spec should retain multi-session answer behavior"
+        );
+        assert!(
+            spec.contains(
+                "daemon-level `current_state` reports `serving` with zero or more active sessions"
+            ),
+            "V03 spec should document answer serving with zero or more sessions"
+        );
+        assert!(
+            spec.contains(
+                "If it does not match an existing session and the message type is `offer`"
+            ) && spec.contains("If it does not match and is not a valid new-session entry point"),
+            "V03 spec should document unknown-session non-offer routing policy"
+        );
+    }
+
+    #[tokio::test]
+    async fn answer_status_event_does_not_rekey_by_peer_or_cross_generation() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        let (path, status_writer) = status_writer_for_test(&mut config, "stale-status");
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let authorized_keys = AuthorizedKeys::parse("").expect("empty keys");
+        let codec = SignalCodec::new(&answer.identity, &authorized_keys, 120, 300);
+        let mut runtime = connected_runtime();
+        let mut ctx =
+            RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+        let mut transport = RecordingTransport::default();
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let remote: PeerId = "offer-home".parse().expect("remote peer");
+        let old_session = SessionId::random();
+        let current_session = SessionId::random();
+        let generation = SessionGeneration(7);
+        let (handle, _rx) = test_answer_handle(
+            current_session,
+            generation,
+            remote.clone(),
+            DaemonState::TunnelOpen,
+        );
+        sessions_by_id.insert(current_session, handle);
+        session_by_peer.insert(remote.clone(), current_session);
+
+        handle_answer_session_event(
+            &mut ctx,
+            &codec,
+            &mut transport,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            AnswerSessionEvent::Status(test_session_status(
+                old_session,
+                generation,
+                remote.clone(),
+                DaemonState::Negotiating,
+            )),
+        )
+        .await;
+
+        assert!(sessions_by_id.contains_key(&current_session));
+        assert!(!sessions_by_id.contains_key(&old_session));
+        assert_eq!(session_by_peer.get(&remote), Some(&current_session));
+
+        handle_answer_session_event(
+            &mut ctx,
+            &codec,
+            &mut transport,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            AnswerSessionEvent::Status(test_session_status(
+                current_session,
+                SessionGeneration(8),
+                remote.clone(),
+                DaemonState::Negotiating,
+            )),
+        )
+        .await;
+
+        assert_eq!(sessions_by_id[&current_session].status.state, DaemonState::TunnelOpen);
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn stale_answer_end_event_cannot_remove_newer_same_peer_session() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        let (_path, status_writer) = status_writer_for_test(&mut config, "stale-ended");
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let authorized_keys = AuthorizedKeys::parse("").expect("empty keys");
+        let codec = SignalCodec::new(&answer.identity, &authorized_keys, 120, 300);
+        let mut runtime = connected_runtime();
+        let mut ctx =
+            RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+        let mut transport = RecordingTransport::default();
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let remote: PeerId = "offer-home".parse().expect("remote peer");
+        let current_session = SessionId::random();
+        let generation = SessionGeneration(3);
+        let (handle, _rx) = test_answer_handle(
+            current_session,
+            generation,
+            remote.clone(),
+            DaemonState::TunnelOpen,
+        );
+        sessions_by_id.insert(current_session, handle);
+        session_by_peer.insert(remote.clone(), current_session);
+
+        handle_answer_session_event(
+            &mut ctx,
+            &codec,
+            &mut transport,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            AnswerSessionEvent::Ended {
+                session_id: SessionId::random(),
+                generation: SessionGeneration(2),
+                remote_peer_id: remote.clone(),
+                result: Ok(()),
+            },
+        )
+        .await;
+
+        assert!(sessions_by_id.contains_key(&current_session));
+        assert_eq!(session_by_peer.get(&remote), Some(&current_session));
+
+        handle_answer_session_event(
+            &mut ctx,
+            &codec,
+            &mut transport,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            AnswerSessionEvent::Ended {
+                session_id: current_session,
+                generation: SessionGeneration(4),
+                remote_peer_id: remote.clone(),
+                result: Ok(()),
+            },
+        )
+        .await;
+
+        assert!(sessions_by_id.contains_key(&current_session));
+        assert_eq!(session_by_peer.get(&remote), Some(&current_session));
+    }
+
+    #[tokio::test]
+    async fn failed_session_end_events_remove_only_that_session() {
+        let failures = vec![
+            ("ack-timeout", DaemonError::AckTimeout),
+            ("remote-close", DaemonError::RemoteClosed("session_closed".to_owned())),
+            (
+                "remote-error",
+                DaemonError::RemoteError(
+                    FailureCode::ProtocolError.as_str().to_owned(),
+                    "remote error".to_owned(),
+                ),
+            ),
+            ("reconnect-failure", DaemonError::IceFailed(IceConnectionState::Failed)),
+        ];
+
+        for (label, failure) in failures {
+            let mut config = sample_config();
+            config.node.role = NodeRole::Answer;
+            let (path, status_writer) = status_writer_for_test(&mut config, label);
+            let config = Arc::new(config);
+            let answer = generate_identity("answer-office").expect("answer identity");
+            let authorized_keys = AuthorizedKeys::parse("").expect("empty keys");
+            let codec = SignalCodec::new(&answer.identity, &authorized_keys, 120, 300);
+            let mut runtime = connected_runtime();
+            let mut ctx =
+                RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+            let mut transport = RecordingTransport::default();
+            let mut sessions_by_id = HashMap::new();
+            let mut session_by_peer = HashMap::new();
+            let peer_a: PeerId = "offer-a".parse().expect("peer a");
+            let peer_b: PeerId = "offer-b".parse().expect("peer b");
+            let session_a = SessionId::random();
+            let session_b = SessionId::random();
+            let generation_a = SessionGeneration(21);
+            let generation_b = SessionGeneration(22);
+            let (handle_a, _rx_a) = test_answer_handle(
+                session_a,
+                generation_a,
+                peer_a.clone(),
+                DaemonState::TunnelOpen,
+            );
+            let (handle_b, _rx_b) = test_answer_handle(
+                session_b,
+                generation_b,
+                peer_b.clone(),
+                DaemonState::TunnelOpen,
+            );
+            sessions_by_id.insert(session_a, handle_a);
+            sessions_by_id.insert(session_b, handle_b);
+            session_by_peer.insert(peer_a.clone(), session_a);
+            session_by_peer.insert(peer_b.clone(), session_b);
+
+            handle_answer_session_event(
+                &mut ctx,
+                &codec,
+                &mut transport,
+                &mut sessions_by_id,
+                &mut session_by_peer,
+                AnswerSessionEvent::Ended {
+                    session_id: session_a,
+                    generation: generation_a,
+                    remote_peer_id: peer_a.clone(),
+                    result: Err(failure),
+                },
+            )
+            .await;
+
+            assert!(!sessions_by_id.contains_key(&session_a), "{label}: peer A removed");
+            assert!(sessions_by_id.contains_key(&session_b), "{label}: peer B remains");
+            assert_eq!(session_by_peer.get(&peer_a), None, "{label}: peer A mapping removed");
+            assert_eq!(
+                session_by_peer.get(&peer_b),
+                Some(&session_b),
+                "{label}: peer B mapping remains"
+            );
+            let status = read_status_file(&path).await;
+            assert_eq!(status["current_state"], "serving", "{label}: daemon still serving");
+            assert_eq!(status["active_session_count"], 1, "{label}: only peer B remains active");
+            assert_eq!(status["sessions"][0]["remote_peer_id"], "offer-b");
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn replacement_event_remaps_only_replaced_peer_session() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        let (path, status_writer) = status_writer_for_test(&mut config, "replacement-isolation");
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let authorized_keys = AuthorizedKeys::parse("").expect("empty keys");
+        let codec = SignalCodec::new(&answer.identity, &authorized_keys, 120, 300);
+        let mut runtime = connected_runtime();
+        let mut ctx =
+            RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+        let mut transport = RecordingTransport::default();
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let peer_a: PeerId = "offer-a".parse().expect("peer a");
+        let peer_b: PeerId = "offer-b".parse().expect("peer b");
+        let old_a = SessionId::random();
+        let new_a = SessionId::random();
+        let session_b = SessionId::random();
+        let generation_a = SessionGeneration(11);
+        let generation_b = SessionGeneration(12);
+        let (handle_a, _rx_a) =
+            test_answer_handle(old_a, generation_a, peer_a.clone(), DaemonState::Negotiating);
+        let (handle_b, mut rx_b) =
+            test_answer_handle(session_b, generation_b, peer_b.clone(), DaemonState::TunnelOpen);
+        let b_status_before = handle_b.status.clone();
+        sessions_by_id.insert(old_a, handle_a);
+        sessions_by_id.insert(session_b, handle_b);
+        session_by_peer.insert(peer_a.clone(), old_a);
+        session_by_peer.insert(peer_b.clone(), session_b);
+
+        handle_answer_session_event(
+            &mut ctx,
+            &codec,
+            &mut transport,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            AnswerSessionEvent::Replaced {
+                old_session_id: old_a,
+                new_session_id: new_a,
+                remote_peer_id: peer_a.clone(),
+                generation: generation_a,
+                status: test_session_status(
+                    new_a,
+                    generation_a,
+                    peer_a.clone(),
+                    DaemonState::ConnectingDataChannel,
+                ),
+            },
+        )
+        .await;
+
+        assert!(!sessions_by_id.contains_key(&old_a));
+        assert!(sessions_by_id.contains_key(&new_a));
+        assert_eq!(session_by_peer.get(&peer_a), Some(&new_a));
+        assert_eq!(session_by_peer.get(&peer_b), Some(&session_b));
+        assert_eq!(sessions_by_id[&session_b].generation, generation_b);
+        assert_eq!(sessions_by_id[&session_b].status.session_id, b_status_before.session_id);
+        assert_eq!(sessions_by_id[&session_b].status.state, b_status_before.state);
+        assert!(rx_b.try_recv().is_err());
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn answer_registry_reports_serving_when_sessions_are_active() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        let (path, status_writer) = status_writer_for_test(&mut config, "serving-registry");
+        let config = Arc::new(config);
+        let mut runtime = connected_runtime();
+        let ctx = RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+        let mut sessions_by_id = HashMap::new();
+        let (handle, _rx) = test_answer_handle(
+            SessionId::random(),
+            SessionGeneration(1),
+            "offer-home".parse().expect("remote peer"),
+            DaemonState::TunnelOpen,
+        );
+        sessions_by_id.insert(handle.status.session_id, handle);
+
+        write_answer_registry_status(&ctx, &sessions_by_id).await;
+
+        let status = read_status_file(&path).await;
+        assert_eq!(status["current_state"], "serving");
+        assert_eq!(status["active_session_count"], 1);
+        assert_eq!(
+            status["active_session_id"],
+            sessions_by_id.keys().next().expect("one session").to_string()
+        );
+        assert!(status["active_stream_count"].is_null());
+        assert!(status["sessions"][0]["configured_forward_ids"].is_array());
+        assert!(status["sessions"][0]["open_forward_ids"].is_null());
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn answer_registry_reports_serving_with_zero_sessions() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        let (path, status_writer) = status_writer_for_test(&mut config, "serving-zero-registry");
+        let config = Arc::new(config);
+        let mut runtime = connected_runtime();
+        let ctx = RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+        let sessions_by_id = HashMap::new();
+
+        write_answer_registry_status(&ctx, &sessions_by_id).await;
+
+        let status = read_status_file(&path).await;
+        assert_eq!(status["current_state"], "serving");
+        assert_eq!(status["role"], "answer");
+        assert_eq!(status["active_session_count"], 0);
+        assert!(status["active_session_id"].is_null());
+        assert!(status["sessions"].as_array().expect("sessions should be an array").is_empty());
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn answer_registry_reports_serving_with_multiple_sessions() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        let (path, status_writer) = status_writer_for_test(&mut config, "serving-multi-registry");
+        let config = Arc::new(config);
+        let mut runtime = connected_runtime();
+        let ctx = RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+        let mut sessions_by_id = HashMap::new();
+        for (idx, peer_id) in ["offer-a", "offer-b"].into_iter().enumerate() {
+            let (handle, _rx) = test_answer_handle(
+                SessionId::random(),
+                SessionGeneration(idx as u64 + 1),
+                peer_id.parse().expect("remote peer"),
+                DaemonState::TunnelOpen,
+            );
+            sessions_by_id.insert(handle.status.session_id, handle);
+        }
+
+        write_answer_registry_status(&ctx, &sessions_by_id).await;
+
+        let status = read_status_file(&path).await;
+        assert_eq!(status["current_state"], "serving");
+        assert_eq!(status["role"], "answer");
+        assert_eq!(
+            status["active_session_count"],
+            status["sessions"].as_array().expect("sessions should be an array").len()
+        );
+        assert_eq!(status["active_session_count"], 2);
+        assert!(status["active_session_id"].is_null());
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn answer_daemon_ignores_unknown_authenticated_non_offer() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.health.write_status_file = false;
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let authorized_keys =
+            Arc::new(AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys"));
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let local_identity = Arc::new(answer.identity);
+        let codec = SignalCodec::new(&local_identity, &authorized_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let mut transport = RecordingTransport::default();
+        let status = StatusWriter::new(&config);
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
+        let (event_tx, _event_rx) = mpsc::channel(4);
+        let mut replay_cache = ReplayCache::new(64);
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let mut next_generation = 1_u64;
+        let message = InnerMessageBuilder::new(
+            SessionId::random(),
+            offer.identity.peer_id.clone(),
+            local_identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: FailureCode::ProtocolError.as_str().to_owned(),
+            message: "unknown session".to_owned(),
+            fatal: true,
+        }));
+        let (_envelope, payload) = offer_codec
+            .encode_for_peer(
+                offer_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("payload encodes");
+
+        handle_answer_daemon_payload(
+            &config,
+            &local_identity,
+            &authorized_keys,
+            &codec,
+            &mut transport,
+            &mut ctx,
+            &event_tx,
+            &mut replay_cache,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            &mut next_generation,
+            payload,
+        )
+        .await;
+
+        assert!(sessions_by_id.is_empty());
+        assert!(session_by_peer.is_empty());
+        assert!(transport.published.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn answer_daemon_does_not_peer_fallback_route_unknown_non_offer() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.health.write_status_file = false;
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let authorized_keys =
+            Arc::new(AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys"));
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let local_identity = Arc::new(answer.identity);
+        let codec = SignalCodec::new(&local_identity, &authorized_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let mut transport = RecordingTransport::default();
+        let status = StatusWriter::new(&config);
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
+        let (event_tx, _event_rx) = mpsc::channel(4);
+        let mut replay_cache = ReplayCache::new(64);
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let mut next_generation = 1_u64;
+        let active_session = SessionId::random();
+        let (handle, mut rx) = test_answer_handle(
+            active_session,
+            SessionGeneration(1),
+            offer.identity.peer_id.clone(),
+            DaemonState::TunnelOpen,
+        );
+        sessions_by_id.insert(active_session, handle);
+        session_by_peer.insert(offer.identity.peer_id.clone(), active_session);
+
+        let message = InnerMessageBuilder::new(
+            SessionId::random(),
+            offer.identity.peer_id.clone(),
+            local_identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: FailureCode::ProtocolError.as_str().to_owned(),
+            message: "unknown session must not fallback-route".to_owned(),
+            fatal: false,
+        }));
+        let (_envelope, payload) = offer_codec
+            .encode_for_peer(
+                offer_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("payload encodes");
+
+        handle_answer_daemon_payload(
+            &config,
+            &local_identity,
+            &authorized_keys,
+            &codec,
+            &mut transport,
+            &mut ctx,
+            &event_tx,
+            &mut replay_cache,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            &mut next_generation,
+            payload,
+        )
+        .await;
+
+        assert!(rx.try_recv().is_err(), "unknown-session non-offer must not route by peer");
+        assert!(
+            transport.published.lock().await.is_empty(),
+            "unknown-session non-offer must not receive accepted-message ACK"
+        );
+        assert_eq!(sessions_by_id[&active_session].status.state, DaemonState::TunnelOpen);
+    }
+
+    #[tokio::test]
+    async fn answer_daemon_ignores_every_unknown_session_non_offer_without_ack() {
+        for (name, body) in AnswerRoutingFixture::unknown_session_non_offer_bodies() {
+            let mut fixture = AnswerRoutingFixture::new();
+            let original_session = fixture.active_session;
+            let payload = fixture.encode_from_offer(SessionId::random(), body);
+
+            fixture.handle_payload(payload).await;
+
+            assert!(fixture.receiver.try_recv().is_err(), "{name} must not fallback-route by peer");
+            assert_eq!(
+                fixture.published_len().await,
+                0,
+                "{name} must not receive accepted-message ACK"
+            );
+            assert_eq!(fixture.sessions_by_id.len(), 1, "{name} must not create a session");
+            assert!(
+                fixture.sessions_by_id.contains_key(&original_session),
+                "{name} must leave the active session map unchanged"
+            );
+            assert_eq!(
+                fixture.sessions_by_id[&original_session].status.state,
+                DaemonState::TunnelOpen,
+                "{name} must leave active session status unchanged"
+            );
+            assert_eq!(
+                fixture.session_by_peer.get(&fixture.offer_identity.identity.peer_id),
+                Some(&original_session),
+                "{name} must leave the peer index unchanged"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_daemon_routes_representative_known_session_messages() {
+        let cases = [
+            ("ack", MessageBody::Ack(AckBody { ack_msg_id: MsgId::new([9_u8; 16]).into_bytes() })),
+            (
+                "ice_candidate",
+                MessageBody::IceCandidate(IceCandidateBody {
+                    candidate: Some("candidate:1 1 UDP 1 127.0.0.1 9 typ host".to_owned()),
+                    sdp_mid: Some("0".to_owned()),
+                    sdp_mline_index: Some(0),
+                }),
+            ),
+            (
+                "close",
+                MessageBody::Close(CloseBody {
+                    reason_code: "done".to_owned(),
+                    message: Some("test close".to_owned()),
+                }),
+            ),
+        ];
+
+        for (name, body) in cases {
+            let mut fixture = AnswerRoutingFixture::new();
+            let payload = fixture.encode_from_offer(fixture.active_session, body);
+
+            fixture.handle_payload(payload).await;
+
+            let routed = fixture.receiver.try_recv().expect("known-session message should route");
+            assert_eq!(routed.message.session_id, fixture.active_session, "{name} routed session");
+            assert!(
+                fixture.sessions_by_id.contains_key(&fixture.active_session),
+                "{name} must leave the session registered"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_daemon_unknown_same_peer_offer_enters_session_policy() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.health.write_status_file = false;
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let authorized_keys =
+            Arc::new(AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys"));
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let local_identity = Arc::new(answer.identity);
+        let codec = SignalCodec::new(&local_identity, &authorized_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let mut transport = RecordingTransport::default();
+        let status = StatusWriter::new(&config);
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
+        let (event_tx, _event_rx) = mpsc::channel(4);
+        let mut replay_cache = ReplayCache::new(64);
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let mut next_generation = 1_u64;
+        let active_session = SessionId::random();
+        let (handle, mut rx) = test_answer_handle(
+            active_session,
+            SessionGeneration(1),
+            offer.identity.peer_id.clone(),
+            DaemonState::TunnelOpen,
+        );
+        sessions_by_id.insert(active_session, handle);
+        session_by_peer.insert(offer.identity.peer_id.clone(), active_session);
+
+        let rejected_session = SessionId::random();
+        let message = InnerMessageBuilder::new(
+            rejected_session,
+            offer.identity.peer_id.clone(),
+            local_identity.peer_id.clone(),
+        )
+        .build(MessageBody::Offer(OfferBody { sdp: "unrelated second offer".to_owned() }));
+        let (_envelope, payload) = offer_codec
+            .encode_for_peer(
+                offer_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("payload encodes");
+
+        handle_answer_daemon_payload(
+            &config,
+            &local_identity,
+            &authorized_keys,
+            &codec,
+            &mut transport,
+            &mut ctx,
+            &event_tx,
+            &mut replay_cache,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            &mut next_generation,
+            payload,
+        )
+        .await;
+
+        let routed = rx.try_recv().expect("same-peer offer should enter session policy handling");
+        assert_eq!(routed.message.session_id, rejected_session);
+        assert!(matches!(routed.message.body, MessageBody::Offer(_)));
+        assert!(transport.published.lock().await.is_empty());
+        assert_eq!(session_by_peer.get(&offer.identity.peer_id), Some(&active_session));
+    }
+
+    #[tokio::test]
+    async fn answer_daemon_admits_unknown_authenticated_offer() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.webrtc.stun_urls = Vec::new();
+        config.webrtc.enable_trickle_ice = false;
+        config.health.write_status_file = false;
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let authorized_keys =
+            Arc::new(AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys"));
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let local_identity = Arc::new(answer.identity);
+        let codec = SignalCodec::new(&local_identity, &authorized_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let mut transport = RecordingTransport::default();
+        let status = StatusWriter::new(&config);
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let mut replay_cache = ReplayCache::new(64);
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let mut next_generation = 1_u64;
+        let offer_peer = WebRtcPeer::new(&config.webrtc).await.expect("offer peer");
+        let _data_channel = offer_peer.create_data_channel().await.expect("data channel");
+        let offer_sdp = offer_peer.create_offer().await.expect("offer sdp");
+        let session_id = SessionId::random();
+        let message = InnerMessageBuilder::new(
+            session_id,
+            offer.identity.peer_id.clone(),
+            local_identity.peer_id.clone(),
+        )
+        .build(MessageBody::Offer(OfferBody { sdp: offer_sdp }));
+        let (_envelope, payload) = offer_codec
+            .encode_for_peer(
+                offer_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("payload encodes");
+
+        handle_answer_daemon_payload(
+            &config,
+            &local_identity,
+            &authorized_keys,
+            &codec,
+            &mut transport,
+            &mut ctx,
+            &event_tx,
+            &mut replay_cache,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            &mut next_generation,
+            payload,
+        )
+        .await;
+
+        assert!(sessions_by_id.contains_key(&session_id));
+        assert_eq!(session_by_peer.get(&offer.identity.peer_id), Some(&session_id));
+        assert!(
+            transport.published.lock().await.len() >= 2,
+            "offer admission should publish ack and answer"
+        );
+        for handle in sessions_by_id.into_values() {
+            handle.task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_daemon_rejects_sender_session_owner_mismatch() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.health.write_status_file = false;
+        config.forwards[0].answer.as_mut().expect("answer forward").allow_remote_peers =
+            vec!["offer-a".parse().expect("peer a"), "offer-b".parse().expect("peer b")];
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer_a = generate_identity("offer-a").expect("offer a identity");
+        let offer_b = generate_identity("offer-b").expect("offer b identity");
+        let authorized_keys = Arc::new(
+            AuthorizedKeys::parse(&format!(
+                "{}\n{}",
+                offer_a.public_identity.render(),
+                offer_b.public_identity.render()
+            ))
+            .expect("answer keys"),
+        );
+        let offer_b_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer b keys");
+        let local_identity = Arc::new(answer.identity);
+        let codec = SignalCodec::new(&local_identity, &authorized_keys, 120, 300);
+        let offer_b_codec = SignalCodec::new(&offer_b.identity, &offer_b_keys, 120, 300);
+        let mut transport = RecordingTransport::default();
+        let status = StatusWriter::new(&config);
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
+        let (event_tx, _event_rx) = mpsc::channel(4);
+        let mut replay_cache = ReplayCache::new(64);
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let mut next_generation = 1_u64;
+        let session_a = SessionId::random();
+        let (handle_a, mut rx_a) = test_answer_handle(
+            session_a,
+            SessionGeneration(1),
+            offer_a.identity.peer_id.clone(),
+            DaemonState::TunnelOpen,
+        );
+        sessions_by_id.insert(session_a, handle_a);
+        session_by_peer.insert(offer_a.identity.peer_id.clone(), session_a);
+        let message = InnerMessageBuilder::new(
+            session_a,
+            offer_b.identity.peer_id.clone(),
+            local_identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: FailureCode::ProtocolError.as_str().to_owned(),
+            message: "wrong owner".to_owned(),
+            fatal: true,
+        }));
+        let (_envelope, payload) = offer_b_codec
+            .encode_for_peer(
+                offer_b_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("payload encodes");
+
+        handle_answer_daemon_payload(
+            &config,
+            &local_identity,
+            &authorized_keys,
+            &codec,
+            &mut transport,
+            &mut ctx,
+            &event_tx,
+            &mut replay_cache,
+            &mut sessions_by_id,
+            &mut session_by_peer,
+            &mut next_generation,
+            payload,
+        )
+        .await;
+
+        assert!(rx_a.try_recv().is_err());
+        assert_eq!(sessions_by_id[&session_a].status.state, DaemonState::TunnelOpen);
+    }
+
+    #[tokio::test]
+    async fn duplicate_signal_for_one_session_does_not_route_to_another_session() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.health.write_status_file = false;
+        config.forwards[0].answer.as_mut().expect("answer forward").allow_remote_peers =
+            vec!["offer-a".parse().expect("peer a"), "offer-b".parse().expect("peer b")];
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer_a = generate_identity("offer-a").expect("offer a identity");
+        let offer_b = generate_identity("offer-b").expect("offer b identity");
+        let authorized_keys = Arc::new(
+            AuthorizedKeys::parse(&format!(
+                "{}\n{}",
+                offer_a.public_identity.render(),
+                offer_b.public_identity.render()
+            ))
+            .expect("answer keys"),
+        );
+        let offer_a_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer a keys");
+        let local_identity = Arc::new(answer.identity);
+        let codec = SignalCodec::new(&local_identity, &authorized_keys, 120, 300);
+        let offer_a_codec = SignalCodec::new(&offer_a.identity, &offer_a_keys, 120, 300);
+        let mut transport = RecordingTransport::default();
+        let status = StatusWriter::new(&config);
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
+        let (event_tx, _event_rx) = mpsc::channel(4);
+        let mut replay_cache = ReplayCache::new(64);
+        let mut sessions_by_id = HashMap::new();
+        let mut session_by_peer = HashMap::new();
+        let mut next_generation = 1_u64;
+        let session_a = SessionId::random();
+        let session_b = SessionId::random();
+        let (handle_a, mut rx_a) = test_answer_handle(
+            session_a,
+            SessionGeneration(1),
+            offer_a.identity.peer_id.clone(),
+            DaemonState::TunnelOpen,
+        );
+        let (handle_b, mut rx_b) = test_answer_handle(
+            session_b,
+            SessionGeneration(2),
+            offer_b.identity.peer_id.clone(),
+            DaemonState::TunnelOpen,
+        );
+        sessions_by_id.insert(session_a, handle_a);
+        sessions_by_id.insert(session_b, handle_b);
+        session_by_peer.insert(offer_a.identity.peer_id.clone(), session_a);
+        session_by_peer.insert(offer_b.identity.peer_id.clone(), session_b);
+        let message = InnerMessageBuilder::new(
+            session_a,
+            offer_a.identity.peer_id.clone(),
+            local_identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: FailureCode::ProtocolError.as_str().to_owned(),
+            message: "duplicate me".to_owned(),
+            fatal: true,
+        }));
+        let (_envelope, payload) = offer_a_codec
+            .encode_for_peer(
+                offer_a_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("payload encodes");
+
+        for _ in 0..2 {
+            handle_answer_daemon_payload(
+                &config,
+                &local_identity,
+                &authorized_keys,
+                &codec,
+                &mut transport,
+                &mut ctx,
+                &event_tx,
+                &mut replay_cache,
+                &mut sessions_by_id,
+                &mut session_by_peer,
+                &mut next_generation,
+                payload.clone(),
+            )
+            .await;
+        }
+
+        assert_eq!(rx_a.try_recv().expect("first routed").message.session_id, session_a);
+        assert_eq!(rx_a.try_recv().expect("duplicate routed").message.session_id, session_a);
+        assert!(rx_b.try_recv().is_err());
+        assert_eq!(sessions_by_id[&session_b].status.state, DaemonState::TunnelOpen);
+    }
+
+    #[tokio::test]
+    async fn active_same_peer_unrelated_offer_gets_encrypted_busy() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.webrtc.stun_urls = Vec::new();
+        config.webrtc.enable_trickle_ice = false;
+        config.health.write_status_file = false;
+        let config = Arc::new(config);
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_identity = Arc::new(answer.identity);
+        let answer_keys = Arc::new(answer_keys);
+        let answer_codec = SignalCodec::new(&answer_identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let transport = RecordingTransport::default();
+        let transport_for_task = transport.clone();
+        let config_for_task = Arc::clone(&config);
+        let answer_identity_for_task = Arc::clone(&answer_identity);
+        let answer_keys_for_task = Arc::clone(&answer_keys);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let event_task = tokio::spawn(async move {
+            let status = StatusWriter::new(&config_for_task);
+            let mut runtime = connected_runtime();
+            let mut ctx =
+                RuntimeContext { config: &config_for_task, status: &status, runtime: &mut runtime };
+            let codec =
+                SignalCodec::new(&answer_identity_for_task, &answer_keys_for_task, 120, 300);
+            let mut transport = transport_for_task;
+            let mut sessions_by_id = HashMap::new();
+            let mut session_by_peer = HashMap::new();
+            while let Some(event) = event_rx.recv().await {
+                handle_answer_session_event(
+                    &mut ctx,
+                    &codec,
+                    &mut transport,
+                    &mut sessions_by_id,
+                    &mut session_by_peer,
+                    event,
+                )
+                .await;
+            }
+        });
+
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("peer should build");
+        let active_id = SessionId::random();
+        let mut session = ActiveSession::new(
+            active_id,
+            answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key").clone(),
+            peer,
+            config.security.replay_cache_size,
+        );
+        session.bridge_state = BridgeSessionState::Active;
+        session.state = DaemonState::TunnelOpen;
+        let replacement_id = SessionId::random();
+        let message = InnerMessageBuilder::new(
+            replacement_id,
+            offer.identity.peer_id.clone(),
+            answer_identity.peer_id.clone(),
+        )
+        .build(MessageBody::Offer(OfferBody { sdp: "new unrelated offer".to_owned() }));
+        let (_envelope, payload) = offer_codec
+            .encode_for_peer(
+                offer_keys.get_by_peer_id(&answer_identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("offer encodes");
+        let mut replay_cache = ReplayCache::new(64);
+        let decoded = answer_codec
+            .decode_with_replay_status(&payload, &mut replay_cache, None)
+            .expect("offer decodes");
+
+        process_answer_session_signal(
+            &config,
+            &answer_codec,
+            &event_tx,
+            SessionGeneration(1),
+            &mut session,
+            decoded,
+        )
+        .await
+        .expect("active unrelated offer should be handled");
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if transport.published.lock().await.len() >= 2 {
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("ack and busy should publish");
+
+        let published = transport.published.lock().await.clone();
+        let mut offer_replay = ReplayCache::new(64);
+        let decoded = published
+            .iter()
+            .filter_map(|(_peer, payload)| {
+                offer_codec
+                    .decode(payload, &mut offer_replay, None)
+                    .ok()
+                    .map(|(_, message, _)| message)
+            })
+            .collect::<Vec<_>>();
+        assert!(decoded.iter().any(|message| matches!(message.body, MessageBody::Ack(_))));
+        assert!(decoded.iter().any(|message| {
+            matches!(
+                &message.body,
+                MessageBody::Error(ErrorBody { code, .. }) if code == FailureCode::Busy.as_str()
+            )
+        }));
+        assert_eq!(session.session_id, active_id);
+        assert_eq!(session.bridge_state, BridgeSessionState::Active);
+        event_task.abort();
+        let _ = event_task.await;
     }
 
     #[test]
@@ -2781,7 +5006,7 @@ mod tests {
             )
             .expect("message encodes");
 
-        let ack = duplicate_active_session_ack_message(
+        let (_duplicate_msg_id, ack) = duplicate_active_session_ack_message(
             &answer_codec,
             session_id,
             answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),
@@ -2798,6 +5023,334 @@ mod tests {
             ack.body,
             MessageBody::Ack(AckBody { ack_msg_id }) if ack_msg_id == envelope.msg_id.into_bytes()
         ));
+    }
+
+    #[test]
+    fn duplicate_active_session_message_ack_policy_matches_message_type() {
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let session_id = SessionId::random();
+        let duplicate_error = SignalingError::Protocol("duplicate message detected".to_owned());
+        let answer_remote = answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key");
+        let offer_remote = offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key");
+
+        for (name, body) in AnswerRoutingFixture::ack_required_duplicate_bodies() {
+            let message = InnerMessageBuilder::new(
+                session_id,
+                offer.identity.peer_id.clone(),
+                answer.identity.peer_id.clone(),
+            )
+            .build(body);
+            let (envelope, payload) = offer_codec
+                .encode_for_peer(offer_remote, &message, false)
+                .expect("message encodes");
+
+            let (_duplicate_msg_id, ack) = duplicate_active_session_ack_message(
+                &answer_codec,
+                session_id,
+                answer_remote,
+                &offer.identity.peer_id,
+                &payload,
+                &duplicate_error,
+            )
+            .unwrap_or_else(|| panic!("{name} duplicate should be re-acknowledged"));
+
+            assert!(matches!(
+                ack.body,
+                MessageBody::Ack(AckBody { ack_msg_id }) if ack_msg_id == envelope.msg_id.into_bytes()
+            ));
+        }
+
+        for (name, body) in AnswerRoutingFixture::non_ack_required_duplicate_bodies() {
+            let message = InnerMessageBuilder::new(
+                session_id,
+                offer.identity.peer_id.clone(),
+                answer.identity.peer_id.clone(),
+            )
+            .build(body);
+            let (_envelope, payload) = offer_codec
+                .encode_for_peer(offer_remote, &message, false)
+                .expect("message encodes");
+
+            let ack = duplicate_active_session_ack_message(
+                &answer_codec,
+                session_id,
+                answer_remote,
+                &offer.identity.peer_id,
+                &payload,
+                &duplicate_error,
+            );
+
+            assert!(ack.is_none(), "{name} duplicate must not be re-acknowledged");
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_session_reacks_duplicate_same_session_ack_required_messages() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.node.peer_id = "answer-office".parse().expect("answer peer id");
+        config.webrtc.stun_urls = Vec::new();
+        config.webrtc.enable_trickle_ice = false;
+        config.health.write_status_file = false;
+        let config = Arc::new(config);
+
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_identity = Arc::new(answer.identity);
+        let answer_keys = Arc::new(answer_keys);
+        let answer_codec = SignalCodec::new(&answer_identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let transport = RecordingTransport::default();
+        let transport_for_task = transport.clone();
+        let config_for_task = Arc::clone(&config);
+        let answer_identity_for_task = Arc::clone(&answer_identity);
+        let answer_keys_for_task = Arc::clone(&answer_keys);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let event_task = tokio::spawn(async move {
+            let status = StatusWriter::new(&config_for_task);
+            let mut runtime = connected_runtime();
+            let mut ctx =
+                RuntimeContext { config: &config_for_task, status: &status, runtime: &mut runtime };
+            let codec =
+                SignalCodec::new(&answer_identity_for_task, &answer_keys_for_task, 120, 300);
+            let mut transport = transport_for_task;
+            let mut sessions_by_id = HashMap::new();
+            let mut session_by_peer = HashMap::new();
+            while let Some(event) = event_rx.recv().await {
+                handle_answer_session_event(
+                    &mut ctx,
+                    &codec,
+                    &mut transport,
+                    &mut sessions_by_id,
+                    &mut session_by_peer,
+                    event,
+                )
+                .await;
+            }
+        });
+
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("answer peer should build");
+        let session_id = SessionId::random();
+        let mut session = ActiveSession::new(
+            session_id,
+            answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key").clone(),
+            peer,
+            config.security.replay_cache_size,
+        );
+        session.state = DaemonState::TunnelOpen;
+        session.bridge_state = BridgeSessionState::Active;
+        let original_state = session.state;
+        let original_bridge_state = session.bridge_state;
+        let mut replay_cache = ReplayCache::new(64);
+
+        for (name, body) in AnswerRoutingFixture::ack_required_duplicate_bodies() {
+            let message = InnerMessageBuilder::new(
+                session_id,
+                offer.identity.peer_id.clone(),
+                answer_identity.peer_id.clone(),
+            )
+            .build(body);
+            let (envelope, payload) = offer_codec
+                .encode_for_peer(
+                    offer_keys.get_by_peer_id(&answer_identity.peer_id).expect("answer key"),
+                    &message,
+                    false,
+                )
+                .expect("message encodes");
+            let mut decoded = answer_codec
+                .decode_with_replay_status(&payload, &mut replay_cache, None)
+                .expect("message decodes");
+            decoded.replay_status = ReplayStatus::DuplicateSameSession;
+
+            process_answer_session_signal(
+                &config,
+                &answer_codec,
+                &event_tx,
+                SessionGeneration(1),
+                &mut session,
+                decoded,
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{name} duplicate should be handled"));
+
+            let published = transport.published.lock().await.clone();
+            let (_peer, ack_payload) = published.last().expect("duplicate should publish ACK");
+            let mut offer_replay = ReplayCache::new(64);
+            let (_ack_envelope, ack_message, _sender) = offer_codec
+                .decode(ack_payload, &mut offer_replay, None)
+                .expect("offer should decode ACK");
+            assert!(matches!(
+                ack_message.body,
+                MessageBody::Ack(AckBody { ack_msg_id }) if ack_msg_id == envelope.msg_id.into_bytes()
+            ));
+            assert_eq!(session.state, original_state, "{name} duplicate must not mutate state");
+            assert_eq!(
+                session.bridge_state, original_bridge_state,
+                "{name} duplicate must not mutate bridge state"
+            );
+        }
+
+        event_task.abort();
+        let _ = event_task.await;
+        session.peer.close().await.expect("answer peer should close");
+    }
+
+    #[tokio::test]
+    async fn answer_session_ignores_duplicate_different_session_before_ack() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.webrtc.stun_urls = Vec::new();
+        config.webrtc.enable_trickle_ice = false;
+        config.health.write_status_file = false;
+
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("answer peer should build");
+        let session_id = SessionId::random();
+        let mut session = ActiveSession::new(
+            session_id,
+            answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key").clone(),
+            peer,
+            config.security.replay_cache_size,
+        );
+        session.state = DaemonState::TunnelOpen;
+        session.bridge_state = BridgeSessionState::Active;
+        let original_state = session.state;
+        let original_bridge_state = session.bridge_state;
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+
+        let message = InnerMessageBuilder::new(
+            session_id,
+            offer.identity.peer_id.clone(),
+            answer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::Error(ErrorBody {
+            code: FailureCode::ProtocolError.as_str().to_owned(),
+            message: "different-session duplicate".to_owned(),
+            fatal: true,
+        }));
+        let (_envelope, payload) = offer_codec
+            .encode_for_peer(
+                offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
+                &message,
+                false,
+            )
+            .expect("message encodes");
+        let mut replay_cache = ReplayCache::new(64);
+        let mut decoded = answer_codec
+            .decode_with_replay_status(&payload, &mut replay_cache, None)
+            .expect("message decodes");
+        decoded.replay_status = ReplayStatus::DuplicateDifferentSession;
+
+        process_answer_session_signal(
+            &config,
+            &answer_codec,
+            &event_tx,
+            SessionGeneration(1),
+            &mut session,
+            decoded,
+        )
+        .await
+        .expect("different-session duplicate should be ignored");
+
+        assert!(event_rx.try_recv().is_err(), "different-session duplicate must not ACK");
+        assert_eq!(session.state, original_state);
+        assert_eq!(session.bridge_state, original_bridge_state);
+        session.peer.close().await.expect("answer peer should close");
+    }
+
+    #[tokio::test]
+    async fn answer_session_ping_pong_do_not_emit_normal_acks() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        config.webrtc.stun_urls = Vec::new();
+        config.webrtc.enable_trickle_ice = false;
+        config.health.write_status_file = false;
+
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("answer peer should build");
+        let session_id = SessionId::random();
+        let mut session = ActiveSession::new(
+            session_id,
+            answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key").clone(),
+            peer,
+            config.security.replay_cache_size,
+        );
+        session.state = DaemonState::TunnelOpen;
+        let original_state = session.state;
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let mut replay_cache = ReplayCache::new(64);
+
+        for body in [MessageBody::Ping(PingBody { seq: 1 }), MessageBody::Pong(PingBody { seq: 2 })]
+        {
+            let message = InnerMessageBuilder::new(
+                session_id,
+                offer.identity.peer_id.clone(),
+                answer.identity.peer_id.clone(),
+            )
+            .build(body);
+            let (_envelope, payload) = offer_codec
+                .encode_for_peer(
+                    offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
+                    &message,
+                    false,
+                )
+                .expect("message encodes");
+            let decoded = answer_codec
+                .decode_with_replay_status(&payload, &mut replay_cache, None)
+                .expect("message decodes");
+            assert!(
+                !decoded.message.message_type.requires_ack(),
+                "ping/pong must remain non-ACK-required"
+            );
+
+            timeout(
+                Duration::from_secs(5),
+                process_answer_session_signal(
+                    &config,
+                    &answer_codec,
+                    &event_tx,
+                    SessionGeneration(1),
+                    &mut session,
+                    decoded,
+                ),
+            )
+            .await
+            .expect("ping/pong handling should finish")
+            .expect("ping/pong should be ignored without ACK");
+            assert!(
+                matches!(event_rx.try_recv(), Ok(AnswerSessionEvent::Status(_))),
+                "ping/pong should only emit status updates"
+            );
+        }
+
+        assert!(event_rx.try_recv().is_err(), "ping/pong must not publish normal ACKs");
+        assert_eq!(session.state, original_state);
+        assert!(session.signaling.ack_tracker.expired().is_empty());
     }
 
     #[tokio::test]
@@ -2867,7 +5420,7 @@ mod tests {
             .expect("duplicate inbound encodes");
         let duplicate_error = SignalingError::Protocol("duplicate message detected".to_owned());
 
-        let reack = duplicate_active_session_ack_message(
+        let (_duplicate_msg_id, reack) = duplicate_active_session_ack_message(
             &offer_codec,
             session_id,
             &session.remote_authorized,
@@ -2900,6 +5453,84 @@ mod tests {
             "retired pending message should not linger as expired"
         );
 
+        session.peer.close().await.expect("offer peer should close");
+    }
+
+    #[tokio::test]
+    async fn duplicate_active_session_message_is_reacked_only_once_per_msg_id() {
+        let mut config = sample_config();
+        let offer = generate_identity("offer-home").expect("offer identity");
+        let answer = generate_identity("answer-office").expect("answer identity");
+        let offer_keys =
+            AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+        let answer_keys =
+            AuthorizedKeys::parse(&offer.public_identity.render()).expect("answer keys");
+        let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+        let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+        let remote = offer_keys
+            .get_by_peer_id(&answer.identity.peer_id)
+            .cloned()
+            .expect("answer authorized key");
+        let peer = WebRtcPeer::new(&config.webrtc).await.expect("offer peer should build");
+        let session_id = SessionId::random();
+        let mut session =
+            ActiveSession::new(session_id, remote.clone(), peer, config.security.replay_cache_size);
+        let (path, writer) = status_writer_for_test(&mut config, "offer-duplicate-reack-once");
+        let mut runtime = connected_runtime();
+        let mut ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
+        let mut transport = RecordingTransport::default();
+
+        let duplicate_inbound = InnerMessageBuilder::new(
+            session_id,
+            answer.identity.peer_id.clone(),
+            offer.identity.peer_id.clone(),
+        )
+        .build(MessageBody::IceCandidate(p2p_signaling::IceCandidateBody {
+            candidate: Some("candidate:1 1 udp 2130706431 127.0.0.1 3478 typ host".to_owned()),
+            sdp_mid: Some("0".to_owned()),
+            sdp_mline_index: Some(0),
+        }));
+        let (_duplicate_envelope, duplicate_payload) = answer_codec
+            .encode_for_peer(
+                answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),
+                &duplicate_inbound,
+                false,
+            )
+            .expect("duplicate inbound encodes");
+        let duplicate_error = SignalingError::Protocol("duplicate message detected".to_owned());
+
+        let first = maybe_ack_duplicate_active_session_message(
+            &mut ctx,
+            &offer_codec,
+            &mut transport,
+            &mut session,
+            &duplicate_payload,
+            &duplicate_error,
+        )
+        .await
+        .expect("first duplicate should be re-acknowledged");
+        assert!(first);
+
+        let second = maybe_ack_duplicate_active_session_message(
+            &mut ctx,
+            &offer_codec,
+            &mut transport,
+            &mut session,
+            &duplicate_payload,
+            &duplicate_error,
+        )
+        .await
+        .expect("second duplicate should be suppressed");
+        assert!(second);
+
+        let published = transport.published.lock().await.clone();
+        assert_eq!(
+            published.len(),
+            1,
+            "only one re-ack should be published for the same duplicate msg_id"
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
         session.peer.close().await.expect("offer peer should close");
     }
 
@@ -3312,7 +5943,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn answer_recovery_returns_to_idle_after_target_connect_failure() {
+    async fn answer_recovery_returns_to_serving_after_target_connect_failure() {
         let mut config = sample_config();
         config.node.role = NodeRole::Answer;
         let (path, writer) = status_writer_for_test(&mut config, "answer-target-connect");
@@ -3328,13 +5959,13 @@ mod tests {
         .await;
 
         let status = read_status_file(&path).await;
-        assert_eq!(status["current_state"], "idle");
+        assert_eq!(status["current_state"], "serving");
         assert_eq!(status["role"], "answer");
         let _ = tokio::fs::remove_file(&path).await;
     }
 
     #[tokio::test]
-    async fn answer_recovery_returns_to_idle_after_remote_close() {
+    async fn answer_recovery_returns_to_serving_after_remote_close() {
         let mut config = sample_config();
         config.node.role = NodeRole::Answer;
         let (path, writer) = status_writer_for_test(&mut config, "answer-remote-close");
@@ -3348,13 +5979,13 @@ mod tests {
         .await;
 
         let status = read_status_file(&path).await;
-        assert_eq!(status["current_state"], "idle");
+        assert_eq!(status["current_state"], "serving");
         assert_eq!(status["role"], "answer");
         let _ = tokio::fs::remove_file(&path).await;
     }
 
     #[tokio::test]
-    async fn answer_recovery_returns_to_idle_after_bridge_task_failure() {
+    async fn answer_recovery_returns_to_serving_after_bridge_task_failure() {
         let mut config = sample_config();
         config.node.role = NodeRole::Answer;
         let (path, writer) = status_writer_for_test(&mut config, "answer-bridge-failure");
@@ -3368,13 +5999,13 @@ mod tests {
         .await;
 
         let status = read_status_file(&path).await;
-        assert_eq!(status["current_state"], "idle");
+        assert_eq!(status["current_state"], "serving");
         assert_eq!(status["role"], "answer");
         let _ = tokio::fs::remove_file(&path).await;
     }
 
     #[tokio::test]
-    async fn answer_recovery_returns_to_idle_after_ice_failure() {
+    async fn answer_recovery_returns_to_serving_after_ice_failure() {
         let mut config = sample_config();
         config.node.role = NodeRole::Answer;
         let (path, writer) = status_writer_for_test(&mut config, "answer-ice-failure");
@@ -3385,7 +6016,7 @@ mod tests {
             .await;
 
         let status = read_status_file(&path).await;
-        assert_eq!(status["current_state"], "idle");
+        assert_eq!(status["current_state"], "serving");
         assert_eq!(status["role"], "answer");
         let _ = tokio::fs::remove_file(&path).await;
     }
@@ -3401,7 +6032,7 @@ mod tests {
         write_steady_state_status(&ctx).await;
 
         let status = read_status_file(&path).await;
-        assert_eq!(status["current_state"], "idle");
+        assert_eq!(status["current_state"], "serving");
         assert_eq!(status["role"], "answer");
         assert_eq!(status["mqtt_connected"], true);
         let _ = tokio::fs::remove_file(&path).await;
@@ -3438,14 +6069,40 @@ mod tests {
 
         mark_transport_unusable(
             &mut ctx,
-            StatusSnapshot { active_session_id: None, current_state: DaemonState::Idle },
+            StatusSnapshot { active_session_id: None, current_state: DaemonState::Serving },
             &SignalingError::Protocol("poll failed".to_owned()),
         )
         .await;
 
         let status = read_status_file(&path).await;
         assert_eq!(status["mqtt_connected"], false);
-        assert_eq!(status["current_state"], "idle");
+        assert_eq!(status["current_state"], "serving");
+        assert_eq!(status["active_session_count"], 0);
+        assert!(status["active_session_id"].is_null());
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn answer_zero_session_transport_recovery_stays_serving() {
+        let mut config = sample_config();
+        config.node.role = NodeRole::Answer;
+        let (path, writer) = status_writer_for_test(&mut config, "answer-zero-transport-recovered");
+        let mut runtime = connected_runtime();
+        runtime.mqtt_connected = false;
+        let mut ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
+
+        mark_transport_usable(
+            &mut ctx,
+            StatusSnapshot { active_session_id: None, current_state: DaemonState::Serving },
+        )
+        .await;
+
+        let status = read_status_file(&path).await;
+        assert_eq!(status["mqtt_connected"], true);
+        assert_eq!(status["current_state"], "serving");
+        assert_eq!(status["active_session_count"], 0);
+        assert!(status["active_session_id"].is_null());
+        assert!(status["sessions"].as_array().expect("sessions should be an array").is_empty());
         let _ = tokio::fs::remove_file(&path).await;
     }
 
@@ -3492,7 +6149,7 @@ mod tests {
 
         let status = read_status_file(&path).await;
         assert_eq!(status["mqtt_connected"], false);
-        assert_eq!(status["current_state"], "idle");
+        assert_eq!(status["current_state"], "serving");
         let _ = tokio::fs::remove_file(&path).await;
     }
 

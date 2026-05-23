@@ -12,6 +12,9 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   lint:
     name: Lint
@@ -101,3 +104,9 @@ jobs:
         with:
           name: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}
           path: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.tar.gz
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.tar.gz
+          generate_release_notes: true
