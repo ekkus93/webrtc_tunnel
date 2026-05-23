@@ -3112,7 +3112,7 @@ mod tests {
 
     fn sample_config() -> AppConfig {
         AppConfig {
-            format: "p2ptunnel-config-v2".to_owned(),
+            format: "p2ptunnel-config-v3".to_owned(),
             node: NodeConfig {
                 peer_id: "offer-home".parse().expect("peer id"),
                 role: NodeRole::Offer,

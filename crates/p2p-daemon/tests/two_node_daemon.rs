@@ -355,7 +355,7 @@ fn sample_config_for(
     let client_id = peer_id.to_string();
 
     AppConfig {
-        format: "p2ptunnel-config-v2".to_owned(),
+        format: "p2ptunnel-config-v3".to_owned(),
         node: NodeConfig { peer_id, role },
         peer: Some(PeerConfig { remote_peer_id: "answer-office".parse().expect("answer peer id") }),
         paths: PathConfig {

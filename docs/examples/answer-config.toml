@@ -1,4 +1,4 @@
-format = "p2ptunnel-config-v2"
+format = "p2ptunnel-config-v3"
 
 [node]
 peer_id = "answer-office"

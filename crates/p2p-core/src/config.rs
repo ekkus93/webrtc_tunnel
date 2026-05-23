@@ -58,7 +58,7 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.format != "p2ptunnel-config-v2" {
+        if self.format != "p2ptunnel-config-v3" {
             return Err(ConfigError::InvalidConfig(format!(
                 "unsupported config format '{}'",
                 self.format
@@ -659,7 +659,7 @@ mod tests {
     fn sample_config(config_dir: &Path, state_dir: &Path) -> String {
         format!(
             r#"
-format = "p2ptunnel-config-v2"
+format = "p2ptunnel-config-v3"
 
 [node]
 peer_id = "answer-office"
