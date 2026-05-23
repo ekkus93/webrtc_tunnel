@@ -1,3 +1,9 @@
+## 2026-05-23T10:39:57Z - Claude Sonnet 4.6 - Config format identifier bumped to v3; skip Co-authored-by trailer
+- Bumped `p2ptunnel-config-v2` → `p2ptunnel-config-v3` everywhere: validator in `p2p-core/config.rs`, test fixtures in `p2p-daemon`, `p2p-signaling`, `two_node_daemon`, example configs, SPECS.md, README.md, and both live temp configs.
+- User requested skipping the `Co-authored-by: Copilot` trailer on commits — repo has a hook that rejects it.
+- Current working branch is `v0.3_dev` (not `master`); commits should be pushed to `v0.3_dev`.
+- Always rebuild affected binaries before running `p2pctl check-config` to avoid stale binary false errors.
+
 ## 2026-05-16T21:06:08Z - GPT-5.4 - Workspace version bumped to v0.2.0
 - Updated the root workspace package version from `0.1.0` to `0.2.0` so Cargo build output and compiled crate metadata match the `v0.2` release tag.
 - Rebuilt both dev and release workspace targets and confirmed Cargo now reports every crate and binary as `v0.2.0`.
@@ -526,3 +532,15 @@
 ## 2026-05-16T22:47:44Z - GPT-5.5 - Full validation passed after spec rename
 - Full local validation passed after the documentation rename and wording cleanup with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
 - Clippy ended with `Finished dev profile [unoptimized + debuginfo] target(s) in 5.05s`; tests ended with `Finished test profile [unoptimized + debuginfo] target(s) in 0.70s`, and all test result lines were `ok`.
+
+## 2026-05-23T10:17:56Z - GPT-5.4 - README and memory baseline refreshed
+- Re-read `README.md` and the recent `memory.md` history to refresh the current project baseline before further work.
+- Current understanding: runtime behavior is the v0.3 multi-session/multi-stream model (multiplexed logical streams per peer session, answer steady state `Serving`, one active session per authenticated peer ID, multiple authorized peers concurrently), while some operator-facing README/version wording still intentionally references the v0.2 release/config line such as `p2ptunnel-config-v2`.
+
+## 2026-05-23T10:22:00Z - GPT-5.4 - User temp configs migrated to current schema
+- Updated `/home/phil/work/rust_webrtc/tmp/p2ptunnel_answer/p2ptunnel/config.toml` and `/home/phil/work/rust_webrtc/tmp/p2ptunnel_offer/p2ptunnel/config.toml` so they validate against the current config schema with `p2pctl check-config`.
+- The answer config was already close to current but had stale `/home/jovyan/...` paths; the offer config needed the old single-tunnel v1 layout replaced with `format = "p2ptunnel-config-v2"`, a `[peer]` section, and `[[forwards]]` / `[forwards.offer]` entries.
+
+## 2026-05-23T10:28:11Z - GPT-5.4 - Answer temp config stale path corrected
+- Re-checked `/home/phil/work/rust_webrtc/tmp/p2ptunnel_answer/p2ptunnel/config.toml` and found it still pointed `paths.identity` and `paths.authorized_keys` at a stale `/home/jovyan/...` tree.
+- Updated those two fields to `/home/phil/work/rust_webrtc/tmp/p2ptunnel_answer/p2ptunnel/...` and revalidated successfully with `cargo run --quiet --bin p2pctl -- check-config --config /home/phil/work/rust_webrtc/tmp/p2ptunnel_answer/p2ptunnel/config.toml`.
