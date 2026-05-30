@@ -1,4 +1,4 @@
-# rust_webrtc
+# rust_webrtc_tunnel
 
 [![CI](https://github.com/ekkus93/rust_webrtc/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ekkus93/rust_webrtc/actions/workflows/ci.yml)
 
