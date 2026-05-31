@@ -59,16 +59,21 @@ class RecordingBridge : TunnelNativeBridge {
     var startOfferCalls = 0
     var startAnswerCalls = 0
     var stopCalls = 0
+    var startDelayMs: Long = 0
     var state: ServiceState = ServiceState.Stopped
 
     fun reset() {
         startOfferCalls = 0
         startAnswerCalls = 0
         stopCalls = 0
+        startDelayMs = 0
         state = ServiceState.Stopped
     }
 
     override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> {
+        if (startDelayMs > 0) {
+            Thread.sleep(startDelayMs)
+        }
         startOfferCalls += 1
         state = ServiceState.Connected
         return Result.success(Unit)

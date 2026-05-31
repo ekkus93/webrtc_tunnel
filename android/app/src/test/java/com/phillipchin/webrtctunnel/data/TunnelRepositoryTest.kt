@@ -99,6 +99,35 @@ class TunnelRepositoryTest {
         assertTrue(result.isFailure)
     }
 
+    @Test
+    fun setLocalErrorRedactsAndClearsActiveState() {
+        bridge.statusPayload = statusJson("running", "offer")
+        repository.refreshStatus()
+        repository.setLocalError(
+            code = "native_start_failed",
+            message = "password=abc sign.private=\"secret\"",
+            details = "token=123",
+            state = ServiceState.Error,
+        )
+        val status = repository.status.value
+        assertEquals(ServiceState.Error, status.serviceState)
+        assertEquals(0, status.activeSessionCount)
+        assertTrue(status.lastError?.message?.contains("***REDACTED***") == true)
+        assertTrue(status.lastError?.details?.contains("***REDACTED***") == true)
+    }
+
+    @Test
+    fun setPolicyBlockedRedactsReasonAndClearsActivity() {
+        bridge.statusPayload = statusJson("running", "offer")
+        repository.refreshStatus()
+        repository.setPolicyBlocked("token=abc")
+        val status = repository.status.value
+        assertEquals(ServiceState.PausedMeteredBlocked, status.serviceState)
+        assertEquals(0, status.activeSessionCount)
+        assertEquals(false, status.networkStatus.tunnelAllowed)
+        assertTrue(status.networkStatus.blockReason?.contains("***REDACTED***") == true)
+    }
+
     private fun statusJson(state: String, mode: String): String =
         Json.encodeToString(
             NativeRuntimeStatusDto(

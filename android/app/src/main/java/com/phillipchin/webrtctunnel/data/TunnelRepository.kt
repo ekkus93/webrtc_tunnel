@@ -99,13 +99,34 @@ class TunnelRepository(
         bridge.generateIdentity(peerId)
 
     fun setPolicyBlocked(blockReason: String) {
+        val redacted = SensitiveDataRedactor.redactText(blockReason)
         _status.value = _status.value.copy(
             serviceState = ServiceState.PausedMeteredBlocked,
+            mqttConnected = false,
+            activeSessionCount = 0,
             networkStatus = _status.value.networkStatus.copy(
                 tunnelAllowed = false,
-                blockReason = blockReason,
+                blockReason = redacted,
             ),
             lastError = null,
+        )
+    }
+
+    fun setLocalError(
+        code: String,
+        message: String,
+        details: String? = null,
+        state: ServiceState = ServiceState.Error,
+    ) {
+        _status.value = _status.value.copy(
+            serviceState = state,
+            mqttConnected = false,
+            activeSessionCount = 0,
+            lastError = TunnelError(
+                code = code,
+                message = SensitiveDataRedactor.redactText(message),
+                details = details?.let(SensitiveDataRedactor::redactText),
+            ),
         )
     }
 

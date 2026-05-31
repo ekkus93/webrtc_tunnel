@@ -51,4 +51,15 @@ class DiagnosticsRepositoryTest {
         assertFalse(text.contains("password=abc"))
         assertFalse(text.contains("candidate=bar"))
     }
+
+    @Test
+    fun buildPayloadReturnsRedactedTextForSharing() {
+        val payload = diagnosticsRepository.buildRedactedDiagnosticsPayload(
+            status = TunnelStatus(serviceState = ServiceState.Error, mode = TunnelMode.Offer, localPeerId = "android-phone"),
+            logs = listOf(LogEvent(1L, "error", "password=abc token=xyz")),
+            networkStatus = NetworkStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
+        )
+        assertTrue(payload.contains("***REDACTED***"))
+        assertFalse(payload.contains("password=abc"))
+    }
 }

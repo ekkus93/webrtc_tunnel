@@ -12,6 +12,19 @@ class DiagnosticsRepository(
     private val context: Context,
     private val configRepository: ConfigRepository,
 ) {
+    fun buildRedactedDiagnosticsPayload(
+        status: TunnelStatus,
+        logs: List<LogEvent>,
+        networkStatus: NetworkStatus,
+    ): String = buildString {
+        appendLine("app_version=${context.packageManager.getPackageInfo(context.packageName, 0).versionName}")
+        appendLine("rust_library=p2p_mobile")
+        appendLine("status_json=${Json.encodeToString(SensitiveDataRedactor.redactStatus(status))}")
+        appendLine("network_json=${Json.encodeToString(networkStatus)}")
+        appendLine("config_redacted=${configRepository.redactConfig(configRepository.readConfig())}")
+        appendLine("recent_logs_redacted=${Json.encodeToString(logs.map(SensitiveDataRedactor::redactLogEvent))}")
+    }
+
     fun exportRedactedDiagnostics(
         outputPath: String,
         status: TunnelStatus,
@@ -20,14 +33,6 @@ class DiagnosticsRepository(
     ): Result<Unit> = runCatching {
         val output = File(outputPath)
         output.parentFile?.mkdirs()
-        val payload = buildString {
-            appendLine("app_version=${context.packageManager.getPackageInfo(context.packageName, 0).versionName}")
-            appendLine("rust_library=p2p_mobile")
-            appendLine("status_json=${Json.encodeToString(SensitiveDataRedactor.redactStatus(status))}")
-            appendLine("network_json=${Json.encodeToString(networkStatus)}")
-            appendLine("config_redacted=${configRepository.redactConfig(configRepository.readConfig())}")
-            appendLine("recent_logs_redacted=${Json.encodeToString(logs.map(SensitiveDataRedactor::redactLogEvent))}")
-        }
-        output.writeText(payload)
+        output.writeText(buildRedactedDiagnosticsPayload(status, logs, networkStatus))
     }
 }

@@ -54,20 +54,20 @@ docs/memory.md
 
 Find all claims/checks related to:
 
-- [ ] Android offer connects to desktop Rust answer.
-- [ ] Android browser reaches remote service via `127.0.0.1:<port>`.
-- [ ] manual E2E validation complete.
-- [ ] E2E validation documented with exact steps/results.
+- [x] Android offer connects to desktop Rust answer.
+- [x] Android browser reaches remote service via `127.0.0.1:<port>`.
+- [x] manual E2E validation complete.
+- [x] E2E validation documented with exact steps/results.
 
 ## 0.2 Correct E2E checklist state
 
 If manual E2E is still not run:
 
-- [ ] mark Android offer ↔ desktop answer unchecked everywhere;
-- [ ] mark Android browser localhost validation unchecked everywhere;
-- [ ] mark manual E2E validation unchecked everywhere;
-- [ ] preserve documentation saying `NOT RUN`;
-- [ ] include exact reason and future run steps.
+- [x] mark Android offer ↔ desktop answer unchecked everywhere;
+- [x] mark Android browser localhost validation unchecked everywhere;
+- [x] mark manual E2E validation unchecked everywhere;
+- [x] preserve documentation saying `NOT RUN`;
+- [x] include exact reason and future run steps.
 
 If E2E is run:
 
@@ -81,8 +81,8 @@ If E2E is run:
 
 ## 0.3 Acceptance
 
-- [ ] No E2E item is checked unless real E2E evidence exists.
-- [ ] `docs/ANDROID_VALIDATION.md` clearly distinguishes PASS, FAIL, and NOT RUN.
+- [x] No E2E item is checked unless real E2E evidence exists.
+- [x] `docs/ANDROID_VALIDATION.md` clearly distinguishes PASS, FAIL, and NOT RUN.
 
 ---
 

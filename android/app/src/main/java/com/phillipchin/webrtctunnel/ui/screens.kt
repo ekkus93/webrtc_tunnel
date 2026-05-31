@@ -1,5 +1,7 @@
 package com.phillipchin.webrtctunnel.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -153,6 +155,7 @@ fun ForwardsScreen(padding: PaddingValues, vm: ForwardsViewModel) {
                                     vm.saveForward(forward.copy(enabled = !forward.enabled))
                                 },
                             ) { Text(if (forward.enabled) "Disable" else "Enable") }
+                            OutlinedButton(onClick = { vm.testLocalPort(forward) }) { Text("Test Local Port") }
                             OutlinedButton(onClick = { loadForEdit(forward) }) { Text("Edit") }
                             OutlinedButton(onClick = { vm.deleteForward(forward.id) }) { Text("Delete") }
                         }
@@ -169,6 +172,7 @@ fun LogsScreen(
     vm: LogsViewModel,
     networkVm: NetworkPolicyViewModel,
 ) {
+    val context = LocalContext.current
     val filter by vm.filter.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val networkStatus by networkVm.networkStatus.collectAsStateWithLifecycle(
@@ -182,6 +186,13 @@ fun LogsScreen(
         ),
     )
     val clipboard = LocalClipboardManager.current
+    val diagnosticsCreateDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri != null) {
+            vm.exportDiagnosticsToUri(uri, networkStatus)
+        }
+    }
     LaunchedEffect(Unit) { vm.refresh() }
     val logs = vm.filteredLogs()
     ScreenSurface(padding) {
@@ -205,7 +216,20 @@ fun LogsScreen(
                     clipboard.setText(AnnotatedString(text))
                 },
             ) { Text("Copy filtered") }
-            OutlinedButton(onClick = { vm.exportDiagnostics("/sdcard/Download/webrtc_diagnostics.txt", networkStatus) }) { Text("Export diagnostics") }
+            OutlinedButton(
+                onClick = {
+                    diagnosticsCreateDocumentLauncher.launch("webrtc_diagnostics_redacted.txt")
+                },
+            ) { Text("Export diagnostics") }
+            OutlinedButton(
+                onClick = {
+                    val intent = Intent.createChooser(
+                        vm.diagnosticsShareIntent(networkStatus),
+                        "Share diagnostics (redacted)",
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                },
+            ) { Text("Share diagnostics") }
         }
         message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
         Spacer(Modifier.height(8.dp))
@@ -320,11 +344,105 @@ fun NetworkPolicyScreen(padding: PaddingValues, vm: NetworkPolicyViewModel) {
 
 @Composable
 fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
+    val context = LocalContext.current
     val state by vm.state.collectAsStateWithLifecycle()
     var showPrivateExportWarning by remember { mutableStateOf(false) }
+    var showRawConfigExportWarning by remember { mutableStateOf(false) }
+    var rawConfigExportViaPicker by remember { mutableStateOf(false) }
+    val openTextDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            vm.importConfigFromUri(uri)
+        }
+    }
+    val openPrivateIdentityLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            vm.importPrivateIdentityFromUri(uri)
+        }
+    }
+    val openPublicIdentityLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            vm.importPublicIdentityFromUri(uri)
+        }
+    }
+    val exportConfigLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri != null) {
+            vm.exportConfigToUri(uri, confirmSensitive = true)
+        }
+    }
+    val exportPublicIdentityLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri != null) {
+            vm.exportPublicIdentityToUri(uri)
+        }
+    }
+    val exportPrivateIdentityLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri != null) {
+            vm.exportPrivateIdentityToUri(uri, confirmRisk = true)
+        }
+    }
     ScreenSurface(padding) {
         Text("Import / Export", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
+        Text("Android-safe import/export (SAF):")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { openTextDocumentLauncher.launch(arrayOf("text/*", "application/toml")) }) {
+                Text("Import config (picker)")
+            }
+            OutlinedButton(
+                onClick = {
+                    rawConfigExportViaPicker = true
+                    showRawConfigExportWarning = true
+                },
+            ) {
+                Text("Export config (picker)")
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { openPrivateIdentityLauncher.launch(arrayOf("text/*")) }) {
+                Text("Import private identity (picker)")
+            }
+            OutlinedButton(onClick = { exportPrivateIdentityLauncher.launch("identity-private.toml") }) {
+                Text("Export private identity (picker)")
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { openPublicIdentityLauncher.launch(arrayOf("text/*")) }) {
+                Text("Import public identity (picker)")
+            }
+            OutlinedButton(onClick = { exportPublicIdentityLauncher.launch("identity-public.txt") }) {
+                Text("Export public identity (picker)")
+            }
+            OutlinedButton(
+                onClick = {
+                    runCatching {
+                        val payload = vm.publicIdentityForShare()
+                        val intent = Intent.createChooser(
+                            Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "WebRTC Tunnel public identity")
+                                putExtra(Intent.EXTRA_TEXT, payload)
+                            },
+                            "Share public identity",
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                    }
+                },
+            ) { Text("Share public identity") }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Debug path fallback (developer only):")
+        Spacer(Modifier.height(6.dp))
         OutlinedTextField(
             value = state.configImportPath,
             onValueChange = { value -> vm.updateState { it.copy(configImportPath = value) } },
@@ -355,7 +473,13 @@ fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
             label = { Text("Config export path") },
             modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedButton(onClick = vm::exportConfig, modifier = Modifier.fillMaxWidth()) { Text("Export config") }
+        OutlinedButton(
+            onClick = {
+                rawConfigExportViaPicker = false
+                showRawConfigExportWarning = true
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Export config") }
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = state.publicIdentityExportPath,
@@ -374,6 +498,32 @@ fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
         OutlinedButton(onClick = { showPrivateExportWarning = true }, modifier = Modifier.fillMaxWidth()) { Text("Export private identity") }
         Spacer(Modifier.height(8.dp))
         state.resultMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+    }
+    if (showRawConfigExportWarning) {
+        AlertDialog(
+            onDismissRequest = { showRawConfigExportWarning = false },
+            title = { Text("Raw Config Export Warning") },
+            text = {
+                Text(
+                    "This config may include broker addresses, usernames, password file paths, peer IDs, local paths, and other operational details.\n\nIt must never include private identity material, but it may still be sensitive.",
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { showRawConfigExportWarning = false }) { Text("Cancel") }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (rawConfigExportViaPicker) {
+                            exportConfigLauncher.launch("p2ptunnel-config.toml")
+                        } else {
+                            vm.exportConfig(confirmSensitive = true)
+                        }
+                        showRawConfigExportWarning = false
+                    },
+                ) { Text("Export Raw Config") }
+            },
+        )
     }
     if (showPrivateExportWarning) {
         AlertDialog(
@@ -429,6 +579,12 @@ private fun StatusCard(status: TunnelStatus) {
             Text("Mode: ${status.mode}")
             Text("Remote peer: ${status.remotePeerId ?: "-"}")
             Text("Active sessions: ${status.activeSessionCount}")
+            status.lastError?.let { error ->
+                Text("Error: ${error.message}", color = MaterialTheme.colorScheme.error)
+                error.details?.takeIf { it.isNotBlank() }?.let { details ->
+                    Text("Details: $details", color = MaterialTheme.colorScheme.error)
+                }
+            }
         }
     }
 }

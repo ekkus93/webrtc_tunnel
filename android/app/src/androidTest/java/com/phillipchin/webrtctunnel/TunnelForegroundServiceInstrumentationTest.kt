@@ -54,6 +54,22 @@ class TunnelForegroundServiceInstrumentationTest {
         assertEquals(0, TestTunnelHooks.bridge.stopCalls)
     }
 
+    @Test
+    fun duplicateStartDoesNotLaunchDuplicateRuntime() {
+        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        assertTrue(waitForCondition(timeoutMs = 10_000) { TestTunnelHooks.bridge.startOfferCalls == 1 })
+    }
+
+    @Test
+    fun stopDuringPendingStartIsSafe() {
+        TestTunnelHooks.bridge.startDelayMs = 1200
+        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        SystemClock.sleep(100)
+        context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))
+        assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
+    }
+
     private fun stopService() {
         context.stopService(Intent(context, TunnelForegroundService::class.java))
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()

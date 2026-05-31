@@ -123,3 +123,14 @@
 ## 2026-05-31T12:22:10Z - GPT-5.3-Codex - User-requested lint/tests rerun passed
 - Re-ran lint and test gates on user request: `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets`, and Android `./gradlew --no-daemon lintDebug testDebugUnitTest connectedDebugAndroidTest`.
 - All commands passed; Android connected instrumentation suite completed 3/3 tests successfully on `Medium_Phone_API_36.0(AVD) - 16`.
+
+## 2026-05-31T12:42:14Z - GPT-5.3-Codex - Reviewed final hardening spec/TODO before coding
+- Read `docs/ANDROID_FINAL_HARDENING_SPEC.md` and `docs/ANDROID_FINAL_HARDENING_TODO.md` end-to-end with no code changes.
+- Identified decision points to confirm before implementation: whether manual Android↔desktop E2E must be executed now or remain NOT RUN/unchecked, whether wizard Network Policy controls should be implemented or deferred honestly, whether SAF/share import-export UX is in-scope now, and whether Test Local Port stays deferred.
+
+## 2026-05-31T12:43:25Z - GPT-5.3-Codex - Final hardening scope decisions captured
+- User chose to keep manual Android↔desktop E2E as `NOT RUN`/unchecked for this pass.
+- User chose to implement Setup Wizard Network Policy controls now.
+- User chose to implement Android SAF/share import-export UX now.
+- User chose to implement Test Local Port now.
+- User clarified Phase 0 reference `ANDROID_FIX_TODO_3(1).md` should be treated as a typo; audit `docs/ANDROID_FIX_TODO_3.md` only.

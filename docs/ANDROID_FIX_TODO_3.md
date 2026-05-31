@@ -55,8 +55,8 @@ Uncheck or annotate any item not proven by test or documented validation.
 
 Pay special attention to:
 
-- [x] Android offer connects to desktop Rust answer.
-- [x] Android browser reaches remote service through `127.0.0.1:<port>`.
+- [ ] Android offer connects to desktop Rust answer.
+- [ ] Android browser reaches remote service through `127.0.0.1:<port>`.
 - [x] end-to-end validation is documented.
 - [x] setup wizard is truly complete.
 - [x] forwards screen has all requested actions.
@@ -1200,7 +1200,7 @@ Do not check these until complete.
 - [ ] Android browser reaches remote service via `127.0.0.1:<port>`.
 - [x] Protocol wire formats unchanged.
 - [x] Desktop Rust tests still pass.
-- [x] E2E validation is documented with exact steps/results.
+- [ ] E2E validation is documented with exact steps/results.
 
 ## 14.8 Build/validation
 

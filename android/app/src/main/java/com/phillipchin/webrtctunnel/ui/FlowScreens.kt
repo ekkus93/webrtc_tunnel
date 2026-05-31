@@ -7,17 +7,25 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
+import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.viewmodel.SetupStep
 import com.phillipchin.webrtctunnel.viewmodel.SetupViewModel
@@ -25,6 +33,20 @@ import com.phillipchin.webrtctunnel.viewmodel.SetupViewModel
 @Composable
 fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val networkStatus by vm.networkStatus.collectAsStateWithLifecycle(
+        initialValue = NetworkStatus(
+            networkType = NetworkType.NoNetwork,
+            isMetered = false,
+            allowedByDefault = false,
+            allowedByUserPolicy = false,
+            tunnelAllowed = false,
+            blockReason = "No network",
+        ),
+    )
+    val prefs by vm.preferences.collectAsStateWithLifecycle(
+        initialValue = AndroidAppPreferences(),
+    )
+    var showMeteredWarningDialog by remember { mutableStateOf(false) }
     val input = state.input
     val forwards = vm.loadSavedForwards()
     val clipboard = LocalClipboardManager.current
@@ -105,14 +127,21 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                     value = input.localPeerId,
                     onValueChange = { updateInput(input.copy(localPeerId = it)) },
                     label = { Text("Local peer id") },
+                    readOnly = state.identityPeerId != null,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (state.identityPeerId != null) {
+                    Text("Local peer ID is locked to imported/generated identity: ${state.identityPeerId}")
+                }
                 OutlinedTextField(
                     value = input.remotePeerId,
                     onValueChange = { updateInput(input.copy(remotePeerId = it)) },
                     label = { Text("Remote peer id") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (state.remoteIdentityPeerId != null) {
+                    Text("Imported remote identity peer ID: ${state.remoteIdentityPeerId}")
+                }
             }
             SetupStep.Forwards -> {
                 Text("Configured forwards: ${forwards.size}")
@@ -122,10 +151,32 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                 Text("Manage forwards in the Forwards tab.")
             }
             SetupStep.NetworkPolicy -> {
-                Text("Allow metered/cellular: ${input.allowMetered}")
-                Text("Resume on unmetered: ${input.resumeOnUnmetered}")
+                Text("Current network: ${networkStatus.networkType} (${if (networkStatus.isMetered) "metered" else "unmetered"})")
+                Text("Allowed by default: ${networkStatus.allowedByDefault}")
+                Text("Allowed by user policy: ${networkStatus.allowedByUserPolicy}")
+                Text("Tunnel allowed now: ${networkStatus.tunnelAllowed}")
+                Text("Blocked reason: ${networkStatus.blockReason ?: "None"}")
                 Text("Unknown network is always blocked for safety.")
-                Text("Network policy details are in Settings > Network policy.")
+                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Allow metered/cellular")
+                    Switch(
+                        checked = input.allowMetered,
+                        onCheckedChange = { checked ->
+                            if (checked && prefs.showMeteredWarning) {
+                                showMeteredWarningDialog = true
+                            } else {
+                                updateInput(input.copy(allowMetered = checked))
+                            }
+                        },
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Resume on unmetered")
+                    Switch(
+                        checked = input.resumeOnUnmetered,
+                        onCheckedChange = { checked -> updateInput(input.copy(resumeOnUnmetered = checked)) },
+                    )
+                }
             }
             SetupStep.Review -> {
                 Text("Mode: offer")
@@ -140,6 +191,30 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                     Text("Local public identity: ${state.localPublicIdentity}")
                 }
             }
+
+        }
+
+        if (showMeteredWarningDialog) {
+            AlertDialog(
+                onDismissRequest = { showMeteredWarningDialog = false },
+                title = { Text("Cellular / Metered Data Warning") },
+                text = {
+                    Text(
+                        "WebRTC Tunnel may use significant data and may trigger carrier charges or throttling. Enable metered/cellular only if you understand and accept this risk.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            updateInput(input.copy(allowMetered = true))
+                            showMeteredWarningDialog = false
+                        },
+                    ) { Text("I understand") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showMeteredWarningDialog = false }) { Text("Cancel") }
+                },
+            )
         }
 
         Spacer(Modifier.height(8.dp))

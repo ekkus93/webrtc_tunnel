@@ -26,6 +26,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import java.io.File
+import java.net.ServerSocket
 
 @RunWith(RobolectricTestRunner::class)
 class AppViewModelsTest {
@@ -104,7 +105,7 @@ class AppViewModelsTest {
         viewModel.setInput(
             viewModel.state.value.input.copy(
                 brokerHost = "broker.local",
-                remotePeerId = "desktop-peer",
+                remotePeerId = "remote-peer",
             ),
         )
         while (viewModel.state.value.currentStep != SetupStep.Review) {
@@ -134,6 +135,90 @@ class AppViewModelsTest {
         viewModel.goNext()
         assertEquals(SetupStep.Broker, viewModel.state.value.currentStep)
         assertTrue(viewModel.state.value.errorMessage?.contains("Broker host") == true)
+    }
+
+    @Test
+    fun setupViewModelBlocksSaveWhenLocalPeerIdMismatchesIdentityPeerId() {
+        val viewModel = SetupViewModel(deps)
+        val identityFile = File(app.filesDir, "incoming_identity_peer_mismatch.toml").apply {
+            writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
+        }
+        configRepository.saveForwards(
+            listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
+        )
+        viewModel.setImportIdentityPath(identityFile.absolutePath)
+        viewModel.setImportPublicIdentity("kid peer")
+        viewModel.setInput(
+            viewModel.state.value.input.copy(
+                localPeerId = "different-peer",
+                brokerHost = "broker.local",
+                remotePeerId = "remote-peer",
+            ),
+        )
+        while (viewModel.state.value.currentStep != SetupStep.Review) {
+            viewModel.goNext()
+        }
+        viewModel.saveAndApplyConfig()
+        assertTrue(viewModel.state.value.errorMessage?.contains("Local peer ID must match private identity peer ID") == true)
+    }
+
+    @Test
+    fun setupViewModelBlocksStartWhenRemotePeerDoesNotMatchPublicIdentityPeerId() {
+        val viewModel = SetupViewModel(deps)
+        val identityFile = File(app.filesDir, "incoming_identity_remote_mismatch.toml").apply {
+            writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
+        }
+        configRepository.saveForwards(
+            listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
+        )
+        viewModel.setImportIdentityPath(identityFile.absolutePath)
+        viewModel.setImportPublicIdentity("kid peer")
+        viewModel.setInput(
+            viewModel.state.value.input.copy(
+                localPeerId = "android-phone",
+                brokerHost = "broker.local",
+                remotePeerId = "remote-peer",
+            ),
+        )
+        while (viewModel.state.value.currentStep != SetupStep.Review) {
+            viewModel.goNext()
+        }
+        viewModel.setInput(viewModel.state.value.input.copy(remotePeerId = "desktop-peer"))
+        viewModel.startTunnelFromReview()
+        assertTrue(viewModel.state.value.errorMessage?.contains("Remote peer ID must match imported public identity peer ID") == true)
+        assertEquals(null, Shadows.shadowOf(app).nextStartedService)
+    }
+
+    @Test
+    fun importExportViewModelRequiresConfirmationForRawConfigExport() {
+        val vm = ImportExportViewModel(deps)
+        val output = File(app.filesDir, "raw-config-export.toml")
+        vm.updateState { it.copy(configExportPath = output.absolutePath) }
+        vm.exportConfig(confirmSensitive = false)
+        assertTrue(vm.state.value.resultMessage?.contains("requires explicit confirmation") == true)
+    }
+
+    @Test
+    fun forwardsViewModelTestLocalPortReportsSuccessAndFailure() {
+        val vm = ForwardsViewModel(deps)
+        val server = ServerSocket(0)
+        val successForward = ForwardConfig(
+            id = "svc-open",
+            name = "svc-open",
+            localHost = "127.0.0.1",
+            localPort = server.localPort,
+            remoteForwardId = "svc-open",
+            enabled = true,
+        )
+        vm.testLocalPort(successForward)
+        Thread.sleep(250)
+        assertTrue(vm.message.value?.contains("succeeded") == true)
+        server.close()
+
+        val failureForward = successForward.copy(id = "svc-closed", localPort = successForward.localPort)
+        vm.testLocalPort(failureForward)
+        Thread.sleep(250)
+        assertTrue(vm.message.value?.contains("failed") == true)
     }
 
     private class RecordingBridge : TunnelNativeBridge {

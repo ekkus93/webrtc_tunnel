@@ -1410,15 +1410,6 @@ async fn simultaneous_offer_peer_reconnects_stay_session_local_and_answer_passiv
         )
         .await;
     }
-    let _ = home_client.shutdown().await;
-    let _ = desktop_client.shutdown().await;
-
-    timeout(Duration::from_secs(15), target_task)
-        .await
-        .expect("target should finish")
-        .expect("target should succeed");
-    assert_eq!(accepted.load(Ordering::SeqCst), 2);
-
     let status = wait_for_status_matching(&answer_status, "two recovered sessions", |status| {
         session_count_is(2)(status)
             && has_remote_peer("offer-home")(status)
@@ -1428,6 +1419,15 @@ async fn simultaneous_offer_peer_reconnects_stay_session_local_and_answer_passiv
     assert_status_schema_is_consistent(&status);
     wait_for_status(&offer_home_status, "tunnel_open").await;
     wait_for_status(&offer_desktop_status, "tunnel_open").await;
+
+    let _ = home_client.shutdown().await;
+    let _ = desktop_client.shutdown().await;
+
+    timeout(Duration::from_secs(15), target_task)
+        .await
+        .expect("target should finish")
+        .expect("target should succeed");
+    assert_eq!(accepted.load(Ordering::SeqCst), 2);
 
     let offer_to_answer =
         decode_signal_records(&mesh.trace().payloads_for("answer-office"), &answer_codec);
