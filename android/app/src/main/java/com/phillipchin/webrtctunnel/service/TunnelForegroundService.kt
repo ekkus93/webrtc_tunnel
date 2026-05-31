@@ -103,6 +103,12 @@ class TunnelForegroundService : Service() {
                 publishError("Unable to decrypt private identity: ${it.message}")
                 return
             }
+        val validation = repository.validateConfigWithIdentity(configRepository.configPath, identity)
+        if (!validation.valid) {
+            repository.refreshStatus()
+            publishError(validation.message ?: "Config validation failed")
+            return
+        }
         repository.start(TunnelMode.Offer, configRepository.configPath, identity)
             .onSuccess {
                 pausedByPolicy = false

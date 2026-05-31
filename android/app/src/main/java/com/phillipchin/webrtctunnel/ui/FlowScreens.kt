@@ -9,10 +9,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
@@ -24,6 +27,7 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
     val input = state.input
     val forwards = vm.loadSavedForwards()
+    val clipboard = LocalClipboardManager.current
 
     fun updateInput(update: SetupConfigInput) = vm.setInput(update)
 
@@ -49,6 +53,17 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                     label = { Text("Remote public identity line") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = vm::generateIdentity) { Text("Generate identity") }
+                    if (state.localPublicIdentity.isNotBlank()) {
+                        TextButton(onClick = { clipboard.setText(AnnotatedString(state.localPublicIdentity)) }) {
+                            Text("Copy local public identity")
+                        }
+                    }
+                }
+                if (state.localPublicIdentity.isNotBlank()) {
+                    Text("Local public identity: ${state.localPublicIdentity}")
+                }
             }
             SetupStep.Broker -> {
                 OutlinedTextField(
@@ -109,6 +124,9 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                 Text("Remote peer: ${input.remotePeerId}")
                 Text("Enabled forwards: ${forwards.count { it.enabled }}")
                 Text("Identity import: ${if (state.importIdentityPath.isBlank()) "existing encrypted identity" else state.importIdentityPath}")
+                if (state.localPublicIdentity.isNotBlank()) {
+                    Text("Local public identity: ${state.localPublicIdentity}")
+                }
             }
         }
 
@@ -121,6 +139,7 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
             Button(onClick = vm::goNext) { Text("Next") }
             if (state.currentStep == SetupStep.Review) {
                 Button(onClick = vm::saveAndApplyConfig) { Text("Save") }
+                Button(onClick = vm::startTunnelFromReview) { Text("Start Tunnel") }
             }
         }
     }

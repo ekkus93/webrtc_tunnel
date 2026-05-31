@@ -10,15 +10,21 @@ import org.junit.Test
 class NetworkPolicyManagerTest {
     @Test
     fun blocksMeteredAndUnknownByDefault() {
-        val metered = NetworkPolicyManager { NetworkStatus(NetworkType.Cellular, true, false, "blocked") }
-        val unknown = NetworkPolicyManager { NetworkStatus(NetworkType.Unknown, false, false, "unknown") }
+        val metered = NetworkPolicyManager {
+            NetworkStatus(NetworkType.Cellular, true, false, false, false, "blocked")
+        }
+        val unknown = NetworkPolicyManager {
+            NetworkStatus(NetworkType.Unknown, false, false, false, false, "unknown")
+        }
         assertFalse(metered.allowTunnelOnCurrentNetwork(allowMetered = false))
         assertFalse(unknown.allowTunnelOnCurrentNetwork(allowMetered = true))
     }
 
     @Test
     fun allowsMeteredWhenOptedIn() {
-        val manager = NetworkPolicyManager { NetworkStatus(NetworkType.MeteredWifi, true, false, "blocked") }
+        val manager = NetworkPolicyManager {
+            NetworkStatus(NetworkType.MeteredWifi, true, false, false, false, "blocked")
+        }
         assertTrue(manager.allowTunnelOnCurrentNetwork(allowMetered = true))
         assertFalse(manager.allowTunnelOnCurrentNetwork(allowMetered = false))
     }
@@ -27,9 +33,9 @@ class NetworkPolicyManagerTest {
     fun transitionsUpdateStatus() {
         val sequence = ArrayDeque(
             listOf(
-                NetworkStatus(NetworkType.UnmeteredWifi, false, true, null),
-                NetworkStatus(NetworkType.MeteredWifi, true, false, "Tunnel blocked by policy"),
-                NetworkStatus(NetworkType.NoNetwork, false, false, "No network"),
+                NetworkStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
+                NetworkStatus(NetworkType.MeteredWifi, true, false, false, false, "Tunnel blocked by policy"),
+                NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
             ),
         )
         val manager = NetworkPolicyManager {

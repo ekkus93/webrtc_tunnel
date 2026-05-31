@@ -357,8 +357,14 @@ fn build_tls_transport(config: &AppConfig) -> Result<Transport, SignalingError> 
         ));
     }
 
-    let ca = fs::read(&config.broker.tls.ca_file)
-        .map_err(|error| SignalingError::io_path(&config.broker.tls.ca_file, error))?;
+    let ca = if config.broker.tls.ca_file.as_os_str().is_empty() {
+        None
+    } else {
+        Some(
+            fs::read(&config.broker.tls.ca_file)
+                .map_err(|error| SignalingError::io_path(&config.broker.tls.ca_file, error))?,
+        )
+    };
     let client_cert_set = !config.broker.tls.client_cert_file.as_os_str().is_empty();
     let client_key_set = !config.broker.tls.client_key_file.as_os_str().is_empty();
     let client_auth = match (client_cert_set, client_key_set) {
@@ -378,7 +384,15 @@ fn build_tls_transport(config: &AppConfig) -> Result<Transport, SignalingError> 
         }
     };
 
-    Ok(Transport::tls(ca, client_auth, None))
+    if let Some(ca) = ca {
+        return Ok(Transport::tls(ca, client_auth, None));
+    }
+    if client_auth.is_some() {
+        return Err(SignalingError::Protocol(
+            "broker TLS client certificate auth requires broker.tls.ca_file in v1".to_owned(),
+        ));
+    }
+    Ok(Transport::tls_with_default_config())
 }
 
 #[derive(Debug)]
@@ -1073,6 +1087,35 @@ mod tests {
         let credentials = options.credentials().expect("credentials");
         assert_eq!(credentials.username, "answer-office");
         assert!(credentials.password.is_empty());
+    }
+
+    #[test]
+    fn build_mqtt_options_supports_default_tls_roots_when_ca_file_is_empty() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp_dir.path().join("password"), "secret\n").expect("password");
+        let mut config = sample_config(temp_dir.path());
+        config.broker.tls.ca_file = PathBuf::new();
+
+        let (options, _qos, _topic) = build_mqtt_options(&config).expect("options build");
+        assert!(matches!(options.transport(), Transport::Tls(_)));
+    }
+
+    #[test]
+    fn build_mqtt_options_rejects_client_cert_without_ca_when_using_default_roots() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp_dir.path().join("password"), "secret\n").expect("password");
+        std::fs::write(temp_dir.path().join("client.crt"), "client cert").expect("client cert");
+        std::fs::write(temp_dir.path().join("client.key"), "client key").expect("client key");
+        let mut config = sample_config(temp_dir.path());
+        config.broker.tls.ca_file = PathBuf::new();
+        config.broker.tls.client_cert_file = temp_dir.path().join("client.crt");
+        config.broker.tls.client_key_file = temp_dir.path().join("client.key");
+
+        assert!(matches!(
+            build_mqtt_options(&config),
+            Err(SignalingError::Protocol(message))
+                if message.contains("requires broker.tls.ca_file")
+        ));
     }
 
     #[test]

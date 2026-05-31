@@ -14,12 +14,15 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
 
 class ConfigRepository(private val context: Context) {
     private val configFile: File get() = File(context.filesDir, "config.toml")
     private val forwardsFile: File get() = File(context.filesDir, "forwards.json")
+    private val setupInputFile: File get() = File(context.filesDir, "setup_input.json")
     val configPath: String get() = configFile.absolutePath
 
     val preferences: Flow<AndroidAppPreferences> = context.dataStore.data.map { prefs ->
@@ -144,6 +147,18 @@ class ConfigRepository(private val context: Context) {
         configFile.writeText(contents)
     }
 
+    fun writeConfigAtomically(contents: String) {
+        configFile.parentFile?.mkdirs()
+        val temp = File(configFile.parentFile, "${configFile.name}.tmp")
+        temp.writeText(contents)
+        Files.move(
+            temp.toPath(),
+            configFile.toPath(),
+            StandardCopyOption.REPLACE_EXISTING,
+            StandardCopyOption.ATOMIC_MOVE,
+        )
+    }
+
     fun loadForwards(): List<ForwardConfig> {
         if (!forwardsFile.exists()) {
             val defaults = listOf(
@@ -169,6 +184,19 @@ class ConfigRepository(private val context: Context) {
         forwardsFile.writeText(Json.encodeToString(forwards))
     }
 
+    fun saveSetupInput(input: SetupConfigInput) {
+        setupInputFile.parentFile?.mkdirs()
+        setupInputFile.writeText(Json.encodeToString(input))
+    }
+
+    fun loadSetupInput(): SetupConfigInput {
+        if (!setupInputFile.exists()) {
+            return SetupConfigInput()
+        }
+        return runCatching { Json.decodeFromString<SetupConfigInput>(setupInputFile.readText()) }
+            .getOrElse { SetupConfigInput() }
+    }
+
     fun upsertForward(forward: ForwardConfig): ValidationResult {
         val updated = loadForwards().toMutableList().apply {
             val index = indexOfFirst { it.id == forward.id }
@@ -191,10 +219,18 @@ class ConfigRepository(private val context: Context) {
     }
 
     fun validateForwards(forwards: List<ForwardConfig>): String? {
+        val duplicateId = forwards.groupBy { it.id }.entries.firstOrNull { it.value.size > 1 }?.key
+        if (duplicateId != null) {
+            return "Duplicate forward id: $duplicateId"
+        }
         val enabled = forwards.filter { it.enabled }
         val duplicatePort = enabled.groupBy { it.localPort }.entries.firstOrNull { it.value.size > 1 }?.key
         if (duplicatePort != null) {
             return "Duplicate enabled local port: $duplicatePort"
+        }
+        val missingRemote = enabled.firstOrNull { it.remoteForwardId.isBlank() }
+        if (missingRemote != null) {
+            return "Remote forward id is required"
         }
         val invalidPort = enabled.firstOrNull { it.localPort !in 1..65535 }
         if (invalidPort != null) {
@@ -312,6 +348,8 @@ class ConfigRepository(private val context: Context) {
         return config
             .replace(Regex("""(?m)^(\s*password_file\s*=\s*).*$"""), "$1\"***REDACTED***\"")
             .replace(Regex("""(?m)^(\s*username\s*=\s*).*$"""), "$1\"***REDACTED***\"")
+            .replace(Regex("""(?m)^(\s*sign\.private\s*=\s*).*$"""), "$1\"***REDACTED***\"")
+            .replace(Regex("""(?m)^(\s*kex\.private\s*=\s*).*$"""), "$1\"***REDACTED***\"")
     }
 
     private object Keys {

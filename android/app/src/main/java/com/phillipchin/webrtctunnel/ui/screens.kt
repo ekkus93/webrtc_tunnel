@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
@@ -45,6 +46,13 @@ import com.phillipchin.webrtctunnel.viewmodel.LogsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.NetworkPolicyViewModel
 import com.phillipchin.webrtctunnel.viewmodel.SettingsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.SetupViewModel
+import android.content.Intent
+import android.net.Uri
+
+private fun forwardStatusText(status: TunnelStatus, forwardId: String): String? {
+    val runtime = status.forwards.firstOrNull { it.id == forwardId } ?: return null
+    return "Runtime: ${runtime.listenState}${runtime.lastError?.let { " (${it})" } ?: ""}"
+}
 
 @Composable
 fun HomeScreen(padding: PaddingValues, vm: HomeViewModel) {
@@ -62,7 +70,9 @@ fun HomeScreen(padding: PaddingValues, vm: HomeViewModel) {
 
 @Composable
 fun ForwardsScreen(padding: PaddingValues, vm: ForwardsViewModel) {
+    val context = LocalContext.current
     val forwards by vm.forwards.collectAsStateWithLifecycle()
+    val status by vm.status.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
     var editId by remember { mutableStateOf<String?>(null) }
@@ -126,8 +136,16 @@ fun ForwardsScreen(padding: PaddingValues, vm: ForwardsViewModel) {
                         Text(forward.name, style = MaterialTheme.typography.titleMedium)
                         Text("${forward.localHost}:${forward.localPort} -> ${forward.remoteForwardId}")
                         Text("Enabled: ${forward.enabled}")
+                        forwardStatusText(status, forward.id)?.let { Text(it) }
                         TextButton(onClick = { clipboard.setText(AnnotatedString(vm.localhostUrl(forward))) }) { Text("Copy URL") }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(vm.localhostUrl(forward)))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    context.startActivity(intent)
+                                },
+                            ) { Text("Open") }
                             OutlinedButton(onClick = { loadForEdit(forward) }) { Text("Edit") }
                             OutlinedButton(onClick = { vm.deleteForward(forward.id) }) { Text("Delete") }
                         }
@@ -256,15 +274,19 @@ fun NetworkPolicyScreen(padding: PaddingValues, vm: NetworkPolicyViewModel) {
     if (showMeteredWarningDialog) {
         AlertDialog(
             onDismissRequest = { showMeteredWarningDialog = false },
-            title = { Text("Allow metered/cellular?") },
-            text = { Text("This can consume significant mobile data. Continue?") },
+            title = { Text("Cellular / Metered Data Warning") },
+            text = {
+                Text(
+                    "WebRTC Tunnel can use a large amount of data. Browser traffic, API calls, SSH sessions, downloads, streaming, llama-server usage, or other forwarded traffic may consume your mobile data plan quickly.\n\nYour carrier may charge overage fees, throttle your connection, or suspend service depending on your plan.\n\nThe app developer is not responsible for carrier charges, throttling, overage fees, or data-plan exhaustion caused by your use of this feature.\n\nOnly enable this if you understand the risk and accept responsibility for any data usage or charges.",
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
                         vm.savePreferences(prefs.copy(allowMetered = true))
                         showMeteredWarningDialog = false
                     },
-                ) { Text("Allow") }
+                ) { Text("I understand — allow cellular/metered tunnels") }
             },
             dismissButton = {
                 TextButton(onClick = { showMeteredWarningDialog = false }) { Text("Cancel") }
@@ -276,6 +298,7 @@ fun NetworkPolicyScreen(padding: PaddingValues, vm: NetworkPolicyViewModel) {
 @Composable
 fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
+    var showPrivateExportWarning by remember { mutableStateOf(false) }
     ScreenSurface(padding) {
         Text("Import / Export", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
@@ -319,20 +342,39 @@ fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
         )
         OutlinedButton(onClick = vm::exportPublicIdentity, modifier = Modifier.fillMaxWidth()) { Text("Export public identity") }
         Spacer(Modifier.height(8.dp))
-        PreferenceSwitch(
-            title = "I understand private key export risks",
-            checked = state.confirmPrivateExportRisk,
-            onToggle = { checked -> vm.updateState { it.copy(confirmPrivateExportRisk = checked) } },
-        )
         OutlinedTextField(
             value = state.privateIdentityExportPath,
             onValueChange = { value -> vm.updateState { it.copy(privateIdentityExportPath = value) } },
             label = { Text("Private identity export path") },
             modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedButton(onClick = vm::exportPrivateIdentity, modifier = Modifier.fillMaxWidth()) { Text("Export private identity") }
+        OutlinedButton(onClick = { showPrivateExportWarning = true }, modifier = Modifier.fillMaxWidth()) { Text("Export private identity") }
         Spacer(Modifier.height(8.dp))
         state.resultMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+    }
+    if (showPrivateExportWarning) {
+        AlertDialog(
+            onDismissRequest = { showPrivateExportWarning = false },
+            title = { Text("Private Identity Export Warning") },
+            text = {
+                Text(
+                    "Anyone with this file can impersonate this phone in your tunnel network.\n\nOnly export it if you understand the risk.",
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { showPrivateExportWarning = false }) { Text("Cancel") }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.exportPrivateIdentity(confirmRisk = true)
+                        showPrivateExportWarning = false
+                    },
+                ) {
+                    Text("Export Private Identity")
+                }
+            },
+        )
     }
 }
 

@@ -33,10 +33,17 @@ class DiagnosticsRepository(
 
     private fun LogEvent.redacted(): LogEvent {
         val cleaned = message
+            .replace(Regex("""(?im)^\s*sign\.private\s*=\s*".*"$"""), "sign.private = \"***REDACTED***\"")
+            .replace(Regex("""(?im)^\s*kex\.private\s*=\s*".*"$"""), "kex.private = \"***REDACTED***\"")
+            .replace(Regex("""(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"""), "***REDACTED_PRIVATE_KEY_BLOCK***")
             .replace(Regex("""(?i)password[^,\s]*\s*=\s*\S+"""), "password=***REDACTED***")
             .replace(Regex("""(?i)token[^,\s]*\s*=\s*\S+"""), "token=***REDACTED***")
+            .replace(Regex("""(?i)bearer\s+[A-Za-z0-9\-\._~\+/]+=*"""), "Bearer ***REDACTED***")
+            .replace(Regex("""(?i)api[_-]?key[^,\s]*\s*=\s*\S+"""), "api_key=***REDACTED***")
             .replace(Regex("""(?i)sdp[:=]\s*.*"""), "sdp=***REDACTED***")
             .replace(Regex("""(?i)candidate[:=]\s*.*"""), "candidate=***REDACTED***")
+            .replace(Regex("""(?i)decrypted[_\s-]?payload[:=]\s*.*"""), "decrypted_payload=***REDACTED***")
+            .replace(Regex("""(?i)forwarded[_\s-]?data[:=]\s*.*"""), "forwarded_data=***REDACTED***")
             .replace(Regex("""(?i)kex_secret\s*=\s*.*"""), "kex_secret=***REDACTED***")
             .replace(Regex("""(?i)signing_key\s*=\s*.*"""), "signing_key=***REDACTED***")
         return copy(message = cleaned)

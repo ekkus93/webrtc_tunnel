@@ -8,6 +8,7 @@ import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -140,5 +141,12 @@ class TunnelRepositoryTest {
         override fun getRecentLogsJson(maxEvents: Int): String = logsJson
 
         override fun validateConfig(configPath: String): ValidationResult = validationResult
+        override fun validateConfigWithIdentity(configPath: String, identityBytes: ByteArray): ValidationResult = validationResult
+        override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
+            IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = identityToml, peer_id = "peer")
+        override fun validatePublicIdentity(line: String): IdentityValidationResult =
+            IdentityValidationResult(valid = true, canonical_public_identity = line.trim(), peer_id = "peer")
+        override fun generateIdentity(peerId: String): IdentityValidationResult =
+            IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = "private", peer_id = peerId)
     }
 }

@@ -68,9 +68,23 @@ class NetworkPolicyManager internal constructor(
     private companion object {
         fun classifyCurrentNetwork(context: Context): NetworkStatus {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val network = cm.activeNetwork ?: return NetworkStatus(NetworkType.NoNetwork, false, false, "No network")
+            val network = cm.activeNetwork ?: return NetworkStatus(
+                networkType = NetworkType.NoNetwork,
+                isMetered = false,
+                allowedByDefault = false,
+                allowedByUserPolicy = false,
+                tunnelAllowed = false,
+                blockReason = "No network",
+            )
             val capabilities = cm.getNetworkCapabilities(network)
-                ?: return NetworkStatus(NetworkType.Unknown, false, false, "Unknown network")
+                ?: return NetworkStatus(
+                    networkType = NetworkType.Unknown,
+                    isMetered = false,
+                    allowedByDefault = false,
+                    allowedByUserPolicy = false,
+                    tunnelAllowed = false,
+                    blockReason = "Unknown network",
+                )
             val metered = cm.isActiveNetworkMetered
             val networkType = when {
                 capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !metered -> NetworkType.UnmeteredWifi
@@ -78,9 +92,17 @@ class NetworkPolicyManager internal constructor(
                 capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkType.Cellular
                 else -> NetworkType.Unknown
             }
-            val allowed = networkType == NetworkType.UnmeteredWifi
-            val reason = if (allowed) null else "Tunnel blocked by policy"
-            return NetworkStatus(networkType, metered, allowed, reason)
+            val allowedByDefault = networkType == NetworkType.UnmeteredWifi
+            val allowedByUserPolicy = allowedByDefault
+            val reason = if (allowedByUserPolicy) null else "Tunnel blocked by policy"
+            return NetworkStatus(
+                networkType = networkType,
+                isMetered = metered,
+                allowedByDefault = allowedByDefault,
+                allowedByUserPolicy = allowedByUserPolicy,
+                tunnelAllowed = allowedByUserPolicy,
+                blockReason = reason,
+            )
         }
     }
 }

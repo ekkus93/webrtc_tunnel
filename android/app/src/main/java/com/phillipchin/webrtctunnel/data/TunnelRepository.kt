@@ -13,6 +13,7 @@ import com.phillipchin.webrtctunnel.model.TunnelError
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -84,12 +85,26 @@ class TunnelRepository(
 
     fun validateConfig(configPath: String): ValidationResult = bridge.validateConfig(configPath)
 
+    fun validateConfigWithIdentity(configPath: String, identityBytes: ByteArray): ValidationResult =
+        bridge.validateConfigWithIdentity(configPath, identityBytes)
+
+    fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
+        bridge.validatePrivateIdentity(identityToml)
+
+    fun validatePublicIdentity(line: String): IdentityValidationResult =
+        bridge.validatePublicIdentity(line)
+
+    fun generateIdentity(peerId: String): IdentityValidationResult =
+        bridge.generateIdentity(peerId)
+
     fun setPolicyBlocked(blockReason: String) {
         _status.value = _status.value.copy(
             serviceState = ServiceState.PausedMeteredBlocked,
             networkStatus = NetworkStatus(
                 networkType = NetworkType.Unknown,
                 isMetered = true,
+                allowedByDefault = false,
+                allowedByUserPolicy = false,
                 tunnelAllowed = false,
                 blockReason = blockReason,
             ),

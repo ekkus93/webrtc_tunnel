@@ -8,6 +8,7 @@ import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.TunnelRepository
 import com.phillipchin.webrtctunnel.model.ForwardConfig
+import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -44,7 +45,14 @@ class AppViewModelsTest {
             configRepository = configRepository,
             tunnelRepository = tunnelRepository,
             networkPolicyManager = NetworkPolicyManager {
-                com.phillipchin.webrtctunnel.model.NetworkStatus(NetworkType.UnmeteredWifi, false, true, null)
+                com.phillipchin.webrtctunnel.model.NetworkStatus(
+                    NetworkType.UnmeteredWifi,
+                    false,
+                    true,
+                    true,
+                    true,
+                    null,
+                )
             },
             identityRepository = IdentityRepository(app, object : IdentityCrypto {
                 override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
@@ -156,5 +164,12 @@ class AppViewModelsTest {
         override fun getRecentLogsJson(maxEvents: Int): String = "[]"
 
         override fun validateConfig(configPath: String): ValidationResult = validationResult
+        override fun validateConfigWithIdentity(configPath: String, identityBytes: ByteArray): ValidationResult = validationResult
+        override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
+            IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = identityToml, peer_id = "android-phone")
+        override fun validatePublicIdentity(line: String): IdentityValidationResult =
+            IdentityValidationResult(valid = true, canonical_public_identity = line.trim(), peer_id = "remote-peer")
+        override fun generateIdentity(peerId: String): IdentityValidationResult =
+            IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = "private", peer_id = peerId)
     }
 }

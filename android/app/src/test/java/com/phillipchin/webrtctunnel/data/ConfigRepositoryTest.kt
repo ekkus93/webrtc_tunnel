@@ -121,6 +121,13 @@ class ConfigRepositoryTest {
     }
 
     @Test
+    fun atomicWriteReplacesConfig() {
+        repository.writeConfig("before")
+        repository.writeConfigAtomically("after")
+        assertEquals("after", repository.readConfig())
+    }
+
+    @Test
     fun forwardsValidationRejectsDuplicateEnabledPorts() {
         val forwards = listOf(
             ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "a", enabled = true),
@@ -152,5 +159,17 @@ class ConfigRepositoryTest {
         assertTrue(text.contains("url = \"mqtts://broker.local:8883\""))
         assertTrue(text.contains("remote_peer_id = \"desktop-peer\""))
         assertTrue(text.contains("listen_port = 8080"))
+    }
+
+    @Test
+    fun setupInputRoundTripPersistsState() {
+        val input = SetupConfigInput(
+            localPeerId = "android-peer",
+            brokerHost = "broker.local",
+            remotePeerId = "desktop-peer",
+            allowMetered = true,
+        )
+        repository.saveSetupInput(input)
+        assertEquals(input, repository.loadSetupInput())
     }
 }

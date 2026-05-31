@@ -29,13 +29,12 @@ class IdentityRepository(
 
     fun readPublicIdentity(): String = if (publicFile.exists()) publicFile.readText() else ""
 
-    fun importPrivateIdentityFromPath(path: String): Result<Unit> = runCatching {
+    fun readPrivateIdentityFile(path: String): Result<String> = runCatching {
         val source = File(path)
         require(source.exists()) { "Identity file not found: $path" }
-        val contents = source.readBytes()
-        require(contents.isNotEmpty()) { "Identity file is empty" }
-        val publicLine = source.readText().lineSequence().firstOrNull { it.contains("peer_id") } ?: ""
-        storeEncryptedIdentity(contents, publicLine)
+        val value = source.readText()
+        require(value.isNotBlank()) { "Identity file is empty" }
+        value
     }
 
     fun appendAuthorizedPublicIdentity(line: String): Result<Unit> = runCatching {
@@ -48,8 +47,14 @@ class IdentityRepository(
         }
         if (existing.add(trimmed)) {
             authorizedKeysFile.parentFile?.mkdirs()
-            authorizedKeysFile.writeText(existing.joinToString("\n"))
+            authorizedKeysFile.writeText(existing.toList().sorted().joinToString("\n"))
         }
+    }
+
+    fun writeAuthorizedPublicIdentities(lines: List<String>) {
+        val unique = lines.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
+        authorizedKeysFile.parentFile?.mkdirs()
+        authorizedKeysFile.writeText(unique.joinToString("\n"))
     }
 
     fun exportPrivateIdentity(outputPath: String, confirmRisk: Boolean): Result<Unit> = runCatching {

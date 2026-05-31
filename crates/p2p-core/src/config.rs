@@ -32,13 +32,39 @@ pub struct AppConfig {
     pub health: HealthConfig,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ConfigValidationOptions {
+    pub require_identity_file: bool,
+}
+
+impl ConfigValidationOptions {
+    pub const fn standard() -> Self {
+        Self { require_identity_file: true }
+    }
+
+    pub const fn with_identity_override() -> Self {
+        Self { require_identity_file: false }
+    }
+}
+
 impl AppConfig {
     pub fn load_from_file(path: &Path) -> Result<Self, ConfigError> {
+        Self::load_from_file_with_options(path, ConfigValidationOptions::standard())
+    }
+
+    pub fn load_from_file_with_identity_override(path: &Path) -> Result<Self, ConfigError> {
+        Self::load_from_file_with_options(path, ConfigValidationOptions::with_identity_override())
+    }
+
+    fn load_from_file_with_options(
+        path: &Path,
+        options: ConfigValidationOptions,
+    ) -> Result<Self, ConfigError> {
         let content =
             fs::read_to_string(path).map_err(|error| ConfigError::io_path(path, error))?;
         let mut config: Self = toml::from_str(&content)?;
         config.expand_paths()?;
-        config.validate()?;
+        config.validate_with_options(options)?;
         Ok(config)
     }
 
@@ -58,6 +84,14 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_with_options(ConfigValidationOptions::standard())
+    }
+
+    pub fn validate_with_identity_override(&self) -> Result<(), ConfigError> {
+        self.validate_with_options(ConfigValidationOptions::with_identity_override())
+    }
+
+    fn validate_with_options(&self, options: ConfigValidationOptions) -> Result<(), ConfigError> {
         if self.format != "p2ptunnel-config-v3" {
             return Err(ConfigError::InvalidConfig(format!(
                 "unsupported config format '{}'",
@@ -128,11 +162,6 @@ impl AppConfig {
             ));
         }
         if self.broker.url.starts_with("mqtts://") {
-            if self.broker.tls.ca_file.as_os_str().is_empty() {
-                return Err(ConfigError::InvalidConfig(
-                    "broker.tls.ca_file must be set for mqtts:// brokers".to_owned(),
-                ));
-            }
             if self.broker.tls.insecure_skip_verify {
                 return Err(ConfigError::InvalidConfig(
                     "broker.tls.insecure_skip_verify is unsupported in v0.2".to_owned(),
@@ -173,9 +202,16 @@ impl AppConfig {
                 "reconnect.local_client_hold_secs is unsupported in v0.2".to_owned(),
             ));
         }
-        validate_required_file(&self.paths.identity, "identity")?;
+        if options.require_identity_file {
+            validate_required_file(&self.paths.identity, "identity")?;
+            validate_non_world_writable(&self.paths.identity, "paths.identity")?;
+        }
         validate_required_file(&self.paths.authorized_keys, "authorized_keys")?;
-        validate_required_file(&self.broker.tls.ca_file, "broker.tls.ca_file")?;
+        validate_optional_file(
+            &self.broker.tls.ca_file,
+            "broker.tls.ca_file",
+            !self.broker.tls.ca_file.as_os_str().is_empty(),
+        )?;
         validate_optional_file(
             &self.broker.password_file,
             "broker.password_file",
@@ -191,13 +227,14 @@ impl AppConfig {
             "broker.tls.client_key_file",
             !self.broker.tls.client_key_file.as_os_str().is_empty(),
         )?;
-        validate_non_world_writable(&self.paths.identity, "paths.identity")?;
         validate_non_world_writable(&self.paths.authorized_keys, "paths.authorized_keys")?;
         validate_non_world_writable(&self.paths.state_dir, "paths.state_dir")?;
         validate_non_world_writable(&self.paths.log_dir, "paths.log_dir")?;
         validate_non_world_writable(&self.logging.log_file, "logging.log_file")?;
         validate_non_world_writable(&self.health.status_file, "health.status_file")?;
-        validate_non_world_writable(&self.broker.tls.ca_file, "broker.tls.ca_file")?;
+        if !self.broker.tls.ca_file.as_os_str().is_empty() {
+            validate_non_world_writable(&self.broker.tls.ca_file, "broker.tls.ca_file")?;
+        }
         if !self.broker.password_file.as_os_str().is_empty() {
             validate_non_world_writable(&self.broker.password_file, "broker.password_file")?;
         }
@@ -383,6 +420,7 @@ pub struct BrokerConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrokerTlsConfig {
+    #[serde(default)]
     pub ca_file: PathBuf,
     pub client_cert_file: PathBuf,
     pub client_key_file: PathBuf,
@@ -1109,6 +1147,40 @@ status_file = "{status_file}"
         let config_path = temp_dir.path().join("config.toml");
         fs::write(&config_path, config).expect("write config");
         AppConfig::load_from_file(&config_path).expect("username-only config");
+    }
+
+    #[test]
+    fn config_allows_mqtts_without_explicit_ca_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::create_dir_all(state_dir.join("log")).expect("create state dir");
+        write_required_files(&config_dir);
+
+        let config = sample_config(&config_dir, &state_dir)
+            .replace(&format!("ca_file = \"{}\"", config_dir.join("ca.crt").display()), "");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, config).expect("write config");
+        AppConfig::load_from_file(&config_path).expect("default-root TLS config");
+    }
+
+    #[test]
+    fn load_with_identity_override_does_not_require_identity_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_dir = temp_dir.path().join("config");
+        let state_dir = temp_dir.path().join("state");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::create_dir_all(state_dir.join("log")).expect("create state dir");
+        write_required_files(&config_dir);
+        fs::remove_file(config_dir.join("identity")).expect("remove identity");
+
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, offer_config(&config_dir, &state_dir)).expect("write config");
+
+        assert!(AppConfig::load_from_file(&config_path).is_err());
+        AppConfig::load_from_file_with_identity_override(&config_path)
+            .expect("identity override should allow loading without paths.identity");
     }
 
     #[test]

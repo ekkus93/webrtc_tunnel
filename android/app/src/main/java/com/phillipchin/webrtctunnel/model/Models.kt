@@ -53,6 +53,8 @@ data class ForwardStatus(
 data class NetworkStatus(
     val networkType: NetworkType,
     val isMetered: Boolean,
+    val allowedByDefault: Boolean,
+    val allowedByUserPolicy: Boolean,
     val tunnelAllowed: Boolean,
     val blockReason: String? = null,
 )
@@ -108,7 +110,13 @@ data class TunnelStatus(
     val activeSessionCount: Int = 0,
     val sessionCapacity: Int? = null,
     val uptimeSeconds: Long? = null,
-    val networkStatus: NetworkStatus = NetworkStatus(NetworkType.NoNetwork, false, false),
+    val networkStatus: NetworkStatus = NetworkStatus(
+        networkType = NetworkType.NoNetwork,
+        isMetered = false,
+        allowedByDefault = false,
+        allowedByUserPolicy = false,
+        tunnelAllowed = false,
+    ),
     val forwards: List<ForwardStatus> = emptyList(),
     val lastError: TunnelError? = null,
 )
@@ -117,6 +125,15 @@ data class TunnelStatus(
 data class ValidationResult(
     val valid: Boolean,
     val message: String? = null,
+)
+
+@Serializable
+data class IdentityValidationResult(
+    val valid: Boolean,
+    val message: String? = null,
+    val canonical_public_identity: String? = null,
+    val canonical_private_identity: String? = null,
+    val peer_id: String? = null,
 )
 
 @Serializable

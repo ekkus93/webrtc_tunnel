@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import java.io.File
 
 enum class SetupStep {
     Mode,
@@ -32,6 +33,7 @@ data class SetupWizardState(
     val input: SetupConfigInput = SetupConfigInput(),
     val importIdentityPath: String = "",
     val importPublicIdentity: String = "",
+    val localPublicIdentity: String = "",
     val errorMessage: String? = null,
     val saveResult: String? = null,
 )
@@ -44,7 +46,6 @@ data class ImportExportState(
     val publicIdentityExportPath: String = "",
     val privateIdentityExportPath: String = "",
     val diagnosticsExportPath: String = "",
-    val confirmPrivateExportRisk: Boolean = false,
     val resultMessage: String? = null,
 )
 
@@ -91,6 +92,27 @@ class SetupViewModel(private val deps: AppDependencies) : ViewModel() {
         _state.value = _state.value.copy(importPublicIdentity = value, errorMessage = null)
     }
 
+    fun generateIdentity() {
+        val current = _state.value
+        val generated = deps.tunnelRepository.generateIdentity(current.input.localPeerId)
+        if (!generated.valid) {
+            _state.value = current.copy(errorMessage = generated.message ?: "Identity generation failed")
+            return
+        }
+        val privateIdentity = generated.canonical_private_identity
+        val publicIdentity = generated.canonical_public_identity
+        if (privateIdentity.isNullOrBlank() || publicIdentity.isNullOrBlank()) {
+            _state.value = current.copy(errorMessage = "Identity generation returned incomplete data")
+            return
+        }
+        deps.identityRepository.storeEncryptedIdentity(privateIdentity.toByteArray(), publicIdentity)
+        _state.value = current.copy(
+            localPublicIdentity = publicIdentity,
+            errorMessage = null,
+            saveResult = "Identity generated",
+        )
+    }
+
     fun goBack() {
         val current = _state.value.currentStep
         val index = steps.indexOf(current)
@@ -123,8 +145,9 @@ class SetupViewModel(private val deps: AppDependencies) : ViewModel() {
             _state.value = current.copy(errorMessage = validationError, saveResult = null)
             return
         }
-        if (current.importIdentityPath.isNotBlank()) {
-            val imported = deps.identityRepository.importPrivateIdentityFromPath(current.importIdentityPath)
+
+        val importedIdentity = if (current.importIdentityPath.isNotBlank()) {
+            val imported = importPrivateIdentity(current.importIdentityPath)
             if (imported.isFailure) {
                 _state.value = current.copy(
                     errorMessage = imported.exceptionOrNull()?.message ?: "Failed importing private identity",
@@ -132,9 +155,20 @@ class SetupViewModel(private val deps: AppDependencies) : ViewModel() {
                 )
                 return
             }
+            imported.getOrNull()
+        } else {
+            runCatching {
+                val bytes = deps.identityRepository.readEncryptedIdentity()
+                bytes to deps.identityRepository.readPublicIdentity()
+            }.getOrNull()
+        }
+        val identityBytes = importedIdentity?.first
+        if (identityBytes == null || identityBytes.isEmpty()) {
+            _state.value = current.copy(errorMessage = "Private identity is required", saveResult = null)
+            return
         }
         if (current.importPublicIdentity.isNotBlank()) {
-            val imported = deps.identityRepository.appendAuthorizedPublicIdentity(current.importPublicIdentity)
+            val imported = importPublicIdentity(current.importPublicIdentity)
             if (imported.isFailure) {
                 _state.value = current.copy(
                     errorMessage = imported.exceptionOrNull()?.message ?: "Failed importing public identity",
@@ -143,7 +177,14 @@ class SetupViewModel(private val deps: AppDependencies) : ViewModel() {
                 return
             }
         }
-        deps.configRepository.writeConfig(deps.configRepository.renderOfferConfig(input, forwards))
+        val candidate = deps.configRepository.renderOfferConfig(input, forwards)
+        val result = validateCandidateConfig(candidate, identityBytes)
+        if (!result.valid) {
+            _state.value = current.copy(errorMessage = result.message ?: "Config validation failed", saveResult = null)
+            return
+        }
+        deps.configRepository.writeConfigAtomically(candidate)
+        deps.configRepository.saveSetupInput(input)
         runBlocking {
             val existing = deps.configRepository.preferences.first()
             deps.configRepository.savePreferences(
@@ -153,12 +194,55 @@ class SetupViewModel(private val deps: AppDependencies) : ViewModel() {
                 ),
             )
         }
-        val result = validateConfig()
-        if (!result.valid) {
-            _state.value = current.copy(errorMessage = result.message ?: "Config validation failed", saveResult = null)
+        _state.value = current.copy(
+            localPublicIdentity = importedIdentity?.second ?: current.localPublicIdentity,
+            errorMessage = null,
+            saveResult = "Configuration saved",
+        )
+    }
+
+    fun startTunnelFromReview() {
+        saveAndApplyConfig()
+        val latest = _state.value
+        if (latest.errorMessage != null) {
             return
         }
-        _state.value = current.copy(errorMessage = null, saveResult = "Configuration saved")
+        ContextCompat.startForegroundService(
+            deps.context,
+            Intent(deps.context, TunnelForegroundService::class.java)
+                .setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
+        _state.value = latest.copy(saveResult = "Tunnel start requested")
+    }
+
+    private fun importPrivateIdentity(path: String): Result<Pair<ByteArray, String>> = runCatching {
+        val privateIdentity = deps.identityRepository.readPrivateIdentityFile(path).getOrThrow()
+        val validated = deps.tunnelRepository.validatePrivateIdentity(privateIdentity)
+        require(validated.valid) { validated.message ?: "Invalid private identity" }
+        val canonicalPrivate = validated.canonical_private_identity ?: privateIdentity
+        val canonicalPublic = validated.canonical_public_identity
+            ?: throw IllegalArgumentException("Missing canonical public identity")
+        deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
+        canonicalPrivate.toByteArray() to canonicalPublic
+    }
+
+    private fun importPublicIdentity(line: String): Result<Unit> = runCatching {
+        val validated = deps.tunnelRepository.validatePublicIdentity(line)
+        require(validated.valid) { validated.message ?: "Invalid public identity" }
+        deps.identityRepository.appendAuthorizedPublicIdentity(
+            validated.canonical_public_identity ?: line.trim(),
+        ).getOrThrow()
+    }
+
+    private fun validateCandidateConfig(candidate: String, identityBytes: ByteArray): ValidationResult {
+        val temp = File(deps.context.cacheDir, "config-candidate.toml")
+        return runCatching {
+            temp.parentFile?.mkdirs()
+            temp.writeText(candidate)
+            deps.tunnelRepository.validateConfigWithIdentity(temp.absolutePath, identityBytes)
+        }.getOrElse { ValidationResult(false, it.message) }.also {
+            temp.delete()
+        }
     }
 
     private fun validateStep(step: SetupStep, state: SetupWizardState): String? {
@@ -167,7 +251,11 @@ class SetupViewModel(private val deps: AppDependencies) : ViewModel() {
             SetupStep.Mode -> null
             SetupStep.Identity -> {
                 val hasStored = deps.identityRepository.hasEncryptedIdentity()
-                if (!hasStored && state.importIdentityPath.isBlank()) "Import a private identity to continue" else null
+                if (!hasStored && state.importIdentityPath.isBlank() && state.localPublicIdentity.isBlank()) {
+                    "Import or generate a private identity to continue"
+                } else {
+                    null
+                }
             }
             SetupStep.Broker -> when {
                 input.brokerHost.isBlank() -> "Broker host is required"
@@ -204,22 +292,61 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
     }
 
     fun saveForward(forward: ForwardConfig) {
+        val before = deps.configRepository.loadForwards()
         val result = deps.configRepository.upsertForward(forward)
-        if (result.valid) {
-            reload()
-            _message.value = "Forward saved"
-        } else {
+        if (!result.valid) {
             _message.value = result.message ?: "Forward update failed"
+            return
         }
+        val sync = regenerateActiveConfig()
+        if (!sync.valid) {
+            deps.configRepository.saveForwards(before)
+            reload()
+            _message.value = sync.message ?: "Forward update failed"
+            return
+        }
+        reload()
+        _message.value = "Forward saved"
     }
 
     fun deleteForward(forwardId: String) {
+        val before = deps.configRepository.loadForwards()
         deps.configRepository.deleteForward(forwardId)
+        val sync = regenerateActiveConfig()
+        if (!sync.valid) {
+            deps.configRepository.saveForwards(before)
+            reload()
+            _message.value = sync.message ?: "Forward delete failed"
+            return
+        }
         reload()
         _message.value = "Forward deleted"
     }
 
     fun localhostUrl(forward: ForwardConfig): String = "http://${forward.localHost}:${forward.localPort}"
+
+    private fun regenerateActiveConfig(): ValidationResult {
+        val input = deps.configRepository.loadSetupInput()
+        val forwards = deps.configRepository.loadForwards().filter { it.enabled }
+        val candidate = deps.configRepository.renderOfferConfig(input, forwards)
+        val temp = File(deps.context.cacheDir, "config-forwards-candidate.toml")
+        val identity = runCatching { deps.identityRepository.readEncryptedIdentity() }.getOrNull()
+        return runCatching {
+            temp.parentFile?.mkdirs()
+            temp.writeText(candidate)
+            val result = if (identity != null && identity.isNotEmpty()) {
+                deps.tunnelRepository.validateConfigWithIdentity(temp.absolutePath, identity)
+            } else {
+                deps.tunnelRepository.validateConfig(temp.absolutePath)
+            }
+            if (result.valid) {
+                deps.configRepository.writeConfigAtomically(candidate)
+            }
+            result
+        }.getOrElse { ValidationResult(false, it.message) }.also {
+            temp.delete()
+        }
+    }
 }
 
 class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
@@ -287,9 +414,19 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         runCatching {
             val source = java.io.File(path)
             require(source.exists()) { "Config file not found" }
-            deps.configRepository.writeConfig(source.readText())
-            val validation = deps.tunnelRepository.validateConfig(deps.configRepository.configPath)
+            val candidate = source.readText()
+            val temp = File(deps.context.cacheDir, "config-import-candidate.toml")
+            temp.parentFile?.mkdirs()
+            temp.writeText(candidate)
+            val identity = runCatching { deps.identityRepository.readEncryptedIdentity() }.getOrNull()
+            val validation = if (identity != null && identity.isNotEmpty()) {
+                deps.tunnelRepository.validateConfigWithIdentity(temp.absolutePath, identity)
+            } else {
+                deps.tunnelRepository.validateConfig(temp.absolutePath)
+            }
             require(validation.valid) { validation.message ?: "Config validation failed" }
+            deps.configRepository.writeConfigAtomically(candidate)
+            temp.delete()
         }.onSuccess {
             _state.value = _state.value.copy(resultMessage = "Config imported")
         }.onFailure {
@@ -298,15 +435,35 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
     }
 
     fun importPrivateIdentity() {
-        deps.identityRepository.importPrivateIdentityFromPath(_state.value.privateIdentityImportPath.trim())
-            .onSuccess { _state.value = _state.value.copy(resultMessage = "Private identity imported") }
-            .onFailure { _state.value = _state.value.copy(resultMessage = it.message ?: "Private identity import failed") }
+        runCatching {
+            val privateIdentity = deps.identityRepository
+                .readPrivateIdentityFile(_state.value.privateIdentityImportPath.trim())
+                .getOrThrow()
+            val validated = deps.tunnelRepository.validatePrivateIdentity(privateIdentity)
+            require(validated.valid) { validated.message ?: "Invalid private identity" }
+            deps.identityRepository.storeEncryptedIdentity(
+                (validated.canonical_private_identity ?: privateIdentity).toByteArray(),
+                validated.canonical_public_identity ?: throw IllegalArgumentException("Missing canonical public identity"),
+            )
+        }.onSuccess {
+            _state.value = _state.value.copy(resultMessage = "Private identity imported")
+        }.onFailure {
+            _state.value = _state.value.copy(resultMessage = it.message ?: "Private identity import failed")
+        }
     }
 
     fun importPublicIdentity() {
-        deps.identityRepository.appendAuthorizedPublicIdentity(_state.value.publicIdentityLine)
-            .onSuccess { _state.value = _state.value.copy(resultMessage = "Public identity imported") }
-            .onFailure { _state.value = _state.value.copy(resultMessage = it.message ?: "Public identity import failed") }
+        runCatching {
+            val validated = deps.tunnelRepository.validatePublicIdentity(_state.value.publicIdentityLine)
+            require(validated.valid) { validated.message ?: "Invalid public identity" }
+            deps.identityRepository.appendAuthorizedPublicIdentity(
+                validated.canonical_public_identity ?: _state.value.publicIdentityLine.trim(),
+            ).getOrThrow()
+        }.onSuccess {
+            _state.value = _state.value.copy(resultMessage = "Public identity imported")
+        }.onFailure {
+            _state.value = _state.value.copy(resultMessage = it.message ?: "Public identity import failed")
+        }
     }
 
     fun exportConfig() {
@@ -315,7 +472,7 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
             output.parentFile?.mkdirs()
             output.writeText(deps.configRepository.readConfig())
         }.onSuccess {
-            _state.value = _state.value.copy(resultMessage = "Config exported")
+            _state.value = _state.value.copy(resultMessage = "Raw config exported (may contain secrets)")
         }.onFailure {
             _state.value = _state.value.copy(resultMessage = it.message ?: "Config export failed")
         }
@@ -327,11 +484,11 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
             .onFailure { _state.value = _state.value.copy(resultMessage = it.message ?: "Public identity export failed") }
     }
 
-    fun exportPrivateIdentity() {
+    fun exportPrivateIdentity(confirmRisk: Boolean) {
         val current = _state.value
         deps.identityRepository.exportPrivateIdentity(
             outputPath = current.privateIdentityExportPath.trim(),
-            confirmRisk = current.confirmPrivateExportRisk,
+            confirmRisk = confirmRisk,
         ).onSuccess {
             _state.value = _state.value.copy(resultMessage = "Private identity exported")
         }.onFailure {

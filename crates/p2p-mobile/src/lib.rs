@@ -7,10 +7,21 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jint, jlong, jstring};
+use p2p_crypto::{IdentityFile, PublicIdentity, generate_identity};
+use serde::Serialize;
 
 pub use runtime::{
     AndroidRuntimeStatus, AndroidTunnelController, AndroidTunnelMode, AndroidValidationResult,
 };
+
+#[derive(Serialize)]
+struct IdentityValidationResult {
+    valid: bool,
+    message: Option<String>,
+    canonical_public_identity: Option<String>,
+    canonical_private_identity: Option<String>,
+    peer_id: Option<String>,
+}
 
 fn into_c_string(value: String) -> *mut c_char {
     match CString::new(value) {
@@ -214,6 +225,133 @@ pub unsafe extern "C" fn p2ptunnel_validate_config(config_path: *const c_char) -
 #[unsafe(no_mangle)]
 /// # Safety
 ///
+/// `config_path` must point to a valid NUL-terminated UTF-8 string.
+/// `identity_ptr` must be valid for `identity_len` bytes and contain UTF-8 TOML.
+pub unsafe extern "C" fn p2ptunnel_validate_config_with_identity(
+    config_path: *const c_char,
+    identity_ptr: *const u8,
+    identity_len: usize,
+) -> *mut c_char {
+    catch_api_string(|| {
+        if config_path.is_null() {
+            return Err("config path was null".to_owned());
+        }
+        if identity_ptr.is_null() {
+            return Err("identity bytes pointer was null".to_owned());
+        }
+        // SAFETY: caller guarantees valid NUL-terminated config path string.
+        let config_path = unsafe { std::ffi::CStr::from_ptr(config_path) }
+            .to_str()
+            .map_err(|error| format!("invalid config path: {error}"))?;
+        // SAFETY: caller guarantees pointer and length validity for this call.
+        let identity_bytes = unsafe { std::slice::from_raw_parts(identity_ptr, identity_len) };
+        let identity_toml = std::str::from_utf8(identity_bytes)
+            .map_err(|error| format!("identity bytes were not valid UTF-8: {error}"))?;
+        let result =
+            AndroidTunnelController::validate_config_with_identity(config_path, identity_toml);
+        serde_json::to_string(&result).map_err(|error| error.to_string())
+    })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `identity_toml` must point to a valid NUL-terminated UTF-8 string.
+pub unsafe extern "C" fn p2ptunnel_validate_private_identity(
+    identity_toml: *const c_char,
+) -> *mut c_char {
+    catch_api_string(|| {
+        if identity_toml.is_null() {
+            return Err("identity text was null".to_owned());
+        }
+        // SAFETY: caller guarantees valid NUL-terminated identity string.
+        let identity_toml = unsafe { std::ffi::CStr::from_ptr(identity_toml) }
+            .to_str()
+            .map_err(|error| format!("identity text was not valid UTF-8: {error}"))?;
+        let payload = match IdentityFile::from_toml(identity_toml) {
+            Ok(identity) => IdentityValidationResult {
+                valid: true,
+                message: None,
+                canonical_public_identity: Some(identity.public_identity().render()),
+                canonical_private_identity: Some(identity.render_toml()),
+                peer_id: Some(identity.peer_id.to_string()),
+            },
+            Err(error) => IdentityValidationResult {
+                valid: false,
+                message: Some(error.to_string()),
+                canonical_public_identity: None,
+                canonical_private_identity: None,
+                peer_id: None,
+            },
+        };
+        serde_json::to_string(&payload).map_err(|error| error.to_string())
+    })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `public_identity` must point to a valid NUL-terminated UTF-8 string.
+pub unsafe extern "C" fn p2ptunnel_validate_public_identity(
+    public_identity: *const c_char,
+) -> *mut c_char {
+    catch_api_string(|| {
+        if public_identity.is_null() {
+            return Err("public identity text was null".to_owned());
+        }
+        // SAFETY: caller guarantees valid NUL-terminated public identity string.
+        let public_identity = unsafe { std::ffi::CStr::from_ptr(public_identity) }
+            .to_str()
+            .map_err(|error| format!("public identity text was not valid UTF-8: {error}"))?;
+        let normalized = public_identity.replace("\r\n", "\n").trim().to_owned();
+        let payload = match PublicIdentity::parse(&normalized) {
+            Ok(identity) => IdentityValidationResult {
+                valid: true,
+                message: None,
+                canonical_public_identity: Some(identity.render()),
+                canonical_private_identity: None,
+                peer_id: Some(identity.peer_id.to_string()),
+            },
+            Err(error) => IdentityValidationResult {
+                valid: false,
+                message: Some(error.to_string()),
+                canonical_public_identity: None,
+                canonical_private_identity: None,
+                peer_id: None,
+            },
+        };
+        serde_json::to_string(&payload).map_err(|error| error.to_string())
+    })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `peer_id` must point to a valid NUL-terminated UTF-8 string.
+pub unsafe extern "C" fn p2ptunnel_generate_identity(peer_id: *const c_char) -> *mut c_char {
+    catch_api_string(|| {
+        if peer_id.is_null() {
+            return Err("peer_id was null".to_owned());
+        }
+        // SAFETY: caller guarantees valid NUL-terminated peer_id string.
+        let peer_id = unsafe { std::ffi::CStr::from_ptr(peer_id) }
+            .to_str()
+            .map_err(|error| format!("peer_id was not valid UTF-8: {error}"))?;
+        let generated = generate_identity(peer_id).map_err(|error| error.to_string())?;
+        let payload = IdentityValidationResult {
+            valid: true,
+            message: None,
+            canonical_public_identity: Some(generated.public_identity.render()),
+            canonical_private_identity: Some(generated.identity.render_toml()),
+            peer_id: Some(generated.identity.peer_id.to_string()),
+        };
+        serde_json::to_string(&payload).map_err(|error| error.to_string())
+    })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
 /// `ptr` must have been returned by one of the bridge string functions and must
 /// not be used after this call.
 pub unsafe extern "C" fn p2ptunnel_free_string(ptr: *mut c_char) {
@@ -388,6 +526,158 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_native
         return std::ptr::null_mut();
     }
     // SAFETY: the pointer was allocated by `p2ptunnel_validate_config`.
+    let value = unsafe { CString::from_raw(ptr) }
+        .into_string()
+        .unwrap_or_else(|_| r#"{"valid":false,"message":"invalid utf-8"}"#.to_owned());
+    to_jstring(&mut env, value)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_nativeValidateConfigWithIdentity(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    config_path: JString<'_>,
+    identity_bytes: jni::objects::JByteArray<'_>,
+) -> jstring {
+    let config_path = match env.get_string(&config_path) {
+        Ok(value) => value.to_string_lossy().into_owned(),
+        Err(error) => {
+            return to_jstring(
+                &mut env,
+                serde_json::json!({"valid": false, "message": error.to_string()}).to_string(),
+            );
+        }
+    };
+    let identity = match env.convert_byte_array(&identity_bytes) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return to_jstring(
+                &mut env,
+                serde_json::json!({"valid": false, "message": error.to_string()}).to_string(),
+            );
+        }
+    };
+    let c_path = match CString::new(config_path) {
+        Ok(value) => value,
+        Err(error) => {
+            return to_jstring(
+                &mut env,
+                serde_json::json!({"valid": false, "message": error.to_string()}).to_string(),
+            );
+        }
+    };
+    let ptr = unsafe {
+        p2ptunnel_validate_config_with_identity(c_path.as_ptr(), identity.as_ptr(), identity.len())
+    };
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: pointer allocated by `p2ptunnel_validate_config_with_identity`.
+    let value = unsafe { CString::from_raw(ptr) }
+        .into_string()
+        .unwrap_or_else(|_| r#"{"valid":false,"message":"invalid utf-8"}"#.to_owned());
+    to_jstring(&mut env, value)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_nativeValidatePrivateIdentity(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    private_identity_toml: JString<'_>,
+) -> jstring {
+    let identity = match env.get_string(&private_identity_toml) {
+        Ok(value) => value.to_string_lossy().into_owned(),
+        Err(error) => {
+            return to_jstring(
+                &mut env,
+                serde_json::json!({"valid": false, "message": error.to_string()}).to_string(),
+            );
+        }
+    };
+    let c_identity = match CString::new(identity) {
+        Ok(value) => value,
+        Err(error) => {
+            return to_jstring(
+                &mut env,
+                serde_json::json!({"valid": false, "message": error.to_string()}).to_string(),
+            );
+        }
+    };
+    let ptr = unsafe { p2ptunnel_validate_private_identity(c_identity.as_ptr()) };
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: pointer allocated by `p2ptunnel_validate_private_identity`.
+    let value = unsafe { CString::from_raw(ptr) }
+        .into_string()
+        .unwrap_or_else(|_| r#"{"valid":false,"message":"invalid utf-8"}"#.to_owned());
+    to_jstring(&mut env, value)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_nativeValidatePublicIdentity(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    public_identity_line: JString<'_>,
+) -> jstring {
+    let line = match env.get_string(&public_identity_line) {
+        Ok(value) => value.to_string_lossy().into_owned(),
+        Err(error) => {
+            return to_jstring(
+                &mut env,
+                serde_json::json!({"valid": false, "message": error.to_string()}).to_string(),
+            );
+        }
+    };
+    let c_line = match CString::new(line) {
+        Ok(value) => value,
+        Err(error) => {
+            return to_jstring(
+                &mut env,
+                serde_json::json!({"valid": false, "message": error.to_string()}).to_string(),
+            );
+        }
+    };
+    let ptr = unsafe { p2ptunnel_validate_public_identity(c_line.as_ptr()) };
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: pointer allocated by `p2ptunnel_validate_public_identity`.
+    let value = unsafe { CString::from_raw(ptr) }
+        .into_string()
+        .unwrap_or_else(|_| r#"{"valid":false,"message":"invalid utf-8"}"#.to_owned());
+    to_jstring(&mut env, value)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_nativeGenerateIdentity(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    peer_id: JString<'_>,
+) -> jstring {
+    let peer_id = match env.get_string(&peer_id) {
+        Ok(value) => value.to_string_lossy().into_owned(),
+        Err(error) => {
+            return to_jstring(
+                &mut env,
+                serde_json::json!({"valid": false, "message": error.to_string()}).to_string(),
+            );
+        }
+    };
+    let c_peer_id = match CString::new(peer_id) {
+        Ok(value) => value,
+        Err(error) => {
+            return to_jstring(
+                &mut env,
+                serde_json::json!({"valid": false, "message": error.to_string()}).to_string(),
+            );
+        }
+    };
+    let ptr = unsafe { p2ptunnel_generate_identity(c_peer_id.as_ptr()) };
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: pointer allocated by `p2ptunnel_generate_identity`.
     let value = unsafe { CString::from_raw(ptr) }
         .into_string()
         .unwrap_or_else(|_| r#"{"valid":false,"message":"invalid utf-8"}"#.to_owned());

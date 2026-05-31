@@ -50,3 +50,13 @@
 
 ## 2026-05-31T06:52:21Z - GPT-5.3-Codex - Added responses11 handoff questions
 - Reviewed `docs/ANDROID_FIX_SPEC_2.md` and `docs/ANDROID_FIX_TODO_2.md` and captured open implementation questions/issues in `docs/responses11.md` for ChatGPT 5.5 alignment.
+
+## 2026-05-31T06:55:34Z - GPT-5.3-Codex - Applied replies11 implementation decisions
+- Read `docs/replies11.md`; decisions frozen for next implementation pass: use TLS Option A (optional/missing `ca_file` with system roots), keep in-memory identity handoff as default with tightly-guarded emergency temp fallback only, and strictly reset/re-prove checklist items under TODO_2.
+- Additional constraints from replies: desktop Rust parser is authoritative for public identity import (only whitespace normalization allowed), `Unknown` network remains blocked always, private export requires explicit modal confirmation, and E2E Android↔desktop acceptance can only be checked when actually run and documented.
+- Phase-0 audit scope confirmed to include `ANDROID_WEBRTC_TUNNEL_TODO.md`, `ANDROID_FIX_TODO1.md`, and `ANDROID_FIX_TODO_2.md`; priority order starts with Rust config compatibility and identity startup correctness before UI polish.
+
+## 2026-05-31T07:13:32Z - GPT-5.3-Codex - Completed ANDROID_FIX_TODO_2 implementation and validation
+- Finalized TODO2 implementation across Rust mobile/runtime validation paths and Android setup/forwards/network/import-export/diagnostics flows.
+- Added `docs/ANDROID_VALIDATION.md` with recorded command results and environment details.
+- Validation pass succeeded for Rust workspace checks/tests, Android native `cargo ndk` build, and Android `lintDebug`, `testDebugUnitTest`, and `connectedDebugAndroidTest`; APK confirms both `arm64-v8a` and `x86_64` `libp2p_mobile.so`.

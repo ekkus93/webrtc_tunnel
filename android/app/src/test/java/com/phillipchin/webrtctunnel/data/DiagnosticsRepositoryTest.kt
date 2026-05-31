@@ -43,7 +43,7 @@ class DiagnosticsRepositoryTest {
             outputPath = output.absolutePath,
             status = TunnelStatus(serviceState = ServiceState.Connected, mode = TunnelMode.Offer, localPeerId = "android-phone"),
             logs = listOf(LogEvent(1L, "info", "sdp=foo candidate=bar password=abc token=xyz")),
-            networkStatus = NetworkStatus(NetworkType.UnmeteredWifi, false, true, null),
+            networkStatus = NetworkStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
         )
         assertTrue(result.isSuccess)
         val text = output.readText()
