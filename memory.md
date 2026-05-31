@@ -617,3 +617,9 @@
 - Completed remaining UI polish implementation across Home, Setup Wizard, Logs, Settings, and Import/Export flows (including mode cards, identity picker import, review summary cards, diagnostics sharing, reset configuration action, temporary metered allow action, status/network icon presentation, and forward validation hardening).
 - Added/updated validation coverage where touched (including forward-name validation test) and reran full Rust+Android gates successfully after each major phase and at final tip.
 - `docs/ANDROID_UI_POLISH_TODO.md` is now fully checked with no remaining open checklist items.
+
+## 2026-05-31T21:25:16Z - GPT-5.3-Codex - ANDROID_UI_FIX_TODO2 finalized and pushed
+- Closed the final ANDROID_UI_FIX_TODO2 gaps by fixing add-forward defaults (`name=""`, `remoteForwardId=""`, suggested free local port) and adding `FlowScreensTest` coverage for the default draft behavior.
+- Updated `docs/ANDROID_UI_FIX_TODO2.md` to fully checked status, including manual mockup comparison with documented intentional UI differences.
+- Re-ran full validation successfully: Android `testDebugUnitTest`, `lintDebug`, `assembleDebug`, `connectedDebugAndroidTest`; Rust `cargo fmt --check`, strict workspace clippy, and workspace tests.
+- Committed and pushed final completion on branch `android-app` in commit `ca45fdd`.
