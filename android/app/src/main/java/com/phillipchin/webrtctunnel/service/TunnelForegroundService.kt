@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
@@ -39,6 +40,7 @@ class TunnelForegroundService : Service() {
     private var startupJob: Job? = null
     private var lastMode: TunnelMode = TunnelMode.Offer
     private var pausedByPolicy: Boolean = false
+    private var lifecycleGeneration: Long = 0
     private val lifecycleMutex = Mutex()
 
     override fun onCreate() {
@@ -81,7 +83,10 @@ class TunnelForegroundService : Service() {
         when (intent.action) {
             ACTION_START_OFFER -> serviceScope.launch { startOffer() }
             ACTION_START_ANSWER -> {
-                publishError("Answer mode is not available in Android v1")
+                publishError(
+                    message = "Answer mode is not available in Android v1",
+                    code = "answer_mode_disabled",
+                )
                 stopSelf(startId)
             }
             ACTION_STOP -> {
@@ -95,6 +100,7 @@ class TunnelForegroundService : Service() {
     }
 
     private suspend fun startOffer() {
+        var generation = 0L
         lifecycleMutex.withLock {
             if (startupJob?.isActive == true) {
                 publishStatus("Tunnel startup already in progress")
@@ -105,14 +111,19 @@ class TunnelForegroundService : Service() {
                 publishStatus("Tunnel already running")
                 return
             }
+            lifecycleGeneration += 1
+            generation = lifecycleGeneration
             startupJob = serviceScope.launch {
-                doStartOffer()
+                doStartOffer(generation)
             }
             startupJob?.invokeOnCompletion { startupJob = null }
         }
+        if (generation == 0L) {
+            return
+        }
     }
 
-    private suspend fun doStartOffer() {
+    private suspend fun doStartOffer(startGeneration: Long) {
         lastMode = TunnelMode.Offer
         startForeground(NOTIFICATION_ID, loadingNotification("Starting tunnel"))
         val prefs = withContext(Dispatchers.IO) { configRepository.preferences.first() }
@@ -144,37 +155,41 @@ class TunnelForegroundService : Service() {
             )
             return
         }
-        withContext(Dispatchers.IO) {
-            repository.start(TunnelMode.Offer, configRepository.configPath, identity)
+        val result = try {
+            withContext(Dispatchers.IO) {
+                repository.start(TunnelMode.Offer, configRepository.configPath, identity)
+            }
+        } catch (_: CancellationException) {
+            withContext(Dispatchers.IO) { repository.stop() }
+            return
         }
-            .onSuccess {
-                pausedByPolicy = false
-                publishStatus()
-            }
-            .onFailure {
-                publishError(
-                    message = it.message ?: "Unable to start tunnel",
-                    code = "native_start_failed",
-                )
-            }
+        val stillCurrent = lifecycleMutex.withLock { lifecycleGeneration == startGeneration }
+        if (!stillCurrent) {
+            withContext(Dispatchers.IO) { repository.stop() }
+            return
+        }
+        result.onSuccess {
+            pausedByPolicy = false
+            publishStatus()
+        }.onFailure {
+            publishError(
+                message = it.message ?: "Unable to start tunnel",
+                code = "native_start_failed",
+            )
+        }
     }
 
     private fun startAnswer() {
-        lastMode = TunnelMode.Answer
-        startForeground(NOTIFICATION_ID, loadingNotification("Starting tunnel"))
-        repository.start(TunnelMode.Answer, configRepository.configPath)
-            .onSuccess { publishStatus() }
-            .onFailure {
-                publishError(
-                    message = it.message ?: "Unable to start tunnel",
-                    code = "native_start_failed",
-                )
-            }
+        publishError(
+            message = "Answer mode is not available in Android v1",
+            code = "answer_mode_disabled",
+        )
     }
 
     private suspend fun pause() {
         lifecycleMutex.withLock {
-            startupJob?.cancel()
+            lifecycleGeneration += 1
+            startupJob = null
             withContext(Dispatchers.IO) {
                 repository.stop()
             }.onFailure {
@@ -196,8 +211,9 @@ class TunnelForegroundService : Service() {
 
     private suspend fun pauseForPolicy(reason: String) {
         lifecycleMutex.withLock {
+            lifecycleGeneration += 1
             pausedByPolicy = true
-            startupJob?.cancel()
+            startupJob = null
             withContext(Dispatchers.IO) {
                 repository.stop()
             }.onFailure {
@@ -250,7 +266,7 @@ class TunnelForegroundService : Service() {
         networkMonitorJob?.cancel()
         val pendingStop = serviceScope.launch {
             lifecycleMutex.withLock {
-                startupJob?.cancel()
+                lifecycleGeneration += 1
                 startupJob = null
                 withContext(Dispatchers.IO) {
                     repository.stop()
@@ -270,7 +286,7 @@ class TunnelForegroundService : Service() {
 
     private suspend fun stopServiceWork() {
         lifecycleMutex.withLock {
-            startupJob?.cancel()
+            lifecycleGeneration += 1
             startupJob = null
             withContext(Dispatchers.IO) {
                 repository.stop()

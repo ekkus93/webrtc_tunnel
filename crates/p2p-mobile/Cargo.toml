@@ -24,5 +24,11 @@ jni = "0.21.1"
 tempfile = "3.20.0"
 
 [lints.rust]
-# FFI boundary crate: explicit policy allows required unsafe for JNI exports/pointer handling.
+# FFI boundary crate: explicit exception is limited to JNI exports and pointer handling.
 unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"

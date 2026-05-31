@@ -14,6 +14,8 @@ import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 object TestTunnelHooks {
     lateinit var bridge: RecordingBridge
@@ -59,23 +61,43 @@ class RecordingBridge : TunnelNativeBridge {
     var startOfferCalls = 0
     var startAnswerCalls = 0
     var stopCalls = 0
-    var startDelayMs: Long = 0
+    private var blockStartOffer = false
+    private var startOfferEntered = CountDownLatch(0)
+    private var startOfferRelease = CountDownLatch(0)
     var state: ServiceState = ServiceState.Stopped
 
     fun reset() {
         startOfferCalls = 0
         startAnswerCalls = 0
         stopCalls = 0
-        startDelayMs = 0
+        blockStartOffer = false
+        startOfferEntered = CountDownLatch(0)
+        startOfferRelease = CountDownLatch(0)
         state = ServiceState.Stopped
     }
 
+    fun blockNextStartOffer() {
+        blockStartOffer = true
+        startOfferEntered = CountDownLatch(1)
+        startOfferRelease = CountDownLatch(1)
+    }
+
+    fun awaitStartOfferEntered(timeoutMs: Long): Boolean = startOfferEntered.await(timeoutMs, TimeUnit.MILLISECONDS)
+
+    fun releaseBlockedStartOffer() {
+        startOfferRelease.countDown()
+    }
+
     override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> {
-        if (startDelayMs > 0) {
-            Thread.sleep(startDelayMs)
+        if (blockStartOffer) {
+            startOfferEntered.countDown()
+            startOfferRelease.await(5, TimeUnit.SECONDS)
+            blockStartOffer = false
         }
         startOfferCalls += 1
-        state = ServiceState.Connected
+        if (stopCalls == 0) {
+            state = ServiceState.Connected
+        }
         return Result.success(Unit)
     }
 

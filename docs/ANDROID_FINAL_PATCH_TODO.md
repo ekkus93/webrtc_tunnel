@@ -50,9 +50,9 @@ If manual E2E is still not run:
 - [ ] keep Android offer ↔ desktop answer unchecked;
 - [ ] keep Android browser localhost validation unchecked;
 - [ ] keep manual E2E validation unchecked;
-- [ ] document `NOT RUN`;
-- [ ] include exact reason;
-- [ ] include future run steps.
+- [x] document `NOT RUN`;
+- [x] include exact reason;
+- [x] include future run steps.
 
 If manual E2E is run:
 
@@ -69,8 +69,8 @@ If manual E2E is run:
 
 ## 0.3 Acceptance
 
-- [ ] No E2E item is checked unless real E2E evidence exists.
-- [ ] Validation docs clearly distinguish PASS, FAIL, and NOT RUN.
+- [x] No E2E item is checked unless real E2E evidence exists.
+- [x] Validation docs clearly distinguish PASS, FAIL, and NOT RUN.
 
 ---
 
@@ -87,10 +87,10 @@ crates/p2p-mobile/Cargo.toml
 
 Document:
 
-- [ ] root workspace lint policy;
-- [ ] current mobile crate lint policy;
-- [ ] whether workspace Clippy lints apply to `p2p-mobile`;
-- [ ] why `unsafe_code` is allowed.
+- [x] root workspace lint policy;
+- [x] current mobile crate lint policy;
+- [x] whether workspace Clippy lints apply to `p2p-mobile`;
+- [x] why `unsafe_code` is allowed.
 
 ## 1.2 Implement lint policy
 
@@ -103,10 +103,10 @@ workspace = true
 
 If Cargo configuration does not allow the preferred form together with a required `unsafe_code` exception:
 
-- [ ] preserve workspace Clippy lint behavior by the narrowest equivalent means;
-- [ ] document why the exception is needed;
-- [ ] keep the exception limited to Rust `unsafe_code`;
-- [ ] do not suppress `unwrap_used`, `todo`, `dbg_macro`, or warning-level Clippy checks broadly.
+- [x] preserve workspace Clippy lint behavior by the narrowest equivalent means;
+- [x] document why the exception is needed;
+- [x] keep the exception limited to Rust `unsafe_code`;
+- [x] do not suppress `unwrap_used`, `todo`, `dbg_macro`, or warning-level Clippy checks broadly.
 
 ## 1.3 Fix lint fallout
 
@@ -118,16 +118,16 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 Tasks:
 
-- [ ] fix any new warnings/errors;
-- [ ] do not hide warnings with broad `allow`;
-- [ ] add safety comments for unsafe blocks/functions if lint policy requires it;
-- [ ] keep FFI-specific exceptions narrow and documented.
+- [x] fix any new warnings/errors;
+- [x] do not hide warnings with broad `allow`;
+- [x] add safety comments for unsafe blocks/functions if lint policy requires it;
+- [x] keep FFI-specific exceptions narrow and documented.
 
 ## 1.4 Acceptance
 
-- [ ] `p2p-mobile` is not silently outside workspace lint discipline.
-- [ ] `unsafe_code` exception is documented and narrow.
-- [ ] Clippy passes with `-D warnings`.
+- [x] `p2p-mobile` is not silently outside workspace lint discipline.
+- [x] `unsafe_code` exception is documented and narrow.
+- [x] Clippy passes with `-D warnings`.
 
 ---
 
@@ -145,39 +145,39 @@ RustTunnelBridge.dispose()
 
 Document:
 
-- [ ] null handle behavior;
-- [ ] Kotlin double-dispose behavior;
-- [ ] raw double-destroy limitations;
-- [ ] whether `stop()` can panic;
-- [ ] whether controller drop can panic;
-- [ ] where panic/error can be recorded.
+- [x] null handle behavior;
+- [x] Kotlin double-dispose behavior;
+- [x] raw double-destroy limitations;
+- [x] whether `stop()` can panic;
+- [x] whether controller drop can panic;
+- [x] where panic/error can be recorded.
 
 ## 2.2 Implement panic-safe destroy
 
 Required:
 
-- [ ] `p2ptunnel_destroy_runtime()` uses `catch_unwind` or existing panic-boundary helper;
-- [ ] null handle remains safe;
-- [ ] stop/drop panic cannot cross FFI;
-- [ ] panic is logged/stored where feasible;
-- [ ] Kotlin `dispose()` remains double-call safe;
-- [ ] calls after `dispose()` fail locally with clear error.
+- [x] `p2ptunnel_destroy_runtime()` uses `catch_unwind` or existing panic-boundary helper;
+- [x] null handle remains safe;
+- [x] stop/drop panic cannot cross FFI;
+- [x] panic is logged/stored where feasible;
+- [x] Kotlin `dispose()` remains double-call safe;
+- [x] calls after `dispose()` fail locally with clear error.
 
 ## 2.3 Tests
 
 Add or update tests:
 
-- [ ] null destroy is safe;
-- [ ] Kotlin double dispose is safe;
-- [ ] calls after dispose return clear error;
-- [ ] stop before dispose is safe;
-- [ ] panic boundary is covered or explicitly documented if hard to trigger;
-- [ ] invalid native paths do not unwind across FFI.
+- [x] null destroy is safe;
+- [x] Kotlin double dispose is safe;
+- [x] calls after dispose return clear error;
+- [x] stop before dispose is safe;
+- [x] panic boundary is covered or explicitly documented if hard to trigger;
+- [x] invalid native paths do not unwind across FFI.
 
 ## 2.4 Acceptance
 
-- [ ] FFI destroy path is panic-safe.
-- [ ] No panic can unwind across destroy FFI boundary.
+- [x] FFI destroy path is panic-safe.
+- [x] No panic can unwind across destroy FFI boundary.
 
 ---
 
@@ -198,11 +198,11 @@ network callback pause/resume paths
 
 Document:
 
-- [ ] where START captures state;
-- [ ] where STOP cancels startup;
-- [ ] where native `repository.start()` can still be in flight;
-- [ ] where Running state is published;
-- [ ] whether STOP can arrive while native START is in progress.
+- [x] where START captures state;
+- [x] where STOP cancels startup;
+- [x] where native `repository.start()` can still be in flight;
+- [x] where Running state is published;
+- [x] whether STOP can arrive while native START is in progress.
 
 ## 3.2 Implement deterministic lifecycle protection
 
@@ -210,13 +210,13 @@ Choose one:
 
 ### Option A — generation token
 
-- [ ] increment generation on every START;
-- [ ] increment generation on every STOP;
-- [ ] increment generation on every PAUSE/network-block;
-- [ ] START captures generation;
-- [ ] after native start returns, START checks generation is still current;
-- [ ] if stale, call `repository.stop()` and do not publish Running;
-- [ ] STOP wins over older START.
+- [x] increment generation on every START;
+- [x] increment generation on every STOP;
+- [x] increment generation on every PAUSE/network-block;
+- [x] START captures generation;
+- [x] after native start returns, START checks generation is still current;
+- [x] if stale, call `repository.stop()` and do not publish Running;
+- [x] STOP wins over older START.
 
 ### Option B — serialized actor/state machine
 
@@ -227,29 +227,29 @@ Choose one:
 
 ## 3.3 Requirements
 
-- [ ] duplicate START does not run duplicate native starts;
-- [ ] STOP during pending START is safe;
-- [ ] STOP during native START cannot leave stale Running state;
-- [ ] network policy pause during START is safe;
-- [ ] start-stop-start still works;
-- [ ] notification state matches repository state.
+- [x] duplicate START does not run duplicate native starts;
+- [x] STOP during pending START is safe;
+- [x] STOP during native START cannot leave stale Running state;
+- [x] network policy pause during START is safe;
+- [x] start-stop-start still works;
+- [x] notification state matches repository state.
 
 ## 3.4 Tests
 
 Add tests:
 
-- [ ] duplicate START is serialized;
-- [ ] STOP before native START returns prevents Running state;
-- [ ] STOP during artificial delayed native START stops runtime after stale success;
-- [ ] network pause during pending START prevents Running state;
-- [ ] start-stop-start succeeds;
-- [ ] repository status is not stale after cancelled START.
+- [x] duplicate START is serialized;
+- [x] STOP before native START returns prevents Running state;
+- [x] STOP during artificial delayed native START stops runtime after stale success;
+- [x] network pause during pending START prevents Running state;
+- [x] start-stop-start succeeds;
+- [x] repository status is not stale after cancelled START.
 
 ## 3.5 Acceptance
 
-- [ ] STOP wins over in-flight START.
-- [ ] Stale START cannot publish Running after STOP/PAUSE.
-- [ ] Lifecycle behavior is deterministic.
+- [x] STOP wins over in-flight START.
+- [x] Stale START cannot publish Running after STOP/PAUSE.
+- [x] Lifecycle behavior is deterministic.
 
 ---
 
@@ -268,10 +268,10 @@ any Answer-mode UI entry points
 
 Document:
 
-- [ ] whether answer mode is supported on Android;
-- [ ] whether any UI can trigger answer mode;
-- [ ] whether `startAnswer()` performs native start synchronously;
-- [ ] whether answer mode is covered by tests.
+- [x] whether answer mode is supported on Android;
+- [x] whether any UI can trigger answer mode;
+- [x] whether `startAnswer()` performs native start synchronously;
+- [x] whether answer mode is covered by tests.
 
 ## 4.2 Choose final behavior
 
@@ -285,10 +285,10 @@ Choose one.
 
 ### Option B — keep disabled safely
 
-- [ ] keep answer mode explicitly disabled;
-- [ ] attempted answer start returns redacted actionable error;
-- [ ] no native startup occurs;
-- [ ] no synchronous blocking path remains.
+- [x] keep answer mode explicitly disabled;
+- [x] attempted answer start returns redacted actionable error;
+- [x] no native startup occurs;
+- [x] no synchronous blocking path remains.
 
 ### Option C — make async-safe
 
@@ -297,8 +297,8 @@ Choose one.
 
 ## 4.3 Acceptance
 
-- [ ] No stale synchronous answer native start path remains.
-- [ ] Android v1 answer-mode behavior is explicit and tested.
+- [x] No stale synchronous answer native start path remains.
+- [x] Android v1 answer-mode behavior is explicit and tested.
 
 ---
 
@@ -324,11 +324,11 @@ config-import-candidate.toml
 
 Required:
 
-- [ ] temp file deleted on successful validation/import;
-- [ ] temp file deleted on validation failure;
-- [ ] temp file deleted on thrown exception;
-- [ ] active config unchanged on validation failure;
-- [ ] active config unchanged on exception.
+- [x] temp file deleted on successful validation/import;
+- [x] temp file deleted on validation failure;
+- [x] temp file deleted on thrown exception;
+- [x] active config unchanged on validation failure;
+- [x] active config unchanged on exception.
 
 Use `try/finally` or equivalent.
 
@@ -336,16 +336,16 @@ Use `try/finally` or equivalent.
 
 Add tests:
 
-- [ ] valid import deletes temp file;
-- [ ] invalid import deletes temp file;
-- [ ] thrown validation error deletes temp file;
-- [ ] invalid import does not replace active config;
-- [ ] exception path does not replace active config.
+- [x] valid import deletes temp file;
+- [x] invalid import deletes temp file;
+- [x] thrown validation error deletes temp file;
+- [x] invalid import does not replace active config;
+- [x] exception path does not replace active config.
 
 ## 5.4 Acceptance
 
-- [ ] Config import leaves no stale temp file.
-- [ ] Invalid import remains transactional.
+- [x] Config import leaves no stale temp file.
+- [x] Invalid import remains transactional.
 
 ---
 
@@ -375,25 +375,25 @@ network policy tests
 
 Use one or more:
 
-- [ ] `runTest`;
-- [ ] test dispatcher;
-- [ ] `advanceUntilIdle`;
-- [ ] deterministic fake bridge callback;
-- [ ] polling helper with timeout and clear failure;
-- [ ] `CompletableDeferred`;
-- [ ] fake socket/server lifecycle synchronization.
+- [x] `runTest`;
+- [x] test dispatcher;
+- [x] `advanceUntilIdle`;
+- [x] deterministic fake bridge callback;
+- [x] polling helper with timeout and clear failure;
+- [x] `CompletableDeferred`;
+- [x] fake socket/server lifecycle synchronization.
 
 ## 6.3 Tests
 
-- [ ] no `Thread.sleep()` remains in unit tests unless narrowly justified;
-- [ ] Test Local Port success/failure tests remain reliable;
-- [ ] lifecycle race tests are deterministic;
-- [ ] tests do not become timing-flaky.
+- [x] no `Thread.sleep()` remains in unit tests unless narrowly justified;
+- [x] Test Local Port success/failure tests remain reliable;
+- [x] lifecycle race tests are deterministic;
+- [x] tests do not become timing-flaky.
 
 ## 6.4 Acceptance
 
-- [ ] Tests avoid fixed sleeps where deterministic synchronization is possible.
-- [ ] Test Local Port tests are stable.
+- [x] Tests avoid fixed sleeps where deterministic synchronization is possible.
+- [x] Test Local Port tests are stable.
 
 ---
 
@@ -411,42 +411,42 @@ SetupConfigInput
 
 Document where these are shown:
 
-- [ ] local private identity import/generation;
-- [ ] local public identity;
-- [ ] local peer ID;
-- [ ] remote peer ID;
-- [ ] remote public identity.
+- [x] local private identity import/generation;
+- [x] local public identity;
+- [x] local peer ID;
+- [x] remote peer ID;
+- [x] remote public identity.
 
 ## 7.2 Fix labeling/placement
 
 Preferred:
 
-- [ ] local identity generation/import remains on Identity step;
-- [ ] local public identity remains on Identity step;
-- [ ] remote peer ID moves to Remote Peer step;
-- [ ] remote public identity moves to Remote Peer step;
-- [ ] Remote Peer step validates peer ID/public identity match;
-- [ ] Review step clearly separates Local Identity and Remote Peer.
+- [x] local identity generation/import remains on Identity step;
+- [x] local public identity remains on Identity step;
+- [x] remote peer ID moves to Remote Peer step;
+- [x] remote public identity moves to Remote Peer step;
+- [x] Remote Peer step validates peer ID/public identity match;
+- [x] Review step clearly separates Local Identity and Remote Peer.
 
 Acceptable:
 
-- [ ] if not moving fields, clearly label remote identity section as Remote Peer Identity;
-- [ ] avoid implying remote public identity belongs to local identity;
-- [ ] keep mismatch validation.
+- [x] if not moving fields, clearly label remote identity section as Remote Peer Identity;
+- [x] avoid implying remote public identity belongs to local identity;
+- [x] keep mismatch validation.
 
 ## 7.3 Tests
 
 Add/update tests:
 
-- [ ] local identity values shown in Identity step;
-- [ ] remote public identity values shown/labeled in Remote Peer step or clearly separated;
-- [ ] remote peer mismatch still rejected;
-- [ ] review summary clearly separates local and remote peers.
+- [x] local identity values shown in Identity step;
+- [x] remote public identity values shown/labeled in Remote Peer step or clearly separated;
+- [x] remote peer mismatch still rejected;
+- [x] review summary clearly separates local and remote peers.
 
 ## 7.4 Acceptance
 
-- [ ] Wizard does not confuse local identity with remote peer identity.
-- [ ] Existing local/remote peer consistency validation remains intact.
+- [x] Wizard does not confuse local identity with remote peer identity.
+- [x] Existing local/remote peer consistency validation remains intact.
 
 ---
 
@@ -464,16 +464,16 @@ ForwardsViewModelTest
 
 Confirm:
 
-- [ ] probe runs off UI thread;
-- [ ] probe targets the configured local host/port;
-- [ ] success/failure result is shown;
-- [ ] failure is actionable;
-- [ ] tests are deterministic after Phase 6.
+- [x] probe runs off UI thread;
+- [x] probe targets the configured local host/port;
+- [x] success/failure result is shown;
+- [x] failure is actionable;
+- [x] tests are deterministic after Phase 6.
 
 ## 8.2 Acceptance
 
-- [ ] Test Local Port is implemented and tested, or checklist says deferred.
-- [ ] There is no false claim about copy/open/test support.
+- [x] Test Local Port is implemented and tested, or checklist says deferred.
+- [x] There is no false claim about copy/open/test support.
 
 ---
 
@@ -491,10 +491,10 @@ cargo test --workspace --all-targets
 
 Tasks:
 
-- [ ] `cargo fmt --check` passes;
-- [ ] Clippy passes with `-D warnings`;
-- [ ] Rust tests pass;
-- [ ] no broad lint suppression added.
+- [x] `cargo fmt --check` passes;
+- [x] Clippy passes with `-D warnings`;
+- [x] Rust tests pass;
+- [x] no broad lint suppression added.
 
 ## 9.2 Android native build
 
@@ -510,9 +510,9 @@ cargo ndk \
 
 Tasks:
 
-- [ ] native build passes;
-- [ ] `arm64-v8a` output exists;
-- [ ] `x86_64` output exists.
+- [x] native build passes;
+- [x] `arm64-v8a` output exists;
+- [x] `x86_64` output exists.
 
 ## 9.3 Android build/tests
 
@@ -526,9 +526,9 @@ cd android
 
 Tasks:
 
-- [ ] `assembleDebug` passes;
-- [ ] unit tests pass;
-- [ ] APK contains native libraries.
+- [x] `assembleDebug` passes;
+- [x] unit tests pass;
+- [x] APK contains native libraries.
 
 ## 9.4 Connected tests
 
@@ -541,8 +541,8 @@ cd android
 
 Tasks:
 
-- [ ] connected tests pass;
-- [ ] if not run, document exact reason.
+- [x] connected tests pass;
+- [x] if not run, document exact reason.
 
 ## 9.5 APK native library check
 
@@ -554,8 +554,8 @@ unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep libp2p_mobile.
 
 Expected:
 
-- [ ] `lib/arm64-v8a/libp2p_mobile.so`;
-- [ ] `lib/x86_64/libp2p_mobile.so`.
+- [x] `lib/arm64-v8a/libp2p_mobile.so`;
+- [x] `lib/x86_64/libp2p_mobile.so`.
 
 ## 9.6 Manual E2E
 
@@ -571,8 +571,8 @@ Run if environment is available:
 
 If not available:
 
-- [ ] document `NOT RUN`;
-- [ ] leave E2E acceptance unchecked.
+- [x] document `NOT RUN`;
+- [x] leave E2E acceptance unchecked.
 
 ## 9.7 Documentation
 
@@ -584,18 +584,18 @@ docs/ANDROID_VALIDATION.md
 
 Include:
 
-- [ ] date;
-- [ ] commit hash;
-- [ ] environment;
-- [ ] command results;
-- [ ] E2E result or NOT RUN reason;
-- [ ] unresolved failures.
+- [x] date;
+- [x] commit hash;
+- [x] environment;
+- [x] command results;
+- [x] E2E result or NOT RUN reason;
+- [x] unresolved failures.
 
 ## 9.8 Acceptance
 
-- [ ] Validation docs are current.
-- [ ] PASS/FAIL/NOT RUN are clearly distinguished.
-- [ ] No unavailable validation is marked as passing.
+- [x] Validation docs are current.
+- [x] PASS/FAIL/NOT RUN are clearly distinguished.
+- [x] No unavailable validation is marked as passing.
 
 ---
 
@@ -603,15 +603,15 @@ Include:
 
 ## 10.1 Required for this final patch
 
-- [ ] `p2p-mobile` inherits workspace Clippy discipline or has narrow documented equivalent.
-- [ ] FFI destroy path is panic-safe.
-- [ ] STOP during START cannot publish stale Running.
-- [ ] stale synchronous answer path removed, disabled safely, or made async-safe.
-- [ ] config import temp files are cleaned on success/failure/exception.
-- [ ] fixed sleeps removed from tests where practical.
-- [ ] Setup Wizard remote public identity UX is clear.
-- [ ] Test Local Port implementation/checklist is honest.
-- [ ] validation docs are updated.
+- [x] `p2p-mobile` inherits workspace Clippy discipline or has narrow documented equivalent.
+- [x] FFI destroy path is panic-safe.
+- [x] STOP during START cannot publish stale Running.
+- [x] stale synchronous answer path removed, disabled safely, or made async-safe.
+- [x] config import temp files are cleaned on success/failure/exception.
+- [x] fixed sleeps removed from tests where practical.
+- [x] Setup Wizard remote public identity UX is clear.
+- [x] Test Local Port implementation/checklist is honest.
+- [x] validation docs are updated.
 
 ## 10.2 Required before compatibility acceptance
 

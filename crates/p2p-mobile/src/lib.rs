@@ -1,6 +1,7 @@
 mod runtime;
 
 use std::ffi::CString;
+use std::mem::ManuallyDrop;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -9,6 +10,7 @@ use jni::objects::{JClass, JString};
 use jni::sys::{jint, jlong, jstring};
 use p2p_crypto::{IdentityFile, PublicIdentity, generate_identity};
 use serde::Serialize;
+use tracing::error;
 
 pub use runtime::{
     AndroidRuntimeStatus, AndroidTunnelController, AndroidTunnelMode, AndroidValidationResult,
@@ -84,8 +86,17 @@ pub unsafe extern "C" fn p2ptunnel_destroy_runtime(handle: *mut AndroidTunnelCon
         return;
     }
     // SAFETY: the pointer was allocated by `p2ptunnel_create_runtime`.
-    let controller = unsafe { Box::from_raw(handle) };
-    controller.stop();
+    let mut controller = ManuallyDrop::new(unsafe { Box::from_raw(handle) });
+    let stop_result = catch_unwind(AssertUnwindSafe(|| (*controller).stop()));
+    if stop_result.is_err() {
+        error!("panic while stopping Android runtime during destroy");
+    }
+    let drop_result = catch_unwind(AssertUnwindSafe(|| unsafe {
+        ManuallyDrop::drop(&mut controller);
+    }));
+    if drop_result.is_err() {
+        error!("panic while dropping Android runtime during destroy");
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -696,4 +707,24 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_native
         .flatten()
         .unwrap_or_else(|| "unknown error".to_owned());
     to_jstring(&mut env, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn destroy_runtime_handles_null_pointer() {
+        unsafe {
+            p2ptunnel_destroy_runtime(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn destroy_runtime_is_safe_for_fresh_handle() {
+        let handle = p2ptunnel_create_runtime();
+        unsafe {
+            p2ptunnel_destroy_runtime(handle);
+        }
+    }
 }

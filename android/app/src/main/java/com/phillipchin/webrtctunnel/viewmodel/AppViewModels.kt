@@ -692,16 +692,19 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
     private fun importConfigContent(candidate: String) {
         val temp = File(deps.context.cacheDir, "config-import-candidate.toml")
         temp.parentFile?.mkdirs()
-        temp.writeText(candidate)
-        val identity = runCatching { deps.identityRepository.readEncryptedIdentity() }.getOrNull()
-        val validation = if (identity != null && identity.isNotEmpty()) {
-            deps.tunnelRepository.validateConfigWithIdentity(temp.absolutePath, identity)
-        } else {
-            deps.tunnelRepository.validateConfig(temp.absolutePath)
+        try {
+            temp.writeText(candidate)
+            val identity = runCatching { deps.identityRepository.readEncryptedIdentity() }.getOrNull()
+            val validation = if (identity != null && identity.isNotEmpty()) {
+                deps.tunnelRepository.validateConfigWithIdentity(temp.absolutePath, identity)
+            } else {
+                deps.tunnelRepository.validateConfig(temp.absolutePath)
+            }
+            require(validation.valid) { validation.message ?: "Config validation failed" }
+            deps.configRepository.writeConfigAtomically(candidate)
+        } finally {
+            temp.delete()
         }
-        require(validation.valid) { validation.message ?: "Config validation failed" }
-        deps.configRepository.writeConfigAtomically(candidate)
-        temp.delete()
     }
 
     private fun importPrivateIdentityContent(privateIdentity: String) {

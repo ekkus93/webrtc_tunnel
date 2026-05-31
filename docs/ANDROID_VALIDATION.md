@@ -139,3 +139,69 @@ unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libp2p_mobile.so
 
 - **Result:** PASS (all commands)
 - **Manual Android↔desktop E2E:** NOT RUN (same reason as above; desktop answer + remote target not provisioned in this pass).
+
+## 2026-05-31T14:39:16Z
+
+- **Commit:** `fe9f336`
+- **Environment:** Linux host, Android emulator `Medium_Phone_API_36.0(AVD) - 16`
+
+### Rust workspace validation
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+```
+
+- **Result:** PASS
+
+### Android validation
+
+```bash
+cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
+cd android
+./gradlew --no-daemon lintDebug testDebugUnitTest connectedDebugAndroidTest
+./gradlew --no-daemon assembleDebug
+unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libp2p_mobile.so
+```
+
+- **Result:** PASS (`lib/arm64-v8a/libp2p_mobile.so`, `lib/x86_64/libp2p_mobile.so`)
+
+### Manual Android↔desktop E2E
+
+- **Result:** NOT RUN
+- **Reason:** Desktop answer + Android browser round-trip was not provisioned in this environment.
+- **Steps to run later:** Start desktop `p2p-answer`, configure Android offer mode from Setup Wizard, start tunnel, browse `http://127.0.0.1:<local_port>`, and record redacted logs plus observed response.
+
+## 2026-05-31T14:58:20Z
+
+- **Commit:** `fe9f336`
+- **Environment:** Linux host, Android emulator `Medium_Phone_API_36.0(AVD) - 16`
+
+### Rust workspace validation
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+```
+
+- **Result:** PASS
+
+### Android validation
+
+```bash
+cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
+cd android
+./gradlew --no-daemon lintDebug testDebugUnitTest connectedDebugAndroidTest
+./gradlew --no-daemon assembleDebug
+unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libp2p_mobile.so
+```
+
+- **Result:** PASS (`lib/arm64-v8a/libp2p_mobile.so`, `lib/x86_64/libp2p_mobile.so`)
+
+### Manual Android↔desktop E2E
+
+- **Result:** NOT RUN
+- **Reason:** Desktop answer + Android browser round-trip was not provisioned in this environment.
+- **Steps to run later:** Start desktop `p2p-answer`, configure Android offer mode from Setup Wizard, start tunnel, browse `http://127.0.0.1:<local_port>`, and record redacted logs plus observed response.

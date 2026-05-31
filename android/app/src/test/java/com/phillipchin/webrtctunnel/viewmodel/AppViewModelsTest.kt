@@ -25,6 +25,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.net.ServerSocket
 
@@ -199,26 +203,96 @@ class AppViewModelsTest {
     }
 
     @Test
-    fun forwardsViewModelTestLocalPortReportsSuccessAndFailure() {
-        val vm = ForwardsViewModel(deps)
-        val server = ServerSocket(0)
-        val successForward = ForwardConfig(
-            id = "svc-open",
-            name = "svc-open",
-            localHost = "127.0.0.1",
-            localPort = server.localPort,
-            remoteForwardId = "svc-open",
-            enabled = true,
-        )
-        vm.testLocalPort(successForward)
-        Thread.sleep(250)
-        assertTrue(vm.message.value?.contains("succeeded") == true)
-        server.close()
+    fun importExportViewModelDeletesTempFileOnSuccessAndFailure() {
+        val vm = ImportExportViewModel(deps)
+        val tempFile = File(app.cacheDir, "config-import-candidate.toml")
+        tempFile.delete()
+        val baseline = configRepository.readConfig()
+        val validFile = File(app.filesDir, "valid-import-config.toml").apply { writeText(baseline) }
 
-        val failureForward = successForward.copy(id = "svc-closed", localPort = successForward.localPort)
-        vm.testLocalPort(failureForward)
-        Thread.sleep(250)
-        assertTrue(vm.message.value?.contains("failed") == true)
+        vm.updateState { it.copy(configImportPath = validFile.absolutePath) }
+        recordingBridge.validationResult = ValidationResult(true, null)
+        vm.importConfig()
+        assertTrue(!tempFile.exists())
+        assertEquals(baseline, configRepository.readConfig())
+
+        val invalidFile = File(app.filesDir, "invalid-import-config.toml").apply { writeText("not valid toml") }
+        vm.updateState { it.copy(configImportPath = invalidFile.absolutePath) }
+        recordingBridge.validationResult = ValidationResult(false, "invalid config")
+        vm.importConfig()
+        assertTrue(!tempFile.exists())
+        assertEquals(baseline, configRepository.readConfig())
+        assertNotNull(vm.state.value.resultMessage)
+    }
+
+    @Test
+    fun importExportViewModelDeletesTempFileOnThrownValidationError() {
+        val throwingBridge = object : TunnelNativeBridge {
+            override fun startOffer(configPath: String, identityBytes: ByteArray?) = Result.success(Unit)
+            override fun startAnswer(configPath: String) = Result.success(Unit)
+            override fun stop() = Result.success(Unit)
+            override fun getStatusJson(): String = recordingBridge.getStatusJson()
+            override fun getRecentLogsJson(maxEvents: Int): String = "[]"
+            override fun validateConfig(configPath: String): ValidationResult = throw RuntimeException("boom")
+            override fun validateConfigWithIdentity(configPath: String, identityBytes: ByteArray): ValidationResult = throw RuntimeException("boom")
+            override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
+                IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = identityToml, peer_id = "android-phone")
+            override fun validatePublicIdentity(line: String): IdentityValidationResult =
+                IdentityValidationResult(valid = true, canonical_public_identity = line.trim(), peer_id = "remote-peer")
+            override fun generateIdentity(peerId: String): IdentityValidationResult =
+                IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = "private", peer_id = peerId)
+        }
+        val throwingDeps = AppDependencies(
+            context = app,
+            configRepository = configRepository,
+            tunnelRepository = TunnelRepository(app, throwingBridge),
+            networkPolicyManager = NetworkPolicyManager {
+                NetworkType.UnmeteredWifi to false
+            },
+            identityRepository = deps.identityRepository,
+        )
+        val vm = ImportExportViewModel(throwingDeps)
+        val tempFile = File(app.cacheDir, "config-import-candidate.toml")
+        tempFile.delete()
+        val configFile = File(app.filesDir, "exception-import-config.toml").apply { writeText(configRepository.readConfig()) }
+        vm.updateState { it.copy(configImportPath = configFile.absolutePath) }
+        vm.importConfig()
+        assertTrue(!tempFile.exists())
+        assertTrue(vm.state.value.resultMessage?.contains("boom") == true)
+    }
+
+    @Test
+    fun forwardsViewModelTestLocalPortReportsSuccessAndFailure() {
+        runBlocking {
+            val server = ServerSocket(0)
+            val successVm = ForwardsViewModel(deps)
+            val successForward = ForwardConfig(
+                id = "svc-open",
+                name = "svc-open",
+                localHost = "127.0.0.1",
+                localPort = server.localPort,
+                remoteForwardId = "svc-open",
+                enabled = true,
+            )
+            val successMessage = async {
+                withTimeout(5_000) {
+                    successVm.message.first { it?.contains("succeeded") == true }
+                }
+            }
+            successVm.testLocalPort(successForward)
+            assertTrue(successMessage.await()?.contains("succeeded") == true)
+            server.close()
+
+            val failureVm = ForwardsViewModel(deps)
+            val failureForward = successForward.copy(id = "svc-closed", localPort = successForward.localPort)
+            val failureMessage = async {
+                withTimeout(5_000) {
+                    failureVm.message.first { it?.contains("failed") == true }
+                }
+            }
+            failureVm.testLocalPort(failureForward)
+            assertTrue(failureMessage.await()?.contains("failed") == true)
+        }
     }
 
     private class RecordingBridge : TunnelNativeBridge {

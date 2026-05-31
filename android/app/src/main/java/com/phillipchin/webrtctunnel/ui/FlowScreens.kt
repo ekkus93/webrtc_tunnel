@@ -69,12 +69,6 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                     label = { Text("Private identity import path") },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
-                    value = state.importPublicIdentity,
-                    onValueChange = vm::setImportPublicIdentity,
-                    label = { Text("Remote public identity line") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = vm::generateIdentity) { Text("Generate identity") }
                     if (state.localPublicIdentity.isNotBlank()) {
@@ -139,6 +133,13 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                     label = { Text("Remote peer id") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                OutlinedTextField(
+                    value = state.importPublicIdentity,
+                    onValueChange = vm::setImportPublicIdentity,
+                    label = { Text("Remote public identity line") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("Remote public identity is validated against the remote peer ID.")
                 if (state.remoteIdentityPeerId != null) {
                     Text("Imported remote identity peer ID: ${state.remoteIdentityPeerId}")
                 }
@@ -180,16 +181,17 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
             }
             SetupStep.Review -> {
                 Text("Mode: offer")
-                Text("Broker: ${input.brokerHost}:${input.brokerPort}")
-                Text("Local peer: ${input.localPeerId}")
+                Text("Local identity: ${state.identityPeerId ?: input.localPeerId}")
+                if (state.localPublicIdentity.isNotBlank()) {
+                    Text("Local public identity: ${state.localPublicIdentity}")
+                }
                 Text("Remote peer: ${input.remotePeerId}")
+                Text("Remote public identity: ${if (state.importPublicIdentity.isBlank()) "not set" else state.importPublicIdentity}")
+                Text("Broker: ${input.brokerHost}:${input.brokerPort}")
                 Text("Enabled forwards: ${forwards.count { it.enabled }}")
                 Text("Allow metered: ${input.allowMetered}")
                 Text("Resume on unmetered: ${input.resumeOnUnmetered}")
                 Text("Identity import: ${if (state.importIdentityPath.isBlank()) "existing encrypted identity" else state.importIdentityPath}")
-                if (state.localPublicIdentity.isNotBlank()) {
-                    Text("Local public identity: ${state.localPublicIdentity}")
-                }
             }
 
         }

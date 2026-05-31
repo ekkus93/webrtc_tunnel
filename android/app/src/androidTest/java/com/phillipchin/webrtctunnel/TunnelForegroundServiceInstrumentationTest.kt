@@ -2,7 +2,6 @@ package com.phillipchin.webrtctunnel
 
 import android.content.Context
 import android.content.Intent
-import android.os.SystemClock
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -14,6 +13,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class TunnelForegroundServiceInstrumentationTest {
@@ -63,11 +63,62 @@ class TunnelForegroundServiceInstrumentationTest {
 
     @Test
     fun stopDuringPendingStartIsSafe() {
-        TestTunnelHooks.bridge.startDelayMs = 1200
+        TestTunnelHooks.bridge.blockNextStartOffer()
         context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
-        SystemClock.sleep(100)
+        assertTrue(TestTunnelHooks.bridge.awaitStartOfferEntered(5_000))
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))
         assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
+        TestTunnelHooks.bridge.releaseBlockedStartOffer()
+        assertEquals(
+            com.phillipchin.webrtctunnel.model.ServiceState.Stopped,
+            (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState,
+        )
+    }
+
+    @Test
+    fun pauseDuringPendingStartIsSafe() {
+        TestTunnelHooks.bridge.blockNextStartOffer()
+        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        assertTrue(TestTunnelHooks.bridge.awaitStartOfferEntered(5_000))
+        context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_PAUSE))
+        assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
+        TestTunnelHooks.bridge.releaseBlockedStartOffer()
+        assertEquals(
+            com.phillipchin.webrtctunnel.model.ServiceState.Stopped,
+            (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState,
+        )
+    }
+
+    @Test
+    fun startStopStartWorks() {
+        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.startOfferCalls >= 1 })
+        context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))
+        assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
+        stopService()
+        assertTrue(waitForCondition(timeoutMs = 5_000) {
+            (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState ==
+                com.phillipchin.webrtctunnel.model.ServiceState.Stopped
+        })
+        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.startOfferCalls >= 2 })
+    }
+
+    @Test
+    fun answerActionIsExplicitlyDisabled() {
+        context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_ANSWER))
+        assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.startAnswerCalls == 0 })
+    }
+
+    @Test
+    fun rustBridgeDisposeIsIdempotentAndRejectsCallsAfterDispose() {
+        val bridge = RustTunnelBridge()
+        bridge.stop()
+        bridge.dispose()
+        bridge.dispose()
+        val result = bridge.startOffer("/does/not/matter")
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message?.contains("disposed") == true)
     }
 
     private fun stopService() {
@@ -76,13 +127,13 @@ class TunnelForegroundServiceInstrumentationTest {
     }
 
     private fun waitForCondition(timeoutMs: Long, condition: () -> Boolean): Boolean {
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
-        while (SystemClock.elapsedRealtime() < deadline) {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (System.nanoTime() < deadline) {
             InstrumentationRegistry.getInstrumentation().waitForIdleSync()
             if (condition()) {
                 return true
             }
-            SystemClock.sleep(50)
+            Thread.yield()
         }
         return condition()
     }
