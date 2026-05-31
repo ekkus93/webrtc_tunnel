@@ -621,10 +621,10 @@ Include:
 
 ## 10.3 Required before merge
 
-- [ ] `cargo fmt --check` passes.
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes.
-- [ ] `cargo test --workspace --all-targets` passes.
-- [ ] `cargo ndk ... build -p p2p-mobile --release` passes.
-- [ ] `./gradlew assembleDebug` passes.
-- [ ] `./gradlew testDebugUnitTest` passes.
-- [ ] connected tests pass if available, or NOT RUN is documented.
+- [x] `cargo fmt --check` passes.
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes.
+- [x] `cargo test --workspace --all-targets` passes.
+- [x] `cargo ndk ... build -p p2p-mobile --release` passes.
+- [x] `./gradlew assembleDebug` passes.
+- [x] `./gradlew testDebugUnitTest` passes.
+- [x] connected tests pass if available, or NOT RUN is documented.
