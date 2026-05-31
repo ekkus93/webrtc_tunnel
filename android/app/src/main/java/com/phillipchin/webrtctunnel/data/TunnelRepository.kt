@@ -14,8 +14,11 @@ import kotlinx.serialization.json.Json
 
 class TunnelRepository(
     @Suppress("UNUSED_PARAMETER") context: Context,
-    private val bridge: TunnelNativeBridge = RustTunnelBridge(),
+    bridgeFactory: () -> TunnelNativeBridge = { RustTunnelBridge() },
 ) {
+    constructor(context: Context, bridge: TunnelNativeBridge) : this(context, { bridge })
+
+    private val bridge: TunnelNativeBridge by lazy(bridgeFactory)
     private val _status = MutableStateFlow(
         TunnelStatus(
             serviceState = com.phillipchin.webrtctunnel.model.ServiceState.Stopped,

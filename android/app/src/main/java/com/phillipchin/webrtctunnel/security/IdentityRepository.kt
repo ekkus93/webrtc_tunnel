@@ -8,23 +8,39 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-class IdentityRepository(private val context: Context) {
+class IdentityRepository(
+    private val context: Context,
+    private val crypto: IdentityCrypto = AndroidKeystoreIdentityCrypto(),
+) {
     private val identityFile = File(context.filesDir, "identity.enc")
     private val publicFile = File(context.filesDir, "identity.pub")
 
     fun hasEncryptedIdentity(): Boolean = identityFile.exists()
 
     fun storeEncryptedIdentity(privateIdentity: ByteArray, publicIdentity: String) {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, loadOrCreateKey())
-        val ciphertext = cipher.doFinal(privateIdentity)
-        val payload = cipher.iv + ciphertext
-        identityFile.writeBytes(payload)
+        identityFile.writeBytes(crypto.encrypt(privateIdentity))
         publicFile.writeText(publicIdentity)
     }
 
     fun readEncryptedIdentity(): ByteArray {
-        val payload = identityFile.readBytes()
+        return crypto.decrypt(identityFile.readBytes())
+    }
+}
+
+interface IdentityCrypto {
+    fun encrypt(plaintext: ByteArray): ByteArray
+    fun decrypt(payload: ByteArray): ByteArray
+}
+
+class AndroidKeystoreIdentityCrypto : IdentityCrypto {
+    override fun encrypt(plaintext: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, loadOrCreateKey())
+        val ciphertext = cipher.doFinal(plaintext)
+        return cipher.iv + ciphertext
+    }
+
+    override fun decrypt(payload: ByteArray): ByteArray {
         val iv = payload.copyOfRange(0, 12)
         val ciphertext = payload.copyOfRange(12, payload.size)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")

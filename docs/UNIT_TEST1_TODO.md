@@ -1,391 +1,365 @@
 # UNIT_TEST1_TODO.md
 
-# Rust WebRTC Tunnel Unit Test TODO 1
+# Android Unit Test Expansion TODO 1
 
 ## Goal
 
-Add focused test coverage for the v0.3 multi-session answer-daemon hardening work and adjacent status/signaling behavior.
+Add comprehensive Android-side automated test coverage for:
 
-This TODO is test-only. Do not change protocol behavior, tunnel frame format, config shape, or public operator semantics while implementing these tests unless a test exposes a real bug that must be fixed.
+1. `ConfigRepository`
+2. `TunnelRepository`
+3. `HomeViewModel`
+4. `NetworkPolicyManager`
+5. `IdentityRepository`
+6. `NotificationController`
+7. `SetupViewModel` / `SettingsViewModel`
+8. `TunnelForegroundService` instrumentation behavior
+
+This TODO is test-focused. Production code changes are allowed only when needed to make behavior testable and must preserve existing runtime behavior.
 
 ## Guardrails
 
-- Keep tests deterministic and avoid live network dependencies where possible.
-- Prefer unit tests for pure routing/status/replay behavior.
-- Use existing in-memory daemon and signaling test harnesses for integration-style coverage.
-- Do not weaken encrypted/signed signaling requirements for test convenience.
-- Do not reintroduce routing by unauthenticated outer-envelope metadata.
-- Preserve session-local failure isolation: one peer/session failure must not tear down unrelated peers.
-- After each completed section, run the relevant targeted tests.
-- Before marking this TODO complete, run full workspace validation:
-
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets
-```
+- Keep tests deterministic and offline (no live broker/network dependency).
+- Prefer JVM unit tests (`src/test`) for logic; use instrumentation tests (`src/androidTest`) only for true Android framework/service lifecycle behavior.
+- Avoid broad mocking of core behavior; prefer focused fakes/stubs close to app interfaces.
+- Do not weaken security expectations for convenience (permissions, encrypted-at-rest assumptions, fail-closed behavior).
+- Keep assertions behavior-focused (state transitions, outputs, side effects), not implementation-detail snapshots.
+- Run lint/tests at phase boundaries; fix warnings/errors instead of suppressing.
 
 ---
 
-# Task 1 - Add `p2pctl status` rendering tests
+## Phase 0 - Test harness and structure baseline
 
-## 1.1 Locate current status rendering
+### 0.1 Inventory current test setup
 
-- [x] Review `bins/p2pctl/src/main.rs`.
-- [x] Identify the `status` command output path.
-- [x] Confirm how it reads:
-  - [x] `current_state`,
-  - [x] `active_session_count`,
-  - [x] `session_capacity`,
-  - [x] `sessions`,
-  - [x] `configured_forward_ids`.
+- [x] Review `android/app/build.gradle.kts` test dependencies.
+- [x] Review existing Android tests under:
+  - [x] `android/app/src/test/...`
+  - [x] `android/app/src/androidTest/...`
+- [x] Confirm current runner and instrumentation setup in `AndroidManifest.xml` / Gradle.
 
-## 1.2 Add a testable rendering seam
+### 0.2 Add shared test utilities
 
-- [x] Extract status JSON rendering into a small helper if needed.
-- [x] Keep CLI behavior unchanged.
-- [x] Ensure the helper accepts parsed status JSON or a string input without reading a real config file.
-- [x] Keep error handling explicit for malformed status JSON.
+- [x] Create JVM test utilities package (example: `android/app/src/test/java/.../testutil`).
+- [x] Add reusable fakes:
+  - [x] fake `TunnelNativeBridge`
+  - [x] fake/in-memory config storage helper
+  - [x] fake notification sink wrapper (if needed)
+- [x] Add coroutine test helpers where needed (`runTest`, dispatcher setup).
+- [x] Add minimal file-system helper for temp file setup/teardown in JVM tests.
 
-## 1.3 Test zero-session output
+### 0.3 Stabilize test naming/layout conventions
 
-- [x] Add a test with `active_session_count = 0`.
-- [x] Assert output is readable and includes:
-  - [x] peer ID,
-  - [x] role,
-  - [x] MQTT status,
-  - [x] daemon state,
-  - [x] `sessions: none`.
-- [x] Assert it does not mention removed or misleading fields:
-  - [x] `active_stream_count`,
-  - [x] `open_forward_ids`.
+- [x] Define naming pattern `<ClassName>Test`.
+- [x] Group tests by behavior sections (`given_when_then` style names or equivalent).
+- [x] Ensure all new tests are discoverable by `testDebugUnitTest`.
 
-## 1.4 Test one-session output
+### 0.4 Phase validation
 
-- [x] Add a test with one active session.
-- [x] Assert output includes:
-  - [x] `sessions=1/<capacity>`,
-  - [x] session ID,
-  - [x] remote peer ID,
-  - [x] session state,
-  - [x] data-channel-open flag,
-  - [x] configured forward IDs.
-- [x] Assert daemon-level `state=serving` is displayed when the fixture has active sessions.
-
-## 1.5 Test multi-session output
-
-- [x] Add a test with at least two sessions.
-- [x] Assert each session is rendered independently.
-- [x] Assert configured forward IDs are shown under the honest `configured_forwards` wording.
-- [x] Assert output remains stable regardless of session order in the JSON fixture if ordering is not guaranteed by the CLI.
-
-## 1.6 Validation
-
-- [x] Run `cargo test -p p2pctl`.
-- [x] Run `cargo clippy -p p2pctl --all-targets --all-features -- -D warnings`.
+- [x] Run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
 
 ---
 
-# Task 2 - Add direct replay-status tests in `p2p-signaling`
+## Phase 1 - `ConfigRepository` unit tests
 
-## 2.1 Locate replay-status API
+Target file: `android/app/src/main/java/.../data/ConfigRepository.kt`
 
-- [x] Review `crates/p2p-signaling/src/replay.rs`.
-- [x] Review `crates/p2p-signaling/src/transport.rs`.
-- [x] Confirm `SignalCodec::decode_with_replay_status` is the intended test target.
+### 1.1 Default config behavior
 
-## 2.2 Test fresh decode status
+- [x] Test `ensureDefaultConfig()` creates file when missing.
+- [x] Test `ensureDefaultConfig()` does not overwrite existing file.
+- [x] Test default template content includes required sections/keys for v0.3 format.
 
-- [x] Encode a valid message from an authorized peer.
-- [x] Decode it with a new `ReplayCache`.
-- [x] Assert `ReplayStatus::Fresh`.
-- [x] Assert authenticated sender peer ID and inner session ID match the encoded message.
+### 1.2 Read/write config behavior
 
-## 2.3 Test duplicate same-session status
+- [x] Test `writeConfig()` writes exact content.
+- [x] Test `readConfig()` returns current content.
+- [x] Test `readConfig()` empty behavior when file absent.
+- [x] Test config path points under app-private files dir.
 
-- [x] Decode the same payload twice with the same replay cache.
-- [x] Assert the second decode returns `ReplayStatus::DuplicateSameSession`.
-- [x] Assert the duplicate payload is still authenticated/decrypted before the duplicate status is returned.
-- [x] Assert the legacy `decode` wrapper still maps this case to the existing duplicate protocol error.
+### 1.3 Android-only preferences behavior
 
-## 2.4 Test duplicate different-session status
+- [x] Test default preference values:
+  - [x] `allowMetered = false`
+  - [x] `pauseOnMetered = true`
+  - [x] `resumeOnUnmetered = true`
+  - [x] `showMeteredWarning = true`
+  - [x] `startTunnelWhenAppOpens = false`
+  - [x] `debugLogsEnabled = false`
+- [x] Test `savePreferences()` persists all fields.
+- [x] Test subsequent reads reflect updates without corruption.
 
-- [x] Create two valid messages that intentionally reuse the same `msg_id` if an existing test seam supports it.
-- [x] If no seam exists, add the smallest test-only helper needed to construct this condition without changing production encoding semantics.
-- [x] Decode the first message successfully.
-- [x] Decode the second message with the same replay cache.
-- [x] Assert `ReplayStatus::DuplicateDifferentSession`.
-- [x] Assert the legacy `decode` wrapper still maps this case to the existing protocol error.
+### 1.4 Edge and failure cases
 
-## 2.5 Test expected-session mismatch remains hard failure
+- [x] Test repeated writes are idempotent (latest write wins).
+- [x] Test malformed/partial existing preference state still maps to safe defaults.
 
-- [x] Decode a valid message while passing a different `expected_session`.
-- [x] Assert a protocol error, not a duplicate status.
-- [x] Confirm stale old-session messages cannot be treated as routable duplicates.
+### 1.5 Phase validation
 
-## 2.6 Validation
-
-- [x] Run `cargo test -p p2p-signaling`.
-- [x] Run `cargo clippy -p p2p-signaling --all-targets --all-features -- -D warnings`.
+- [x] Run targeted tests for `ConfigRepositoryTest`.
+- [x] Run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
 
 ---
 
-# Task 3 - Add same-peer pending replacement isolation test
+## Phase 2 - `TunnelRepository` unit tests
 
-## 3.1 Define the scenario
+Target file: `android/app/src/main/java/.../data/TunnelRepository.kt`
 
-- [x] Peer A has a pending answer-side session that has not reached active data-channel/tunnel state.
-- [x] Peer B has an active healthy session.
-- [x] Peer A sends a valid replacement offer with a new `session_id`.
-- [x] Peer A's pending session is replaced.
-- [x] Peer B remains registered, active, and unaffected.
+### 2.1 Start/stop path coverage
 
-## 3.2 Choose test level
+- [x] Test `start(Offer, ...)` calls `bridge.startOffer(...)`.
+- [x] Test `start(Answer, ...)` calls `bridge.startAnswer(...)`.
+- [x] Test successful `start()` triggers `refreshStatus()`.
+- [x] Test successful `stop()` triggers `refreshStatus()`.
 
-- [x] Prefer a `p2p-daemon` unit test if the registry/event loop can be exercised deterministically.
-- [x] Use `crates/p2p-daemon/tests/two_node_daemon.rs` only if end-to-end behavior is needed.
-- [x] Avoid sleeps where an event-channel assertion can prove the same behavior.
+### 2.2 Status decoding behavior
 
-## 3.3 Build fixtures
+- [x] Test valid status JSON updates exposed `status` flow.
+- [x] Test invalid status JSON does not crash and preserves safe behavior.
+- [x] Test initial status state is sane before any bridge calls.
 
-- [x] Create identities for answer, peer A, and peer B.
-- [x] Configure answer authorized keys for both peers.
-- [x] Configure per-forward allowlists that allow both peers where needed.
-- [x] Create an existing Peer A pending session.
-- [x] Create an existing Peer B active session.
+### 2.3 Error propagation behavior
 
-## 3.4 Exercise replacement
+- [x] Test start failure propagates `Result.failure`.
+- [x] Test stop failure propagates `Result.failure`.
+- [x] Test validation pass-through from bridge (`validateConfig`).
 
-- [x] Deliver Peer A's authenticated replacement offer.
-- [x] Assert the daemon emits or handles the explicit replacement event.
-- [x] Assert `session_by_peer[peer_a]` now maps to the replacement session ID.
-- [x] Assert old Peer A session ID is no longer in `sessions_by_id`.
+### 2.4 Recent logs behavior
 
-## 3.5 Assert peer B isolation
+- [x] Test valid log JSON returns parsed list.
+- [x] Test invalid log JSON returns empty list (existing behavior).
 
-- [x] Assert Peer B's session ID remains in `sessions_by_id`.
-- [x] Assert Peer B's generation is unchanged.
-- [x] Assert Peer B's status is unchanged.
-- [x] Assert Peer B's inbound channel is not closed or replaced.
-- [x] Assert Peer B does not receive Peer A's replacement signal.
+### 2.5 Phase validation
 
-## 3.6 Validation
-
-- [x] Run the focused `p2p-daemon` test.
-- [x] Run `cargo test -p p2p-daemon`.
+- [x] Run targeted tests for `TunnelRepositoryTest`.
+- [x] Run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
 
 ---
 
-# Task 4 - Add per-forward allowlist isolation across sessions
+## Phase 3 - `HomeViewModel` unit tests
 
-## 4.1 Define the scenario
+Target file: `android/app/src/main/java/.../viewmodel/AppViewModels.kt` (`HomeViewModel`)
 
-- [x] Peer A and Peer B both establish sessions with the same answer daemon.
-- [x] Forward `ssh` allows Peer A only.
-- [x] Forward `web-ui` allows Peer B only.
-- [x] Peer A can open `ssh`.
-- [x] Peer A is denied on `web-ui`.
-- [x] Peer B can open `web-ui`.
-- [x] Peer B is denied on `ssh`.
-- [x] A denial in one session does not affect the other session.
+### 3.1 Service intent wiring tests
 
-## 4.2 Build integration fixture
+- [x] Test `startTunnel(Offer)` dispatches intent action `ACTION_START_OFFER`.
+- [x] Test `startTunnel(Answer)` dispatches intent action `ACTION_START_ANSWER`.
+- [x] Test `stopTunnel()` dispatches intent action `ACTION_STOP`.
+- [x] Test intents target `TunnelForegroundService` class explicitly.
 
-- [x] Extend or reuse the in-memory transport mesh in `two_node_daemon.rs`.
-- [x] Configure two offer daemons with distinct peer identities.
-- [x] Configure two forwards on the answer side with disjoint allowlists.
-- [x] Start target TCP listeners for the allowed paths.
-- [x] Avoid target listeners for denied paths unless needed to prove no connection is attempted.
+### 3.2 Status passthrough behavior
 
-## 4.3 Test allowed paths
+- [x] Test `status` flow exposure mirrors repository flow.
+- [x] Test `refresh()` delegates to repository exactly once per call.
 
-- [x] Connect Peer A's local client to the `ssh` listener.
-- [x] Assert bytes bridge successfully through the `ssh` target.
-- [x] Connect Peer B's local client to the `web-ui` listener.
-- [x] Assert bytes bridge successfully through the `web-ui` target.
+### 3.3 Testability seam tasks (if needed)
 
-## 4.4 Test denied paths
+- [x] Introduce minimal injectable intent dispatcher abstraction if current code is hard to unit test.
+- [x] Keep runtime behavior identical after seam extraction.
 
-- [x] Attempt Peer A's denied `web-ui` stream.
-- [x] Assert the client observes a stream-local failure or close consistent with existing tunnel behavior.
-- [x] Attempt Peer B's denied `ssh` stream.
-- [x] Assert the client observes a stream-local failure or close consistent with existing tunnel behavior.
-- [x] Assert denied attempts do not produce plaintext MQTT diagnostics.
+### 3.4 Phase validation
 
-## 4.5 Assert isolation
-
-- [x] After each denied attempt, prove the other peer's allowed stream still works.
-- [x] Assert answer status still reports both sessions if both sessions are expected to remain active.
-- [x] Assert target listeners for denied paths are not contacted.
-
-## 4.6 Validation
-
-- [x] Run the focused `two_node_daemon` test.
-- [x] Run `cargo test -p p2p-daemon --test two_node_daemon`.
+- [x] Run targeted tests for `HomeViewModelTest`.
+- [x] Run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
 
 ---
 
-# Task 5 - Add multi-session failure-isolation variants
+## Phase 4 - `NetworkPolicyManager` unit tests
 
-## 5.1 Shared fixture
+Target file: `android/app/src/main/java/.../network/NetworkPolicyManager.kt`
 
-- [x] Build or reuse a helper that starts:
-  - [x] one answer daemon,
-  - [x] two authorized offer daemons,
-  - [x] two independent offer-side clients,
-  - [x] two independent answer-side target paths.
-- [x] Ensure the helper can inject or trigger a failure in only one session.
-- [x] Ensure the helper can prove the unaffected peer still bridges bytes afterward.
+### 4.1 Default policy behavior
 
-## 5.2 ACK timeout isolation
+- [x] Test metered/cellular blocked by default.
+- [x] Test unknown/unclassified network treated fail-safe.
 
-- [x] Inject dropped ACKs or suppress ACK handling for Peer A only.
-- [x] Assert Peer A session fails or cleans up as expected.
-- [x] Assert Peer B session remains usable.
-- [x] Assert the answer daemon remains running and reports accurate status.
+### 4.2 Preference-driven policy behavior
 
-## 5.3 Remote close isolation
+- [x] Test explicit opt-in allows metered when configured.
+- [x] Test pause/resume flags affect resulting policy state as intended.
+- [x] Test warning-required preference is represented correctly.
 
-- [x] Deliver a valid encrypted `close` from Peer A.
-- [x] Assert Peer A session cleans up.
-- [x] Assert Peer B session remains usable.
-- [x] Assert stale Peer A cleanup events cannot remove Peer B.
+### 4.3 Network transition handling
 
-## 5.4 Remote error isolation
+- [x] Test transition unmetered -> metered emits expected policy/state.
+- [x] Test transition metered -> unmetered emits expected policy/state.
+- [x] Test disconnected/no-network emits blocked/no-network state.
 
-- [x] Deliver a valid encrypted `error` from Peer A.
-- [x] Assert Peer A session cleans up according to existing error policy.
-- [x] Assert Peer B session remains usable.
-- [x] Assert daemon-level status does not collapse to a misleading no-session state while Peer B is still active.
+### 4.4 Phase validation
 
-## 5.5 Reconnect failure isolation
-
-- [x] Trigger a reconnect/replacement failure for Peer A.
-- [x] Assert failure is contained to Peer A.
-- [x] Assert Peer B continues to use its established session.
-- [x] Assert answer side does not initiate reconnect signaling.
-
-## 5.6 Target-connect failure isolation expansion
-
-- [x] Keep the existing target-connect failure isolation test.
-- [x] Add assertions that the failed session's cleanup does not remove unrelated session registry entries.
-- [x] Add assertions that status eventually reflects only the still-active peer if the failed peer session is removed.
-
-## 5.7 Validation
-
-- [x] Run each focused failure-isolation test individually while developing.
-- [x] Run `cargo test -p p2p-daemon --test two_node_daemon`.
-- [x] Run `cargo test -p p2p-daemon`.
+- [x] Run targeted tests for `NetworkPolicyManagerTest`.
+- [x] Run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
 
 ---
 
-# Task 6 - Add authenticated-routing edge-case tests
+## Phase 5 - `IdentityRepository` unit tests
 
-## 6.1 Unknown non-offer handling
+Target file: `android/app/src/main/java/.../security/IdentityRepository.kt`
 
-- [x] Construct a valid authenticated non-offer message for an unknown `session_id`.
-- [x] Deliver it to the answer daemon routing loop.
-- [x] Assert no new session is created.
-- [x] Assert no existing session receives the message.
-- [x] Assert no plaintext diagnostic is published.
+### 5.1 Identity file presence behavior
 
-## 6.2 Unknown fresh offer admission
+- [x] Test `hasEncryptedIdentity()` false when no file exists.
+- [x] Test `hasEncryptedIdentity()` true after encrypted store.
 
-- [x] Construct a valid authenticated offer for an unknown `session_id`.
-- [x] Deliver it to the answer daemon routing loop.
-- [x] Assert a new session is created when the peer is authorized and allowed.
-- [x] Assert ACK/answer behavior remains unchanged.
+### 5.2 Encrypted storage behavior
 
-## 6.3 Sender/session owner mismatch
+- [x] Test `storeEncryptedIdentity()` writes encrypted payload file.
+- [x] Test stored payload is not plaintext private identity bytes.
+- [x] Test public identity file is written as expected.
 
-- [x] Create a session owned by Peer A.
-- [x] Deliver a valid authenticated Peer B message that uses Peer A's active `session_id`.
-- [x] Assert the message is rejected or ignored.
-- [x] Assert Peer A's session inbound queue does not receive Peer B's message.
-- [x] Assert Peer B cannot mutate Peer A's session status.
+### 5.3 Decryption roundtrip behavior
 
-## 6.4 Duplicate with multiple sessions
+- [x] Test `readEncryptedIdentity()` returns original private identity bytes after store.
+- [x] Test roundtrip with multiple sample payloads (short/long).
 
-- [x] Create active sessions for Peer A and Peer B.
-- [x] Deliver a duplicate ACK-required message for Peer A.
-- [x] Assert Peer A gets the duplicate re-ACK behavior.
-- [x] Assert Peer B receives no signal and no status mutation.
+### 5.4 Failure/robustness behavior
 
-## 6.5 Validation
+- [x] Test corrupted encrypted file read fails explicitly.
+- [x] Test missing public file does not affect private decrypt path (if current behavior expects this).
 
-- [x] Run `cargo test -p p2p-daemon`.
-- [x] Run `cargo clippy -p p2p-daemon --all-targets --all-features -- -D warnings`.
+### 5.5 Android keystore test strategy subtasks
 
----
+- [x] Decide per-test approach:
+  - [x] Robolectric-backed Android Keystore
+  - [x] injectable crypto/key provider seam
+- [x] Implement minimal seam only if strictly required for deterministic tests.
 
-# Task 7 - Add status schema regression tests
+### 5.6 Phase validation
 
-## 7.1 Daemon status schema
-
-- [x] Add or extend `p2p-daemon` status tests to assert serialized JSON includes:
-  - [x] `active_session_count`,
-  - [x] `session_capacity`,
-  - [x] `sessions`,
-  - [x] `configured_forwards`.
-- [x] Assert serialized JSON excludes:
-  - [x] `active_stream_count`,
-  - [x] `open_forward_ids`.
-
-## 7.2 Session status schema
-
-- [x] Add a session-status fixture with one session.
-- [x] Assert per-session JSON includes:
-  - [x] `session_id`,
-  - [x] `remote_peer_id`,
-  - [x] `state`,
-  - [x] `data_channel_open`,
-  - [x] `configured_forward_ids`.
-- [x] Assert per-session JSON excludes fake stream/open-forward fields.
-
-## 7.3 Multi-session aggregate behavior
-
-- [x] Serialize status with two sessions.
-- [x] Assert `active_session_count == sessions.len()`.
-- [x] Assert `active_session_id` is absent or null when more than one session is active.
-- [x] Assert `current_state = serving` for active answer-session registry snapshots.
-
-## 7.4 Validation
-
-- [x] Run `cargo test -p p2p-daemon status`.
+- [x] Run targeted tests for `IdentityRepositoryTest`.
+- [x] Run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
 
 ---
 
-# Task 8 - Documentation and checklist cleanup
+## Phase 6 - `NotificationController` unit tests
 
-## 8.1 Update this TODO as tests land
+Target file: `android/app/src/main/java/.../notification/NotificationController.kt`
 
-- [x] Mark each implemented test task complete.
-- [x] If a planned test is replaced by a better equivalent, document the replacement.
-- [x] If a test exposes a real bug, add a short note describing the bug and fix.
+### 6.1 Channel behavior
 
-## 8.2 Avoid stale claims
+- [x] Test `ensureChannels()` creates expected channels IDs/properties.
+- [x] Test repeated `ensureChannels()` calls are safe/idempotent.
 
-- [x] Keep canonical docs aligned if status fields or behavior are clarified by tests.
-- [x] Do not edit historical review docs except to add clearly marked follow-up notes.
+### 6.2 Notification content behavior
 
-## 8.3 Final validation
+- [x] Test notification built for key service states has expected title/body.
+- [x] Test pending intent points to `MainActivity`.
+- [x] Test notification action/button wiring for stop/open behaviors (if present).
 
-- [x] Run `cargo fmt --all --check`.
-- [x] Run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
-- [x] Run `cargo test --workspace --all-targets`.
+### 6.3 Permission-gated notify behavior
+
+- [x] Test no-post path when POST_NOTIFICATIONS permission is absent (API 33+ path).
+- [x] Test notify path when permission is granted.
+- [x] Test failure path logs/handles `notify()` exceptions without crashing.
+
+### 6.4 Phase validation
+
+- [x] Run targeted tests for `NotificationControllerTest`.
+- [x] Run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
 
 ---
 
-# Acceptance checklist
+## Phase 7 - `SetupViewModel` / `SettingsViewModel` unit tests
 
-Mark this TODO complete only when all items are true:
+Target file: `android/app/src/main/java/.../viewmodel/AppViewModels.kt`
 
-- [x] `p2pctl status` has tests for zero, one, and multiple sessions.
-- [x] `p2p-signaling` directly tests replay-status outcomes.
-- [x] Same-peer pending replacement is tested while an unrelated peer remains active.
-- [x] Per-forward allowlist behavior is tested across simultaneous sessions.
-- [x] Multi-session failure isolation covers ACK timeout, remote close, remote error, reconnect failure, and target-connect cleanup/status behavior.
-- [x] Authenticated routing tests cover unknown non-offer, unknown offer admission, sender/session mismatch, and duplicate handling with multiple sessions.
-- [x] Status schema tests prove fake stream/open-forward fields are absent.
-- [x] All targeted crate tests pass.
-- [x] Full workspace fmt, clippy, and tests pass.
+### 7.1 `SetupViewModel` behavior
+
+- [x] Test `validateConfig()` delegates to tunnel repository with current config path.
+- [x] Test `saveConfig(contents)` writes contents through config repository.
+- [x] Test validation failure result is surfaced unchanged.
+
+### 7.2 `SettingsViewModel` behavior
+
+- [x] Test `validateConfig()` delegates to tunnel repository.
+- [x] Test validation success/failure pass-through behavior.
+
+### 7.3 Phase validation
+
+- [x] Run targeted tests for `SetupViewModelTest` and `SettingsViewModelTest`.
+- [x] Run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
+
+---
+
+## Phase 8 - `TunnelForegroundService` instrumentation tests (`androidTest`)
+
+Target file: `android/app/src/main/java/.../service/TunnelForegroundService.kt`
+
+### 8.1 Instrumentation test scaffolding
+
+- [x] Add instrumentation dependencies/rules needed for service lifecycle tests.
+- [x] Add test helper to start app activity and trigger service actions as app UID.
+- [x] Ensure tests cleanly stop service and reset app state between cases.
+
+### 8.2 Service start/stop action tests
+
+- [x] Test `ACTION_START_OFFER` starts foreground service and enters foreground state.
+- [x] Test `ACTION_START_ANSWER` starts foreground service and enters foreground state.
+- [x] Test `ACTION_STOP` stops/tears down service runtime.
+
+### 8.3 Background persistence behavior
+
+- [x] Start service from app UI flow.
+- [x] Background activity (home action) in test.
+- [x] Assert service remains foreground and active after activity backgrounding.
+
+### 8.4 Notification behavior in service lifecycle
+
+- [x] Assert persistent notification exists while running.
+- [x] Assert stop action updates/stops service as expected.
+
+### 8.5 Failure path behavior
+
+- [x] Simulate startup error and assert service reports error state without process crash.
+- [x] Assert service status remains queryable after failure.
+
+### 8.6 Phase validation
+
+- [x] Run: `cd android && ./gradlew --no-daemon connectedDebugAndroidTest`
+- [x] Re-run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
+
+---
+
+## Cross-cutting completion tasks
+
+### C.1 Coverage and regression checks
+
+- [x] Ensure each major Android package has at least one meaningful automated test:
+  - [x] `data`
+  - [x] `viewmodel`
+  - [x] `network`
+  - [x] `security`
+  - [x] `notification`
+  - [x] `service` (instrumentation)
+- [x] Add regression tests for any bugs found while writing tests.
+
+### C.2 Documentation updates
+
+- [x] Update `docs/ANDROID_WEBRTC_TUNNEL_TODO.md` test-related checklist/status if scope changed.
+- [x] Add a short testing section in Android docs if test commands/layout changed materially.
+
+### C.3 Final validation (required before done)
+
+- [x] Run: `cargo fmt --check`
+- [x] Run: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- [x] Run: `cargo test --workspace --all-targets`
+- [x] Run: `cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release`
+- [x] Run: `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest`
+- [x] Run instrumentation suite (if emulator/device available): `cd android && ./gradlew --no-daemon connectedDebugAndroidTest`
+
+---
+
+## Acceptance checklist
+
+Mark complete only when all are true:
+
+- [x] `ConfigRepository` tests cover default config, read/write, and preferences.
+- [x] `TunnelRepository` tests cover start/stop, status decode, logs decode, and error propagation.
+- [x] `HomeViewModel` tests verify foreground-service intent wiring for offer/answer/stop.
+- [x] `NetworkPolicyManager` tests verify default block, opt-in, and fail-safe unknown behavior.
+- [x] `IdentityRepository` tests verify encrypted-at-rest roundtrip and corruption handling.
+- [x] `NotificationController` tests verify channel setup, content, and permission-gated notify.
+- [x] `SetupViewModel` and `SettingsViewModel` tests verify validation/save delegation.
+- [x] `TunnelForegroundService` instrumentation tests verify start/stop + background persistence.
+- [x] Android lint + unit tests pass with no lint errors.
+- [x] Workspace fmt/clippy/tests remain green.

@@ -23,7 +23,7 @@ class TunnelForegroundService : Service() {
         super.onCreate()
         notifications = NotificationController(this)
         notifications.ensureChannels()
-        val deps = (application as WebRtcTunnelApplication).deps
+        val deps = (application as HasAppDependencies).deps
         configRepository = deps.configRepository
         repository = deps.tunnelRepository
     }

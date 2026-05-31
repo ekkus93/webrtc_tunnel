@@ -1,13 +1,14 @@
 package com.phillipchin.webrtctunnel.notification
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.pm.PackageManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -15,13 +16,30 @@ import androidx.core.content.ContextCompat
 import com.phillipchin.webrtctunnel.MainActivity
 import com.phillipchin.webrtctunnel.model.ServiceState
 
-class NotificationController(private val context: Context) {
+class NotificationController(
+    private val context: Context,
+    private val sdkIntProvider: () -> Int = { Build.VERSION.SDK_INT },
+    private val notificationsAllowedProvider: () -> Boolean = {
+        sdkIntProvider() < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+    },
+    notifyAction: ((Int, android.app.Notification) -> Unit)? = null,
+) {
     companion object {
         private const val TAG = "NotificationController"
         const val CHANNEL_STATUS = "tunnel_status"
         const val CHANNEL_ERRORS = "tunnel_errors"
         const val NOTIFICATION_ID = 1001
     }
+
+    @SuppressLint("MissingPermission")
+    private fun notifyWithManager(id: Int, notification: android.app.Notification) {
+        NotificationManagerCompat.from(context).notify(id, notification)
+    }
+
+    private val notifyAction: (Int, android.app.Notification) -> Unit =
+        notifyAction ?: { id, notification -> notifyWithManager(id, notification) }
 
     fun ensureChannels() {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -61,14 +79,12 @@ class NotificationController(private val context: Context) {
     }
 
     fun show(notification: android.app.Notification) {
-        val notificationsAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        if (!notificationsAllowed) {
+        if (!notificationsAllowedProvider()) {
             return
         }
 
         runCatching {
-            NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
+            notifyAction(NOTIFICATION_ID, notification)
         }.onFailure { error ->
             Log.w(TAG, "Unable to show notification", error)
         }

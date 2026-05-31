@@ -568,3 +568,8 @@
 - Fixed Android app lifecycle wiring so Home actions start/stop the foreground tunnel service (instead of bypassing it), using application-scoped dependencies shared by `MainActivity` and `TunnelForegroundService`.
 - Updated mobile runtime error handling to persist startup failures in `last_error`, enabling actionable Android-side diagnostics instead of generic `"unknown error"` messages.
 - Completed live emulator↔desktop validation: Android offer connected to a desktop `p2p-answer` via MQTT/WebRTC, foreground service remained active after app backgrounding, and localhost forward usage was verified with emulator-side `127.0.0.1:8080` requests producing answer-side stream activity; final TODO compatibility/service checkboxes were marked complete.
+
+## 2026-05-31T03:55:30Z - GPT-5.3-Codex - Android unit/instrumentation expansion completed
+- Added broad Android automated coverage across config/tunnel repositories, viewmodels, network policy, identity handling, notification behavior, and foreground service instrumentation.
+- Introduced targeted testability seams that preserve runtime behavior (`HasAppDependencies` provider contract, lazy native bridge creation in `TunnelRepository`, injectable adapters in `NetworkPolicyManager`, `IdentityRepository`, and `NotificationController`).
+- Completed full validation: Rust workspace fmt/clippy/tests, Android `cargo ndk` build, Android lint + unit tests, and connected instrumentation tests.

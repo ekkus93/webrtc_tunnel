@@ -4,13 +4,14 @@ import android.app.Application
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.notification.NotificationController
 
-class WebRtcTunnelApplication : Application() {
-    lateinit var deps: AppDependencies
-        private set
+open class WebRtcTunnelApplication : Application(), HasAppDependencies {
+    private lateinit var appDependencies: AppDependencies
+    override val deps: AppDependencies
+        get() = appDependencies
 
     override fun onCreate() {
         super.onCreate()
-        deps = AppDependencies(this)
+        appDependencies = AppDependencies(this)
         NotificationController(this).ensureChannels()
         deps.configRepository.ensureDefaultConfig(deps.configRepository.defaultConfigTemplate())
     }

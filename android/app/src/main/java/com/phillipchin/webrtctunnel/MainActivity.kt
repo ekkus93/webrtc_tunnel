@@ -8,7 +8,7 @@ import com.phillipchin.webrtctunnel.ui.WebRtcTunnelApp
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val deps = (application as WebRtcTunnelApplication).deps
+        val deps = (application as HasAppDependencies).deps
         setContent {
             WebRtcTunnelApp(deps)
         }
