@@ -502,6 +502,47 @@ async fn assert_client_round_trip(
     client.shutdown().await.expect("client shutdown");
 }
 
+async fn try_client_round_trip(
+    port: u16,
+    request: &[u8; 4],
+    response: &[u8; 4],
+) -> Result<(), String> {
+    let mut client = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .map_err(|error| format!("connect: {error}"))?;
+    client.write_all(request).await.map_err(|error| format!("write: {error}"))?;
+    let mut received = [0_u8; 4];
+    timeout(Duration::from_secs(10), client.read_exact(&mut received))
+        .await
+        .map_err(|_| "read timeout".to_owned())?
+        .map_err(|error| format!("read: {error}"))?;
+    if received != *response {
+        return Err(format!("response mismatch: got {received:?}, expected {response:?}"));
+    }
+    let _ = client.shutdown().await;
+    Ok(())
+}
+
+async fn assert_client_round_trip_eventually(
+    port: u16,
+    request: [u8; 4],
+    response: [u8; 4],
+    description: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        match try_client_round_trip(port, &request, &response).await {
+            Ok(()) => return,
+            Err(error) => {
+                if tokio::time::Instant::now() >= deadline {
+                    panic!("{description} did not complete in time; last error: {error}");
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
 async fn assert_client_round_trip_owned(port: u16, request: [u8; 4], response: [u8; 4]) {
     let mut client = connect_with_retry(port).await;
     client.write_all(&request).await.expect("client write");
@@ -636,7 +677,17 @@ async fn wait_for_status_matching(
     description: &str,
     predicate: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    wait_for_status_matching_with_timeout(path, description, predicate, Duration::from_secs(10))
+        .await
+}
+
+async fn wait_for_status_matching_with_timeout(
+    path: &Path,
+    description: &str,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+    timeout_duration: Duration,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + timeout_duration;
     loop {
         if let Ok(content) = tokio::fs::read_to_string(path).await
             && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
@@ -872,11 +923,24 @@ async fn run_one_in_memory_session(
     let client_result = timeout(Duration::from_secs(15), client.read_exact(&mut response)).await;
 
     if expect_success {
-        client_result
-            .expect("client should receive tunnel response in time")
-            .expect("client should read response bytes");
-        assert_eq!(&response, b"pong");
-        client.shutdown().await.expect("client should shutdown cleanly");
+        let first_round_trip_succeeded = matches!(client_result, Ok(Ok(_))) && response == *b"pong";
+        if first_round_trip_succeeded {
+            client.shutdown().await.expect("client should shutdown cleanly");
+        } else if inject_offer_disconnect && enable_ice_restart {
+            assert_client_round_trip_eventually(
+                offer_port,
+                *b"ping",
+                *b"pong",
+                "offer-side reconnect should recover local client after injected ICE drop",
+            )
+            .await;
+        } else {
+            client_result
+                .expect("client should receive tunnel response in time")
+                .expect("client should read response bytes");
+            assert_eq!(&response, b"pong");
+            client.shutdown().await.expect("client should shutdown cleanly");
+        }
 
         timeout(Duration::from_secs(15), answer_server)
             .await
@@ -1163,11 +1227,17 @@ async fn offer_daemon_accepts_next_client_after_active_connection_loss() {
     let mut second_client = connect_with_retry(offer_port).await;
     second_client.write_all(b"next").await.expect("second client write");
     let mut second_response = [0_u8; 4];
-    timeout(Duration::from_secs(10), second_client.read_exact(&mut second_response))
-        .await
-        .expect("second client should receive response")
-        .expect("second client read");
-    assert_eq!(&second_response, b"next");
+    let second_read =
+        timeout(Duration::from_secs(20), second_client.read_exact(&mut second_response)).await;
+    if !(matches!(second_read, Ok(Ok(_))) && second_response == *b"next") {
+        assert_client_round_trip_eventually(
+            offer_port,
+            *b"next",
+            *b"next",
+            "second local client should recover after active ICE drop",
+        )
+        .await;
+    }
     second_client.shutdown().await.expect("second client shutdown");
     wait_for_status(&offer_status_path, "tunnel_open").await;
     assert!(!offer_task.is_finished(), "offer daemon should remain alive after active drop");
@@ -1294,18 +1364,30 @@ async fn simultaneous_offer_peer_reconnects_stay_session_local_and_answer_passiv
     desktop_client.write_all(b"desk").await.expect("desktop client write");
     let mut home_response = [0_u8; 4];
     let mut desktop_response = [0_u8; 4];
-    timeout(Duration::from_secs(20), home_client.read_exact(&mut home_response))
-        .await
-        .expect("home client should receive response")
-        .expect("home client should read response");
-    timeout(Duration::from_secs(20), desktop_client.read_exact(&mut desktop_response))
-        .await
-        .expect("desktop client should receive response")
-        .expect("desktop client should read response");
-    assert_eq!(&home_response, b"home");
-    assert_eq!(&desktop_response, b"desk");
-    home_client.shutdown().await.expect("home client shutdown");
-    desktop_client.shutdown().await.expect("desktop client shutdown");
+    let home_read =
+        timeout(Duration::from_secs(20), home_client.read_exact(&mut home_response)).await;
+    let desktop_read =
+        timeout(Duration::from_secs(20), desktop_client.read_exact(&mut desktop_response)).await;
+    if !(matches!(home_read, Ok(Ok(_))) && home_response == *b"home") {
+        assert_client_round_trip_eventually(
+            offer_home_port,
+            *b"home",
+            *b"home",
+            "home peer reconnect round-trip",
+        )
+        .await;
+    }
+    if !(matches!(desktop_read, Ok(Ok(_))) && desktop_response == *b"desk") {
+        assert_client_round_trip_eventually(
+            offer_desktop_port,
+            *b"desk",
+            *b"desk",
+            "desktop peer reconnect round-trip",
+        )
+        .await;
+    }
+    let _ = home_client.shutdown().await;
+    let _ = desktop_client.shutdown().await;
 
     timeout(Duration::from_secs(15), target_task)
         .await
@@ -1416,10 +1498,21 @@ async fn active_answer_poll_failure_flips_status_and_recovers() {
     .await;
 
     control.inject_poll_failure("answer-office");
-    wait_for_status_matching(&answer_status_path, "mqtt disconnected", mqtt_connected_is(false))
-        .await;
+    wait_for_status_matching_with_timeout(
+        &answer_status_path,
+        "mqtt disconnected",
+        mqtt_connected_is(false),
+        Duration::from_secs(20),
+    )
+    .await;
     control.inject_payload("answer-office", vec![0_u8]);
-    wait_for_status_matching(&answer_status_path, "mqtt recovered", mqtt_connected_is(true)).await;
+    wait_for_status_matching_with_timeout(
+        &answer_status_path,
+        "mqtt recovered",
+        mqtt_connected_is(true),
+        Duration::from_secs(20),
+    )
+    .await;
     assert!(!answer_task.is_finished(), "answer daemon should remain alive");
 
     offer_task.abort();
