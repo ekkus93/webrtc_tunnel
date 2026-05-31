@@ -134,3 +134,10 @@
 - User chose to implement Android SAF/share import-export UX now.
 - User chose to implement Test Local Port now.
 - User clarified Phase 0 reference `ANDROID_FIX_TODO_3(1).md` should be treated as a typo; audit `docs/ANDROID_FIX_TODO_3.md` only.
+
+## 2026-05-31T16:00:08Z - GPT-5.3-Codex - Tiny final Android patch completed and pushed
+- Implemented `docs/ANDROID_TINY_FINAL_PATCH_TODO.md` end-to-end on `android-app`:
+  pre-native-start generation gate in `TunnelForegroundService`, explicit `startupJob` cancellation paths for STOP/PAUSE/policy/onDestroy, async `SetupViewModel` save/start flow without `runBlocking`, and expanded `p2p-mobile` lint-policy rationale comment.
+- Added/updated Android tests for lifecycle/startup edge cases and async setup save/start behavior, including preference-save gating and failure handling.
+- Updated `docs/ANDROID_TINY_FINAL_PATCH_TODO.md` statuses and `docs/ANDROID_VALIDATION.md` with final validation evidence; manual Android↔desktop E2E remains explicitly `NOT RUN` and unchecked.
+- Commit `17bcc63` pushed to `origin/android-app`.
