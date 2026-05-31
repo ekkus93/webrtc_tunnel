@@ -841,11 +841,13 @@ async fn handle_answer_session_event<T: DaemonSignalingTransport>(
             publish_answer_session_request(ctx, codec, transport, *request).await;
         }
         AnswerSessionEvent::RawPublish { peer_id, payload, status, result } => {
+            eprintln!("[DEBUG] handle_answer_session_event: RawPublish start, mqtt_connected={}", ctx.runtime.mqtt_connected);
             let publish_result = match transport
                 .publish_signal(&peer_id, &ctx.config.broker.topic_prefix, payload)
                 .await
             {
                 Ok(()) => {
+                    eprintln!("[DEBUG] RawPublish: publish SUCCESS, mqtt_connected={}", ctx.runtime.mqtt_connected);
                     mark_transport_usable(
                         ctx,
                         StatusSnapshot {
@@ -854,6 +856,7 @@ async fn handle_answer_session_event<T: DaemonSignalingTransport>(
                         },
                     )
                     .await;
+                    eprintln!("[DEBUG] RawPublish: after mark_transport_usable, mqtt_connected={}", ctx.runtime.mqtt_connected);
                     Ok(())
                 }
                 Err(error) => {
@@ -2124,8 +2127,11 @@ async fn mark_transport_unusable(
     snapshot: StatusSnapshot,
     error: &SignalingError,
 ) {
+    eprintln!("[DEBUG] mark_transport_unusable: setting mqtt_connected=false");
     ctx.runtime.mqtt_connected = false;
+    eprintln!("[DEBUG] mark_transport_unusable: starting write_daemon_status");
     write_daemon_status(ctx, snapshot).await;
+    eprintln!("[DEBUG] mark_transport_unusable: write_daemon_status DONE");
     tracing::warn!(
         reason = %error,
         role = ?ctx.config.node.role,
@@ -2139,6 +2145,7 @@ async fn mark_transport_usable(ctx: &mut RuntimeContext<'_>, snapshot: StatusSna
     if ctx.runtime.mqtt_connected {
         return;
     }
+    eprintln!("[DEBUG] mark_transport_usable: setting mqtt_connected=true");
     ctx.runtime.mqtt_connected = true;
     write_daemon_status(ctx, snapshot).await;
     tracing::info!(
