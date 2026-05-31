@@ -55,15 +55,15 @@ Add a new top-level entry to `docs/ANDROID_VALIDATION.md`.
 
 Required fields:
 
-- [ ] date/time;
-- [ ] git commit hash, if committed;
-- [ ] working tree state, if not committed;
-- [ ] host OS/environment;
-- [ ] Rust toolchain version;
-- [ ] Android Gradle/Gradle wrapper version;
-- [ ] Android SDK/NDK version;
-- [ ] device/emulator availability;
-- [ ] summary of this validation run.
+- [x] date/time;
+- [x] git commit hash, if committed;
+- [x] working tree state, if not committed;
+- [x] host OS/environment;
+- [x] Rust toolchain version;
+- [x] Android Gradle/Gradle wrapper version;
+- [x] Android SDK/NDK version;
+- [x] device/emulator availability;
+- [x] summary of this validation run.
 
 If the working tree is dirty, explicitly write:
 
@@ -138,10 +138,10 @@ Reason: <exact reason>
 
 ## 1.5 Acceptance
 
-- [ ] `docs/ANDROID_VALIDATION.md` has a fresh entry for the current tiny-final-patch code.
-- [ ] The entry clearly distinguishes `PASS`, `FAIL`, and `NOT RUN`.
-- [ ] No stale pre-patch validation entry is presented as current.
-- [ ] Unavailable validation is not marked as passing.
+- [x] `docs/ANDROID_VALIDATION.md` has a fresh entry for the current tiny-final-patch code.
+- [x] The entry clearly distinguishes `PASS`, `FAIL`, and `NOT RUN`.
+- [x] No stale pre-patch validation entry is presented as current.
+- [x] Unavailable validation is not marked as passing.
 
 ---
 
@@ -202,17 +202,17 @@ The hook must not affect production behavior.
 
 Add or strengthen tests:
 
-- [ ] STOP before native start prevents `repository.start(...)` from being called.
-- [ ] PAUSE/network-block before native start prevents `repository.start(...)` from being called.
-- [ ] STOP during native start stops stale successful runtime.
-- [ ] stale START never publishes Running after STOP.
-- [ ] start-stop-start still works.
+- [x] STOP before native start prevents `repository.start(...)` from being called.
+- [x] PAUSE/network-block before native start prevents `repository.start(...)` from being called.
+- [x] STOP during native start stops stale successful runtime.
+- [x] stale START never publishes Running after STOP.
+- [x] start-stop-start still works.
 
 ## 2.4 Acceptance
 
-- [ ] STOP-before-native-start behavior is tested deterministically.
-- [ ] No lifecycle race test depends on arbitrary `Thread.sleep()`.
-- [ ] Tests fail reliably if the pre-native-start generation check is removed.
+- [x] STOP-before-native-start behavior is tested deterministically.
+- [x] No lifecycle race test depends on arbitrary `Thread.sleep()`.
+- [x] Tests fail reliably if the pre-native-start generation check is removed.
 
 ---
 
@@ -273,9 +273,9 @@ Leave these unchecked:
 
 ## 3.3 Acceptance
 
-- [ ] E2E is either run and documented as PASS/FAIL, or explicitly documented as NOT RUN.
-- [ ] E2E compatibility items remain unchecked unless the real test is run.
-- [ ] Automated tests are not treated as a substitute for manual Android browser ↔ desktop answer validation.
+- [x] E2E is either run and documented as PASS/FAIL, or explicitly documented as NOT RUN.
+- [x] E2E compatibility items remain unchecked unless the real test is run.
+- [x] Automated tests are not treated as a substitute for manual Android browser ↔ desktop answer validation.
 
 ---
 
@@ -283,17 +283,17 @@ Leave these unchecked:
 
 ## 4.1 Documentation cleanup acceptance
 
-- [ ] Fresh validation entry added for current tiny-final-patch code.
-- [ ] PASS/FAIL/NOT RUN are clearly distinguished.
-- [ ] Stale pre-patch validation is not presented as current.
-- [ ] Connected test status is documented.
-- [ ] Manual E2E status is documented.
+- [x] Fresh validation entry added for current tiny-final-patch code.
+- [x] PASS/FAIL/NOT RUN are clearly distinguished.
+- [x] Stale pre-patch validation is not presented as current.
+- [x] Connected test status is documented.
+- [x] Manual E2E status is documented.
 
 ## 4.2 Optional test-quality acceptance
 
-- [ ] STOP-before-native-start test is deterministic.
-- [ ] No arbitrary sleep is needed for lifecycle race tests.
-- [ ] Test fails if pre-native-start generation check is removed.
+- [x] STOP-before-native-start test is deterministic.
+- [x] No arbitrary sleep is needed for lifecycle race tests.
+- [x] Test fails if pre-native-start generation check is removed.
 
 ## 4.3 Compatibility acceptance
 

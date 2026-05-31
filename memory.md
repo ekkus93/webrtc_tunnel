@@ -573,3 +573,8 @@
 - Added broad Android automated coverage across config/tunnel repositories, viewmodels, network policy, identity handling, notification behavior, and foreground service instrumentation.
 - Introduced targeted testability seams that preserve runtime behavior (`HasAppDependencies` provider contract, lazy native bridge creation in `TunnelRepository`, injectable adapters in `NetworkPolicyManager`, `IdentityRepository`, and `NotificationController`).
 - Completed full validation: Rust workspace fmt/clippy/tests, Android `cargo ndk` build, Android lint + unit tests, and connected instrumentation tests.
+
+## 2026-05-31T16:43:21Z - GPT-5.3-Codex - Android E2E validation cleanup checklist completed
+- Completed `docs/ANDROID_E2E_VALIDATION_CLEANUP_TODO.md` Phase 1-4 checklist updates with honest compatibility gating: manual Android↔desktop E2E remains `NOT RUN`, so compatibility acceptance items stay unchecked.
+- Added fresh top validation evidence in `docs/ANDROID_VALIDATION.md` with PASS results for Rust/Android automated commands and explicit `NOT RUN` manual E2E reason/future steps.
+- Hardened instrumentation stability by increasing `awaitStartOfferEntered` wait tolerance in `TunnelForegroundServiceInstrumentationTest` for pending-start stop/pause cases; full validation rerun is green (`cargo fmt --check`, strict workspace clippy/tests, `cargo ndk`, Android lint/unit/connected tests, assembleDebug, APK JNI check).

@@ -65,6 +65,9 @@ class RecordingBridge : TunnelNativeBridge {
     private var blockStartOffer = false
     private var startOfferEntered = CountDownLatch(0)
     private var startOfferRelease = CountDownLatch(0)
+    private var blockValidation = false
+    private var validationEntered = CountDownLatch(0)
+    private var validationRelease = CountDownLatch(0)
     var state: ServiceState = ServiceState.Stopped
 
     fun reset() {
@@ -75,6 +78,9 @@ class RecordingBridge : TunnelNativeBridge {
         blockStartOffer = false
         startOfferEntered = CountDownLatch(0)
         startOfferRelease = CountDownLatch(0)
+        blockValidation = false
+        validationEntered = CountDownLatch(0)
+        validationRelease = CountDownLatch(0)
         state = ServiceState.Stopped
     }
 
@@ -88,6 +94,18 @@ class RecordingBridge : TunnelNativeBridge {
 
     fun releaseBlockedStartOffer() {
         startOfferRelease.countDown()
+    }
+
+    fun blockNextValidation() {
+        blockValidation = true
+        validationEntered = CountDownLatch(1)
+        validationRelease = CountDownLatch(1)
+    }
+
+    fun awaitValidationEntered(timeoutMs: Long): Boolean = validationEntered.await(timeoutMs, TimeUnit.MILLISECONDS)
+
+    fun releaseBlockedValidation() {
+        validationRelease.countDown()
     }
 
     override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> {
@@ -134,7 +152,14 @@ class RecordingBridge : TunnelNativeBridge {
 
     override fun validateConfig(configPath: String): ValidationResult = ValidationResult(true, null)
     override fun validateConfigWithIdentity(configPath: String, identityBytes: ByteArray): ValidationResult =
-        ValidationResult(true, null)
+        if (blockValidation) {
+            validationEntered.countDown()
+            validationRelease.await(5, TimeUnit.SECONDS)
+            blockValidation = false
+            ValidationResult(true, null)
+        } else {
+            ValidationResult(true, null)
+        }
     override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
         IdentityValidationResult(valid = true, canonical_public_identity = "android-phone ssh-ed25519 AAAA test", canonical_private_identity = identityToml, peer_id = "android-phone")
     override fun validatePublicIdentity(line: String): IdentityValidationResult =

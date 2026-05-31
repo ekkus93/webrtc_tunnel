@@ -1,5 +1,164 @@
 # Android Validation
 
+## 2026-05-31T16:42:56Z
+
+- **Commit:** `17a5b74`
+- **Working tree:** dirty / contains Android E2E validation cleanup changes
+- **Environment:** Linux host (`6.17.0-29-generic`), JVM `21.0.11`, Android emulator `Medium_Phone_API_36.0(AVD) - 16`
+- **Rust toolchain:** `rustc 1.94.1`, `cargo 1.94.1`
+- **Android Gradle/Wrapper:** Gradle `8.7`, AGP `8.5.2`
+- **Android SDK/NDK:** compileSdk `35`, targetSdk `35`, minSdk `26`, installed NDKs include `28.2.13676358` (also `27.0.12077973`, `21.4.7075529`)
+- **Device/emulator availability:** connected device `emulator-5554`
+- **Summary:** Final checklist pass is green on the current working tree after hardening `stopDuringPendingStartIsSafe` wait tolerance; manual Android↔desktop browser E2E remains explicitly unrun.
+
+### Rust workspace validation
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+```
+
+- **Result:** PASS
+
+### Android native library build
+
+```bash
+cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
+```
+
+- **Result:** PASS
+
+### Android lint/build/tests
+
+```bash
+cd android
+./gradlew --no-daemon lintDebug testDebugUnitTest connectedDebugAndroidTest assembleDebug
+```
+
+- **Result:** PASS
+
+### APK native library check
+
+```bash
+cd android
+unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libp2p_mobile.so
+```
+
+- **Result:** PASS (`lib/arm64-v8a/libp2p_mobile.so`, `lib/x86_64/libp2p_mobile.so`)
+
+### Manual Android↔desktop E2E
+
+- **Result:** NOT RUN
+- **Reason:** Desktop `p2p-answer` runtime plus remote target service were not provisioned for this pass.
+- **Future run steps:** Start desktop `p2p-answer` with real config, configure Android offer from Setup Wizard, start tunnel, open `http://127.0.0.1:<local_port>` on Android browser, and capture redacted Android/desktop logs with response summary.
+
+## 2026-05-31T16:38:22Z
+
+- **Commit:** `17a5b74`
+- **Working tree:** dirty / contains Android E2E validation cleanup changes
+- **Environment:** Linux host (`6.17.0-29-generic`), JVM `21.0.11`, Android emulator `Medium_Phone_API_36.0(AVD) - 16`
+- **Rust toolchain:** `rustc 1.94.1`, `cargo 1.94.1`
+- **Android Gradle/Wrapper:** Gradle `8.7`, AGP `8.5.2`
+- **Android SDK/NDK:** compileSdk `35`, targetSdk `35`, minSdk `26`, installed NDKs include `28.2.13676358` (also `27.0.12077973`, `21.4.7075529`)
+- **Device/emulator availability:** connected device `emulator-5554`
+- **Summary:** Cleanup pass validation is green for Rust and Android automation on the current working tree; manual Android↔desktop browser E2E remains explicitly unrun.
+
+### Rust workspace validation
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+```
+
+- **Result:** PASS
+
+### Android native library build
+
+```bash
+cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
+```
+
+- **Result:** PASS
+
+### Android lint/build/tests
+
+```bash
+cd android
+./gradlew --no-daemon lintDebug testDebugUnitTest connectedDebugAndroidTest assembleDebug
+```
+
+- **Result:** PASS
+
+### APK native library check
+
+```bash
+cd android
+unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libp2p_mobile.so
+```
+
+- **Result:** PASS (`lib/arm64-v8a/libp2p_mobile.so`, `lib/x86_64/libp2p_mobile.so`)
+
+### Manual Android↔desktop E2E
+
+- **Result:** NOT RUN
+- **Reason:** Desktop `p2p-answer` runtime plus remote target service were not provisioned for this pass.
+- **Future run steps:** Start desktop `p2p-answer` with real config, configure Android offer from Setup Wizard, start tunnel, open `http://127.0.0.1:<local_port>` on Android browser, and capture redacted Android/desktop logs with response summary.
+
+## 2026-05-31T16:31:47Z
+
+- **Commit:** `17a5b74`
+- **Working tree:** clean
+- **Environment:** Linux host (`6.17.0-29-generic`), JVM `21.0.11`, Android emulator `Medium_Phone_API_36.0(AVD) - 16`
+- **Rust toolchain:** `rustc 1.94.1`, `cargo 1.94.1`
+- **Android Gradle/Wrapper:** Gradle `8.7`, AGP `8.5.2`
+- **Android SDK/NDK:** compileSdk `35`, targetSdk `35`, minSdk `26`, installed NDKs include `28.2.13676358` (also `27.0.12077973`, `21.4.7075529`)
+- **Device/emulator availability:** connected device `emulator-5554`
+- **Summary:** Current tiny-final-patch tree validates cleanly across Rust and Android automation; manual Android↔desktop browser E2E remains unrun in this pass.
+
+### Rust workspace validation
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+```
+
+- **Result:** PASS
+
+### Android native library build
+
+```bash
+cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
+```
+
+- **Result:** PASS
+
+### Android lint/build/tests
+
+```bash
+cd android
+./gradlew --no-daemon lintDebug testDebugUnitTest connectedDebugAndroidTest assembleDebug
+```
+
+- **Result:** PASS
+
+### APK native library check
+
+```bash
+cd android
+unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libp2p_mobile.so
+```
+
+- **Result:** PASS (`lib/arm64-v8a/libp2p_mobile.so`, `lib/x86_64/libp2p_mobile.so`)
+
+### Manual Android↔desktop E2E
+
+- **Result:** NOT RUN
+- **Reason:** Desktop `p2p-answer` runtime plus remote target service were not provisioned for this pass.
+- **Future run steps:** Start desktop `p2p-answer` with real config, configure Android offer from Setup Wizard, start tunnel, open `http://127.0.0.1:<local_port>` on Android browser, and capture redacted Android/desktop logs with response summary.
+
 ## 2026-05-31T07:13:03Z
 
 - **Commit:** `390654e`
