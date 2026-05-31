@@ -595,3 +595,11 @@
 ## 2026-05-31T17:19:27Z - GPT-5.3-Codex - Full lint/test rerun after UNIT_TEST3 push
 - Re-ran repository quality gates end-to-end: `cargo fmt --check`, strict workspace clippy, workspace tests, and Android `lintDebug testDebugUnitTest connectedDebugAndroidTest`.
 - All lint and test commands completed successfully with no warnings promoted to errors and no test failures.
+
+## 2026-05-31T17:49:19Z - GPT-5.3-Codex - New Android UI polish spec/TODO added
+- `android-app` pulled new planning docs: `docs/ANDROID_UI_POLISH_SPEC.md` and `docs/ANDROID_UI_POLISH_TODO.md`.
+- Reviewed both docs end-to-end for pre-implementation clarification; scope is a full Android UI/UX polish pass with explicit non-goals preserving protocol/runtime/security behavior.
+
+## 2026-05-31T17:51:43Z - GPT-5.3-Codex - Shared UI polish clarification questions with user
+- Added `docs/responses12.md` containing the six unresolved clarification questions/issues from review of the new Android UI polish spec and TODO.
+- Questions focus on credential UX, answer-mode visibility, non-HTTP forward UX, MQTT test-connection semantics, non-localhost bind exposure, and settings default/migration policy.
