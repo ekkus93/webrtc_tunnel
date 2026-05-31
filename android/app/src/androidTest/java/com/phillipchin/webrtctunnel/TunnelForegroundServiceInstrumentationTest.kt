@@ -34,8 +34,7 @@ class TunnelForegroundServiceInstrumentationTest {
     @Test
     fun startOfferActionStartsOfferPath() {
         context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-        assertEquals(1, TestTunnelHooks.bridge.startOfferCalls)
+        assertTrue(waitForCondition(timeoutMs = 10_000) { TestTunnelHooks.bridge.startOfferCalls >= 1 })
     }
 
     @Test
@@ -51,8 +50,7 @@ class TunnelForegroundServiceInstrumentationTest {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.moveToState(Lifecycle.State.CREATED)
         }
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-        assertEquals(1, TestTunnelHooks.bridge.startOfferCalls)
+        assertTrue(waitForCondition(timeoutMs = 10_000) { TestTunnelHooks.bridge.startOfferCalls >= 1 })
         assertEquals(0, TestTunnelHooks.bridge.stopCalls)
     }
 

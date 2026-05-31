@@ -7,7 +7,6 @@ import com.phillipchin.webrtctunnel.model.LogEvent
 import com.phillipchin.webrtctunnel.model.NativeLogEventDto
 import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
 import com.phillipchin.webrtctunnel.model.NetworkStatus
-import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelError
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -49,14 +48,14 @@ class TunnelRepository(
     fun refreshStatus() {
         runCatching {
             val native = Json.decodeFromString<NativeRuntimeStatusDto>(bridge.getStatusJson())
-            _status.value = native.toTunnelStatus(_status.value)
+            _status.value = SensitiveDataRedactor.redactStatus(native.toTunnelStatus(_status.value))
         }.onFailure { error ->
             _status.value = _status.value.copy(
                 serviceState = ServiceState.Error,
                 lastError = TunnelError(
                     code = "status_decode_failed",
                     message = "Native status decode failed",
-                    details = error.message,
+                    details = SensitiveDataRedactor.redactText(error.message ?: "unknown status decode error"),
                 ),
             )
         }
@@ -66,10 +65,12 @@ class TunnelRepository(
         runCatching {
             Json.decodeFromString<List<NativeLogEventDto>>(bridge.getRecentLogsJson(maxEvents))
                 .map { event ->
-                    LogEvent(
+                    SensitiveDataRedactor.redactLogEvent(
+                        LogEvent(
                         unixMs = event.unix_ms,
                         level = event.level,
                         message = event.message,
+                    ),
                     )
                 }
         }.onFailure { error ->
@@ -78,7 +79,7 @@ class TunnelRepository(
                 lastError = TunnelError(
                     code = "log_decode_failed",
                     message = "Native log decode failed",
-                    details = error.message,
+                    details = SensitiveDataRedactor.redactText(error.message ?: "unknown log decode error"),
                 ),
             )
         }.getOrDefault(emptyList())
@@ -100,16 +101,16 @@ class TunnelRepository(
     fun setPolicyBlocked(blockReason: String) {
         _status.value = _status.value.copy(
             serviceState = ServiceState.PausedMeteredBlocked,
-            networkStatus = NetworkStatus(
-                networkType = NetworkType.Unknown,
-                isMetered = true,
-                allowedByDefault = false,
-                allowedByUserPolicy = false,
+            networkStatus = _status.value.networkStatus.copy(
                 tunnelAllowed = false,
                 blockReason = blockReason,
             ),
             lastError = null,
         )
+    }
+
+    fun updateNetworkStatus(networkStatus: NetworkStatus) {
+        _status.value = _status.value.copy(networkStatus = networkStatus)
     }
 
     private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): TunnelStatus {

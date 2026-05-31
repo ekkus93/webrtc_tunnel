@@ -22,3 +22,7 @@ jni = "0.21.1"
 
 [dev-dependencies]
 tempfile = "3.20.0"
+
+[lints.rust]
+# FFI boundary crate: explicit policy allows required unsafe for JNI exports/pointer handling.
+unsafe_code = "allow"

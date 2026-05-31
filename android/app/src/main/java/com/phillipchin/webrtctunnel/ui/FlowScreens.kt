@@ -92,6 +92,13 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                     label = { Text("Broker password file (optional)") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                OutlinedTextField(
+                    value = input.topicPrefix,
+                    onValueChange = { updateInput(input.copy(topicPrefix = it)) },
+                    label = { Text("Topic prefix") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("TLS uses broker host with system default roots when CA file is omitted.")
             }
             SetupStep.Peer -> {
                 OutlinedTextField(
@@ -115,7 +122,10 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                 Text("Manage forwards in the Forwards tab.")
             }
             SetupStep.NetworkPolicy -> {
-                Text("Network policy is configured in Settings > Network policy.")
+                Text("Allow metered/cellular: ${input.allowMetered}")
+                Text("Resume on unmetered: ${input.resumeOnUnmetered}")
+                Text("Unknown network is always blocked for safety.")
+                Text("Network policy details are in Settings > Network policy.")
             }
             SetupStep.Review -> {
                 Text("Mode: offer")
@@ -123,6 +133,8 @@ fun SetupWizardScreen(padding: PaddingValues, vm: SetupViewModel) {
                 Text("Local peer: ${input.localPeerId}")
                 Text("Remote peer: ${input.remotePeerId}")
                 Text("Enabled forwards: ${forwards.count { it.enabled }}")
+                Text("Allow metered: ${input.allowMetered}")
+                Text("Resume on unmetered: ${input.resumeOnUnmetered}")
                 Text("Identity import: ${if (state.importIdentityPath.isBlank()) "existing encrypted identity" else state.importIdentityPath}")
                 if (state.localPublicIdentity.isNotBlank()) {
                     Text("Local public identity: ${state.localPublicIdentity}")

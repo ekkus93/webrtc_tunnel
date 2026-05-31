@@ -1080,8 +1080,8 @@ If any command fails:
 
 ## 14.6 Compatibility
 
-- [x] Android offer connects to desktop Rust answer.
-- [x] Android browser reaches remote service via `127.0.0.1:<port>`.
+- [ ] Android offer connects to desktop Rust answer.
+- [ ] Android browser reaches remote service via `127.0.0.1:<port>`.
 - [x] Protocol wire formats unchanged.
 - [x] Desktop Rust tests still pass.
 

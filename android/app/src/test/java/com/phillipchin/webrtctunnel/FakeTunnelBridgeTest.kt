@@ -1,9 +1,7 @@
 package com.phillipchin.webrtctunnel
 
-import com.phillipchin.webrtctunnel.model.LogEvent
-import com.phillipchin.webrtctunnel.model.ServiceState
-import com.phillipchin.webrtctunnel.model.TunnelMode
-import com.phillipchin.webrtctunnel.model.TunnelStatus
+import com.phillipchin.webrtctunnel.model.NativeLogEventDto
+import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -15,15 +13,15 @@ class FakeTunnelBridgeTest {
     @Test
     fun fakeBridgeReturnsStatusJson() {
         val bridge = FakeTunnelBridge()
-        val status = json.decodeFromString(TunnelStatus.serializer(), bridge.getStatusJson())
-        assertEquals(ServiceState.Stopped, status.serviceState)
-        assertEquals(TunnelMode.Offer, status.mode)
+        val status = json.decodeFromString(NativeRuntimeStatusDto.serializer(), bridge.getStatusJson())
+        assertEquals("stopped", status.state)
+        assertEquals("offer", status.mode)
     }
 
     @Test
     fun fakeBridgeReturnsLogsJson() {
         val bridge = FakeTunnelBridge()
-        val logs = json.decodeFromString<List<LogEvent>>(bridge.getRecentLogsJson(2))
+        val logs = json.decodeFromString<List<NativeLogEventDto>>(bridge.getRecentLogsJson(2))
         assertTrue(logs.isNotEmpty())
     }
 }

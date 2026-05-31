@@ -1,6 +1,8 @@
 package com.phillipchin.webrtctunnel
 
 import com.phillipchin.webrtctunnel.model.LogEvent
+import com.phillipchin.webrtctunnel.model.NativeLogEventDto
+import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
 import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.model.TunnelStatus
@@ -32,6 +34,7 @@ class RustTunnelBridge : TunnelNativeBridge {
     }
 
     private var runtimeHandle: Long = if (nativeAvailable) nativeCreateRuntime() else 0L
+    private var disposed: Boolean = false
 
     override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> = runCatching {
         ensureNativeAvailable()
@@ -89,18 +92,28 @@ class RustTunnelBridge : TunnelNativeBridge {
     }
 
     fun dispose() {
+        if (disposed) {
+            return
+        }
         if (runtimeHandle != 0L) {
             nativeDestroyRuntime(runtimeHandle)
+            runtimeHandle = 0L
         }
-        runtimeHandle = 0L
+        disposed = true
     }
 
     private fun ensureNativeAvailable() {
+        if (disposed) {
+            throw IllegalStateException("Tunnel bridge is disposed")
+        }
         if (!nativeAvailable) {
             throw IllegalStateException(
                 "Native library p2p_mobile failed to load",
                 nativeLoadError,
             )
+        }
+        if (runtimeHandle == 0L) {
+            throw IllegalStateException("Native runtime handle is unavailable")
         }
     }
 
@@ -125,30 +138,37 @@ class RustTunnelBridge : TunnelNativeBridge {
 }
 
 class FakeTunnelBridge : TunnelNativeBridge {
-    private var status = TunnelStatus(
-        serviceState = com.phillipchin.webrtctunnel.model.ServiceState.Stopped,
-        mode = com.phillipchin.webrtctunnel.model.TunnelMode.Offer,
-        localPeerId = "android-phone",
-    )
+    private var state = "stopped"
+    private var mode = "offer"
 
     override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> = runCatching {
-        status = status.copy(serviceState = com.phillipchin.webrtctunnel.model.ServiceState.Connected)
+        mode = "offer"
+        state = "running"
     }
 
     override fun startAnswer(configPath: String): Result<Unit> = runCatching {
-        status = status.copy(serviceState = com.phillipchin.webrtctunnel.model.ServiceState.Serving)
+        mode = "answer"
+        state = "running"
     }
 
     override fun stop(): Result<Unit> = runCatching {
-        status = status.copy(serviceState = com.phillipchin.webrtctunnel.model.ServiceState.Stopped)
+        state = "stopped"
     }
 
-    override fun getStatusJson(): String = Json.encodeToString(TunnelStatus.serializer(), status)
+    override fun getStatusJson(): String = Json.encodeToString(
+        NativeRuntimeStatusDto.serializer(),
+        NativeRuntimeStatusDto(
+            state = state,
+            mode = mode,
+            config_path = "/tmp/fake-config.toml",
+            active = state == "running",
+        ),
+    )
 
     override fun getRecentLogsJson(maxEvents: Int): String =
         Json.encodeToString(
-            ListSerializer(LogEvent.serializer()),
-            List(maxEvents.coerceAtMost(3)) { LogEvent(0L, "info", "fake log $it") }
+            ListSerializer(NativeLogEventDto.serializer()),
+            List(maxEvents.coerceAtMost(3)) { NativeLogEventDto(0L, "info", "fake log $it") },
         )
 
     override fun validateConfig(configPath: String): ValidationResult = ValidationResult(true, null)

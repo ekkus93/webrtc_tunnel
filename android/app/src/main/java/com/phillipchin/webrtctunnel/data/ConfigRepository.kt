@@ -32,11 +32,11 @@ class ConfigRepository(private val context: Context) {
     suspend fun savePreferences(update: AndroidAppPreferences) {
         context.dataStore.edit { prefs ->
             prefs[Keys.allowMetered] = update.allowMetered
-            prefs[Keys.pauseOnMetered] = update.pauseOnMetered
             prefs[Keys.resumeOnUnmetered] = update.resumeOnUnmetered
             prefs[Keys.showMeteredWarning] = update.showMeteredWarning
             prefs[Keys.startTunnelWhenAppOpens] = update.startTunnelWhenAppOpens
             prefs[Keys.debugLogsEnabled] = update.debugLogsEnabled
+            prefs.remove(Keys.pauseOnMetered)
         }
     }
 
@@ -56,10 +56,10 @@ class ConfigRepository(private val context: Context) {
         role = "offer"
 
         [paths]
-        identity = "${File(context.filesDir, "runtime/identity.toml").absolutePath}"
-        authorized_keys = "${File(context.filesDir, "authorized_keys").absolutePath}"
-        state_dir = "${File(context.filesDir, "state").absolutePath}"
-        log_dir = "${File(context.filesDir, "state/log").absolutePath}"
+        identity = ${tomlString(File(context.filesDir, "runtime/identity.toml").absolutePath)}
+        authorized_keys = ${tomlString(File(context.filesDir, "authorized_keys").absolutePath)}
+        state_dir = ${tomlString(File(context.filesDir, "state").absolutePath)}
+        log_dir = ${tomlString(File(context.filesDir, "state/log").absolutePath)}
 
         [broker]
         url = "mqtts://broker.example.com:8883"
@@ -128,7 +128,7 @@ class ConfigRepository(private val context: Context) {
         format = "text"
         file_logging = true
         stdout_logging = true
-        log_file = "${File(context.filesDir, "state/log/p2ptunnel.log").absolutePath}"
+        log_file = ${tomlString(File(context.filesDir, "state/log/p2ptunnel.log").absolutePath)}
         redact_secrets = true
         redact_sdp = true
         redact_candidates = true
@@ -137,7 +137,7 @@ class ConfigRepository(private val context: Context) {
         [health]
         status_socket = ""
         write_status_file = true
-        status_file = "${File(context.filesDir, "state/status.json").absolutePath}"
+        status_file = ${tomlString(File(context.filesDir, "state/status.json").absolutePath)}
     """.trimIndent()
 
     fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()
@@ -226,11 +226,19 @@ class ConfigRepository(private val context: Context) {
         val enabled = forwards.filter { it.enabled }
         val duplicatePort = enabled.groupBy { it.localPort }.entries.firstOrNull { it.value.size > 1 }?.key
         if (duplicatePort != null) {
-            return "Duplicate enabled local port: $duplicatePort"
+            return "Duplicate local port: $duplicatePort"
+        }
+        val duplicateRemoteForwardId = enabled
+            .groupBy { it.remoteForwardId.trim() }
+            .entries
+            .firstOrNull { it.key.isNotBlank() && it.value.size > 1 }
+            ?.key
+        if (duplicateRemoteForwardId != null) {
+            return "Duplicate remote forward ID: $duplicateRemoteForwardId"
         }
         val missingRemote = enabled.firstOrNull { it.remoteForwardId.isBlank() }
         if (missingRemote != null) {
-            return "Remote forward id is required"
+            return "Remote forward ID is required"
         }
         val invalidPort = enabled.firstOrNull { it.localPort !in 1..65535 }
         if (invalidPort != null) {
@@ -247,10 +255,10 @@ class ConfigRepository(private val context: Context) {
         val forwardsToml = forwards.joinToString(separator = "\n\n") { forward ->
             """
             [[forwards]]
-            id = "${forward.remoteForwardId}"
+            id = ${tomlString(forward.remoteForwardId)}
 
             [forwards.offer]
-            listen_host = "${forward.localHost}"
+            listen_host = ${tomlString(forward.localHost)}
             listen_port = ${forward.localPort}
             """.trimIndent()
         }
@@ -260,21 +268,21 @@ class ConfigRepository(private val context: Context) {
             format = "p2ptunnel-config-v3"
 
             [node]
-            peer_id = "${input.localPeerId}"
+            peer_id = ${tomlString(input.localPeerId)}
             role = "offer"
 
             [paths]
-            identity = "${File(context.filesDir, "runtime/identity.toml").absolutePath}"
-            authorized_keys = "${File(context.filesDir, "authorized_keys").absolutePath}"
-            state_dir = "${File(context.filesDir, "state").absolutePath}"
-            log_dir = "${File(context.filesDir, "state/log").absolutePath}"
+            identity = ${tomlString(File(context.filesDir, "runtime/identity.toml").absolutePath)}
+            authorized_keys = ${tomlString(File(context.filesDir, "authorized_keys").absolutePath)}
+            state_dir = ${tomlString(File(context.filesDir, "state").absolutePath)}
+            log_dir = ${tomlString(File(context.filesDir, "state/log").absolutePath)}
 
             [broker]
-            url = "mqtts://${input.brokerHost}:${input.brokerPort}"
-            client_id = "${input.localPeerId}"
-            topic_prefix = "${input.topicPrefix}"
-            username = "$username"
-            password_file = "$passwordFile"
+            url = ${tomlString("mqtts://${input.brokerHost}:${input.brokerPort}")}
+            client_id = ${tomlString(input.localPeerId)}
+            topic_prefix = ${tomlString(input.topicPrefix)}
+            username = ${tomlString(username)}
+            password_file = ${tomlString(passwordFile)}
             qos = 1
             keepalive_secs = 30
             clean_session = false
@@ -299,7 +307,7 @@ class ConfigRepository(private val context: Context) {
             $forwardsToml
 
             [peer]
-            remote_peer_id = "${input.remotePeerId}"
+            remote_peer_id = ${tomlString(input.remotePeerId)}
 
             [reconnect]
             enable_auto_reconnect = true
@@ -331,7 +339,7 @@ class ConfigRepository(private val context: Context) {
             format = "text"
             file_logging = true
             stdout_logging = true
-            log_file = "${File(context.filesDir, "state/log/p2ptunnel.log").absolutePath}"
+            log_file = ${tomlString(File(context.filesDir, "state/log/p2ptunnel.log").absolutePath)}
             redact_secrets = true
             redact_sdp = true
             redact_candidates = true
@@ -340,16 +348,12 @@ class ConfigRepository(private val context: Context) {
             [health]
             status_socket = ""
             write_status_file = true
-            status_file = "${File(context.filesDir, "state/status.json").absolutePath}"
+            status_file = ${tomlString(File(context.filesDir, "state/status.json").absolutePath)}
             """.trimIndent()
     }
 
     fun redactConfig(config: String): String {
-        return config
-            .replace(Regex("""(?m)^(\s*password_file\s*=\s*).*$"""), "$1\"***REDACTED***\"")
-            .replace(Regex("""(?m)^(\s*username\s*=\s*).*$"""), "$1\"***REDACTED***\"")
-            .replace(Regex("""(?m)^(\s*sign\.private\s*=\s*).*$"""), "$1\"***REDACTED***\"")
-            .replace(Regex("""(?m)^(\s*kex\.private\s*=\s*).*$"""), "$1\"***REDACTED***\"")
+        return SensitiveDataRedactor.redactText(config)
     }
 
     private object Keys {
@@ -363,10 +367,27 @@ class ConfigRepository(private val context: Context) {
 
     private fun Preferences.toAppPreferences() = AndroidAppPreferences(
         allowMetered = this[Keys.allowMetered] ?: false,
-        pauseOnMetered = this[Keys.pauseOnMetered] ?: true,
         resumeOnUnmetered = this[Keys.resumeOnUnmetered] ?: true,
         showMeteredWarning = this[Keys.showMeteredWarning] ?: true,
         startTunnelWhenAppOpens = this[Keys.startTunnelWhenAppOpens] ?: false,
         debugLogsEnabled = this[Keys.debugLogsEnabled] ?: false,
     )
+
+    private fun tomlString(value: String): String {
+        val escaped = buildString(value.length + 2) {
+            append('"')
+            value.forEach { ch ->
+                when (ch) {
+                    '\\' -> append("\\\\")
+                    '"' -> append("\\\"")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> append(ch)
+                }
+            }
+            append('"')
+        }
+        return escaped
+    }
 }

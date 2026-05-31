@@ -70,6 +70,12 @@ From `android/`:
 ./gradlew lintDebug assembleDebug testDebugUnitTest
 ```
 
+## Common failures
+
+- `cargo-ndk: command not found`: install with `cargo install cargo-ndk`.
+- Missing Android targets: run `rustup target add aarch64-linux-android x86_64-linux-android`.
+- APK missing native libs: rerun `cargo ndk ... -o android/app/src/main/jniLibs ...` and then `./gradlew assembleDebug`.
+
 ## Install APK
 
 With a connected device or emulator:

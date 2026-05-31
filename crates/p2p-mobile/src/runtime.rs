@@ -203,21 +203,33 @@ impl AndroidTunnelController {
                     p2p_daemon::run_answer_daemon(config_clone, identity, authorized_keys).await
                 }
             };
-            if let Err(error) = result {
-                if let Ok(mut inner) = log_state.lock() {
-                    inner.state.state = AndroidRuntimeState::Error;
-                    inner.state.last_error = Some(error.to_string());
-                    inner.state.active = false;
-                    inner.logs.push_back(AndroidLogEvent {
-                        unix_ms: unix_ms(),
-                        level: "error".to_owned(),
-                        message: error.to_string(),
-                    });
-                    while inner.logs.len() > 256 {
-                        inner.logs.pop_front();
+            if let Ok(mut inner) = log_state.lock() {
+                match result {
+                    Ok(()) => {
+                        inner.state.state = AndroidRuntimeState::Stopped;
+                        inner.state.mode = None;
+                        inner.state.active = false;
+                        inner.logs.push_back(AndroidLogEvent {
+                            unix_ms: unix_ms(),
+                            level: "info".to_owned(),
+                            message: "runtime completed".to_owned(),
+                        });
                     }
-                    inner.task = None;
+                    Err(error) => {
+                        inner.state.state = AndroidRuntimeState::Error;
+                        inner.state.last_error = Some(error.to_string());
+                        inner.state.active = false;
+                        inner.logs.push_back(AndroidLogEvent {
+                            unix_ms: unix_ms(),
+                            level: "error".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
                 }
+                while inner.logs.len() > 256 {
+                    inner.logs.pop_front();
+                }
+                inner.task = None;
             }
         });
 

@@ -77,7 +77,6 @@ class ConfigRepositoryTest {
         assertEquals(
             AndroidAppPreferences(
                 allowMetered = false,
-                pauseOnMetered = true,
                 resumeOnUnmetered = true,
                 showMeteredWarning = true,
                 startTunnelWhenAppOpens = false,
@@ -91,7 +90,6 @@ class ConfigRepositoryTest {
     fun savePreferencesPersistsAllFields() = runBlocking {
         val update = AndroidAppPreferences(
             allowMetered = true,
-            pauseOnMetered = false,
             resumeOnUnmetered = false,
             showMeteredWarning = false,
             startTunnelWhenAppOpens = true,
@@ -109,7 +107,7 @@ class ConfigRepositoryTest {
         }
         val prefs = repository.preferences.first()
         assertTrue(prefs.allowMetered)
-        assertTrue(prefs.pauseOnMetered)
+        assertTrue(prefs.resumeOnUnmetered)
     }
 
     @Test
@@ -133,7 +131,25 @@ class ConfigRepositoryTest {
             ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "a", enabled = true),
             ForwardConfig(id = "b", name = "b", localPort = 9000, remoteForwardId = "b", enabled = true),
         )
-        assertTrue(repository.validateForwards(forwards)?.contains("Duplicate enabled local port") == true)
+        assertTrue(repository.validateForwards(forwards)?.contains("Duplicate local port") == true)
+    }
+
+    @Test
+    fun forwardsValidationRejectsDuplicateEnabledRemoteForwardIds() {
+        val forwards = listOf(
+            ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "llama", enabled = true),
+            ForwardConfig(id = "b", name = "b", localPort = 9001, remoteForwardId = "llama", enabled = true),
+        )
+        assertEquals("Duplicate remote forward ID: llama", repository.validateForwards(forwards))
+    }
+
+    @Test
+    fun forwardsValidationAllowsDuplicateRemoteForwardIdWhenOneDisabled() {
+        val forwards = listOf(
+            ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "llama", enabled = true),
+            ForwardConfig(id = "b", name = "b", localPort = 9001, remoteForwardId = "llama", enabled = false),
+        )
+        assertEquals(null, repository.validateForwards(forwards))
     }
 
     @Test
@@ -159,6 +175,30 @@ class ConfigRepositoryTest {
         assertTrue(text.contains("url = \"mqtts://broker.local:8883\""))
         assertTrue(text.contains("remote_peer_id = \"desktop-peer\""))
         assertTrue(text.contains("listen_port = 8080"))
+    }
+
+    @Test
+    fun renderOfferConfigEscapesInjectedTomlStrings() {
+        val input = SetupConfigInput(
+            localPeerId = "android\"peer",
+            brokerHost = "broker.local\"\\n[[forwards]]\\nid = \"evil\"",
+            remotePeerId = "desktop\"peer",
+            topicPrefix = "topic\nprefix",
+        )
+        val text = repository.renderOfferConfig(
+            input,
+            listOf(
+                ForwardConfig(
+                    id = "llama",
+                    name = "Llama",
+                    localPort = 8080,
+                    remoteForwardId = "llama\"inject",
+                ),
+            ),
+        )
+        assertTrue(text.contains("topic_prefix = \"topic\\nprefix\""))
+        assertTrue(text.contains("id = \"llama\\\"inject\""))
+        assertFalse(text.contains("\n[[forwards]]\nid = \"evil\""))
     }
 
     @Test

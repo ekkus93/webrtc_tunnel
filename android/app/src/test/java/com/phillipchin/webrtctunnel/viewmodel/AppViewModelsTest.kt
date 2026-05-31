@@ -45,14 +45,7 @@ class AppViewModelsTest {
             configRepository = configRepository,
             tunnelRepository = tunnelRepository,
             networkPolicyManager = NetworkPolicyManager {
-                com.phillipchin.webrtctunnel.model.NetworkStatus(
-                    NetworkType.UnmeteredWifi,
-                    false,
-                    true,
-                    true,
-                    true,
-                    null,
-                )
+                NetworkType.UnmeteredWifi to false
             },
             identityRepository = IdentityRepository(app, object : IdentityCrypto {
                 override fun encrypt(plaintext: ByteArray): ByteArray = plaintext

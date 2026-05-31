@@ -47,13 +47,7 @@ class TestWebRtcTunnelApplication : Application(), HasAppDependencies {
             configRepository = configRepository,
             tunnelRepository = TunnelRepository(this, bridge),
             networkPolicyManager = NetworkPolicyManager {
-                com.phillipchin.webrtctunnel.model.NetworkStatus(
-                    networkType = com.phillipchin.webrtctunnel.model.NetworkType.UnmeteredWifi,
-                    isMetered = false,
-                    tunnelAllowed = true,
-                    allowedByDefault = true,
-                    allowedByUserPolicy = true,
-                )
+                com.phillipchin.webrtctunnel.model.NetworkType.UnmeteredWifi to false
             },
             identityRepository = identityRepository,
         )

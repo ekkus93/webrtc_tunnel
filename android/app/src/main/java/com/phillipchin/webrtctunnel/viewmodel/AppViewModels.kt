@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.viewmodel
 import android.content.Intent
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.TunnelForegroundService
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.model.ForwardConfig
@@ -14,8 +15,9 @@ import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import java.io.File
 
 enum class SetupStep {
@@ -185,7 +187,7 @@ class SetupViewModel(private val deps: AppDependencies) : ViewModel() {
         }
         deps.configRepository.writeConfigAtomically(candidate)
         deps.configRepository.saveSetupInput(input)
-        runBlocking {
+        viewModelScope.launch {
             val existing = deps.configRepository.preferences.first()
             deps.configRepository.savePreferences(
                 existing.copy(
@@ -393,11 +395,13 @@ class SettingsViewModel(private val deps: AppDependencies) : ViewModel() {
 }
 
 class NetworkPolicyViewModel(private val deps: AppDependencies) : ViewModel() {
-    val networkStatus = deps.networkPolicyManager.status
+    val networkStatus = combine(deps.networkPolicyManager.status, deps.configRepository.preferences) { _, prefs ->
+        deps.networkPolicyManager.evaluateWithPolicy(prefs.allowMetered)
+    }
     val preferences = deps.configRepository.preferences
 
     fun savePreferences(updated: com.phillipchin.webrtctunnel.model.AndroidAppPreferences) {
-        runBlocking { deps.configRepository.savePreferences(updated) }
+        viewModelScope.launch { deps.configRepository.savePreferences(updated) }
     }
 }
 

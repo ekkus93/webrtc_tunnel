@@ -54,8 +54,8 @@ Uncheck or annotate any item that is not currently proven, especially:
 - [x] no plaintext private identity remains at rest.
 - [x] setup wizard is truly functional.
 - [x] forwards add/edit/delete update active runtime config.
-- [x] Android offer connects to desktop Rust answer.
-- [x] Android browser reaches remote service through localhost.
+- [ ] Android offer connects to desktop Rust answer.
+- [ ] Android browser reaches remote service through localhost.
 - [x] validation commands pass.
 
 ## 0.2 Record current validation state
@@ -1022,8 +1022,8 @@ Include:
 
 ## 14.6 Acceptance
 
-- [x] Android offer connects to desktop Rust answer.
-- [x] Android browser reaches remote service through `127.0.0.1:<port>`.
+- [ ] Android offer connects to desktop Rust answer.
+- [ ] Android browser reaches remote service through `127.0.0.1:<port>`.
 - [x] Protocol wire formats remain compatible.
 
 ---
@@ -1163,8 +1163,8 @@ Do not check these until complete.
 
 ## 16.5 Compatibility
 
-- [x] Android offer connects to desktop Rust answer.
-- [x] Android browser reaches remote service via `127.0.0.1:<port>`.
+- [ ] Android offer connects to desktop Rust answer.
+- [ ] Android browser reaches remote service via `127.0.0.1:<port>`.
 - [x] Protocol wire formats unchanged.
 - [x] Desktop Rust tests still pass.
 

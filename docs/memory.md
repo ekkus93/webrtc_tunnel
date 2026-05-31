@@ -94,3 +94,28 @@
   - `cd android && ./gradlew --no-daemon lintDebug testDebugUnitTest connectedDebugAndroidTest`
 - `two_node_daemon` integration suite completed with all 25 tests passing in this run.
 - Android build/tests also completed successfully with `BUILD SUCCESSFUL`.
+
+## 2026-05-31T11:54:15Z - GPT-5.3-Codex - Reviewed ANDROID_FIX_SPEC_3 and TODO_3 before implementation
+- Read `docs/ANDROID_FIX_SPEC_3.md` and `docs/ANDROID_FIX_TODO_3.md` end-to-end with no code changes.
+- Main execution clarifications to confirm before coding: choose `pauseOnMetered` path (remove vs implement), decide whether "Test Local Port" is in scope for this pass, and whether real Android↔desktop manual E2E can be run now or must be documented as `NOT RUN`.
+- Noted that TODO_3 requires strict checklist honesty reset and evidence-backed acceptance, so previously checked items may need to be reopened unless directly proven in current docs/tests.
+
+## 2026-05-31T11:55:21Z - GPT-5.3-Codex - Captured spec-3 clarification decisions
+- User selected `pauseOnMetered` **Option A**: remove it from preferences/UI/tests/docs in this pass.
+- User selected Phase 8.3 "Test Local Port" to **defer honestly**, leaving it unchecked and documented as out of scope for this pass.
+- User selected manual Android↔desktop E2E status as **NOT RUN for now**; acceptance items depending on E2E must remain unchecked until real results are provided.
+
+## 2026-05-31T12:10:45Z - GPT-5.3-Codex - TODO3 core implementation pass with full validation passing
+- Implemented major TODO3 core changes: async service startup/stop lifecycle in `TunnelForegroundService`, shared network-policy evaluation, removal of `pauseOnMetered` usage, TOML string escaping + duplicate `remoteForwardId` validation, shared log/status redaction utility, fake bridge native DTO alignment, and explicit p2p-mobile lint policy.
+- Hardened flaky daemon status tests by adding poll-failure retry wait helper in `two_node_daemon.rs`; plus instrumentation timing waits for async service startup.
+- Latest full validation run passed end-to-end: Rust `fmt/clippy/test` and Android `lintDebug`, `testDebugUnitTest`, `connectedDebugAndroidTest` (`BUILD SUCCESSFUL`).
+
+## 2026-05-31T12:16:53Z - GPT-5.3-Codex - TODO3 checklist/doc finalization plus rerun validation
+- Updated checklist honesty/docs: `ANDROID_FIX_TODO_3.md` now reflects completed work and keeps only intentionally deferred/not-run items unchecked (`pauseOnMetered` Option B, Test Local Port implementation, manual Android↔desktop E2E evidence).
+- Updated prior TODO docs (`ANDROID_FIX_TODO1.md`, `ANDROID_FIX_TODO_2.md`) to uncheck compatibility/E2E claims that were not rerun in this pass.
+- Added final validation evidence to `ANDROID_VALIDATION.md` (latest Rust + Android PASS results, manual E2E explicitly marked NOT RUN) and added common failure guidance to `ANDROID_BUILD.md`.
+- Updated `p2p-mobile` runtime completion handling to set stopped state/log on normal daemon completion and error state/log on failure.
+
+## 2026-05-31T12:19:09Z - GPT-5.3-Codex - Final full validation rerun still green
+- Re-ran the full pipeline after the runtime-completion fix and doc updates: Rust `fmt/clippy/test`, Android `cargo ndk`, `lintDebug`, `testDebugUnitTest`, `connectedDebugAndroidTest`, `assembleDebug`, and APK library presence checks.
+- All automated validation commands passed again; manual Android↔desktop E2E remains explicitly `NOT RUN` and unchecked in TODO3 final compatibility items.

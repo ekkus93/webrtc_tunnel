@@ -703,6 +703,30 @@ async fn wait_for_status_matching_with_timeout(
     }
 }
 
+async fn wait_for_mqtt_disconnected_after_poll_failure(
+    control: &TransportFaultControl,
+    peer_id: &str,
+    path: &Path,
+    description: &str,
+    timeout_duration: Duration,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+    loop {
+        control.inject_poll_failure(peer_id);
+        if let Ok(content) = tokio::fs::read_to_string(path).await
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+            && mqtt_connected_is(false)(&json)
+        {
+            return json;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "status condition {description} not observed in time"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
 async fn wait_for_failed_publish_attempt(
     trace: &TransportTrace,
     from_peer_id: &str,
@@ -1497,11 +1521,11 @@ async fn active_answer_poll_failure_flips_status_and_recovers() {
     })
     .await;
 
-    control.inject_poll_failure("answer-office");
-    wait_for_status_matching_with_timeout(
+    wait_for_mqtt_disconnected_after_poll_failure(
+        &control,
+        "answer-office",
         &answer_status_path,
         "mqtt disconnected",
-        mqtt_connected_is(false),
         Duration::from_secs(20),
     )
     .await;
@@ -1574,11 +1598,12 @@ async fn signaling_turbulence_does_not_interrupt_active_tcp_stream() {
     let mut client = connect_with_retry(offer_port).await;
     for payload in [*b"a001", *b"a002", *b"a003"] {
         if payload == *b"a002" {
-            control.inject_poll_failure("answer-office");
-            wait_for_status_matching(
+            wait_for_mqtt_disconnected_after_poll_failure(
+                &control,
+                "answer-office",
                 &answer_status_path,
                 "answer mqtt disconnected while stream remains open",
-                mqtt_connected_is(false),
+                Duration::from_secs(20),
             )
             .await;
         }
@@ -1591,10 +1616,11 @@ async fn signaling_turbulence_does_not_interrupt_active_tcp_stream() {
         assert_eq!(response, payload);
         if payload == *b"a002" {
             control.inject_payload("answer-office", vec![0_u8]);
-            wait_for_status_matching(
+            wait_for_status_matching_with_timeout(
                 &answer_status_path,
                 "answer mqtt recovered while stream remains open",
                 mqtt_connected_is(true),
+                Duration::from_secs(20),
             )
             .await;
         }

@@ -37,6 +37,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
+import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.viewmodel.ForwardsViewModel
@@ -146,6 +148,11 @@ fun ForwardsScreen(padding: PaddingValues, vm: ForwardsViewModel) {
                                     context.startActivity(intent)
                                 },
                             ) { Text("Open") }
+                            OutlinedButton(
+                                onClick = {
+                                    vm.saveForward(forward.copy(enabled = !forward.enabled))
+                                },
+                            ) { Text(if (forward.enabled) "Disable" else "Enable") }
                             OutlinedButton(onClick = { loadForEdit(forward) }) { Text("Edit") }
                             OutlinedButton(onClick = { vm.deleteForward(forward.id) }) { Text("Delete") }
                         }
@@ -164,7 +171,16 @@ fun LogsScreen(
 ) {
     val filter by vm.filter.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
-    val networkStatus by networkVm.networkStatus.collectAsStateWithLifecycle()
+    val networkStatus by networkVm.networkStatus.collectAsStateWithLifecycle(
+        initialValue = NetworkStatus(
+            networkType = NetworkType.NoNetwork,
+            isMetered = false,
+            allowedByDefault = false,
+            allowedByUserPolicy = false,
+            tunnelAllowed = false,
+            blockReason = "No network",
+        ),
+    )
     val clipboard = LocalClipboardManager.current
     LaunchedEffect(Unit) { vm.refresh() }
     val logs = vm.filteredLogs()
@@ -224,11 +240,19 @@ fun SettingsScreen(
 
 @Composable
 fun NetworkPolicyScreen(padding: PaddingValues, vm: NetworkPolicyViewModel) {
-    val status by vm.networkStatus.collectAsStateWithLifecycle()
+    val status by vm.networkStatus.collectAsStateWithLifecycle(
+        initialValue = NetworkStatus(
+            networkType = NetworkType.NoNetwork,
+            isMetered = false,
+            allowedByDefault = false,
+            allowedByUserPolicy = false,
+            tunnelAllowed = false,
+            blockReason = "No network",
+        ),
+    )
     val prefs by vm.preferences.collectAsStateWithLifecycle(
         initialValue = AndroidAppPreferences(
             allowMetered = false,
-            pauseOnMetered = true,
             resumeOnUnmetered = true,
             showMeteredWarning = true,
             startTunnelWhenAppOpens = false,
@@ -241,7 +265,11 @@ fun NetworkPolicyScreen(padding: PaddingValues, vm: NetworkPolicyViewModel) {
         Text("Network Policy", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text("Current network: ${status.networkType} (${if (status.isMetered) "metered" else "unmetered"})")
-        Text(if (status.tunnelAllowed) "Tunnel allowed" else status.blockReason ?: "Blocked")
+        Text("Allowed by default: ${status.allowedByDefault}")
+        Text("Allowed by user policy: ${status.allowedByUserPolicy}")
+        Text("Tunnel allowed now: ${status.tunnelAllowed}")
+        Text("Blocked reason: ${status.blockReason ?: "None"}")
+        Text("Unknown network stays blocked even with allow-metered enabled.")
         Spacer(Modifier.height(12.dp))
         PreferenceSwitch(
             title = "Allow metered/cellular",
@@ -253,11 +281,6 @@ fun NetworkPolicyScreen(padding: PaddingValues, vm: NetworkPolicyViewModel) {
                     vm.savePreferences(prefs.copy(allowMetered = checked))
                 }
             },
-        )
-        PreferenceSwitch(
-            title = "Pause on metered",
-            checked = prefs.pauseOnMetered,
-            onToggle = { vm.savePreferences(prefs.copy(pauseOnMetered = it)) },
         )
         PreferenceSwitch(
             title = "Resume on unmetered",

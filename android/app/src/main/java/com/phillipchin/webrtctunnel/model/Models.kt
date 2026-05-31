@@ -93,7 +93,6 @@ data class NativeLogEventDto(
 @Serializable
 data class AndroidAppPreferences(
     val allowMetered: Boolean = false,
-    val pauseOnMetered: Boolean = true,
     val resumeOnUnmetered: Boolean = true,
     val showMeteredWarning: Boolean = true,
     val startTunnelWhenAppOpens: Boolean = false,
