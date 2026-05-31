@@ -25,3 +25,16 @@
 ## 2026-05-31T05:46:24Z - GPT-5.3-Codex - Wrote Android clarification handoff file
 - Added `docs/responses10.md` containing the open questions/issues from `ANDROID_CODE_REVIEW1.md` and `ANDROID_FIX_TODO1.md`.
 - Questions focus on identity handoff strategy, v1 answer-mode UI scope, Android TLS `ca_file` handling, service lifecycle policy, and cleanup of temporary daemon debug instrumentation.
+
+## 2026-05-31T05:50:27Z - GPT-5.3-Codex - Applied replies10 final Android decisions
+- Read `docs/replies10.md` and captured the frozen implementation decisions.
+- Confirmed: in-memory identity handoff now (temp-file fallback only if blocked), answer mode hidden/disabled in v1 Android UI, Android config omits default `broker.tls.ca_file`, service returns `START_NOT_STICKY`, and temporary daemon `[DEBUG] eprintln!` traces must be removed during Phase 0 cleanup.
+
+## 2026-05-31T06:11:17Z - GPT-5.3-Codex - Android fix pass core/runtime phases completed
+- Removed temporary daemon debug instrumentation and fixed transport status behavior so full Rust workspace tests pass again.
+- Added in-memory identity startup path from Android -> JNI -> `p2p-mobile` (`start_offer_with_identity`) and hardened FFI null/NUL handling plus panic boundaries usage.
+- Added Kotlin native DTO mapping (`NativeRuntimeStatusDto`, `NativeLogEventDto`) with explicit decode-failure error surfacing.
+- Updated Android default config generation to app-private paths and removed Linux CA path defaults.
+- Enforced service policy/lifecycle hardening: early `startForeground`, `START_NOT_STICKY`, null-intent handling, policy gating/pause/resume hooks, and connected test stabilization.
+- Wired Rust Android build into Gradle lifecycle (`preBuild` dependency + `verifyRustJniLibs` + cargo-ndk presence check).
+- Validation passed: `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets`, and `./gradlew --no-daemon lintDebug assembleDebug testDebugUnitTest connectedDebugAndroidTest`.

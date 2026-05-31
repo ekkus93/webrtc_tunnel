@@ -38,13 +38,6 @@ class TunnelForegroundServiceInstrumentationTest {
     }
 
     @Test
-    fun startAnswerActionStartsAnswerPath() {
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_ANSWER))
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-        assertEquals(1, TestTunnelHooks.bridge.startAnswerCalls)
-    }
-
-    @Test
     fun stopActionStopsTunnel() {
         context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))

@@ -11,42 +11,103 @@ import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.notification.NotificationController
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.TunnelRepository
+import com.phillipchin.webrtctunnel.model.NetworkType
+import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class TunnelForegroundService : Service() {
     private val tag = "TunnelForegroundService"
     private lateinit var notifications: NotificationController
     private lateinit var repository: TunnelRepository
     private lateinit var configRepository: ConfigRepository
+    private lateinit var networkPolicyManager: NetworkPolicyManager
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var networkMonitorJob: Job? = null
     private var lastMode: TunnelMode = TunnelMode.Offer
+    private var pausedByPolicy: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
         notifications = NotificationController(this)
         notifications.ensureChannels()
+        startForeground(NOTIFICATION_ID, loadingNotification("Preparing tunnel service"))
         val deps = (application as HasAppDependencies).deps
         configRepository = deps.configRepository
         repository = deps.tunnelRepository
+        networkPolicyManager = deps.networkPolicyManager
+        networkMonitorJob = serviceScope.launch {
+            networkPolicyManager.monitor(this@TunnelForegroundService).collect { status ->
+                if (status.networkType == NetworkType.UnmeteredWifi) {
+                    val prefs = configRepository.preferences.first()
+                    if (pausedByPolicy && prefs.resumeOnUnmetered) {
+                        pausedByPolicy = false
+                        resume()
+                    }
+                } else if (!networkPolicyManager.allowTunnelOnCurrentNetwork(
+                        allowMetered = configRepository.preferences.first().allowMetered
+                    )
+                ) {
+                    val current = repository.status.value.serviceState
+                    if (current == ServiceState.Connected || current == ServiceState.Serving) {
+                        pausedByPolicy = true
+                        repository.stop()
+                        repository.setPolicyBlocked("Tunnel paused: network policy blocks metered/cellular")
+                        publishStatus("Cellular/metered network blocked")
+                    }
+                }
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        if (intent == null) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        when (intent.action) {
             ACTION_START_OFFER -> startOffer()
-            ACTION_START_ANSWER -> startAnswer()
+            ACTION_START_ANSWER -> {
+                publishError("Answer mode is not available in Android v1")
+                stopSelf(startId)
+            }
             ACTION_STOP -> {
                 repository.stop()
                 stopSelf()
             }
             ACTION_PAUSE -> pause()
             ACTION_RESUME -> resume()
+            else -> stopSelf(startId)
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startOffer() {
         lastMode = TunnelMode.Offer
         startForeground(NOTIFICATION_ID, loadingNotification("Starting tunnel"))
-        repository.start(TunnelMode.Offer, configRepository.configPath)
-            .onSuccess { publishStatus() }
+        val allowMetered = runBlocking { configRepository.preferences.first().allowMetered }
+        if (!networkPolicyManager.allowTunnelOnCurrentNetwork(allowMetered)) {
+            repository.setPolicyBlocked("Tunnel blocked by current network policy")
+            publishStatus("Tunnel blocked by network policy")
+            return
+        }
+        val identity = runCatching { (application as HasAppDependencies).deps.identityRepository.readEncryptedIdentity() }
+            .getOrElse {
+                publishError("Unable to decrypt private identity: ${it.message}")
+                return
+            }
+        repository.start(TunnelMode.Offer, configRepository.configPath, identity)
+            .onSuccess {
+                pausedByPolicy = false
+                publishStatus()
+            }
             .onFailure { publishError(it.message ?: "Unable to start tunnel") }
     }
 
@@ -101,6 +162,8 @@ class TunnelForegroundService : Service() {
 
     override fun onDestroy() {
         repository.stop()
+        networkMonitorJob?.cancel()
+        serviceScope.coroutineContext.cancel()
         super.onDestroy()
     }
 

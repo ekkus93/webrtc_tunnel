@@ -104,14 +104,27 @@ impl AndroidTunnelController {
     }
 
     pub fn start_offer(&self, config_path: &str) -> Result<(), String> {
-        self.start(AndroidTunnelMode::Offer, config_path)
+        self.start(AndroidTunnelMode::Offer, config_path, None)
+    }
+
+    pub fn start_offer_with_identity(
+        &self,
+        config_path: &str,
+        identity_toml: &str,
+    ) -> Result<(), String> {
+        self.start(AndroidTunnelMode::Offer, config_path, Some(identity_toml))
     }
 
     pub fn start_answer(&self, config_path: &str) -> Result<(), String> {
-        self.start(AndroidTunnelMode::Answer, config_path)
+        self.start(AndroidTunnelMode::Answer, config_path, None)
     }
 
-    fn start(&self, mode: AndroidTunnelMode, config_path: &str) -> Result<(), String> {
+    fn start(
+        &self,
+        mode: AndroidTunnelMode,
+        config_path: &str,
+        identity_toml: Option<&str>,
+    ) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|_| "runtime mutex poisoned".to_owned())?;
         if inner.state.active {
             return Err(record_start_error(&mut inner, "runtime already running".to_owned()));
@@ -120,8 +133,12 @@ impl AndroidTunnelController {
         let config_path = config_path.to_owned();
         let config = AppConfig::load_from_file(Path::new(&config_path))
             .map_err(|error| record_start_error(&mut inner, error.to_string()))?;
-        let identity = IdentityFile::from_file(&config.paths.identity)
-            .map_err(|error| record_start_error(&mut inner, error.to_string()))?;
+        let identity = match identity_toml {
+            Some(identity_toml) => IdentityFile::from_toml(identity_toml)
+                .map_err(|error| record_start_error(&mut inner, error.to_string()))?,
+            None => IdentityFile::from_file(&config.paths.identity)
+                .map_err(|error| record_start_error(&mut inner, error.to_string()))?,
+        };
         let authorized_keys = AuthorizedKeys::from_file(&config.paths.authorized_keys)
             .map_err(|error| record_start_error(&mut inner, error.to_string()))?;
         match (mode, &config.node.role) {

@@ -29,7 +29,9 @@ fn fresh_message_within_age_window_is_accepted() {
     let check = fresh_check(session_id, now_ms - 60_000, now_ms); // 60 seconds old
     let mut cache = fresh_cache();
     assert_eq!(
-        cache.check_and_record_status(random_kid(), MsgId::random(), check).expect("check_and_record_status should succeed"),
+        cache
+            .check_and_record_status(random_kid(), MsgId::random(), check)
+            .expect("check_and_record_status should succeed"),
         ReplayStatus::Fresh
     );
 }
@@ -43,7 +45,9 @@ fn message_just_at_max_age_boundary_is_accepted() {
     let check = fresh_check(session_id, now_ms - max_age_ms, now_ms);
     let mut cache = fresh_cache();
     assert_eq!(
-        cache.check_and_record_status(random_kid(), MsgId::random(), check).expect("check_and_record_status should succeed"),
+        cache
+            .check_and_record_status(random_kid(), MsgId::random(), check)
+            .expect("check_and_record_status should succeed"),
         ReplayStatus::Fresh
     );
 }
@@ -71,7 +75,9 @@ fn future_skewed_message_within_allowed_skew_is_accepted() {
     let check = fresh_check(session_id, now_ms + skew_ms, now_ms);
     let mut cache = fresh_cache();
     assert_eq!(
-        cache.check_and_record_status(random_kid(), MsgId::random(), check).expect("check_and_record_status should succeed"),
+        cache
+            .check_and_record_status(random_kid(), MsgId::random(), check)
+            .expect("check_and_record_status should succeed"),
         ReplayStatus::Fresh
     );
 }
@@ -125,7 +131,9 @@ fn matching_expected_session_is_accepted() {
     };
     let mut cache = fresh_cache();
     assert_eq!(
-        cache.check_and_record_status(random_kid(), MsgId::random(), check).expect("check_and_record_status should succeed"),
+        cache
+            .check_and_record_status(random_kid(), MsgId::random(), check)
+            .expect("check_and_record_status should succeed"),
         ReplayStatus::Fresh
     );
 }
@@ -143,22 +151,14 @@ fn duplicate_same_session_returns_correct_status() {
     // First: Fresh
     assert_eq!(
         cache
-            .check_and_record_status(
-                sender_kid,
-                msg_id,
-                fresh_check(session_id, now_ms, now_ms)
-            )
+            .check_and_record_status(sender_kid, msg_id, fresh_check(session_id, now_ms, now_ms))
             .expect("check_and_record_status should succeed"),
         ReplayStatus::Fresh
     );
     // Second: DuplicateSameSession
     assert_eq!(
         cache
-            .check_and_record_status(
-                sender_kid,
-                msg_id,
-                fresh_check(session_id, now_ms, now_ms)
-            )
+            .check_and_record_status(sender_kid, msg_id, fresh_check(session_id, now_ms, now_ms))
             .expect("check_and_record_status should succeed"),
         ReplayStatus::DuplicateSameSession
     );
@@ -176,22 +176,14 @@ fn duplicate_different_session_returns_correct_status() {
     // First with session1: Fresh
     assert_eq!(
         cache
-            .check_and_record_status(
-                sender_kid,
-                msg_id,
-                fresh_check(session1, now_ms, now_ms)
-            )
+            .check_and_record_status(sender_kid, msg_id, fresh_check(session1, now_ms, now_ms))
             .expect("check_and_record_status should succeed"),
         ReplayStatus::Fresh
     );
     // Same msg_id with session2: DuplicateDifferentSession
     assert_eq!(
         cache
-            .check_and_record_status(
-                sender_kid,
-                msg_id,
-                fresh_check(session2, now_ms, now_ms)
-            )
+            .check_and_record_status(sender_kid, msg_id, fresh_check(session2, now_ms, now_ms))
             .expect("check_and_record_status should succeed"),
         ReplayStatus::DuplicateDifferentSession
     );

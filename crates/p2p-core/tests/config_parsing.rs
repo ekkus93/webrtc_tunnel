@@ -1,9 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use p2p_core::{
-    AppConfig, ForwardAnswerConfig, ForwardOfferConfig, ForwardRule, ForwardTable,
-};
+use p2p_core::{AppConfig, ForwardAnswerConfig, ForwardOfferConfig, ForwardRule, ForwardTable};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -130,7 +128,10 @@ fn setup_dirs() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     (tmp, config_dir, state_dir)
 }
 
-fn write_and_load(tmp: &tempfile::TempDir, content: &str) -> Result<AppConfig, p2p_core::ConfigError> {
+fn write_and_load(
+    tmp: &tempfile::TempDir,
+    content: &str,
+) -> Result<AppConfig, p2p_core::ConfigError> {
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, content).expect("write config");
     AppConfig::load_from_file(&config_path)
@@ -225,8 +226,10 @@ fn config_rejects_zero_replay_cache_size() {
 #[test]
 fn config_rejects_non_tls_broker_url() {
     let (tmp, config_dir, state_dir) = setup_dirs();
-    let config = sample_answer_config(&config_dir, &state_dir)
-        .replace("url = \"mqtts://mqtt.example.com:8883\"", "url = \"mqtt://mqtt.example.com:1883\"");
+    let config = sample_answer_config(&config_dir, &state_dir).replace(
+        "url = \"mqtts://mqtt.example.com:8883\"",
+        "url = \"mqtt://mqtt.example.com:1883\"",
+    );
     assert!(write_and_load(&tmp, &config).is_err());
 }
 
@@ -243,10 +246,7 @@ fn config_rejects_insecure_skip_verify() {
 fn make_forward_table() -> ForwardTable {
     ForwardTable::new(&[ForwardRule {
         id: "ssh".to_owned(),
-        offer: Some(ForwardOfferConfig {
-            listen_host: "127.0.0.1".to_owned(),
-            listen_port: 2223,
-        }),
+        offer: Some(ForwardOfferConfig { listen_host: "127.0.0.1".to_owned(), listen_port: 2223 }),
         answer: Some(ForwardAnswerConfig {
             target_host: "127.0.0.1".to_owned(),
             target_port: 22,

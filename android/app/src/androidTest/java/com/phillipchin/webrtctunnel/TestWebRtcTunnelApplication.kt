@@ -4,9 +4,9 @@ import android.app.Application
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.TunnelRepository
+import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
-import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
@@ -28,6 +28,19 @@ class TestWebRtcTunnelApplication : Application(), HasAppDependencies {
         val bridge = RecordingBridge()
         TestTunnelHooks.bridge = bridge
         val configRepository = ConfigRepository(this)
+        val identityRepository = IdentityRepository(this, object : IdentityCrypto {
+            override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
+            override fun decrypt(payload: ByteArray): ByteArray = payload
+        })
+        identityRepository.storeEncryptedIdentity(
+            """
+            [identity]
+            peer_id = "android-phone"
+            signing_key = "test-signing-key"
+            kex_secret = "test-kex-secret"
+            """.trimIndent().toByteArray(),
+            "android-phone ssh-ed25519 AAAA test",
+        )
         appDependencies = AppDependencies(
             context = this,
             configRepository = configRepository,
@@ -39,10 +52,7 @@ class TestWebRtcTunnelApplication : Application(), HasAppDependencies {
                     tunnelAllowed = true,
                 )
             },
-            identityRepository = IdentityRepository(this, object : IdentityCrypto {
-                override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
-                override fun decrypt(payload: ByteArray): ByteArray = payload
-            }),
+            identityRepository = identityRepository,
         )
         configRepository.ensureDefaultConfig(configRepository.defaultConfigTemplate())
     }
@@ -61,7 +71,7 @@ class RecordingBridge : TunnelNativeBridge {
         state = ServiceState.Stopped
     }
 
-    override fun startOffer(configPath: String): Result<Unit> {
+    override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> {
         startOfferCalls += 1
         state = ServiceState.Connected
         return Result.success(Unit)
@@ -80,10 +90,16 @@ class RecordingBridge : TunnelNativeBridge {
     }
 
     override fun getStatusJson(): String = Json.encodeToString(
-        TunnelStatus(
-            serviceState = state,
-            mode = if (state == ServiceState.Serving) TunnelMode.Answer else TunnelMode.Offer,
-            localPeerId = "android-phone",
+        NativeRuntimeStatusDto(
+            state = when (state) {
+                ServiceState.Connected, ServiceState.Serving -> "running"
+                ServiceState.Starting -> "starting"
+                ServiceState.Stopping -> "stopping"
+                ServiceState.Error -> "error"
+                else -> "stopped"
+            },
+            mode = if (state == ServiceState.Serving) "answer" else "offer",
+            active = state == ServiceState.Connected || state == ServiceState.Serving,
         ),
     )
 

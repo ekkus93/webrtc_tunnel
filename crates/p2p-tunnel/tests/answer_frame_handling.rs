@@ -19,10 +19,7 @@ fn sample_tunnel_config() -> TunnelConfig {
 fn forward_table_for_peer(target_port: u16, allowed_peer: &str) -> ForwardTable {
     ForwardTable::new(&[ForwardRule {
         id: "ssh".to_owned(),
-        offer: Some(ForwardOfferConfig {
-            listen_host: "127.0.0.1".to_owned(),
-            listen_port: 2223,
-        }),
+        offer: Some(ForwardOfferConfig { listen_host: "127.0.0.1".to_owned(), listen_port: 2223 }),
         answer: Some(ForwardAnswerConfig {
             target_host: "127.0.0.1".to_owned(),
             target_port,
@@ -45,14 +42,11 @@ async fn connected_channels()
     let answer_sdp = answer_peer.create_answer().await.expect("answer SDP should build");
     offer_peer.apply_remote_answer(&answer_sdp).await.expect("offer should accept answer");
 
-    let answer_channel = timeout(
-        Duration::from_secs(10),
-        answer_peer.next_incoming_data_channel(),
-    )
-    .await
-    .expect("incoming data channel should arrive")
-    .expect("incoming data channel stream should yield")
-    .expect("incoming data channel should be accepted");
+    let answer_channel = timeout(Duration::from_secs(10), answer_peer.next_incoming_data_channel())
+        .await
+        .expect("incoming data channel should arrive")
+        .expect("incoming data channel stream should yield")
+        .expect("incoming data channel should be accepted");
 
     offer_channel
         .wait_for_open(Duration::from_secs(10))
@@ -97,9 +91,8 @@ async fn unknown_forward_id_returns_stream_local_error_without_killing_session()
     });
 
     // Send OPEN with an unknown forward_id
-    let open_frame =
-        TunnelFrame::open(1, OpenPayload { forward_id: "does-not-exist".to_owned() })
-            .expect("open frame should build");
+    let open_frame = TunnelFrame::open(1, OpenPayload { forward_id: "does-not-exist".to_owned() })
+        .expect("open frame should build");
     let encoded = TunnelFrameCodec::encode(&open_frame).expect("encode should succeed");
     offer_channel.send(&encoded).await.expect("send should succeed");
 
@@ -112,9 +105,8 @@ async fn unknown_forward_id_returns_stream_local_error_without_killing_session()
 
     // WebRTC session must still be alive: send another OPEN on stream 2 for an unknown
     // forward_id and expect another stream-local error — not a closed channel.
-    let open2 =
-        TunnelFrame::open(2, OpenPayload { forward_id: "also-missing".to_owned() })
-            .expect("second open frame");
+    let open2 = TunnelFrame::open(2, OpenPayload { forward_id: "also-missing".to_owned() })
+        .expect("second open frame");
     let encoded2 = TunnelFrameCodec::encode(&open2).expect("encode");
     offer_channel.send(&encoded2).await.expect("send stream 2");
     let error2 = recv_frame(&offer_channel).await;
@@ -145,9 +137,8 @@ async fn unauthorized_peer_open_returns_forbidden_stream_error_without_killing_s
         .await
     });
 
-    let open_frame =
-        TunnelFrame::open(1, OpenPayload { forward_id: "ssh".to_owned() })
-            .expect("open frame should build");
+    let open_frame = TunnelFrame::open(1, OpenPayload { forward_id: "ssh".to_owned() })
+        .expect("open frame should build");
     let encoded = TunnelFrameCodec::encode(&open_frame).expect("encode");
     offer_channel.send(&encoded).await.expect("send");
 

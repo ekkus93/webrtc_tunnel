@@ -72,6 +72,23 @@ data class LogEvent(
 )
 
 @Serializable
+data class NativeRuntimeStatusDto(
+    val state: String,
+    val mode: String? = null,
+    val config_path: String? = null,
+    val last_error: String? = null,
+    val started_at_unix_ms: Long? = null,
+    val active: Boolean = false,
+)
+
+@Serializable
+data class NativeLogEventDto(
+    val unix_ms: Long,
+    val level: String,
+    val message: String,
+)
+
+@Serializable
 data class AndroidAppPreferences(
     val allowMetered: Boolean = false,
     val pauseOnMetered: Boolean = true,

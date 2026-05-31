@@ -3,10 +3,16 @@ package com.phillipchin.webrtctunnel.network
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import com.phillipchin.webrtctunnel.model.NetworkStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.channels.awaitClose
 
 class NetworkPolicyManager internal constructor(
     private val classifier: () -> NetworkStatus,
@@ -14,7 +20,7 @@ class NetworkPolicyManager internal constructor(
     constructor(context: Context) : this({ classifyCurrentNetwork(context) })
 
     private val _status = MutableStateFlow(classifier())
-    val status: StateFlow<NetworkStatus> = _status
+    val status: StateFlow<NetworkStatus> = _status.asStateFlow()
 
     fun refresh() {
         _status.value = classifier()
@@ -28,6 +34,36 @@ class NetworkPolicyManager internal constructor(
             NetworkType.UnmeteredWifi -> true
         }
     }
+
+    fun monitor(context: Context): Flow<NetworkStatus> = callbackFlow {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                val current = classifier()
+                _status.value = current
+                trySend(current)
+            }
+
+            override fun onLost(network: android.net.Network) {
+                val current = classifier()
+                _status.value = current
+                trySend(current)
+            }
+
+            override fun onCapabilitiesChanged(
+                network: android.net.Network,
+                networkCapabilities: NetworkCapabilities,
+            ) {
+                val current = classifier()
+                _status.value = current
+                trySend(current)
+            }
+        }
+        val request = NetworkRequest.Builder().build()
+        cm.registerNetworkCallback(request, callback)
+        trySend(classifier())
+        awaitClose { cm.unregisterNetworkCallback(callback) }
+    }.conflate()
 
     private companion object {
         fun classifyCurrentNetwork(context: Context): NetworkStatus {

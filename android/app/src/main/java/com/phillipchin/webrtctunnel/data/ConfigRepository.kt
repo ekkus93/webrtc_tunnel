@@ -39,6 +39,7 @@ class ConfigRepository(private val context: Context) {
     }
 
     fun defaultConfigTemplate(): String = """
+        # Generated for Android app-private storage.
         format = "p2ptunnel-config-v3"
 
         [node]
@@ -46,10 +47,10 @@ class ConfigRepository(private val context: Context) {
         role = "offer"
 
         [paths]
-        identity = "~/.config/p2ptunnel/identity"
-        authorized_keys = "~/.config/p2ptunnel/authorized_keys"
-        state_dir = "~/.local/state/p2ptunnel"
-        log_dir = "~/.local/state/p2ptunnel/log"
+        identity = "${File(context.filesDir, "runtime/identity.toml").absolutePath}"
+        authorized_keys = "${File(context.filesDir, "authorized_keys").absolutePath}"
+        state_dir = "${File(context.filesDir, "state").absolutePath}"
+        log_dir = "${File(context.filesDir, "state/log").absolutePath}"
 
         [broker]
         url = "mqtts://broker.example.com:8883"
@@ -64,7 +65,6 @@ class ConfigRepository(private val context: Context) {
         session_expiry_secs = 0
 
         [broker.tls]
-        ca_file = "/etc/ssl/certs/ca-certificates.crt"
         client_cert_file = ""
         client_key_file = ""
         insecure_skip_verify = false
@@ -119,7 +119,7 @@ class ConfigRepository(private val context: Context) {
         format = "text"
         file_logging = true
         stdout_logging = true
-        log_file = "~/.local/state/p2ptunnel/log/p2ptunnel.log"
+        log_file = "${File(context.filesDir, "state/log/p2ptunnel.log").absolutePath}"
         redact_secrets = true
         redact_sdp = true
         redact_candidates = true
@@ -128,7 +128,7 @@ class ConfigRepository(private val context: Context) {
         [health]
         status_socket = ""
         write_status_file = true
-        status_file = "~/.local/state/p2ptunnel/status.json"
+        status_file = "${File(context.filesDir, "state/status.json").absolutePath}"
     """.trimIndent()
 
     fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()

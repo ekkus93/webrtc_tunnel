@@ -81,6 +81,20 @@ tasks.register<Exec>("buildRustAndroid") {
     group = "build"
     description = "Builds p2p-mobile for Android ABIs and copies .so files into jniLibs."
     workingDir = rootDir.parentFile
+    doFirst {
+        val hasCargoNdk = try {
+            val result = exec {
+                commandLine(cargoExecutable, "ndk", "--version")
+                isIgnoreExitValue = true
+            }
+            result.exitValue == 0
+        } catch (_: Exception) {
+            false
+        }
+        if (!hasCargoNdk) {
+            throw GradleException("cargo-ndk is required. Install with: cargo install cargo-ndk")
+        }
+    }
     commandLine(
         cargoExecutable,
         "ndk",
@@ -91,4 +105,26 @@ tasks.register<Exec>("buildRustAndroid") {
         "-p", "p2p-mobile",
         "--release",
     )
+}
+
+tasks.register("verifyRustJniLibs") {
+    group = "verification"
+    description = "Ensures required Rust JNI libraries exist before packaging."
+    dependsOn("buildRustAndroid")
+    doLast {
+        val libsDir = file("src/main/jniLibs")
+        val required = listOf(
+            file("${libsDir.path}/arm64-v8a/libp2p_mobile.so"),
+            file("${libsDir.path}/x86_64/libp2p_mobile.so"),
+        )
+        required.forEach { lib ->
+            if (!lib.exists()) {
+                throw GradleException("Missing JNI library: ${lib.path}")
+            }
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("verifyRustJniLibs")
 }

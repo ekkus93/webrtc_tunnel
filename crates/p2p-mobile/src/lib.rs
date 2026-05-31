@@ -13,7 +13,12 @@ pub use runtime::{
 };
 
 fn into_c_string(value: String) -> *mut c_char {
-    CString::new(value).expect("serialized JSON must not contain interior NUL").into_raw()
+    match CString::new(value) {
+        Ok(value) => value.into_raw(),
+        Err(_) => CString::new("ffi string contained interior NUL")
+            .expect("static fallback string is valid")
+            .into_raw(),
+    }
 }
 
 fn with_controller<R>(
@@ -89,8 +94,40 @@ pub unsafe extern "C" fn p2ptunnel_start_offer(
         let config_path = unsafe { std::ffi::CStr::from_ptr(config_path) }
             .to_str()
             .map_err(|error| format!("invalid config path: {error}"))?;
-        let controller = unsafe { &*handle };
-        controller.start_offer(config_path)
+        with_controller(handle, |controller| controller.start_offer(config_path))?
+    })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `handle` must be a valid runtime pointer from `p2ptunnel_create_runtime`.
+/// `config_path` must point to a valid, NUL-terminated UTF-8 string.
+/// `identity_ptr` must point to valid UTF-8 bytes with length `identity_len`.
+pub unsafe extern "C" fn p2ptunnel_start_offer_with_identity(
+    handle: *mut AndroidTunnelController,
+    config_path: *const c_char,
+    identity_ptr: *const u8,
+    identity_len: usize,
+) -> i32 {
+    catch_api(|| {
+        if config_path.is_null() {
+            return Err("config path was null".to_owned());
+        }
+        if identity_ptr.is_null() {
+            return Err("identity bytes pointer was null".to_owned());
+        }
+        // SAFETY: pointers are expected to reference valid memory for this call.
+        let config_path = unsafe { std::ffi::CStr::from_ptr(config_path) }
+            .to_str()
+            .map_err(|error| format!("invalid config path: {error}"))?;
+        // SAFETY: JNI passes pointer and length to an owned byte array for the duration of call.
+        let identity_bytes = unsafe { std::slice::from_raw_parts(identity_ptr, identity_len) };
+        let identity_toml = std::str::from_utf8(identity_bytes)
+            .map_err(|error| format!("identity bytes were not valid UTF-8: {error}"))?;
+        with_controller(handle, |controller| {
+            controller.start_offer_with_identity(config_path, identity_toml)
+        })?
     })
 }
 
@@ -111,8 +148,7 @@ pub unsafe extern "C" fn p2ptunnel_start_answer(
         let config_path = unsafe { std::ffi::CStr::from_ptr(config_path) }
             .to_str()
             .map_err(|error| format!("invalid config path: {error}"))?;
-        let controller = unsafe { &*handle };
-        controller.start_answer(config_path)
+        with_controller(handle, |controller| controller.start_answer(config_path))?
     })
 }
 
@@ -122,8 +158,7 @@ pub unsafe extern "C" fn p2ptunnel_start_answer(
 /// `handle` must be a valid runtime pointer from `p2ptunnel_create_runtime`.
 pub unsafe extern "C" fn p2ptunnel_stop(handle: *mut AndroidTunnelController) -> i32 {
     catch_api(|| {
-        let controller = unsafe { &*handle };
-        controller.stop();
+        with_controller(handle, |controller| controller.stop())?;
         Ok(())
     })
 }
@@ -217,9 +252,45 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_native
         Ok(value) => value.to_string_lossy().into_owned(),
         Err(_) => return -1,
     };
-    let c_path = CString::new(config_path).expect("config path contains NUL");
+    let c_path = match CString::new(config_path) {
+        Ok(value) => value,
+        Err(_) => return -1,
+    };
     match unsafe { p2ptunnel_start_offer(handle as *mut AndroidTunnelController, c_path.as_ptr()) }
     {
+        0 => 0,
+        value => value as jint,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_nativeStartOfferWithIdentity(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    config_path: JString<'_>,
+    identity_bytes: jni::objects::JByteArray<'_>,
+) -> jint {
+    let config_path = match env.get_string(&config_path) {
+        Ok(value) => value.to_string_lossy().into_owned(),
+        Err(_) => return -1,
+    };
+    let c_path = match CString::new(config_path) {
+        Ok(value) => value,
+        Err(_) => return -1,
+    };
+    let identity = match env.convert_byte_array(&identity_bytes) {
+        Ok(bytes) => bytes,
+        Err(_) => return -1,
+    };
+    match unsafe {
+        p2ptunnel_start_offer_with_identity(
+            handle as *mut AndroidTunnelController,
+            c_path.as_ptr(),
+            identity.as_ptr(),
+            identity.len(),
+        )
+    } {
         0 => 0,
         value => value as jint,
     }
@@ -236,7 +307,10 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_native
         Ok(value) => value.to_string_lossy().into_owned(),
         Err(_) => return -1,
     };
-    let c_path = CString::new(config_path).expect("config path contains NUL");
+    let c_path = match CString::new(config_path) {
+        Ok(value) => value,
+        Err(_) => return -1,
+    };
     match unsafe { p2ptunnel_start_answer(handle as *mut AndroidTunnelController, c_path.as_ptr()) }
     {
         0 => 0,
@@ -327,11 +401,9 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustTunnelBridge_native
     handle: jlong,
 ) -> jstring {
     let handle = handle as *mut AndroidTunnelController;
-    let error = if handle.is_null() {
-        "runtime handle was null".to_owned()
-    } else {
-        // SAFETY: the pointer comes from `p2ptunnel_create_runtime` and remains owned by caller.
-        unsafe { &*handle }.last_error().unwrap_or_else(|| "unknown error".to_owned())
-    };
+    let error = with_controller(handle, |controller| controller.last_error())
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "unknown error".to_owned());
     to_jstring(&mut env, error)
 }

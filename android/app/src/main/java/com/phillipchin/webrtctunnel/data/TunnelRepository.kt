@@ -4,6 +4,12 @@ import android.content.Context
 import com.phillipchin.webrtctunnel.RustTunnelBridge
 import com.phillipchin.webrtctunnel.TunnelNativeBridge
 import com.phillipchin.webrtctunnel.model.LogEvent
+import com.phillipchin.webrtctunnel.model.NativeLogEventDto
+import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
+import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkType
+import com.phillipchin.webrtctunnel.model.ServiceState
+import com.phillipchin.webrtctunnel.model.TunnelError
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
@@ -28,9 +34,9 @@ class TunnelRepository(
     )
     val status: StateFlow<TunnelStatus> = _status.asStateFlow()
 
-    fun start(mode: TunnelMode, configPath: String): Result<Unit> {
+    fun start(mode: TunnelMode, configPath: String, identityBytes: ByteArray? = null): Result<Unit> {
         val result = when (mode) {
-            TunnelMode.Offer -> bridge.startOffer(configPath)
+            TunnelMode.Offer -> bridge.startOffer(configPath, identityBytes)
             TunnelMode.Answer -> bridge.startAnswer(configPath)
         }
         result.onSuccess { refreshStatus() }
@@ -41,13 +47,76 @@ class TunnelRepository(
 
     fun refreshStatus() {
         runCatching {
-            _status.value = Json.decodeFromString(TunnelStatus.serializer(), bridge.getStatusJson())
+            val native = Json.decodeFromString<NativeRuntimeStatusDto>(bridge.getStatusJson())
+            _status.value = native.toTunnelStatus(_status.value)
+        }.onFailure { error ->
+            _status.value = _status.value.copy(
+                serviceState = ServiceState.Error,
+                lastError = TunnelError(
+                    code = "status_decode_failed",
+                    message = "Native status decode failed",
+                    details = error.message,
+                ),
+            )
         }
     }
 
     fun recentLogs(maxEvents: Int): List<LogEvent> =
-        runCatching { Json.decodeFromString<List<LogEvent>>(bridge.getRecentLogsJson(maxEvents)) }
-            .getOrDefault(emptyList())
+        runCatching {
+            Json.decodeFromString<List<NativeLogEventDto>>(bridge.getRecentLogsJson(maxEvents))
+                .map { event ->
+                    LogEvent(
+                        unixMs = event.unix_ms,
+                        level = event.level,
+                        message = event.message,
+                    )
+                }
+        }.onFailure { error ->
+            _status.value = _status.value.copy(
+                serviceState = ServiceState.Error,
+                lastError = TunnelError(
+                    code = "log_decode_failed",
+                    message = "Native log decode failed",
+                    details = error.message,
+                ),
+            )
+        }.getOrDefault(emptyList())
 
     fun validateConfig(configPath: String): ValidationResult = bridge.validateConfig(configPath)
+
+    fun setPolicyBlocked(blockReason: String) {
+        _status.value = _status.value.copy(
+            serviceState = ServiceState.PausedMeteredBlocked,
+            networkStatus = NetworkStatus(
+                networkType = NetworkType.Unknown,
+                isMetered = true,
+                tunnelAllowed = false,
+                blockReason = blockReason,
+            ),
+            lastError = null,
+        )
+    }
+
+    private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): TunnelStatus {
+        val modeValue = when (mode) {
+            "answer" -> TunnelMode.Answer
+            else -> TunnelMode.Offer
+        }
+        val stateValue = when (state) {
+            "running" -> if (modeValue == TunnelMode.Answer) ServiceState.Serving else ServiceState.Connected
+            "starting" -> ServiceState.Starting
+            "stopping" -> ServiceState.Stopping
+            "error" -> ServiceState.Error
+            else -> ServiceState.Stopped
+        }
+        return previous.copy(
+            serviceState = stateValue,
+            mode = modeValue,
+            mqttConnected = active,
+            activeSessionCount = if (active) 1 else 0,
+            lastError = last_error?.let {
+                TunnelError(code = "native_runtime_error", message = it, details = config_path)
+            },
+        )
+    }
 }

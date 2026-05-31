@@ -49,6 +49,10 @@ class ConfigRepositoryTest {
         assertTrue(template.contains("[broker]"))
         assertTrue(template.contains("[security]"))
         assertTrue(template.contains("[logging]"))
+        assertFalse(template.contains("~/.config"))
+        assertFalse(template.contains("~/.local"))
+        assertFalse(template.contains("/etc/ssl/certs"))
+        assertTrue(template.contains(context.filesDir.absolutePath))
     }
 
     @Test

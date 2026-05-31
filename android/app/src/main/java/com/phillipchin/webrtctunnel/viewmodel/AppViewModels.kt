@@ -16,7 +16,7 @@ class HomeViewModel(private val deps: AppDependencies) : ViewModel() {
     fun startTunnel(mode: TunnelMode): Unit {
         val action = when (mode) {
             TunnelMode.Offer -> TunnelForegroundService.ACTION_START_OFFER
-            TunnelMode.Answer -> TunnelForegroundService.ACTION_START_ANSWER
+            TunnelMode.Answer -> return
         }
         ContextCompat.startForegroundService(
             deps.context,

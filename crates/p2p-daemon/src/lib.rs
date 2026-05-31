@@ -185,11 +185,12 @@ impl DuplicateActiveAckCache {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DaemonRuntimeState {
     mqtt_connected: bool,
+    last_transport_failure_at_ms: Option<u64>,
 }
 
 impl DaemonRuntimeState {
     fn new_connected() -> Self {
-        Self { mqtt_connected: true }
+        Self { mqtt_connected: true, last_transport_failure_at_ms: None }
     }
 }
 
@@ -841,14 +842,12 @@ async fn handle_answer_session_event<T: DaemonSignalingTransport>(
             publish_answer_session_request(ctx, codec, transport, *request).await;
         }
         AnswerSessionEvent::RawPublish { peer_id, payload, status, result } => {
-            eprintln!("[DEBUG] handle_answer_session_event: RawPublish start, mqtt_connected={}", ctx.runtime.mqtt_connected);
             let publish_result = match transport
                 .publish_signal(&peer_id, &ctx.config.broker.topic_prefix, payload)
                 .await
             {
                 Ok(()) => {
-                    eprintln!("[DEBUG] RawPublish: publish SUCCESS, mqtt_connected={}", ctx.runtime.mqtt_connected);
-                    mark_transport_usable(
+                    mark_transport_usable_after_publish(
                         ctx,
                         StatusSnapshot {
                             active_session_id: Some(status.session_id),
@@ -856,7 +855,6 @@ async fn handle_answer_session_event<T: DaemonSignalingTransport>(
                         },
                     )
                     .await;
-                    eprintln!("[DEBUG] RawPublish: after mark_transport_usable, mqtt_connected={}", ctx.runtime.mqtt_connected);
                     Ok(())
                 }
                 Err(error) => {
@@ -2127,11 +2125,9 @@ async fn mark_transport_unusable(
     snapshot: StatusSnapshot,
     error: &SignalingError,
 ) {
-    eprintln!("[DEBUG] mark_transport_unusable: setting mqtt_connected=false");
     ctx.runtime.mqtt_connected = false;
-    eprintln!("[DEBUG] mark_transport_unusable: starting write_daemon_status");
+    ctx.runtime.last_transport_failure_at_ms = Some(current_time_ms());
     write_daemon_status(ctx, snapshot).await;
-    eprintln!("[DEBUG] mark_transport_unusable: write_daemon_status DONE");
     tracing::warn!(
         reason = %error,
         role = ?ctx.config.node.role,
@@ -2145,8 +2141,8 @@ async fn mark_transport_usable(ctx: &mut RuntimeContext<'_>, snapshot: StatusSna
     if ctx.runtime.mqtt_connected {
         return;
     }
-    eprintln!("[DEBUG] mark_transport_usable: setting mqtt_connected=true");
     ctx.runtime.mqtt_connected = true;
+    ctx.runtime.last_transport_failure_at_ms = None;
     write_daemon_status(ctx, snapshot).await;
     tracing::info!(
         role = ?ctx.config.node.role,
@@ -2154,6 +2150,18 @@ async fn mark_transport_usable(ctx: &mut RuntimeContext<'_>, snapshot: StatusSna
         session_id = snapshot.active_session_id.as_ref().map(ToString::to_string),
         "signaling transport recovered"
     );
+}
+
+async fn mark_transport_usable_after_publish(
+    ctx: &mut RuntimeContext<'_>,
+    snapshot: StatusSnapshot,
+) {
+    if ctx.runtime.last_transport_failure_at_ms.is_some_and(|failure_at| {
+        current_time_ms().saturating_sub(failure_at) < DAEMON_RUNTIME_RETRY_DELAY.as_millis() as u64
+    }) {
+        return;
+    }
+    mark_transport_usable(ctx, snapshot).await;
 }
 
 async fn poll_session_signal_payload<T: DaemonSignalingTransport>(
@@ -2332,7 +2340,7 @@ async fn publish_answer_session_request<T: DaemonSignalingTransport>(
                 .await
             {
                 Ok(()) => {
-                    mark_transport_usable(
+                    mark_transport_usable_after_publish(
                         ctx,
                         StatusSnapshot {
                             active_session_id: Some(request.status.session_id),

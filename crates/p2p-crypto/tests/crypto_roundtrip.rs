@@ -1,8 +1,8 @@
 use p2p_core::{Kid, MsgId};
 use p2p_crypto::{
-    AuthorizedKeys, CryptoError, decrypt_message, derive_aead_key, derive_aead_key_from_shared_secret,
-    encrypt_message, generate_ephemeral_secret, generate_identity, kid_from_signing_key,
-    random_nonce, sign_message, verify_message,
+    AuthorizedKeys, CryptoError, decrypt_message, derive_aead_key,
+    derive_aead_key_from_shared_secret, encrypt_message, generate_ephemeral_secret,
+    generate_identity, kid_from_signing_key, random_nonce, sign_message, verify_message,
 };
 use x25519_dalek::PublicKey as X25519PublicKey;
 
@@ -24,7 +24,8 @@ fn render_toml_then_from_toml_preserves_signing_and_kex_keys() {
     let parsed = p2p_crypto::IdentityFile::from_toml(&toml).expect("parse roundtrip");
     let message = b"round-trip message";
     let sig = sign_message(&identity.identity.signing_key, message);
-    verify_message(&parsed.verifying_key, message, &sig).expect("parsed key must verify original sig");
+    verify_message(&parsed.verifying_key, message, &sig)
+        .expect("parsed key must verify original sig");
 }
 
 #[test]
@@ -119,16 +120,12 @@ fn different_msg_id_produces_different_key() {
     let (alice_eph, _alice_pub, _bob_static, bob_pub, alice_kid, bob_kid, msg_id1) =
         make_alice_bob_keys();
     let msg_id2 = MsgId::random();
-    assert_ne!(
-        msg_id1.as_bytes(),
-        msg_id2.as_bytes(),
-        "test requires distinct msg_ids"
-    );
+    assert_ne!(msg_id1.as_bytes(), msg_id2.as_bytes(), "test requires distinct msg_ids");
 
-    let key1 = derive_aead_key(&alice_eph, &bob_pub, &alice_kid, &bob_kid, &msg_id1)
-        .expect("key 1");
-    let key2 = derive_aead_key(&alice_eph, &bob_pub, &alice_kid, &bob_kid, &msg_id2)
-        .expect("key 2");
+    let key1 =
+        derive_aead_key(&alice_eph, &bob_pub, &alice_kid, &bob_kid, &msg_id1).expect("key 1");
+    let key2 =
+        derive_aead_key(&alice_eph, &bob_pub, &alice_kid, &bob_kid, &msg_id2).expect("key 2");
 
     assert_ne!(key1, key2, "different msg_id must produce different key");
 }
@@ -180,7 +177,10 @@ fn decrypt_with_wrong_key_returns_error() {
     let ciphertext = encrypt_message(&key, &nonce, b"aad", b"payload").expect("encrypt");
     let wrong_key = [0xFF_u8; 32];
     assert!(
-        matches!(decrypt_message(&wrong_key, &nonce, b"aad", &ciphertext), Err(CryptoError::Decryption)),
+        matches!(
+            decrypt_message(&wrong_key, &nonce, b"aad", &ciphertext),
+            Err(CryptoError::Decryption)
+        ),
         "wrong key must return Decryption error"
     );
 }

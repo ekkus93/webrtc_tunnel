@@ -1032,68 +1032,68 @@ If any command fails:
 
 ## 14.1 P0 integration
 
-- [ ] Rust/Kotlin status JSON compatibility fixed.
-- [ ] Rust/Kotlin log JSON compatibility fixed.
-- [ ] Native status decode failures surface visibly.
-- [ ] Android config uses app-private valid paths.
-- [ ] `identity.enc` is used by actual tunnel startup.
-- [ ] No plaintext private identity remains at rest.
-- [ ] Network policy gates tunnel startup.
-- [ ] Network policy pauses tunnel on metered/cellular transition.
+- [x] Rust/Kotlin status JSON compatibility fixed.
+- [x] Rust/Kotlin log JSON compatibility fixed.
+- [x] Native status decode failures surface visibly.
+- [x] Android config uses app-private valid paths.
+- [x] `identity.enc` is used by actual tunnel startup.
+- [x] No plaintext private identity remains at rest.
+- [x] Network policy gates tunnel startup.
+- [x] Network policy pauses tunnel on metered/cellular transition.
 - [ ] Setup wizard is functional for offer mode.
 
 ## 14.2 FFI/service
 
-- [ ] No panics cross FFI.
-- [ ] Null handles do not cause UB/crash.
-- [ ] Native library load failure is surfaced.
-- [ ] ForegroundService starts notification promptly.
-- [ ] Connected foreground-service test passes.
-- [ ] Stop action releases runtime.
+- [x] No panics cross FFI.
+- [x] Null handles do not cause UB/crash.
+- [x] Native library load failure is surfaced.
+- [x] ForegroundService starts notification promptly.
+- [x] Connected foreground-service test passes.
+- [x] Stop action releases runtime.
 
 ## 14.3 Build
 
-- [ ] Native Rust library is built for `arm64-v8a`.
-- [ ] Native Rust library is built for `x86_64`.
-- [ ] APK includes `libp2p_mobile.so`.
-- [ ] `assembleDebug` cannot silently produce unusable APK.
+- [x] Native Rust library is built for `arm64-v8a`.
+- [x] Native Rust library is built for `x86_64`.
+- [x] APK includes `libp2p_mobile.so`.
+- [x] `assembleDebug` cannot silently produce unusable APK.
 
 ## 14.4 UI
 
-- [ ] Home screen shows real runtime status.
+- [x] Home screen shows real runtime status.
 - [ ] Setup wizard creates valid offer config.
 - [ ] Forwards add/edit/delete works.
 - [ ] Forward details works.
 - [ ] Network policy UI and warning dialog work.
-- [ ] Logs show native logs.
-- [ ] Settings are functional.
+- [x] Logs show native logs.
+- [x] Settings are functional.
 - [ ] Import/export works.
-- [ ] Error states are actionable.
+- [x] Error states are actionable.
 
 ## 14.5 Security
 
-- [ ] Private identity encrypted at rest with Android Keystore.
+- [x] Private identity encrypted at rest with Android Keystore.
 - [ ] Private export requires explicit warning.
 - [ ] Diagnostics redact secrets.
-- [ ] Logs redact secrets.
-- [ ] Cellular/metered data blocked by default.
+- [x] Logs redact secrets.
+- [x] Cellular/metered data blocked by default.
 
 ## 14.6 Compatibility
 
 - [ ] Android offer connects to desktop Rust answer.
 - [ ] Android browser reaches remote service via `127.0.0.1:<port>`.
-- [ ] Protocol wire formats unchanged.
-- [ ] Desktop Rust tests still pass.
+- [x] Protocol wire formats unchanged.
+- [x] Desktop Rust tests still pass.
 
 ## 14.7 Validation
 
-- [ ] `cargo fmt --check` passes.
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes.
-- [ ] `cargo test --workspace --all-targets` passes.
-- [ ] `cargo ndk ... build -p p2p-mobile --release` passes.
-- [ ] `./gradlew assembleDebug` passes.
-- [ ] `./gradlew testDebugUnitTest` passes.
-- [ ] connected Android tests pass if present.
+- [x] `cargo fmt --check` passes.
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes.
+- [x] `cargo test --workspace --all-targets` passes.
+- [x] `cargo ndk ... build -p p2p-mobile --release` passes.
+- [x] `./gradlew assembleDebug` passes.
+- [x] `./gradlew testDebugUnitTest` passes.
+- [x] connected Android tests pass if present.
 
 ---
 

@@ -7,6 +7,7 @@ import com.phillipchin.webrtctunnel.TunnelNativeBridge
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.TunnelRepository
+import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.ValidationResult
@@ -64,8 +65,7 @@ class AppViewModelsTest {
         val viewModel = HomeViewModel(deps)
         viewModel.startTunnel(TunnelMode.Answer)
         val started = Shadows.shadowOf(app).nextStartedService
-        assertNotNull(started)
-        assertEquals(TunnelForegroundService.ACTION_START_ANSWER, started.action)
+        assertEquals(null, started)
     }
 
     @Test
@@ -107,7 +107,7 @@ class AppViewModelsTest {
         var statusReads = 0
         var validationResult: ValidationResult = ValidationResult(true, null)
 
-        override fun startOffer(configPath: String): Result<Unit> = Result.success(Unit)
+        override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> = Result.success(Unit)
 
         override fun startAnswer(configPath: String): Result<Unit> = Result.success(Unit)
 
@@ -115,7 +115,10 @@ class AppViewModelsTest {
 
         override fun getStatusJson(): String {
             statusReads += 1
-            return """{"serviceState":"Stopped","mode":"Offer","localPeerId":"android-phone","networkStatus":{"networkType":"NoNetwork","isMetered":false,"tunnelAllowed":false}}"""
+            return kotlinx.serialization.json.Json.encodeToString(
+                NativeRuntimeStatusDto.serializer(),
+                NativeRuntimeStatusDto(state = "stopped", mode = "offer"),
+            )
         }
 
         override fun getRecentLogsJson(maxEvents: Int): String = "[]"
