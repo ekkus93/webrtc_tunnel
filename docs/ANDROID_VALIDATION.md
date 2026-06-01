@@ -1,5 +1,49 @@
 # Android Validation
 
+## 2026-06-01T04:28:29Z
+
+- **Commit:** working tree with TODO4 tiny final cleanup changes (not yet committed)
+- **Environment:** Linux host, Android emulator `Medium_Phone_API_36.0(AVD) - 16`
+- **Summary:** TODO4 code fixes are complete and validation gates pass; manual large-font walkthrough and manual Android↔desktop browser E2E remain explicitly NOT RUN in this pass.
+
+### Rust workspace validation
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets -- --test-threads=1
+```
+
+- **Result:** PASS
+
+### Android lint/build/tests
+
+```bash
+cd android
+./gradlew --no-daemon assembleDebug testDebugUnitTest connectedDebugAndroidTest --console=plain
+```
+
+- **Result:** PASS
+
+### Android Rust native library build
+
+```bash
+cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
+```
+
+- **Result:** PASS
+
+### Manual UI validation (large-font/phone-layout walkthrough)
+
+- **Result:** NOT RUN
+- **Reason:** Interactive large-font manual walkthrough was not performed in this CLI-only validation pass.
+
+### Manual Android↔desktop E2E
+
+- **Result:** NOT RUN
+- **Reason:** Desktop `p2p-answer` + remote target environment were not provisioned for this run.
+- **Required future run:** Start desktop `p2p-answer`, start Android offer tunnel, browse `http://127.0.0.1:<local_port>`, and capture redacted Android/desktop logs with response evidence.
+
 ## 2026-05-31T22:41:24Z
 
 - **Commit:** working tree with TODO3 final UI cleanup changes (not yet committed)

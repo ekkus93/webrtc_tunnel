@@ -91,7 +91,7 @@ fun SetupWizardScreen(
             vm.importIdentityFromUri(uri)
         }
     }
-    var editingForward by remember { mutableStateOf<ForwardConfig?>(null) }
+    var editingForward by remember { mutableStateOf<ForwardEditorState?>(null) }
 
     ScrollableScreenSurface(padding) {
         SectionHeader("Setup Wizard", "Configure tunnel in 7 guided steps")
@@ -119,9 +119,13 @@ fun SetupWizardScreen(
                 },
                 onImportFile = { importPublicIdentityLauncher.launch(arrayOf("text/*")) },
             )
-            SetupStep.Forwards -> ForwardsStepContent(vm, forwards, onAdd = {
-                editingForward = defaultNewForward(forwards)
-            }, onEdit = { editingForward = it }, onDelete = vm::deleteForward)
+            SetupStep.Forwards -> ForwardsStepContent(
+                vm,
+                forwards,
+                onAdd = { editingForward = beginAddForwardEdit(forwards) },
+                onEdit = { editingForward = beginEditForward(it) },
+                onDelete = vm::deleteForward,
+            )
             SetupStep.NetworkPolicy -> PolicyStepContent(vm, state, networkStatus)
             SetupStep.Review -> ReviewStepContent(state, forwards)
         }
@@ -157,10 +161,10 @@ fun SetupWizardScreen(
         }
     }
 
-    editingForward?.let { draft ->
+    editingForward?.let { editor ->
         EditForwardDialog(
-            mode = ForwardEditorMode.Add,
-            initial = draft,
+            mode = editor.mode,
+            initial = editor.draft,
             existingForwards = forwards,
             validateDraft = vm::validateForwardDraft,
             onDismiss = { editingForward = null },
@@ -421,6 +425,21 @@ internal enum class ForwardEditorMode {
     Add,
     Edit,
 }
+
+internal data class ForwardEditorState(
+    val mode: ForwardEditorMode,
+    val draft: ForwardConfig,
+)
+
+internal fun beginAddForwardEdit(existingForwards: List<ForwardConfig>): ForwardEditorState = ForwardEditorState(
+    mode = ForwardEditorMode.Add,
+    draft = defaultNewForward(existingForwards),
+)
+
+internal fun beginEditForward(existingForward: ForwardConfig): ForwardEditorState = ForwardEditorState(
+    mode = ForwardEditorMode.Edit,
+    draft = existingForward,
+)
 
 internal data class ForwardEditorLabels(
     val title: String,

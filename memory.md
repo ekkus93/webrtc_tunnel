@@ -632,3 +632,13 @@
 - Implemented TODO3 UI fixes across Android UI/service/viewmodel/tests: session-scoped metered allowance wiring, duplicate Review Save/Start removal from review content, Home/Forwards scrollability hardening, Logs overflow actions menu, explicit add/edit forward dialog mode labels, and contextual action content descriptions.
 - Added targeted regression coverage in Android tests (`AppViewModelsTest`, `FlowScreensTest`, `TunnelRepositoryTest`, `TunnelForegroundServiceInstrumentationTest`) and reran full Rust+Android gates.
 - Updated `docs/ANDROID_UI_FIX_TODO3.md` and appended a new section to `docs/ANDROID_VALIDATION.md` with pass results plus explicit `NOT RUN` notes for manual large-font walkthrough and Android↔desktop browser E2E.
+
+## 2026-06-01T04:13:32Z - GPT-5.4-mini - Reviewed TODO4/spec and captured remaining ambiguity points
+- Read `docs/ANDROID_UI_CODE_REVIEW4.md` and `docs/ANDROID_UI_FIX_TODO4.md` in full; scope is intentionally tiny and limited to Setup Wizard add/edit dialog mode correctness plus moving Settings public-identity loading out of composable-time file I/O.
+- Confirmed this pass should preserve prior TODO3 behavior and keep manual large-font and Android↔desktop E2E reporting honest (run-and-pass or explicitly `NOT RUN`).
+- Identified one execution detail to clarify before implementation: whether full Rust test gates should keep using serial `--test-threads=1` for known flaky `p2p-daemon` two-node tests versus strict default parallel execution.
+
+## 2026-06-01T04:29:41Z - GPT-5.4-mini - TODO4 tiny cleanup implemented and validated
+- Setup Wizard forward editing now uses explicit mode-aware editor state (`ForwardEditorState`) so Add and Edit paths pass correct `ForwardEditorMode` semantics to the dialog, while preserving existing forward draft validation flow.
+- Settings public identity loading was moved out of composable-time file reads into `SettingsViewModel` state (`SettingsUiState`) with explicit refresh/error handling; Settings copy/share actions now consume that state and are disabled when identity is unavailable.
+- Added targeted regression coverage for setup editor-mode helpers and settings public-identity load/missing/error paths, updated `docs/ANDROID_UI_FIX_TODO4.md` and `docs/ANDROID_VALIDATION.md`, and reran full Rust+Android validation (including `assembleDebug`, `connectedDebugAndroidTest`, and `cargo ndk`) with manual large-font and Android↔desktop E2E still explicitly `NOT RUN`.

@@ -37,4 +37,42 @@ class FlowScreensTest {
         assertEquals(ForwardEditorLabels("Add Forward", "Add"), forwardEditorLabels(ForwardEditorMode.Add))
         assertEquals(ForwardEditorLabels("Edit Forward", "Save"), forwardEditorLabels(ForwardEditorMode.Edit))
     }
+
+    @Test
+    fun beginAddForwardEditUsesAddModeAndDefaultDraft() {
+        val existing = listOf(
+            ForwardConfig(
+                id = "svc",
+                name = "svc",
+                localHost = "127.0.0.1",
+                localPort = 8080,
+                remoteForwardId = "svc",
+                enabled = true,
+            ),
+        )
+        val editor = beginAddForwardEdit(existing)
+        assertEquals(ForwardEditorMode.Add, editor.mode)
+        assertEquals("Add Forward", forwardEditorLabels(editor.mode).title)
+        assertEquals("Add", forwardEditorLabels(editor.mode).action)
+        assertEquals("127.0.0.1", editor.draft.localHost)
+        assertEquals("", editor.draft.name)
+        assertEquals("", editor.draft.remoteForwardId)
+    }
+
+    @Test
+    fun beginEditForwardUsesEditModeAndExistingDraft() {
+        val existingForward = ForwardConfig(
+            id = "svc",
+            name = "svc",
+            localHost = "127.0.0.1",
+            localPort = 8080,
+            remoteForwardId = "svc",
+            enabled = true,
+        )
+        val editor = beginEditForward(existingForward)
+        assertEquals(ForwardEditorMode.Edit, editor.mode)
+        assertEquals("Edit Forward", forwardEditorLabels(editor.mode).title)
+        assertEquals("Save", forwardEditorLabels(editor.mode).action)
+        assertEquals(existingForward, editor.draft)
+    }
 }

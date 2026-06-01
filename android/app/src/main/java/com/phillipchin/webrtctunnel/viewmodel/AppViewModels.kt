@@ -66,6 +66,11 @@ data class ImportExportState(
     val resultMessage: String? = null,
 )
 
+data class SettingsUiState(
+    val publicIdentity: String? = null,
+    val publicIdentityLoadError: String? = null,
+)
+
 class HomeViewModel(private val deps: AppDependencies) : ViewModel() {
     val status: StateFlow<TunnelStatus> = deps.tunnelRepository.status
     private val _configuredForwards = MutableStateFlow(deps.configRepository.loadForwards())
@@ -763,8 +768,19 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
     }
 }
 
-class SettingsViewModel(private val deps: AppDependencies) : ViewModel() {
+class SettingsViewModel(
+    private val deps: AppDependencies,
+    private val loadPublicIdentity: suspend () -> String = {
+        withContext(Dispatchers.IO) { deps.identityRepository.readPublicIdentity() }
+    },
+) : ViewModel() {
     val preferences = deps.configRepository.preferences
+    private val _uiState = MutableStateFlow(SettingsUiState())
+    val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+
+    init {
+        refreshPublicIdentity()
+    }
 
     fun validateConfig(): ValidationResult = deps.tunnelRepository.validateConfig(deps.configRepository.configPath)
 
@@ -772,7 +788,23 @@ class SettingsViewModel(private val deps: AppDependencies) : ViewModel() {
         viewModelScope.launch { deps.configRepository.savePreferences(updated) }
     }
 
-    fun publicIdentityOrNull(): String? = runCatching { deps.identityRepository.readPublicIdentity() }.getOrNull()
+    fun refreshPublicIdentity() {
+        viewModelScope.launch {
+            runCatching { loadPublicIdentity().ifBlank { null } }
+                .onSuccess { publicIdentity ->
+                    _uiState.value = _uiState.value.copy(
+                        publicIdentity = publicIdentity,
+                        publicIdentityLoadError = null,
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        publicIdentity = null,
+                        publicIdentityLoadError = SensitiveDataRedactor.redactText(error.message ?: "Unable to load local public identity"),
+                    )
+                }
+        }
+    }
 
     fun statusJson(): String = runCatching {
         Json.encodeToString(SensitiveDataRedactor.redactStatus(deps.tunnelRepository.status.value))

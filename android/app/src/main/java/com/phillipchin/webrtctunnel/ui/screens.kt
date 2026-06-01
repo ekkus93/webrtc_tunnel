@@ -582,10 +582,13 @@ fun SettingsScreen(
     onOpenImportExport: () -> Unit,
 ) {
     val prefs by vm.preferences.collectAsStateWithLifecycle(initialValue = AndroidAppPreferences())
+    val uiState by vm.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val publicIdentity = vm.publicIdentityOrNull()
+    val publicIdentity = uiState.publicIdentity
+    val hasPublicIdentity = !publicIdentity.isNullOrBlank()
     var showMeteredWarningDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { vm.refreshPublicIdentity() }
     ScrollableScreenSurface(padding) {
         SectionHeader("Settings", "Tunnel and app behavior")
         Spacer(Modifier.height(12.dp))
@@ -618,27 +621,28 @@ fun SettingsScreen(
         Spacer(Modifier.height(12.dp))
         SettingsSection("Identity") {
             Text(publicIdentity ?: "No local public identity found.", style = MaterialTheme.typography.bodySmall)
+            uiState.publicIdentityLoadError?.let { error ->
+                Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = {
-                        if (!publicIdentity.isNullOrBlank()) {
-                            clipboard.setText(AnnotatedString(publicIdentity))
-                        }
+                        clipboard.setText(AnnotatedString(publicIdentity.orEmpty()))
                     },
                     modifier = Modifier.weight(1f),
+                    enabled = hasPublicIdentity,
                 ) { Text("Copy identity") }
                 OutlinedButton(
                     onClick = {
-                        if (!publicIdentity.isNullOrBlank()) {
-                            val share = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_SUBJECT, "WebRTC Tunnel public identity")
-                                putExtra(Intent.EXTRA_TEXT, publicIdentity)
-                            }
-                            context.startActivity(Intent.createChooser(share, "Share public identity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        val share = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "WebRTC Tunnel public identity")
+                            putExtra(Intent.EXTRA_TEXT, publicIdentity)
                         }
+                        context.startActivity(Intent.createChooser(share, "Share public identity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     },
                     modifier = Modifier.weight(1f),
+                    enabled = hasPublicIdentity,
                 ) { Text("Share identity") }
             }
             OutlinedButton(onClick = onOpenImportExport, modifier = Modifier.fillMaxWidth()) { Text("Import / Export identity") }

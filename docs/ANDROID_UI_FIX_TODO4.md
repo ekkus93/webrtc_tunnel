@@ -18,18 +18,18 @@ This is **not** a protocol change, service redesign, UI redesign, or Rust refact
 
 ## 2. Non-negotiable rules
 
-- [ ] Do not change MQTT signaling wire format.
-- [ ] Do not change tunnel frame format.
-- [ ] Do not change desktop Rust protocol semantics.
-- [ ] Do not add TURN.
-- [ ] Do not add VPN/TUN mode.
-- [ ] Do not weaken Android Keystore identity-at-rest behavior.
-- [ ] Do not weaken cellular/metered blocking behavior.
-- [ ] Do not weaken log/diagnostic redaction behavior.
-- [ ] Do not persist temporary metered allowance to DataStore.
-- [ ] Do not reintroduce duplicate Review Save/Start controls.
-- [ ] Do not reintroduce disk/native work in Composable bodies.
-- [ ] Do not mark Android↔desktop E2E complete unless it actually ran and passed.
+- [x] Do not change MQTT signaling wire format.
+- [x] Do not change tunnel frame format.
+- [x] Do not change desktop Rust protocol semantics.
+- [x] Do not add TURN.
+- [x] Do not add VPN/TUN mode.
+- [x] Do not weaken Android Keystore identity-at-rest behavior.
+- [x] Do not weaken cellular/metered blocking behavior.
+- [x] Do not weaken log/diagnostic redaction behavior.
+- [x] Do not persist temporary metered allowance to DataStore.
+- [x] Do not reintroduce duplicate Review Save/Start controls.
+- [x] Do not reintroduce disk/native work in Composable bodies.
+- [x] Do not mark Android↔desktop E2E complete unless it actually ran and passed.
 
 ---
 
@@ -51,19 +51,19 @@ docs/ANDROID_VALIDATION.md
 
 Before changing code, confirm the following are still true:
 
-- [ ] Home action is labeled `Allow This Session`, not `Allow Temporarily`.
-- [ ] Home temporary metered allowance does not persist `allowMetered = true`.
-- [ ] Temporary metered allowance clears on stop/service destroy.
-- [ ] Settings metered toggle still shows warning before enabling.
-- [ ] Setup Wizard metered toggle still shows warning before enabling.
-- [ ] Private identity export still shows warning before export.
-- [ ] Review step has one Save/Start control set.
-- [ ] Home is scrollable.
-- [ ] Forwards screen is scrollable/list-based.
-- [ ] Logs uses overflow menu for secondary actions.
-- [ ] Home configured-forwards display still works.
-- [ ] `SetupWizardState.canAdvance` is ViewModel state.
-- [ ] Logs/diagnostics remain redacted.
+- [x] Home action is labeled `Allow This Session`, not `Allow Temporarily`.
+- [x] Home temporary metered allowance does not persist `allowMetered = true`.
+- [x] Temporary metered allowance clears on stop/service destroy.
+- [x] Settings metered toggle still shows warning before enabling.
+- [x] Setup Wizard metered toggle still shows warning before enabling.
+- [x] Private identity export still shows warning before export.
+- [x] Review step has one Save/Start control set.
+- [x] Home is scrollable.
+- [x] Forwards screen is scrollable/list-based.
+- [x] Logs uses overflow menu for secondary actions.
+- [x] Home configured-forwards display still works.
+- [x] `SetupWizardState.canAdvance` is ViewModel state.
+- [x] Logs/diagnostics remain redacted.
 
 ---
 
@@ -148,19 +148,19 @@ Do not break:
 
 Add or update tests for:
 
-- [ ] Setup Wizard Add Forward opens dialog with `Add Forward`.
-- [ ] Setup Wizard Add Forward primary button says `Add`.
-- [ ] Setup Wizard Edit Forward opens dialog with `Edit Forward`.
-- [ ] Setup Wizard Edit Forward primary button says `Save`.
-- [ ] Forward Details edit still opens `Edit Forward`.
-- [ ] Invalid Add/Edit input remains in dialog with inline errors.
+- [x] Setup Wizard Add Forward opens dialog with `Add Forward`.
+- [x] Setup Wizard Add Forward primary button says `Add`.
+- [x] Setup Wizard Edit Forward opens dialog with `Edit Forward`.
+- [x] Setup Wizard Edit Forward primary button says `Save`.
+- [x] Forward Details edit still opens `Edit Forward`.
+- [x] Invalid Add/Edit input remains in dialog with inline errors.
 
 ## 1.7 Acceptance
 
-- [ ] Setup Wizard Add uses Add mode.
-- [ ] Setup Wizard Edit uses Edit mode.
-- [ ] Dialog labels match action semantics.
-- [ ] Existing forward validation still works.
+- [x] Setup Wizard Add uses Add mode.
+- [x] Setup Wizard Edit uses Edit mode.
+- [x] Dialog labels match action semantics.
+- [x] Existing forward validation still works.
 
 ---
 
@@ -248,20 +248,20 @@ Do not read file synchronously on button click unless delegated through ViewMode
 
 Add or update tests for:
 
-- [ ] Settings ViewModel loads public identity into state.
-- [ ] Settings ViewModel handles missing public identity.
-- [ ] Settings ViewModel handles read errors.
-- [ ] SettingsScreen no longer calls `publicIdentityOrNull()` during composition.
-- [ ] Copy/share public identity uses ViewModel state.
+- [x] Settings ViewModel loads public identity into state.
+- [x] Settings ViewModel handles missing public identity.
+- [x] Settings ViewModel handles read errors.
+- [x] SettingsScreen no longer calls `publicIdentityOrNull()` during composition.
+- [x] Copy/share public identity uses ViewModel state.
 
 Where direct Compose testing is difficult, use unit tests and remove the composable-facing file-read method entirely.
 
 ## 2.7 Acceptance
 
-- [ ] No disk I/O is triggered directly from `SettingsScreen`.
-- [ ] Public identity appears through ViewModel state.
-- [ ] Copy/share public identity still works.
-- [ ] Missing public identity is handled gracefully.
+- [x] No disk I/O is triggered directly from `SettingsScreen`.
+- [x] Public identity appears through ViewModel state.
+- [x] Copy/share public identity still works.
+- [x] Missing public identity is handled gracefully.
 
 ---
 
@@ -273,13 +273,13 @@ Do not create a large test rewrite.
 
 Add the smallest useful tests for:
 
-- [ ] Setup Wizard Add/Edit mode.
-- [ ] Settings public identity state loading.
-- [ ] Settings missing public identity state.
-- [ ] Settings read error state, if error path exists.
-- [ ] Home temporary metered allowance still does not persist DataStore.
-- [ ] Review Save does not start service.
-- [ ] Review Start saves and starts service.
+- [x] Setup Wizard Add/Edit mode.
+- [x] Settings public identity state loading.
+- [x] Settings missing public identity state.
+- [x] Settings read error state, if error path exists.
+- [x] Home temporary metered allowance still does not persist DataStore.
+- [x] Review Save does not start service.
+- [x] Review Start saves and starts service.
 
 ## 3.2 Keep existing tests passing
 
@@ -297,9 +297,9 @@ If large-font usability or visual mockup comparison is manual-only, document it 
 
 ## 3.4 Acceptance
 
-- [ ] New tests cover the two code fixes.
-- [ ] Existing tests still pass.
-- [ ] Manual-only checks are documented honestly.
+- [x] New tests cover the two code fixes.
+- [x] Existing tests still pass.
+- [x] Manual-only checks are documented honestly.
 
 ---
 
@@ -414,7 +414,7 @@ Do not mark product acceptance complete.
 ## 5.4 Acceptance
 
 - [ ] E2E passed and is documented, or
-- [ ] E2E remains documented as NOT RUN and product acceptance is not claimed.
+- [x] E2E remains documented as NOT RUN and product acceptance is not claimed.
 
 ---
 
@@ -472,14 +472,14 @@ Do not mark commands as passing unless they pass.
 
 ## 6.5 Acceptance
 
-- [ ] Rust fmt passes.
-- [ ] Rust clippy passes.
-- [ ] Rust tests pass.
-- [ ] Android assemble passes.
-- [ ] Android unit tests pass.
-- [ ] Android connected tests pass or are documented as not run.
-- [ ] cargo-ndk Android library build passes.
-- [ ] Validation docs are updated honestly.
+- [x] Rust fmt passes.
+- [x] Rust clippy passes.
+- [x] Rust tests pass.
+- [x] Android assemble passes.
+- [x] Android unit tests pass.
+- [x] Android connected tests pass or are documented as not run.
+- [x] cargo-ndk Android library build passes.
+- [x] Validation docs are updated honestly.
 
 ---
 
@@ -487,37 +487,37 @@ Do not mark commands as passing unless they pass.
 
 ## Code fixes
 
-- [ ] Setup Wizard Add Forward uses Add mode.
-- [ ] Setup Wizard Edit Forward uses Edit mode.
-- [ ] Forward editor labels match Add/Edit semantics.
-- [ ] Settings public identity is loaded through ViewModel state.
-- [ ] Settings composable does not read files directly.
+- [x] Setup Wizard Add Forward uses Add mode.
+- [x] Setup Wizard Edit Forward uses Edit mode.
+- [x] Forward editor labels match Add/Edit semantics.
+- [x] Settings public identity is loaded through ViewModel state.
+- [x] Settings composable does not read files directly.
 
 ## Regression preservation
 
-- [ ] Home temporary metered allowance does not persist to DataStore.
-- [ ] Temporary allowance still clears on stop/service destroy.
-- [ ] Private identity export warning remains.
-- [ ] Settings metered warning remains.
-- [ ] Setup Wizard metered warning remains.
-- [ ] Review Save/Start controls remain non-duplicated.
-- [ ] Home configured-forwards display remains.
-- [ ] Logs overflow layout remains.
-- [ ] Logs/diagnostics remain redacted.
+- [x] Home temporary metered allowance does not persist to DataStore.
+- [x] Temporary allowance still clears on stop/service destroy.
+- [x] Private identity export warning remains.
+- [x] Settings metered warning remains.
+- [x] Setup Wizard metered warning remains.
+- [x] Review Save/Start controls remain non-duplicated.
+- [x] Home configured-forwards display remains.
+- [x] Logs overflow layout remains.
+- [x] Logs/diagnostics remain redacted.
 
 ## Tests/docs
 
-- [ ] Targeted tests added or verified.
-- [ ] Validation docs updated.
-- [ ] Large-font validation passed or remains honestly marked NOT RUN.
-- [ ] Android↔desktop E2E passed or remains honestly marked NOT RUN.
+- [x] Targeted tests added or verified.
+- [x] Validation docs updated.
+- [x] Large-font validation passed or remains honestly marked NOT RUN.
+- [x] Android↔desktop E2E passed or remains honestly marked NOT RUN.
 
 ## Non-regression
 
-- [ ] No protocol behavior changed.
-- [ ] No identity-at-rest behavior weakened.
-- [ ] No network-policy behavior weakened.
-- [ ] No redaction behavior weakened.
+- [x] No protocol behavior changed.
+- [x] No identity-at-rest behavior weakened.
+- [x] No network-policy behavior weakened.
+- [x] No redaction behavior weakened.
 
 ## Final note
 
