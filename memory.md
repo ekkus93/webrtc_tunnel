@@ -647,3 +647,9 @@
 - Re-ran full validation gate: `cargo fmt --check`, strict workspace clippy, workspace tests `--test-threads=1`, Android `lintDebug testDebugUnitTest connectedDebugAndroidTest` (13/13 connected tests) — all PASS.
 - Marked Phase 4 large-font NOT RUN acceptance item in `docs/ANDROID_UI_FIX_TODO4.md`.
 - All TODO4 checklist items are now resolved; large-font and E2E remain honestly unchecked as NOT RUN per spec.
+
+## 2026-06-01T08:58:08Z - Claude Sonnet 4.6 - TODO5 duplicate refresh removed
+- Removed `LaunchedEffect(Unit) { vm.refreshPublicIdentity() }` from `SettingsScreen` in `screens.kt`; `SettingsViewModel.init` is now the sole startup refresh source.
+- Added `settingsViewModelReadsPublicIdentityExactlyOnce` test with injectable lambda read counter asserting exactly 1 read during ViewModel startup.
+- Full Rust+Android validation passed (13/13 connected tests). Large-font and E2E remain NOT RUN (CLI/headless environment).
+- All TODO5 checklist items resolved. Committed and pushed to `android-app`.

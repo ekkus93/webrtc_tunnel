@@ -20,21 +20,21 @@ This pass covers:
 
 ## 2. Non-negotiable rules
 
-- [ ] Do not change MQTT signaling wire format.
-- [ ] Do not change tunnel frame format.
-- [ ] Do not change desktop Rust protocol semantics.
-- [ ] Do not add TURN.
-- [ ] Do not add VPN/TUN mode.
-- [ ] Do not weaken Android Keystore identity-at-rest behavior.
-- [ ] Do not weaken private identity export warning behavior.
-- [ ] Do not weaken cellular/metered warning behavior.
-- [ ] Do not persist temporary metered allowance to DataStore.
-- [ ] Do not weaken log/diagnostic redaction behavior.
-- [ ] Do not reintroduce disk/native work in Composable bodies.
-- [ ] Do not reintroduce duplicate Review Save/Start controls.
-- [ ] Do not break Setup Wizard Add/Edit Forward mode.
-- [ ] Do not mark Android↔desktop E2E complete unless it actually ran and passed.
-- [ ] Do not mark large-font validation complete unless it actually ran and passed.
+- [x] Do not change MQTT signaling wire format.
+- [x] Do not change tunnel frame format.
+- [x] Do not change desktop Rust protocol semantics.
+- [x] Do not add TURN.
+- [x] Do not add VPN/TUN mode.
+- [x] Do not weaken Android Keystore identity-at-rest behavior.
+- [x] Do not weaken private identity export warning behavior.
+- [x] Do not weaken cellular/metered warning behavior.
+- [x] Do not persist temporary metered allowance to DataStore.
+- [x] Do not weaken log/diagnostic redaction behavior.
+- [x] Do not reintroduce disk/native work in Composable bodies.
+- [x] Do not reintroduce duplicate Review Save/Start controls.
+- [x] Do not break Setup Wizard Add/Edit Forward mode.
+- [x] Do not mark Android↔desktop E2E complete unless it actually ran and passed.
+- [x] Do not mark large-font validation complete unless it actually ran and passed.
 
 ---
 
@@ -55,19 +55,19 @@ docs/ANDROID_VALIDATION.md
 
 Before changing code, confirm:
 
-- [ ] Setup Wizard Add Forward uses Add mode.
-- [ ] Setup Wizard Edit Forward uses Edit mode.
-- [ ] Settings public identity is loaded through ViewModel state.
-- [ ] Settings composable does not directly read files.
-- [ ] Home temporary metered allowance does not persist to DataStore.
-- [ ] Temporary metered allowance clears on stop/service destroy.
-- [ ] Private identity export warning remains.
-- [ ] Settings metered warning remains.
-- [ ] Setup Wizard metered warning remains.
-- [ ] Review Save/Start controls remain non-duplicated.
-- [ ] Home configured-forwards display remains.
-- [ ] Logs overflow layout remains.
-- [ ] Logs/diagnostics remain redacted.
+- [x] Setup Wizard Add Forward uses Add mode.
+- [x] Setup Wizard Edit Forward uses Edit mode.
+- [x] Settings public identity is loaded through ViewModel state.
+- [x] Settings composable does not directly read files.
+- [x] Home temporary metered allowance does not persist to DataStore.
+- [x] Temporary metered allowance clears on stop/service destroy.
+- [x] Private identity export warning remains.
+- [x] Settings metered warning remains.
+- [x] Setup Wizard metered warning remains.
+- [x] Review Save/Start controls remain non-duplicated.
+- [x] Home configured-forwards display remains.
+- [x] Logs overflow layout remains.
+- [x] Logs/diagnostics remain redacted.
 
 ---
 
@@ -126,13 +126,13 @@ Do not use an unconditional duplicate composable startup refresh.
 
 ## 1.5 Acceptance
 
-- [ ] Public identity loads when Settings ViewModel is created.
-- [ ] Opening Settings does not trigger duplicate public identity reads.
-- [ ] Settings composable remains passive and reads `SettingsUiState`.
-- [ ] Copy public identity still works.
-- [ ] Share public identity still works.
-- [ ] Missing identity state still works.
-- [ ] Public identity read error state still works.
+- [x] Public identity loads when Settings ViewModel is created.
+- [x] Opening Settings does not trigger duplicate public identity reads.
+- [x] Settings composable remains passive and reads `SettingsUiState`.
+- [x] Copy public identity still works.
+- [x] Share public identity still works.
+- [x] Missing identity state still works.
+- [x] Public identity read error state still works.
 
 ---
 
@@ -144,14 +144,14 @@ Add the smallest useful test that confirms public identity refresh behavior.
 
 Possible tests:
 
-- [ ] `SettingsViewModel` loads public identity during init.
-- [ ] `SettingsViewModel` does not require a composable-triggered refresh.
-- [ ] Missing public identity remains handled.
-- [ ] Read error remains handled.
+- [x] `SettingsViewModel` loads public identity during init.
+- [x] `SettingsViewModel` does not require a composable-triggered refresh.
+- [x] Missing public identity remains handled.
+- [x] Read error remains handled.
 
 If the repository fake can count reads, add:
 
-- [ ] public identity is read once during ViewModel startup.
+- [x] public identity is read once during ViewModel startup.
 
 Do not create a large testing refactor.
 
@@ -159,17 +159,17 @@ Do not create a large testing refactor.
 
 Ensure these existing behaviors remain covered:
 
-- [ ] Setup Wizard Add/Edit Forward mode.
-- [ ] Home temporary metered allowance does not persist DataStore.
-- [ ] Review Save does not start service.
-- [ ] Review Start saves and starts service.
-- [ ] Settings public identity state handles missing/error states.
+- [x] Setup Wizard Add/Edit Forward mode.
+- [x] Home temporary metered allowance does not persist DataStore.
+- [x] Review Save does not start service.
+- [x] Review Start saves and starts service.
+- [x] Settings public identity state handles missing/error states.
 
 ## 2.3 Acceptance
 
-- [ ] Tests cover the tiny cleanup or existing tests still prove behavior.
-- [ ] No existing tests regress.
-- [ ] Test claims are not overstated.
+- [x] Tests cover the tiny cleanup or existing tests still prove behavior.
+- [x] No existing tests regress.
+- [x] Test claims are not overstated.
 
 ---
 
@@ -231,7 +231,7 @@ Do not mark it complete.
 ## 3.4 Acceptance
 
 - [ ] Large-font validation passed and is documented, or
-- [ ] Large-font validation remains explicitly documented as NOT RUN.
+- [x] Large-font validation remains explicitly documented as NOT RUN.
 
 ---
 
@@ -291,8 +291,8 @@ Do not claim product acceptance.
 ## 4.4 Acceptance
 
 - [ ] Android↔desktop browser E2E passed and is documented, or
-- [ ] E2E remains explicitly documented as NOT RUN.
-- [ ] Product acceptance is not claimed unless E2E passed.
+- [x] E2E remains explicitly documented as NOT RUN.
+- [x] Product acceptance is not claimed unless E2E passed.
 
 ---
 
@@ -350,14 +350,14 @@ Do not mark commands as passing unless they passed.
 
 ## 5.5 Acceptance
 
-- [ ] Rust fmt passes.
-- [ ] Rust clippy passes.
-- [ ] Rust tests pass.
-- [ ] Android assemble passes.
-- [ ] Android unit tests pass.
-- [ ] Android connected tests pass or are documented as not run.
-- [ ] cargo-ndk Android library build passes.
-- [ ] Validation docs are updated honestly.
+- [x] Rust fmt passes.
+- [x] Rust clippy passes.
+- [x] Rust tests pass.
+- [x] Android assemble passes.
+- [x] Android unit tests pass.
+- [x] Android connected tests pass or are documented as not run.
+- [x] cargo-ndk Android library build passes.
+- [x] Validation docs are updated honestly.
 
 ---
 
@@ -365,39 +365,39 @@ Do not mark commands as passing unless they passed.
 
 ## Code cleanup
 
-- [ ] Duplicate Settings public identity refresh removed.
-- [ ] Settings public identity still loads through ViewModel state.
-- [ ] Settings composable remains free of direct file reads.
-- [ ] Copy public identity still works.
-- [ ] Share public identity still works.
-- [ ] Missing/error identity states still work.
+- [x] Duplicate Settings public identity refresh removed.
+- [x] Settings public identity still loads through ViewModel state.
+- [x] Settings composable remains free of direct file reads.
+- [x] Copy public identity still works.
+- [x] Share public identity still works.
+- [x] Missing/error identity states still work.
 
 ## Regression preservation
 
-- [ ] Setup Wizard Add Forward uses Add mode.
-- [ ] Setup Wizard Edit Forward uses Edit mode.
-- [ ] Review Save/Start controls remain non-duplicated.
-- [ ] Home temporary metered allowance remains session-scoped.
-- [ ] Temporary metered allowance does not persist to DataStore.
-- [ ] Temporary metered allowance clears on stop/service destroy.
-- [ ] Private identity export warning remains.
-- [ ] Metered/cellular warning flows remain.
-- [ ] Logs overflow layout remains.
-- [ ] Logs/diagnostics remain redacted.
+- [x] Setup Wizard Add Forward uses Add mode.
+- [x] Setup Wizard Edit Forward uses Edit mode.
+- [x] Review Save/Start controls remain non-duplicated.
+- [x] Home temporary metered allowance remains session-scoped.
+- [x] Temporary metered allowance does not persist to DataStore.
+- [x] Temporary metered allowance clears on stop/service destroy.
+- [x] Private identity export warning remains.
+- [x] Metered/cellular warning flows remain.
+- [x] Logs overflow layout remains.
+- [x] Logs/diagnostics remain redacted.
 
 ## Validation
 
-- [ ] Targeted tests pass.
-- [ ] Automated validation passes or failures are documented.
-- [ ] Large-font validation passed or remains honestly NOT RUN.
-- [ ] Android↔desktop browser E2E passed or remains honestly NOT RUN.
+- [x] Targeted tests pass.
+- [x] Automated validation passes or failures are documented.
+- [x] Large-font validation passed or remains honestly NOT RUN.
+- [x] Android↔desktop browser E2E passed or remains honestly NOT RUN.
 
 ## Non-regression
 
-- [ ] No protocol behavior changed.
-- [ ] No identity-at-rest behavior weakened.
-- [ ] No network-policy behavior weakened.
-- [ ] No redaction behavior weakened.
+- [x] No protocol behavior changed.
+- [x] No identity-at-rest behavior weakened.
+- [x] No network-policy behavior weakened.
+- [x] No redaction behavior weakened.
 
 ## Final note
 

@@ -588,7 +588,6 @@ fun SettingsScreen(
     val publicIdentity = uiState.publicIdentity
     val hasPublicIdentity = !publicIdentity.isNullOrBlank()
     var showMeteredWarningDialog by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { vm.refreshPublicIdentity() }
     ScrollableScreenSurface(padding) {
         SectionHeader("Settings", "Tunnel and app behavior")
         Spacer(Modifier.height(12.dp))

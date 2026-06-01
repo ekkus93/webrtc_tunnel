@@ -136,6 +136,20 @@ class AppViewModelsTest {
     }
 
     @Test
+    fun settingsViewModelReadsPublicIdentityExactlyOnce() {
+        var readCount = 0
+        val viewModel = SettingsViewModel(
+            deps = deps,
+            loadPublicIdentity = {
+                readCount += 1
+                "peer_id = \"android-phone\""
+            },
+        )
+        awaitSettingsState(viewModel) { it.publicIdentity != null }
+        assertEquals(1, readCount)
+    }
+
+    @Test
     fun settingsViewModelLoadsPublicIdentityIntoState() {
         deps.identityRepository.storeEncryptedIdentity("private".toByteArray(), "peer_id = \"android-phone\"")
         val viewModel = SettingsViewModel(deps)

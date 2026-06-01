@@ -534,3 +534,31 @@ unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libp2p_mobile.so
 ### Unresolved failures
 
 - None in the final command set above.
+
+## Android UI Fix TODO 5 Validation — 2026-06-01
+
+### Code change
+
+- Removed duplicate `LaunchedEffect(Unit) { vm.refreshPublicIdentity() }` from `SettingsScreen`.
+- `SettingsViewModel.init` remains the sole startup refresh source.
+- Added `settingsViewModelReadsPublicIdentityExactlyOnce` test confirming read count = 1.
+
+### Automated validation
+
+| Check | Result |
+|---|---|
+| cargo fmt --check | PASS |
+| cargo clippy --workspace --all-targets --all-features -D warnings | PASS |
+| cargo test --workspace --all-targets --test-threads=1 | PASS |
+| ./gradlew lintDebug | PASS |
+| ./gradlew testDebugUnitTest | PASS |
+| ./gradlew connectedDebugAndroidTest (13/13) | PASS |
+| cargo ndk arm64-v8a + x86_64 --release | PASS |
+
+### Manual large-font UI validation: NOT RUN
+
+Reason: This pass ran in a CLI/headless environment without an interactive Android UI walkthrough.
+
+### Manual Android↔desktop browser E2E: NOT RUN
+
+Reason: No dedicated desktop answer-side service / full E2E environment was provisioned for this pass.
