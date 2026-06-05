@@ -116,6 +116,7 @@ fun WebRtcTunnelApp(deps: AppDependencies) {
                     HomeScreen(
                         padding = padding,
                         vm = homeViewModel,
+                        forwardsVm = forwardsViewModel,
                         onOpenSetup = { navController.navigate(Route.Setup.value) },
                         onOpenLogs = { navController.navigate(Route.Logs.value) },
                         onOpenSettings = { navController.navigate(Route.Settings.value) },

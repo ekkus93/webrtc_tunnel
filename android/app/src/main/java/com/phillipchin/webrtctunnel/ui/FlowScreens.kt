@@ -13,7 +13,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -149,7 +148,7 @@ fun SetupWizardScreen(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (state.currentStep == SetupStep.Broker) {
-                    OutlinedButton(onClick = vm::testBrokerConnection) { Text("Test Broker") }
+                    OutlinedButton(onClick = vm::testBrokerConnection) { Text("Test TCP reachability") }
                 }
                 if (state.currentStep == SetupStep.Review) {
                     OutlinedButton(onClick = vm::saveAndApplyConfig, enabled = canAdvance) { Text("Save") }
@@ -188,21 +187,17 @@ private fun stepLabel(step: SetupStep): String = when (step) {
 
 @Composable
 private fun ModeStepContent() {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        StatusCard {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Filled.PhoneAndroid, contentDescription = "Offer mode")
-                Text("Offer mode (Client)", style = MaterialTheme.typography.titleMedium)
-            }
-            Text("Start from Android and connect to a remote answer daemon.")
+    StatusCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(Icons.Filled.PhoneAndroid, contentDescription = "Offer mode")
+            Text("Welcome to WebRTC Tunnel Setup", style = MaterialTheme.typography.titleMedium)
         }
-        StatusCard {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Filled.Storage, contentDescription = "Answer mode disabled")
-                Text("Answer mode (Server)", style = MaterialTheme.typography.titleMedium)
-            }
-            Text("Not available on Android v1.")
-        }
+        Text("This wizard will guide you through configuring a secure tunnel to a remote server.")
+        Text("Steps: identity → broker → remote peer → forwards → network policy → review.")
+        Text(
+            "This app operates in Offer (client) mode. Answer (server) mode is not available on Android.",
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
@@ -218,13 +213,17 @@ private fun IdentityStepContent(vm: SetupViewModel, state: SetupWizardState, onI
             OutlinedButton(onClick = vm::generateIdentity, modifier = Modifier.weight(1f)) { Text("Generate identity") }
         }
         OutlinedButton(onClick = { showRawPathImport = !showRawPathImport }, modifier = Modifier.fillMaxWidth()) {
-            Text(if (showRawPathImport) "Hide debug path import" else "Show debug path import")
+            Text(if (showRawPathImport) "Hide advanced import options" else "Show advanced import options")
         }
         if (showRawPathImport) {
+            Text(
+                "Enter the full file path if you cannot use the file picker above.",
+                style = MaterialTheme.typography.bodySmall,
+            )
             OutlinedTextField(
                 value = state.importIdentityPath,
                 onValueChange = vm::setImportIdentityPath,
-                label = { Text("Private identity path (debug)") },
+                label = { Text("Private identity file path") },
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedButton(onClick = vm::importIdentityFromPath, modifier = Modifier.fillMaxWidth()) { Text("Import from path") }
@@ -271,11 +270,15 @@ private fun BrokerStepContent(vm: SetupViewModel, state: SetupWizardState) {
             modifier = Modifier.fillMaxWidth(),
             visualTransformation = PasswordVisualTransformation(),
         )
-        OutlinedTextField(value = state.input.topicPrefix, onValueChange = { vm.setInput(state.input.copy(topicPrefix = it)) }, label = { Text("Topic prefix") }, modifier = Modifier.fillMaxWidth())
         OutlinedButton(onClick = { vm.setAdvancedExpanded(!state.advancedExpanded) }, modifier = Modifier.fillMaxWidth()) {
             Text(if (state.advancedExpanded) "Hide advanced" else "Show advanced")
         }
         if (state.advancedExpanded) {
+            OutlinedTextField(value = state.input.topicPrefix, onValueChange = { vm.setInput(state.input.copy(topicPrefix = it)) }, label = { Text("Topic prefix") }, modifier = Modifier.fillMaxWidth())
+            Text(
+                "Change topic prefix only if your broker requires isolation from other users.",
+                style = MaterialTheme.typography.bodySmall,
+            )
             OutlinedTextField(value = state.input.brokerPasswordFile, onValueChange = { vm.setInput(state.input.copy(brokerPasswordFile = it)) }, label = { Text("Broker password file (advanced)") }, modifier = Modifier.fillMaxWidth())
         }
     }
@@ -365,12 +368,6 @@ private fun PolicyStepContent(vm: SetupViewModel, state: SetupWizardState, netwo
             Spacer(Modifier.weight(1f))
             Switch(checked = state.input.resumeOnUnmetered, onCheckedChange = { vm.setInput(state.input.copy(resumeOnUnmetered = it)) })
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Acknowledge non-localhost bind warning")
-            Spacer(Modifier.weight(1f))
-            Switch(checked = state.nonLocalhostWarningAccepted, onCheckedChange = vm::setNonLocalhostWarningAccepted)
-        }
-        Text("Non-localhost bind remains advanced and warning-gated.")
     }
     if (showMeteredWarningDialog) {
         MeteredWarningDialog(
@@ -393,12 +390,16 @@ private fun ReviewStepContent(state: SetupWizardState, forwards: List<ForwardCon
         StatusCard {
             Text("Local Identity", style = MaterialTheme.typography.titleMedium)
             Text("Local peer: ${state.input.localPeerId}")
-            Text("Public identity imported/generated: ${if (state.localPublicIdentity.isBlank()) "No" else "Yes"}")
+            Text("Public identity: ${if (state.localPublicIdentity.isBlank()) "Not yet set" else "Ready"}")
         }
         StatusCard {
             Text("Remote Peer", style = MaterialTheme.typography.titleMedium)
             Text("Remote peer: ${state.input.remotePeerId}")
-            Text("Remote identity validated: ${state.remoteIdentityPeerId ?: "No"}")
+            if (state.remoteIdentityPeerId != null) {
+                Text("Remote identity: validated (${state.remoteIdentityPeerId})")
+            } else {
+                Text("Remote identity: will be validated at save")
+            }
         }
         StatusCard {
             Text("Broker", style = MaterialTheme.typography.titleMedium)
@@ -408,8 +409,8 @@ private fun ReviewStepContent(state: SetupWizardState, forwards: List<ForwardCon
         }
         StatusCard {
             Text("Network Policy", style = MaterialTheme.typography.titleMedium)
-            Text("Allow metered: ${state.input.allowMetered}")
-            Text("Resume on unmetered: ${state.input.resumeOnUnmetered}")
+            Text("Allow metered / cellular: ${if (state.input.allowMetered) "Yes" else "No"}")
+            Text("Resume on Wi-Fi: ${if (state.input.resumeOnUnmetered) "Yes" else "No"}")
         }
         StatusCard {
             Text("Forwards", style = MaterialTheme.typography.titleMedium)

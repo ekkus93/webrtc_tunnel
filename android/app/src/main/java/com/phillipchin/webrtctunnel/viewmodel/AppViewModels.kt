@@ -17,10 +17,12 @@ import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -49,7 +51,6 @@ data class SetupWizardState(
     val remoteIdentityPeerId: String? = null,
     val brokerTestMessage: String? = null,
     val advancedExpanded: Boolean = false,
-    val nonLocalhostWarningAccepted: Boolean = false,
     val canAdvance: Boolean = false,
     val errorMessage: String? = null,
     val saveResult: String? = null,
@@ -125,6 +126,7 @@ class SetupViewModel(
     val preferences = deps.configRepository.preferences
 
     init {
+        loadStoredSetupInput()
         loadStoredIdentity()
         refreshForwards()
     }
@@ -193,10 +195,6 @@ class SetupViewModel(
 
     fun setAdvancedExpanded(expanded: Boolean) {
         updateState { current -> current.copy(advancedExpanded = expanded) }
-    }
-
-    fun setNonLocalhostWarningAccepted(accepted: Boolean) {
-        updateState { current -> current.copy(nonLocalhostWarningAccepted = accepted, errorMessage = null) }
     }
 
     fun importIdentityFromPath() {
@@ -392,9 +390,9 @@ class SetupViewModel(
                 Socket().use { socket ->
                     socket.connect(InetSocketAddress(host, port), 2_500)
                 }
-                "Broker connection succeeded."
+                "TCP connection to $host:$port succeeded. Full MQTT/TLS auth is confirmed when the tunnel connects."
             }.getOrElse {
-                "Broker connection failed: ${it.message ?: "unknown error"}"
+                "TCP connection to $host:$port failed: ${it.message ?: "unknown error"}"
             }
             _state.value = _state.value.copy(brokerTestMessage = SensitiveDataRedactor.redactText(message))
         }
@@ -607,7 +605,15 @@ class SetupViewModel(
             _state.value = _state.value.copy(localPublicIdentity = publicIdentity).withCanAdvance(_forwards.value)
         }
     }
+
+    private fun loadStoredSetupInput() {
+        val saved = runCatching { deps.configRepository.loadSetupInput() }.getOrNull() ?: return
+        if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
+            _state.value = _state.value.copy(input = saved).withCanAdvance(_forwards.value)
+        }
+    }
 }
+
 
 class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
     val status: StateFlow<TunnelStatus> = deps.tunnelRepository.status
@@ -651,8 +657,6 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
         reload()
         _message.value = "Forward deleted"
     }
-
-    fun localhostUrl(forward: ForwardConfig): String = "http://${forward.localHost}:${forward.localPort}"
 
     fun validateForwardDraft(draft: ForwardConfig, currentForwards: List<ForwardConfig>): String? {
         val updated = currentForwards.map { if (it.id == draft.id) draft else it }.let { candidates ->
@@ -707,17 +711,16 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
+    val filteredLogs: StateFlow<List<LogEvent>> = combine(_logs, _filter) { logs, level ->
+        if (level == "all") logs else logs.filter { it.level.equals(level, ignoreCase = true) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     fun refresh(maxEvents: Int = 200) {
         _logs.value = deps.tunnelRepository.recentLogs(maxEvents)
     }
 
     fun setFilter(level: String) {
         _filter.value = level
-    }
-
-    fun filteredLogs(): List<LogEvent> {
-        val selected = _filter.value
-        return if (selected == "all") _logs.value else _logs.value.filter { it.level.equals(selected, ignoreCase = true) }
     }
 
     fun clearLogs() {
@@ -820,18 +823,7 @@ class SettingsViewModel(
         runCatching {
             deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
             deps.configRepository.saveSetupInput(SetupConfigInput())
-            deps.configRepository.saveForwards(
-                listOf(
-                    ForwardConfig(
-                        id = "llama",
-                        name = "Llama server",
-                        localHost = "127.0.0.1",
-                        localPort = 8080,
-                        remoteForwardId = "llama",
-                        enabled = true,
-                    ),
-                ),
-            )
+            deps.configRepository.saveForwards(emptyList())
         }
     }
 
