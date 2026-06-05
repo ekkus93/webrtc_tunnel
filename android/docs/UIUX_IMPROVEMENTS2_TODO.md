@@ -129,7 +129,7 @@ the Forwards tab and click through from there. The discoverability is poor.
 
 ---
 
-### M1 — De-duplicate network policy controls between Settings and Network Policy screens
+### M1 — De-duplicate network policy controls between Settings and Network Policy screens ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt`
@@ -140,19 +140,19 @@ as interactive `PreferenceSwitch` controls on both `SettingsScreen` and `Network
 This creates two authoritative-looking sources for the same setting.
 
 **Tasks:**
-- [ ] Keep the two `PreferenceSwitch` controls on `NetworkPolicyScreen` (that screen is
+- [x] Keep the two `PreferenceSwitch` controls on `NetworkPolicyScreen` (that screen is
   dedicated to network policy)
-- [ ] In `SettingsScreen` → "Network Policy" section, remove the `PreferenceSwitch` for
+- [x] In `SettingsScreen` → "Network Policy" section, remove the `PreferenceSwitch` for
   "Allow cellular / metered data" and keep only the `OutlinedButton` that opens the
   Network Policy screen
-- [ ] Optionally add a read-only status line showing the current metered setting, e.g.
+- [x] Optionally add a read-only status line showing the current metered setting, e.g.
   `Text("Cellular: ${if (prefs.allowMetered) "Allowed" else "Blocked"}")` — so the user
   can see the state without being able to change it in two places
-- [ ] Run lint
+- [x] Run lint
 
 ---
 
-### M2 — Consolidate identity controls to a single canonical location
+### M2 — Consolidate identity controls to a single canonical location ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt` (`SettingsScreen`)
@@ -163,20 +163,20 @@ Export" button) and `SettingsScreen → Identity` ("Import / Export identity" bu
 open the same `ImportExportScreen`. The duplication is confusing.
 
 **Tasks:**
-- [ ] In `SettingsScreen`, merge the "Identity" section and the "Import / Export" button
+- [x] In `SettingsScreen`, merge the "Identity" section and the "Import / Export" button
   from "Configuration" into a single "Identity" section
-- [ ] Keep the "Copy identity" and "Share identity" shortcut buttons (quick actions that don't
+- [x] Keep the "Copy identity" and "Share identity" shortcut buttons (quick actions that don't
   require navigating away)
-- [ ] Replace the duplicate "Import / Export" + "Import / Export identity" buttons with one
+- [x] Replace the duplicate "Import / Export" + "Import / Export identity" buttons with one
   consistently-named button: "Import / Export identity"
-- [ ] Remove the redundant `OutlinedButton(onClick = onOpenImportExport, ...)` from the
+- [x] Remove the redundant `OutlinedButton(onClick = onOpenImportExport, ...)` from the
   "Configuration" section (or rename the Configuration section to "Config file" and
   keep only config file import/export there, separately from identity)
-- [ ] Run lint
+- [x] Run lint
 
 ---
 
-### M3 — Move Diagnostics behind Advanced toggle in Settings
+### M3 — Move Diagnostics behind Advanced toggle in Settings ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt` (`SettingsScreen`)
@@ -186,17 +186,17 @@ at the same visual level as user-facing settings. Most users will never use them
 add cognitive noise.
 
 **Tasks:**
-- [ ] Move the "Diagnostics" `SettingsSection` content inside the
+- [x] Move the "Diagnostics" `SettingsSection` content inside the
   `if (prefs.advancedSettingsEnabled)` block in the "Advanced" section, or
-- [ ] Alternatively, keep "Open logs / export diagnostics" and "Share diagnostics" as
+- [x] Alternatively, keep "Open logs / export diagnostics" and "Share diagnostics" as
   top-level (useful for all users sending bug reports), but move "Copy status JSON" and
   "Copy redacted config" into the Advanced section
-- [ ] Adjust section headers accordingly
-- [ ] Run lint
+- [x] Adjust section headers accordingly
+- [x] Run lint
 
 ---
 
-### M4 — Color-code `ForwardSummaryRow` status chip by listen state
+### M4 — Color-code `ForwardSummaryRow` status chip by listen state ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/components.kt`
@@ -208,18 +208,18 @@ regardless of state. A forward in Error state looks the same as one that is List
 `stateColorToken()` already exists.
 
 **Tasks:**
-- [ ] Add a `statusColor: Color = MaterialTheme.colorScheme.primaryContainer` parameter to
+- [x] Add a `statusColor: Color = MaterialTheme.colorScheme.primaryContainer` parameter to
   `ForwardSummaryRow`
-- [ ] Change the chip `Surface` `color` to use the new parameter
-- [ ] In `HomeScreen`, pass `stateColorToken(mapForwardListenLabel(runtime?.listenState?.name ?: ...))`
+- [x] Change the chip `Surface` `color` to use the new parameter
+- [x] In `HomeScreen`, pass `stateColorToken(mapForwardListenLabel(runtime?.listenState?.name ?: ...))`
   as `statusColor`
-- [ ] Ensure `stateColorToken` is accessible from `components.kt` (it is, since it's in the
+- [x] Ensure `stateColorToken` is accessible from `components.kt` (it is, since it's in the
   same `ui` package)
-- [ ] Run lint
+- [x] Run lint
 
 ---
 
-### M5 — Use `mapForwardListenLabel()` consistently in `ForwardsScreen`
+### M5 — Use `mapForwardListenLabel()` consistently in `ForwardsScreen` ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt` (`ForwardsScreen`)
@@ -229,18 +229,18 @@ while `HomeScreen` uses `mapForwardListenLabel()`. The user sees different label
 depending on which screen they're on.
 
 **Tasks:**
-- [ ] Replace the `Text(runtime?.listenState?.name ?: if (forward.enabled) "Configured" else "Disabled", ...)`
+- [x] Replace the `Text(runtime?.listenState?.name ?: if (forward.enabled) "Configured" else "Disabled", ...)`
   in `ForwardsScreen` with:
   ```kotlin
   val stateLabel = mapForwardListenLabel(runtime?.listenState?.name ?: if (forward.enabled) "configured" else "disabled")
   Text(stateLabel, color = stateColorToken(stateLabel))
   ```
-- [ ] Make `mapForwardListenLabel()` `internal` (same change as H1) so it's accessible
-- [ ] Run lint
+- [x] Make `mapForwardListenLabel()` `internal` (same change as H1) so it's accessible
+- [x] Run lint
 
 ---
 
-### M6 — Truncate/format public identity display in Settings
+### M6 — Truncate/format public identity display in Settings ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt` (`SettingsScreen`)
@@ -250,19 +250,19 @@ Identity section. On narrow phones (360dp wide) a 64-byte hex key overflows and 
 into many lines, making the section ugly and hard to scan.
 
 **Tasks:**
-- [ ] Create a private helper `fun truncateIdentity(key: String): String` that returns
+- [x] Create a private helper `fun truncateIdentity(key: String): String` that returns
   the first 16 characters + "…" + the last 8 characters if `key.length > 28`, else the
   full key
-- [ ] In the Identity section, display `truncateIdentity(publicIdentity ?: "")` instead of
+- [x] In the Identity section, display `truncateIdentity(publicIdentity ?: "")` instead of
   the raw `publicIdentity` value
-- [ ] Keep the full identity in the clipboard copy and share operations (do not truncate
+- [x] Keep the full identity in the clipboard copy and share operations (do not truncate
   what is copied/shared)
-- [ ] Add a small `(truncated)` label or tooltip if desired
-- [ ] Run lint
+- [x] Add a small `(truncated)` label or tooltip if desired
+- [x] Run lint
 
 ---
 
-### M7 — Move message feedback near the triggering button in `ForwardDetailsScreen`
+### M7 — Move message feedback near the triggering button in `ForwardDetailsScreen` ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt`
@@ -274,11 +274,11 @@ user taps "Test Local Port", the result message appears far from the button and 
 may miss it without scrolling.
 
 **Tasks:**
-- [ ] Move `message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }` to
+- [x] Move `message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }` to
   appear immediately after the "Test Local Port" / "Enable/Disable" row
-- [ ] Optionally introduce separate message state for test-port feedback vs. save/delete
+- [x] Optionally introduce separate message state for test-port feedback vs. save/delete
   feedback if the ViewModel supports it
-- [ ] Run lint
+- [x] Run lint
 
 ---
 

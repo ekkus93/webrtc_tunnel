@@ -92,6 +92,9 @@ private val logTimestampFormatter: DateTimeFormatter =
 private fun formatLogTimestamp(unixMs: Long): String =
     logTimestampFormatter.format(Instant.ofEpochMilli(unixMs))
 
+private fun truncateIdentity(key: String): String =
+    if (key.length > 28) "${key.take(16)}…${key.takeLast(8)}" else key
+
 private data class HomeStatusUi(val title: String, val description: String)
 
 private fun mapStatusUi(status: TunnelStatus): HomeStatusUi = when (status.serviceState) {
@@ -418,7 +421,8 @@ fun ForwardsScreen(padding: PaddingValues, vm: ForwardsViewModel, onOpenDetails:
                             Text(forward.name, style = MaterialTheme.typography.titleMedium)
                             Text("${forward.localHost}:${forward.localPort} -> ${forward.remoteForwardId}", style = MaterialTheme.typography.bodySmall)
                             val runtime = status.forwards.firstOrNull { it.id == forward.id }
-                            Text(runtime?.listenState?.name ?: if (forward.enabled) "Configured" else "Disabled", color = stateColorToken(runtime?.listenState?.name ?: "disabled"))
+                            val stateLabel = mapForwardListenLabel(runtime?.listenState?.name ?: if (forward.enabled) "configured" else "disabled")
+                            Text(stateLabel, color = stateColorToken(stateLabel))
                         }
                         Text("›", style = MaterialTheme.typography.titleLarge)
                     }
@@ -502,11 +506,11 @@ fun ForwardDetailsScreen(
                 Text(if (forward.enabled) "Disable" else "Enable")
             }
         }
+        message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = { showEditDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("Edit") }
         Spacer(Modifier.height(8.dp))
         DestructiveActionButton("Delete Forward") { showDeleteDialog = true }
-        message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
     }
 
     if (showDeleteDialog && forward != null) {
@@ -693,24 +697,24 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(12.dp))
         SettingsSection("Network Policy") {
-            PreferenceSwitch("Allow cellular / metered data", prefs.allowMetered) {
-                if (it) {
-                    showMeteredWarningDialog = true
-                } else {
-                    vm.savePreferences(prefs.copy(allowMetered = false))
-                }
-            }
+            Text(
+                "Cellular / metered: ${if (prefs.allowMetered) "Allowed" else "Blocked"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF6B7280),
+            )
             OutlinedButton(onClick = onOpenNetworkPolicy, modifier = Modifier.fillMaxWidth()) { Text("Open network policy details") }
         }
         Spacer(Modifier.height(12.dp))
         SettingsSection("Configuration") {
-            OutlinedButton(onClick = onOpenImportExport, modifier = Modifier.fillMaxWidth()) { Text("Import / Export") }
             OutlinedButton(onClick = { vm.validateConfig() }, modifier = Modifier.fillMaxWidth()) { Text("Validate configuration") }
             DestructiveActionButton("Reset configuration") { showResetConfirmDialog = true }
         }
         Spacer(Modifier.height(12.dp))
         SettingsSection("Identity") {
-            Text(publicIdentity ?: "No local public identity found.", style = MaterialTheme.typography.bodySmall)
+            Text(
+                if (publicIdentity != null) truncateIdentity(publicIdentity) else "No local public identity found.",
+                style = MaterialTheme.typography.bodySmall,
+            )
             uiState.publicIdentityLoadError?.let { error ->
                 Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
@@ -739,14 +743,6 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(12.dp))
         SettingsSection("Diagnostics") {
-            OutlinedButton(
-                onClick = { clipboard.setText(AnnotatedString(vm.statusJson())) },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Copy status JSON") }
-            OutlinedButton(
-                onClick = { clipboard.setText(AnnotatedString(vm.redactedConfigOrEmpty())) },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Copy redacted config") }
             OutlinedButton(onClick = onOpenLogs, modifier = Modifier.fillMaxWidth()) { Text("Open logs / export diagnostics") }
             OutlinedButton(
                 onClick = {
@@ -767,7 +763,15 @@ fun SettingsScreen(
                 PreferenceSwitch("Enable debug logs", prefs.debugLogsEnabled) { vm.savePreferences(prefs.copy(debugLogsEnabled = it)) }
                 OutlinedButton(onClick = onOpenSetup, modifier = Modifier.fillMaxWidth()) { Text("Edit custom topic prefix") }
                 OutlinedButton(onClick = onOpenSetup, modifier = Modifier.fillMaxWidth()) { Text("Configure non-localhost bind (advanced)") }
-                Text("Answer mode: Not available in Android v1", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+                Text("Answer mode: not available on Android", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+                OutlinedButton(
+                    onClick = { clipboard.setText(AnnotatedString(vm.statusJson())) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Copy status JSON") }
+                OutlinedButton(
+                    onClick = { clipboard.setText(AnnotatedString(vm.redactedConfigOrEmpty())) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Copy redacted config") }
             }
         }
         Spacer(Modifier.height(12.dp))
