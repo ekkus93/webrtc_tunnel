@@ -286,7 +286,7 @@ may miss it without scrolling.
 
 ---
 
-### L1 — Remove "Unknown network is blocked." unconditional warning in `NetworkPolicyScreen`
+### L1 — Remove "Unknown network is blocked." unconditional warning in `NetworkPolicyScreen` ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt`
@@ -297,15 +297,13 @@ actual network type, even when the user is on a known Wi-Fi connection. It reads
 persistent error even when everything is fine.
 
 **Tasks:**
-- [ ] Wrap the `Text("Unknown network is blocked.")` in an
-  `if (status.networkType == NetworkType.Unknown)` condition
-- [ ] Or convert it to a one-time explanatory note inside an `EmptyStateCard`-style helper
-  that only appears when the network is Unknown
-- [ ] Run lint
+- [x] Remove `Text("Unknown network is blocked.")` — dropped from NetworkStatusCard in
+  Phase 1 (H1 edit)
+- [x] Run lint
 
 ---
 
-### L2 — Fix "Answer mode: Not available in Android v1" stale version string
+### L2 — Fix "Answer mode: Not available in Android v1" stale version string ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt` (`SettingsScreen`)
@@ -314,13 +312,12 @@ persistent error even when everything is fine.
 The app is now version 0.3.0; `v1` is stale and looks like a mistake.
 
 **Tasks:**
-- [ ] Change to `"Answer mode: not available on Android"` (no version number, since this is
-  an architectural constraint, not a versioned limitation)
-- [ ] Run lint
+- [x] Changed to `"Answer mode: not available on Android"` (implemented in Phase 2 M3 edit)
+- [x] Run lint
 
 ---
 
-### L3 — Fix `ImportExportScreen` advanced section title
+### L3 — Fix `ImportExportScreen` advanced section title ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt`
@@ -331,28 +328,31 @@ The app is now version 0.3.0; `v1` is stale and looks like a mistake.
 toggle label but not the section title.
 
 **Tasks:**
-- [ ] Change `SettingsSection("Advanced (developer/debug)")` to
+- [x] Changed `SettingsSection("Advanced (developer/debug)")` to
   `SettingsSection("Advanced (file paths)")`
-- [ ] Run lint
+- [x] Run lint
 
 ---
 
-### L4 — Fix `EditForwardDialog` "Remote forward_id" label
+### L4 — Fix `EditForwardDialog` "Remote forward_id" label ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/FlowScreens.kt`
   (`EditForwardDialog`)
+- `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt`
+  (`ForwardDetailsScreen`)
 
 **Problem:** The field label `Text("Remote forward_id")` uses an underscore — it looks like
 a variable name from the underlying data model leaked into the UI.
 
 **Tasks:**
-- [ ] Change `label = { Text("Remote forward_id") }` to `label = { Text("Remote forward ID") }`
-- [ ] Run lint
+- [x] Changed `label = { Text("Remote forward_id") }` to `label = { Text("Remote forward ID") }`
+- [x] Also fixed "Remote forward_id:" display label in ForwardDetailsScreen
+- [x] Run lint
 
 ---
 
-### L5 — Add helper text for Broker password file field
+### L5 — Add helper text for Broker password file field ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/FlowScreens.kt`
@@ -363,12 +363,12 @@ this section will not know whether to use this instead of or in addition to the 
 field.
 
 **Tasks:**
-- [ ] Add `Text("Use this instead of the password field if your credentials are stored in a file on device.", style = MaterialTheme.typography.bodySmall)` after the password file `OutlinedTextField`
-- [ ] Run lint
+- [x] Added bodySmall helper text after the password file `OutlinedTextField`
+- [x] Run lint
 
 ---
 
-### L6 — Fix "Remote peer: -" label on Home screen
+### L6 — Fix "Remote peer: -" label on Home screen ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt` (`HomeScreen`)
@@ -377,12 +377,13 @@ field.
 no peer is configured, which looks like an empty data field rather than a meaningful status.
 
 **Tasks:**
-- [ ] Change `status.remotePeerId ?: "-"` to `status.remotePeerId ?: "Not configured"`
-- [ ] Run lint
+- [x] Changed `status.remotePeerId ?: "-"` to `status.remotePeerId ?: "Not configured"`
+  (implemented in Phase 1 H5 edit)
+- [x] Run lint
 
 ---
 
-### L7 — Deduplicate `isBrowserOpenable()` calls in `ForwardDetailsScreen`
+### L7 — Deduplicate `isBrowserOpenable()` calls in `ForwardDetailsScreen` ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/screens.kt`
@@ -393,14 +394,14 @@ no peer is configured, which looks like an empty data field rather than a meanin
 While the function is cheap, triple-calling it in one composition is unnecessarily redundant.
 
 **Tasks:**
-- [ ] Add `val canOpenBrowser = isBrowserOpenable(forward)` at the top of the
-  `ScrollableScreenSurface` lambda (after the null guard)
-- [ ] Replace all three `isBrowserOpenable(forward)` call sites with `canOpenBrowser`
-- [ ] Run lint
+- [x] Added `val canOpenBrowser = isBrowserOpenable(forward)` at the top of the forward
+  details block (after the null guard)
+- [x] Replaced all three `isBrowserOpenable(forward)` call sites with `canOpenBrowser`
+- [x] Run lint
 
 ---
 
-### L8 — Rename "MQTT Broker" step label to "Broker"
+### L8 — Rename "MQTT Broker" step label to "Broker" ✅
 
 **Files:**
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/ui/FlowScreens.kt` (`stepLabel`)
@@ -409,13 +410,13 @@ While the function is cheap, triple-calling it in one composition is unnecessari
 `WizardStepper` display. Most end users do not need to know the signaling protocol is MQTT.
 
 **Tasks:**
-- [ ] Change `SetupStep.Broker -> "MQTT Broker"` to `SetupStep.Broker -> "Broker"`
-- [ ] Run lint
+- [x] Changed `SetupStep.Broker -> "MQTT Broker"` to `SetupStep.Broker -> "Broker"`
+- [x] Run lint
 
 ---
 
-## Validation Gate
+## Validation Gate ✅
 
-- [ ] Run `./gradlew --no-daemon lintDebug` — must pass with no errors
-- [ ] Run `./gradlew --no-daemon testDebugUnitTest` — all tests must pass
-- [ ] Run `./gradlew --no-daemon assembleDebug` — build must succeed
+- [x] Run `./gradlew --no-daemon lintDebug` — passed with no errors
+- [x] Run `./gradlew --no-daemon testDebugUnitTest` — all tests passed
+- [x] Run `./gradlew --no-daemon assembleDebug` — build successful

@@ -178,7 +178,7 @@ fun SetupWizardScreen(
 private fun stepLabel(step: SetupStep): String = when (step) {
     SetupStep.Mode -> "Mode"
     SetupStep.Identity -> "Identity"
-    SetupStep.Broker -> "MQTT Broker"
+    SetupStep.Broker -> "Broker"
     SetupStep.Peer -> "Remote Peer"
     SetupStep.Forwards -> "Forwards"
     SetupStep.NetworkPolicy -> "Network Policy"
@@ -280,6 +280,10 @@ private fun BrokerStepContent(vm: SetupViewModel, state: SetupWizardState) {
                 style = MaterialTheme.typography.bodySmall,
             )
             OutlinedTextField(value = state.input.brokerPasswordFile, onValueChange = { vm.setInput(state.input.copy(brokerPasswordFile = it)) }, label = { Text("Broker password file (advanced)") }, modifier = Modifier.fillMaxWidth())
+            Text(
+                "Use this instead of the password field if your credentials are stored in a file on device.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
@@ -472,7 +476,7 @@ internal fun EditForwardDialog(
                 OutlinedTextField(value = value.name, onValueChange = { value = value.copy(name = it) }, label = { Text("Display name") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = value.localHost, onValueChange = { value = value.copy(localHost = it) }, label = { Text("Local host") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = value.localPort.toString(), onValueChange = { value = value.copy(localPort = it.toIntOrNull() ?: 0) }, label = { Text("Local port") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = value.remoteForwardId, onValueChange = { value = value.copy(remoteForwardId = it) }, label = { Text("Remote forward_id") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = value.remoteForwardId, onValueChange = { value = value.copy(remoteForwardId = it) }, label = { Text("Remote forward ID") }, modifier = Modifier.fillMaxWidth())
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Enabled")
                     Spacer(Modifier.weight(1f))

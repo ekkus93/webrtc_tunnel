@@ -471,22 +471,23 @@ fun ForwardDetailsScreen(
         Spacer(Modifier.height(12.dp))
         val localAddress = "${forward.localHost}:${forward.localPort}"
         val browserUrl = "http://$localAddress"
+        val canOpenBrowser = isBrowserOpenable(forward)
         StatusCard {
             Text("Status: ${runtime?.listenState ?: if (forward.enabled) "Configured" else "Disabled"}")
             Text("Local address: $localAddress")
-            Text("Remote forward_id: ${forward.remoteForwardId}")
+            Text("Remote forward ID: ${forward.remoteForwardId}")
             runtime?.lastError?.let { Text("Last error: $it", color = MaterialTheme.colorScheme.error) }
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val copyLabel = if (isBrowserOpenable(forward)) "Copy URL" else "Copy address"
-            val copyValue = if (isBrowserOpenable(forward)) browserUrl else localAddress
+            val copyLabel = if (canOpenBrowser) "Copy URL" else "Copy address"
+            val copyValue = if (canOpenBrowser) browserUrl else localAddress
             OutlinedButton(onClick = { clipboard.setText(AnnotatedString(copyValue)) }, modifier = Modifier.weight(1f)) {
                 Icon(Icons.Default.ContentCopy, contentDescription = null)
                 Spacer(Modifier.size(4.dp))
                 Text(copyLabel)
             }
-            if (isBrowserOpenable(forward)) {
+            if (canOpenBrowser) {
                 OutlinedButton(
                     onClick = {
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(browserUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -928,7 +929,7 @@ fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
         }
         if (showAdvanced) {
             Spacer(Modifier.height(8.dp))
-            SettingsSection("Advanced (developer/debug)") {
+            SettingsSection("Advanced (file paths)") {
                 OutlinedTextField(
                     value = state.configImportPath,
                     onValueChange = { value -> vm.updateState { it.copy(configImportPath = value) } },
