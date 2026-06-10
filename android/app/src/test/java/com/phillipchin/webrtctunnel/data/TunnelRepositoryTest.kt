@@ -176,6 +176,28 @@ class TunnelRepositoryTest {
     }
 
     @Test
+    fun refreshStatusDoesNotResurrectPolicyPausedState() {
+        // Tunnel was paused by policy while the native daemon task is still "running"/active.
+        repository.setPolicyBlocked("metered network blocked")
+        assertEquals(ServiceState.PausedMeteredBlocked, repository.status.value.serviceState)
+
+        bridge.statusPayload = statusJson("running", "offer")
+        repository.refreshStatus()
+
+        val status = repository.status.value
+        assertEquals(ServiceState.PausedMeteredBlocked, status.serviceState)
+        assertEquals(false, status.networkStatus.tunnelAllowed)
+        assertEquals(0, status.activeSessionCount)
+    }
+
+    @Test
+    fun refreshStatusAppliesNativeStateWhenNotPolicyPaused() {
+        bridge.statusPayload = statusJson("error", "offer")
+        repository.refreshStatus()
+        assertEquals(ServiceState.Error, repository.status.value.serviceState)
+    }
+
+    @Test
     fun updateSessionMeteredAllowanceUpdatesStatusFlag() {
         repository.updateSessionMeteredAllowance(true)
         assertEquals(true, repository.status.value.allowMeteredForCurrentSession)

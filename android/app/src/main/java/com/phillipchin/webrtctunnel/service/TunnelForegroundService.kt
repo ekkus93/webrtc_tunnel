@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -39,6 +40,7 @@ class TunnelForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var networkMonitorJob: Job? = null
     private var startupJob: Job? = null
+    private var statusPollJob: Job? = null
     private var lastMode: TunnelMode = TunnelMode.Offer
     private var pausedByPolicy: Boolean = false
     private var allowMeteredForCurrentRun: Boolean = false
@@ -178,6 +180,7 @@ class TunnelForegroundService : Service() {
         result.onSuccess {
             pausedByPolicy = false
             publishStatus()
+            startStatusPolling()
         }.onFailure {
             publishError(
                 message = it.message ?: "Unable to start tunnel",
@@ -205,6 +208,7 @@ class TunnelForegroundService : Service() {
     private suspend fun pause() {
         lifecycleMutex.withLock {
             lifecycleGeneration += 1
+            stopStatusPolling()
             cancelStartupJobLocked()
             withContext(Dispatchers.IO) {
                 repository.stop()
@@ -229,6 +233,7 @@ class TunnelForegroundService : Service() {
         lifecycleMutex.withLock {
             lifecycleGeneration += 1
             pausedByPolicy = true
+            stopStatusPolling()
             cancelStartupJobLocked()
             withContext(Dispatchers.IO) {
                 repository.stop()
@@ -280,6 +285,7 @@ class TunnelForegroundService : Service() {
 
     override fun onDestroy() {
         networkMonitorJob?.cancel()
+        stopStatusPolling()
         val pendingStop = serviceScope.launch {
             lifecycleMutex.withLock {
                 lifecycleGeneration += 1
@@ -304,6 +310,7 @@ class TunnelForegroundService : Service() {
     private suspend fun stopServiceWork() {
         lifecycleMutex.withLock {
             lifecycleGeneration += 1
+            stopStatusPolling()
             cancelStartupJobLocked()
             withContext(Dispatchers.IO) {
                 repository.stop()
@@ -334,6 +341,37 @@ class TunnelForegroundService : Service() {
         startupJob = null
     }
 
+    /**
+     * Poll native runtime status while the tunnel is active so the UI and
+     * notification reflect changes (e.g. a post-start error) without the user
+     * navigating or manually refreshing. Stops when the tunnel leaves an active
+     * state or is paused by policy. [TunnelRepository.refreshStatus] independently
+     * refuses to resurrect policy-paused states, so a poll racing a policy pause
+     * cannot flip the UI back to Connected.
+     */
+    private fun startStatusPolling() {
+        if (statusPollJob?.isActive == true) return
+        statusPollJob = serviceScope.launch {
+            var lastState = repository.status.value.serviceState
+            while (true) {
+                delay(STATUS_POLL_INTERVAL_MS)
+                if (pausedByPolicy) break
+                withContext(Dispatchers.IO) { runCatching { repository.refreshStatus() } }
+                val state = repository.status.value.serviceState
+                if (state != lastState) {
+                    lastState = state
+                    publishStatus()
+                }
+                if (state !in ACTIVE_STATES) break
+            }
+        }
+    }
+
+    private fun stopStatusPolling() {
+        statusPollJob?.cancel()
+        statusPollJob = null
+    }
+
     companion object {
         const val ACTION_START_OFFER = "com.phillipchin.webrtctunnel.action.START_OFFER"
         const val ACTION_START_ANSWER = "com.phillipchin.webrtctunnel.action.START_ANSWER"
@@ -342,5 +380,14 @@ class TunnelForegroundService : Service() {
         const val ACTION_RESUME = "com.phillipchin.webrtctunnel.action.RESUME"
         const val ACTION_ALLOW_METERED_SESSION = "com.phillipchin.webrtctunnel.action.ALLOW_METERED_SESSION"
         const val NOTIFICATION_ID = NotificationController.NOTIFICATION_ID
+        private const val STATUS_POLL_INTERVAL_MS = 1_500L
+        private val ACTIVE_STATES = setOf(
+            ServiceState.Starting,
+            ServiceState.Connecting,
+            ServiceState.Reconnecting,
+            ServiceState.Connected,
+            ServiceState.Listening,
+            ServiceState.Serving,
+        )
     }
 }

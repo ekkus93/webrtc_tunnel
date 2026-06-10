@@ -47,8 +47,24 @@ class TunnelRepository(
 
     fun refreshStatus() {
         runCatching {
+            val previous = _status.value
             val native = Json.decodeFromString<NativeRuntimeStatusDto>(bridge.getStatusJson())
-            _status.value = SensitiveDataRedactor.redactStatus(native.toTunnelStatus(_status.value))
+            val mapped = native.toTunnelStatus(previous)
+            // A native status poll must never resurrect a policy-paused state
+            // (PausedMeteredBlocked / NoNetwork) back to Connected: the daemon task
+            // may still be reported active while network policy has blocked the tunnel.
+            val resolved = if (isPolicyPausedState(previous.serviceState) && native.active) {
+                mapped.copy(
+                    serviceState = previous.serviceState,
+                    networkStatus = previous.networkStatus,
+                    mqttConnected = false,
+                    activeSessionCount = 0,
+                    lastError = previous.lastError,
+                )
+            } else {
+                mapped
+            }
+            _status.value = SensitiveDataRedactor.redactStatus(resolved)
         }.onFailure { error ->
             _status.value = _status.value.copy(
                 serviceState = ServiceState.Error,
@@ -137,6 +153,9 @@ class TunnelRepository(
     fun updateSessionMeteredAllowance(allowForCurrentSession: Boolean) {
         _status.value = _status.value.copy(allowMeteredForCurrentSession = allowForCurrentSession)
     }
+
+    private fun isPolicyPausedState(state: ServiceState): Boolean =
+        state == ServiceState.PausedMeteredBlocked || state == ServiceState.NoNetwork
 
     private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): TunnelStatus {
         val modeValue = when (mode) {
