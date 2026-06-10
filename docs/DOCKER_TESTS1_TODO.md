@@ -190,8 +190,29 @@ signaling transport).
 
 ## Phase B — Android emulator (offer) ↔ Linux answer (docker)
 
-> Reuses Phase A's PKI, broker, answer, and target. Adds the emulator as the offer
-> peer. Two hard prerequisites (B1 CA trust, B2 NAT traversal) must be solved first.
+> **◐ PARTIALLY IMPLEMENTED — smoke tier done; full data path deferred.**
+>
+> **Done (smoke):** `tests/e2e/android_smoke.sh` automates a running emulator end to
+> end — builds/installs the APK, `pm clear`s for a clean state, generates a remote
+> peer identity (`p2pctl`), drives the full 7-step setup wizard via `adb`/uiautomator
+> against a **real broker** (`broker.emqx.io:8883`, B1 Option 3 — no CA change needed
+> since the app trusts public roots via webpki-roots), starts the tunnel, and asserts
+> the offer reaches **Connected** with its forward **Listening**, then **Stop** →
+> **Stopped**. Verified locally: passes repeatably, leaves the app stopped/clean.
+> This exercises the Android `.so`/JNI/Kotlin/foreground-service stack against a real
+> TLS broker on-device. It is a **local/manual** smoke test (needs a booted emulator
+> + internet), not a CI gate.
+>
+> **Deferred (full data path):** Android offer → WebRTC → Linux answer → target with
+> real bytes is **blocked by B2**: the emulator is behind qemu NAT and `p2p-webrtc`
+> rejects `turn:` URLs (no ICE relay), so emulator↔external WebRTC can't reliably
+> connect. Unblocking needs the TURN code change (B2 Option A — separate product
+> spec/sign-off) or bridged emulator networking (B2 Option B). Recorded here rather
+> than silently bolting a TURN feature onto a tests task. Meanwhile the data path is
+> covered by Phase A (desktop↔desktop over a real broker) + headless daemon tests.
+>
+> See `tests/e2e/README.md`. The detailed task breakdown below remains the plan for
+> the full tier once B2 is resolved.
 
 ### B1 — Android broker TLS trust (BLOCKER) — pick a path
 - [ ] **Option 1 (hermetic, preferred long-term): add `ca_file` support to Android.**
@@ -329,11 +350,15 @@ signaling transport).
 
 ## Definition of done
 
-- [ ] Phase A: `tests/e2e/run.sh` is a hermetic, self-cleaning, CI-runnable E2E that
-      proves real tunnel data over a real TLS broker; green.
-- [ ] Phase B: at minimum the scripted Android **smoke** (Connected + `Listening` +
-      Stop) runs repeatably; the **full** Android↔Linux data path runs once B1/B2
-      are resolved (or is explicitly deferred with the reason recorded).
-- [ ] All assets generated at runtime; no committed secrets; documented in
+- [x] Phase A: a hermetic, self-cleaning, CI-runnable E2E proves real tunnel data
+      over a real TLS broker; green. (Implemented as
+      `cargo test -p p2p-daemon --test real_broker_tunnel`, not a `run.sh` — single
+      mosquitto container, no compose.)
+- [x] Phase B: the scripted Android **smoke** (Connected + `Listening` + Stop) runs
+      repeatably (`tests/e2e/android_smoke.sh`); the **full** Android↔Linux data path
+      is explicitly **deferred** with the reason recorded (B2: TURN unsupported).
+- [x] All assets generated at runtime; no committed secrets; documented in
       `tests/e2e/README.md`.
-- [ ] Existing `two_node_daemon.rs` and unit suites remain green.
+- [x] Existing `two_node_daemon.rs` and unit suites remain green.
+- [ ] (Future) Full Android data-path E2E + per-forward soft-fail on-device — gated
+      on resolving B2 (TURN support or bridged emulator networking).
