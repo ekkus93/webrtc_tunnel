@@ -203,6 +203,18 @@ grep -RnE "identity|private|password|token|secret" crates/p2p-daemon/src/status.
       fabricated `Connected` (validates the Phase 1 honesty fix on-device).
 - [x] Redaction verified on-device: the identity path is `***REDACTED***` in both
       logcat and the UI error card.
+- [x] P4 on-device: Forward Details → Test Local Port reports the **configured**
+      host and actual `host:port` ("Local port test failed for 127.0.0.1:8080 …
+      ECONNREFUSED"), with the message rendered directly under the button.
+- [x] UIUX2 surfaces confirmed on-device: Forward Details shows "Remote forward ID"
+      (not `forward_id`) and both Copy URL + Open Browser (canOpenBrowser for the
+      http-like port); Logs shows the empty-state **inside** the `LazyColumn` with
+      filter/action controls pinned; Settings shows Network Policy as read-only
+      "Cellular / metered: Blocked" (no duplicate switch) and no duplicate
+      import/export; Home shows "Remote peer: Not configured".
+- [x] Theme finding: the app is **light-only** (`Theme.kt` uses only
+      `lightColorScheme`, no `isSystemInDarkTheme`), so dark-mode chip contrast is
+      not an actual concern; light-mode chip readability verified.
 - [ ] Real MQTT/connected state — needs a reachable broker (covered headlessly by
       `snapshot_status_overlays_daemon_status_when_active`).
 - [ ] Forward `Listening` after bind / per-forward `Error` while others listen —
