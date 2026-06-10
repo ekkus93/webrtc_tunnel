@@ -3,8 +3,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use p2p_core::{AppConfig, NodeRole};
+use p2p_core::{AppConfig, DaemonState, NodeRole};
 use p2p_crypto::{AuthorizedKeys, IdentityFile};
+use p2p_daemon::DaemonStatus;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
@@ -36,6 +37,28 @@ pub struct AndroidRuntimeStatus {
     pub last_error: Option<String>,
     pub started_at_unix_ms: Option<u64>,
     pub active: bool,
+    // Measured runtime fields, sourced from the live daemon status channel rather
+    // than guessed at task-spawn time. Default to "not connected" before a snapshot.
+    pub mqtt_connected: bool,
+    pub active_session_count: usize,
+    pub session_capacity: Option<usize>,
+}
+
+/// Map the daemon's connection state machine onto the coarse mobile runtime state
+/// the UI understands. Negotiation/reconnect phases surface as `Starting`.
+fn android_state_from_daemon(state: DaemonState) -> AndroidRuntimeState {
+    match state {
+        DaemonState::Idle
+        | DaemonState::Serving
+        | DaemonState::WaitingForLocalClient
+        | DaemonState::TunnelOpen => AndroidRuntimeState::Running,
+        DaemonState::Negotiating
+        | DaemonState::ConnectingDataChannel
+        | DaemonState::IceRestarting
+        | DaemonState::Renegotiating
+        | DaemonState::Backoff => AndroidRuntimeState::Starting,
+        DaemonState::Closed => AndroidRuntimeState::Stopped,
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,6 +79,32 @@ struct RuntimeInner {
     logs: VecDeque<AndroidLogEvent>,
     task: Option<JoinHandle<()>>,
     runtime: Option<Runtime>,
+    /// Latest daemon status from the running offer daemon, if any. Overlaid onto the
+    /// controller-owned lifecycle state in [`RuntimeInner::snapshot_status`].
+    status_rx: Option<tokio::sync::watch::Receiver<DaemonStatus>>,
+}
+
+impl RuntimeInner {
+    /// Merge the controller-owned lifecycle state with the latest measured daemon
+    /// status. Measured fields are only trusted while the controller considers the
+    /// runtime active; once stopped/errored they reset to a quiescent view.
+    fn snapshot_status(&self) -> AndroidRuntimeStatus {
+        let mut status = self.state.clone();
+        match (&self.status_rx, status.active) {
+            (Some(rx), true) => {
+                let daemon = rx.borrow();
+                status.mqtt_connected = daemon.mqtt_connected;
+                status.active_session_count = daemon.active_session_count;
+                status.session_capacity = Some(daemon.session_capacity);
+                status.state = android_state_from_daemon(daemon.current_state);
+            }
+            _ => {
+                status.mqtt_connected = false;
+                status.active_session_count = 0;
+            }
+        }
+        status
+    }
 }
 
 fn record_start_error(inner: &mut RuntimeInner, message: String) -> String {
@@ -80,6 +129,7 @@ impl Default for RuntimeInner {
             logs: VecDeque::with_capacity(256),
             task: None,
             runtime: None,
+            status_rx: None,
         }
     }
 }
@@ -194,10 +244,28 @@ impl AndroidTunnelController {
             Runtime::new().map_err(|error| record_start_error(&mut inner, error.to_string()))?;
         let log_state = Arc::clone(&self.inner);
         let config_clone = config.clone();
+        // Seed the status channel with a pre-connection snapshot so `status()` has a
+        // valid value before the daemon emits its first real status. Only the offer
+        // daemon streams live status; answer mode is disabled on Android.
+        let status_seed = DaemonStatus::new(
+            config.node.peer_id.clone(),
+            config.node.role.clone(),
+            false,
+            None,
+            DaemonState::Idle,
+            config.forwards.iter().map(|forward| forward.id.clone()).collect(),
+        );
+        let (status_tx, status_rx) = tokio::sync::watch::channel(status_seed);
         let task = runtime.spawn(async move {
             let result = match mode {
                 AndroidTunnelMode::Offer => {
-                    p2p_daemon::run_offer_daemon(config_clone, identity, authorized_keys).await
+                    p2p_daemon::run_offer_daemon_with_status(
+                        config_clone,
+                        identity,
+                        authorized_keys,
+                        status_tx,
+                    )
+                    .await
                 }
                 AndroidTunnelMode::Answer => {
                     p2p_daemon::run_answer_daemon(config_clone, identity, authorized_keys).await
@@ -241,6 +309,7 @@ impl AndroidTunnelController {
         inner.state.active = true;
         inner.task = Some(task);
         inner.runtime = Some(runtime);
+        inner.status_rx = Some(status_rx);
         inner.logs.push_back(AndroidLogEvent {
             unix_ms: unix_ms(),
             level: "info".to_owned(),
@@ -258,6 +327,7 @@ impl AndroidTunnelController {
                 task.abort();
             }
             inner.runtime = None;
+            inner.status_rx = None;
             inner.state.state = AndroidRuntimeState::Stopped;
             inner.state.mode = None;
             inner.state.active = false;
@@ -276,13 +346,16 @@ impl AndroidTunnelController {
     }
 
     pub fn status(&self) -> AndroidRuntimeStatus {
-        self.inner.lock().map(|inner| inner.state.clone()).unwrap_or(AndroidRuntimeStatus {
+        self.inner.lock().map(|inner| inner.snapshot_status()).unwrap_or(AndroidRuntimeStatus {
             state: AndroidRuntimeState::Error,
             mode: None,
             config_path: None,
             last_error: Some("runtime mutex poisoned".to_owned()),
             started_at_unix_ms: None,
             active: false,
+            mqtt_connected: false,
+            active_session_count: 0,
+            session_capacity: None,
         })
     }
 
@@ -312,6 +385,65 @@ mod tests {
 
     use super::*;
     use p2p_crypto::generate_identity;
+
+    #[test]
+    fn android_state_mapping_covers_connection_phases() {
+        assert_eq!(android_state_from_daemon(DaemonState::TunnelOpen), AndroidRuntimeState::Running);
+        assert_eq!(
+            android_state_from_daemon(DaemonState::WaitingForLocalClient),
+            AndroidRuntimeState::Running,
+        );
+        assert_eq!(
+            android_state_from_daemon(DaemonState::Negotiating),
+            AndroidRuntimeState::Starting,
+        );
+        assert_eq!(android_state_from_daemon(DaemonState::Backoff), AndroidRuntimeState::Starting);
+        assert_eq!(android_state_from_daemon(DaemonState::Closed), AndroidRuntimeState::Stopped);
+    }
+
+    #[test]
+    fn snapshot_status_overlays_daemon_status_when_active() {
+        let mut inner = RuntimeInner::default();
+        inner.state.active = true;
+        let connected = DaemonStatus::with_sessions(
+            "offer-home".parse().expect("peer id"),
+            NodeRole::Offer,
+            true,
+            DaemonState::TunnelOpen,
+            vec!["ssh".to_owned()],
+            16,
+            Vec::new(),
+        );
+        let (tx, rx) = tokio::sync::watch::channel(connected);
+        inner.status_rx = Some(rx);
+
+        let snapshot = inner.snapshot_status();
+        assert!(snapshot.mqtt_connected);
+        assert_eq!(snapshot.session_capacity, Some(16));
+        assert_eq!(snapshot.state, AndroidRuntimeState::Running);
+        drop(tx);
+    }
+
+    #[test]
+    fn snapshot_status_is_quiescent_when_inactive() {
+        let mut inner = RuntimeInner::default();
+        inner.state.active = false;
+        let connected = DaemonStatus::new(
+            "offer-home".parse().expect("peer id"),
+            NodeRole::Offer,
+            true,
+            None,
+            DaemonState::TunnelOpen,
+            Vec::new(),
+        );
+        let (tx, rx) = tokio::sync::watch::channel(connected);
+        inner.status_rx = Some(rx);
+
+        let snapshot = inner.snapshot_status();
+        assert!(!snapshot.mqtt_connected);
+        assert_eq!(snapshot.active_session_count, 0);
+        drop(tx);
+    }
 
     #[test]
     fn validate_config_reports_missing_file() {

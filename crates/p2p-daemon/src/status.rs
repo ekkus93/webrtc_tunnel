@@ -105,14 +105,39 @@ impl DaemonStatus {
 pub struct StatusWriter {
     enabled: bool,
     path: PathBuf,
+    /// Optional latest-value sink. When present, every `DaemonStatus` is broadcast
+    /// here in addition to (or instead of) being written to the status file. This
+    /// is how the Android runtime observes real daemon status; the desktop CLI
+    /// leaves it `None` and is unaffected.
+    sink: Option<tokio::sync::watch::Sender<DaemonStatus>>,
 }
 
 impl StatusWriter {
     pub fn new(config: &AppConfig) -> Self {
-        Self { enabled: config.health.write_status_file, path: config.health.status_file.clone() }
+        Self {
+            enabled: config.health.write_status_file,
+            path: config.health.status_file.clone(),
+            sink: None,
+        }
+    }
+
+    pub fn with_sink(
+        config: &AppConfig,
+        sink: tokio::sync::watch::Sender<DaemonStatus>,
+    ) -> Self {
+        Self {
+            enabled: config.health.write_status_file,
+            path: config.health.status_file.clone(),
+            sink: Some(sink),
+        }
     }
 
     pub async fn write(&self, status: DaemonStatus) -> Result<(), DaemonError> {
+        // Broadcast to the sink first so observers see updates even when status-file
+        // writing is disabled. A closed receiver is not an error for the daemon.
+        if let Some(sink) = &self.sink {
+            let _ = sink.send(status.clone());
+        }
         if !self.enabled {
             return Ok(());
         }
@@ -135,10 +160,35 @@ mod tests {
     use super::{DaemonStatus, SessionStatus, StatusWriter};
 
     #[tokio::test]
+    async fn write_broadcasts_to_sink_even_when_file_disabled() {
+        let seed = DaemonStatus::new(
+            "offer-home".parse().expect("peer id"),
+            NodeRole::Offer,
+            false,
+            None,
+            DaemonState::Idle,
+            vec!["ssh".to_owned()],
+        );
+        let (tx, rx) = tokio::sync::watch::channel(seed);
+        // File writing disabled: the sink must still receive updates.
+        let writer = StatusWriter { enabled: false, path: PathBuf::new(), sink: Some(tx) };
+        let updated = DaemonStatus::new(
+            "offer-home".parse().expect("peer id"),
+            NodeRole::Offer,
+            true,
+            None,
+            DaemonState::TunnelOpen,
+            vec!["ssh".to_owned()],
+        );
+        writer.write(updated.clone()).await.expect("write should succeed");
+        assert_eq!(*rx.borrow(), updated);
+    }
+
+    #[tokio::test]
     async fn writes_status_json_without_secrets() {
         let temp_path =
             std::env::temp_dir().join(format!("p2ptunnel-status-{}.json", std::process::id()));
-        let writer = StatusWriter { enabled: true, path: temp_path.clone() };
+        let writer = StatusWriter { enabled: true, path: temp_path.clone(), sink: None };
         writer
             .write(DaemonStatus::new(
                 "offer-home".parse().expect("peer id"),
@@ -166,7 +216,7 @@ mod tests {
     async fn writes_multi_session_status_json() {
         let temp_path = std::env::temp_dir()
             .join(format!("p2ptunnel-status-multi-{}.json", std::process::id()));
-        let writer = StatusWriter { enabled: true, path: temp_path.clone() };
+        let writer = StatusWriter { enabled: true, path: temp_path.clone(), sink: None };
         writer
             .write(DaemonStatus::with_sessions(
                 "answer-office".parse().expect("peer id"),
@@ -201,7 +251,7 @@ mod tests {
     async fn writes_multi_session_aggregate_without_single_active_session_id() {
         let temp_path = std::env::temp_dir()
             .join(format!("p2ptunnel-status-aggregate-{}.json", std::process::id()));
-        let writer = StatusWriter { enabled: true, path: temp_path.clone() };
+        let writer = StatusWriter { enabled: true, path: temp_path.clone(), sink: None };
         writer
             .write(DaemonStatus::with_sessions(
                 "answer-office".parse().expect("peer id"),

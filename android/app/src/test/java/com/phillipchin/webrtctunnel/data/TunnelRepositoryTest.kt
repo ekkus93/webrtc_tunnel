@@ -176,6 +176,36 @@ class TunnelRepositoryTest {
     }
 
     @Test
+    fun refreshStatusMapsMeasuredDaemonFields() {
+        bridge.statusPayload = Json.encodeToString(
+            NativeRuntimeStatusDto(
+                state = "running",
+                mode = "offer",
+                config_path = "/tmp/config.toml",
+                active = true,
+                mqtt_connected = true,
+                active_session_count = 2,
+                session_capacity = 16,
+            ),
+        )
+        repository.refreshStatus()
+        val status = repository.status.value
+        assertEquals(true, status.mqttConnected)
+        assertEquals(2, status.activeSessionCount)
+        assertEquals(16, status.sessionCapacity)
+    }
+
+    @Test
+    fun refreshStatusDecodesNativeJsonWithoutMeasuredFields() {
+        bridge.statusPayload = """{"state":"running","mode":"offer","active":true}"""
+        repository.refreshStatus()
+        val status = repository.status.value
+        assertEquals(ServiceState.Connected, status.serviceState)
+        assertEquals(false, status.mqttConnected)
+        assertEquals(0, status.activeSessionCount)
+    }
+
+    @Test
     fun refreshStatusDoesNotResurrectPolicyPausedState() {
         // Tunnel was paused by policy while the native daemon task is still "running"/active.
         repository.setPolicyBlocked("metered network blocked")

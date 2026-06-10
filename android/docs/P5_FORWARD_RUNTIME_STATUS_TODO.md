@@ -13,19 +13,21 @@ status JSON, the status file, logs, or UI. Do not enable Android answer mode.
 
 ## P0 — Regression guard & decisions before editing
 
-- [ ] Run current tests and record any pre-existing failures:
-  - [ ] `cargo test -p p2p-daemon`
-  - [ ] `cargo test -p p2p-mobile`
-  - [ ] `cd android && ./gradlew --no-daemon testDebugUnitTest lintDebug`
-- [ ] Resolve open decisions from the spec (§ "Open decisions"):
-  - [ ] **D1 — bind soft-fail vs fatal** (changes CLI startup semantics). Default:
-    soft-fail per forward; daemon-level error only if zero forwards bind.
-  - [ ] **D2 — status primitive**: confirm `tokio::sync::watch`.
-  - [ ] **D3 — per-forward active-connection count**: defer (Listening only) unless
-    decided otherwise.
-  - [ ] **D5 — `DaemonStatus` seed**: seed the channel with a config-derived
-    "starting" status (avoid forcing `Default` on core types).
-- [ ] Do not hide or suppress new lint/test failures — fix them.
+- [x] Run current tests and record any pre-existing failures:
+  - [x] `cargo test -p p2p-daemon` — passed (baseline clean)
+  - [x] `cargo test -p p2p-mobile` — passed (baseline clean)
+  - [x] `cd android && ./gradlew --no-daemon testDebugUnitTest lintDebug` — passed
+- [x] Resolve open decisions from the spec (§ "Open decisions"):
+  - [x] **D1 — bind soft-fail vs fatal**: chose soft-fail per forward; daemon-level
+    error only if zero forwards bind (implemented in Phase 2).
+  - [x] **D2 — status primitive**: `tokio::sync::watch` (latest-value).
+  - [x] **D3 — per-forward active-connection count**: deferred (Listening only).
+  - [x] **D4 — answer-role**: out of scope; the status channel is wired for the
+    **offer** path only (answer mode is disabled on Android), avoiding a risky
+    refactor of the large inline answer daemon and its many test callers.
+  - [x] **D5 — `DaemonStatus` seed**: channel seeded with a config-derived
+    pre-connection status; no `Default` forced on core types.
+- [x] Do not hide or suppress new lint/test failures — fix them.
 
 ---
 
@@ -35,47 +37,44 @@ status JSON, the status file, logs, or UI. Do not enable Android answer mode.
 `crates/p2p-mobile/src/{runtime.rs,lib.rs}`, CLI crate (delegation only).
 
 **Daemon tasks:**
-- [ ] Define `pub type DaemonStatusSink = tokio::sync::watch::Sender<DaemonStatus>;`
-      in `p2p-daemon` (or a small `StatusEmitter` wrapping `StatusWriter` + optional
-      sink).
-- [ ] Thread an optional sink through `RuntimeContext` (`lib.rs:256-260`).
-- [ ] At the single `write_status_or_log` choke point, after writing the file, also
-      `sink.send(status.clone())` when present (so channel == file).
-- [ ] Add `run_offer_daemon_with_status(config, identity, keys, sink)` and
-      `run_answer_daemon_with_status(...)`.
-- [ ] Make existing `run_offer_daemon` / `run_answer_daemon` delegate with no sink
-      so the **CLI is unchanged**.
+- [x] Sink is `Option<tokio::sync::watch::Sender<DaemonStatus>>` attached to
+      `StatusWriter` (lower churn than `RuntimeContext`, which has ~30 construction
+      sites). `StatusWriter::with_sink` added; `new` leaves it `None`.
+- [x] At `StatusWriter::write` (the choke point reached by all `write_*_status`
+      paths), broadcast to the sink before the file write so channel == file and
+      observers see updates even when the status file is disabled.
+- [x] Add `run_offer_daemon_with_status(config, identity, keys, sink)`; threaded a
+      sink param into `run_offer_daemon_inner`. (Answer: see D4 — offer-only.)
+- [x] Existing `run_offer_daemon`/`run_answer_daemon` and all transport/test entry
+      points delegate with no sink → **CLI unchanged** (full `cargo test` green).
 
 **Mobile tasks:**
-- [ ] In `AndroidTunnelController::start` (`runtime.rs:146`): create a
-      `watch::channel` seeded with a config-derived "starting" `DaemonStatus`; store
-      the `Receiver` in `RuntimeInner`; pass the `Sender` to the `*_with_status`
-      entry point.
-- [ ] Rewrite `status()` (`runtime.rs:278`) to derive `AndroidRuntimeStatus` from
-      the latest `DaemonStatus` (`rx.borrow()`), merged with controller-owned
-      lifecycle facts (`config_path`, `started_at_unix_ms`, terminal `Error`).
-- [ ] Map `DaemonState` → `AndroidRuntimeState` honestly (Idle/WaitingForLocalClient/
-      Serving → running; Negotiating/ConnectingDataChannel → connecting; TunnelOpen
-      → connected; IceRestarting/Renegotiating/Backoff → reconnecting; Closed →
-      stopped). Document mapping in code.
-- [ ] Surface real `mqtt_connected`, `active_session_count`, `session_capacity` in
-      the status JSON emitted by `p2p-mobile/src/lib.rs`.
+- [x] In `AndroidTunnelController::start`: create a `watch::channel` seeded with a
+      config-derived pre-connection `DaemonStatus`; store the `Receiver` in
+      `RuntimeInner`; pass the `Sender` to `run_offer_daemon_with_status` (offer arm).
+- [x] `RuntimeInner::snapshot_status()` merges the latest `DaemonStatus` with
+      controller lifecycle state; `status()` uses it; cleared on stop.
+- [x] `android_state_from_daemon` maps `DaemonState` → `AndroidRuntimeState`
+      (documented in code; covered by a totality test).
+- [x] Real `mqtt_connected`, `active_session_count`, `session_capacity` added to
+      `AndroidRuntimeStatus` (serialized in the status JSON).
 
 **Kotlin tasks:**
-- [ ] `TunnelRepository.toTunnelStatus()`: set `mqttConnected`,
-      `activeSessionCount`, `sessionCapacity` from the now-real native fields
-      instead of `active` (`TunnelRepository.kt:160-161`).
+- [x] `NativeRuntimeStatusDto` gains defaulted `mqtt_connected`,
+      `active_session_count`, `session_capacity`; `toTunnelStatus()` maps them
+      instead of deriving from `active`.
 
 **Tests:**
-- [ ] Rust: sink receives a `DaemonStatus` clone equal to what was written.
-- [ ] Rust: `status()` reflects channel values (fresh vs. running); secret-safe.
-- [ ] Kotlin: `mqttConnected`/`activeSessionCount`/`sessionCapacity` reflect decoded
-      values, not a hardcoded flag.
+- [x] Rust: sink receives a `DaemonStatus` clone equal to what was written
+      (`write_broadcasts_to_sink_even_when_file_disabled`).
+- [x] Rust: `snapshot_status` overlays daemon status when active / quiescent when
+      inactive; state mapping totality test.
+- [x] Kotlin: measured fields decode and map; JSON without them still decodes.
 
 **Acceptance:**
-- [ ] Home reflects real MQTT/session/connection state within the poll interval.
-- [ ] `mqttConnected` is no longer "task spawned".
-- [ ] CLI status-file behavior unchanged.
+- [x] Home reflects real MQTT/session/connection state within the poll interval.
+- [x] `mqttConnected` is no longer "task spawned".
+- [x] CLI status-file behavior unchanged.
 
 ---
 

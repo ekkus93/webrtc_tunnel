@@ -382,8 +382,31 @@ pub async fn run_offer_daemon_with_transport<T: DaemonSignalingTransport>(
     #[cfg(not(any(test, debug_assertions)))]
     {
         let mut transport = transport;
-        run_offer_daemon_inner(config, local_identity, authorized_keys, &mut transport, None).await
+        run_offer_daemon_inner(config, local_identity, authorized_keys, &mut transport, None, None)
+            .await
     }
+}
+
+/// Offer daemon entry point that streams live `DaemonStatus` to `status_sink` in
+/// addition to the usual status-file behavior. Used by the Android runtime so the
+/// UI reflects real daemon/connection state. Behaves identically to
+/// [`run_offer_daemon`] otherwise.
+pub async fn run_offer_daemon_with_status(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    status_sink: tokio::sync::watch::Sender<DaemonStatus>,
+) -> Result<(), DaemonError> {
+    let mut transport = MqttSignalingTransport::connect(&config)?;
+    run_offer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        &mut transport,
+        None,
+        Some(status_sink),
+    )
+    .await
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -394,8 +417,15 @@ pub async fn run_offer_daemon_with_transport_and_test_hook<T: DaemonSignalingTra
     mut transport: T,
     session_hook: Option<mpsc::UnboundedSender<OfferSessionTestHandle>>,
 ) -> Result<(), DaemonError> {
-    run_offer_daemon_inner(config, local_identity, authorized_keys, &mut transport, session_hook)
-        .await
+    run_offer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        &mut transport,
+        session_hook,
+        None,
+    )
+    .await
 }
 
 async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
@@ -407,6 +437,7 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
         mpsc::UnboundedSender<OfferSessionTestHandle>,
     >,
     #[cfg(not(any(test, debug_assertions)))] _session_hook: Option<()>,
+    status_sink: Option<tokio::sync::watch::Sender<DaemonStatus>>,
 ) -> Result<(), DaemonError> {
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let codec = SignalCodec::new(
@@ -417,7 +448,10 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     );
     transport.subscribe_own_topic().await?;
 
-    let status = StatusWriter::new(&config);
+    let status = match status_sink {
+        Some(sink) => StatusWriter::with_sink(&config, sink),
+        None => StatusWriter::new(&config),
+    };
     let mut runtime = DaemonRuntimeState::new_connected();
     let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
     write_steady_state_status(&ctx).await;

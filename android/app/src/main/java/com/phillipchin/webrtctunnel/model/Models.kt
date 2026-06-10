@@ -81,6 +81,11 @@ data class NativeRuntimeStatusDto(
     val last_error: String? = null,
     val started_at_unix_ms: Long? = null,
     val active: Boolean = false,
+    // Measured runtime fields from the native daemon status channel. Defaulted so
+    // older/native status JSON without them still decodes.
+    val mqtt_connected: Boolean = false,
+    val active_session_count: Int = 0,
+    val session_capacity: Int? = null,
 )
 
 @Serializable

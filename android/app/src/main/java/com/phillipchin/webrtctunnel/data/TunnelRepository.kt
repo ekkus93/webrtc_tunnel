@@ -176,8 +176,9 @@ class TunnelRepository(
         return previous.copy(
             serviceState = stateValue,
             mode = modeValue,
-            mqttConnected = active,
-            activeSessionCount = if (active) 1 else 0,
+            mqttConnected = mqtt_connected,
+            activeSessionCount = active_session_count,
+            sessionCapacity = session_capacity ?: previous.sessionCapacity,
             uptimeSeconds = uptimeSeconds,
             lastError = last_error?.let {
                 TunnelError(code = "native_runtime_error", message = it, details = config_path)
