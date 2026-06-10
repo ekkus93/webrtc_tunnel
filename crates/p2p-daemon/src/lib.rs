@@ -39,7 +39,9 @@ use tokio::time::{interval, sleep};
 
 pub use error::DaemonError;
 pub use logging::{redact_candidate, redact_sdp, redact_secret, setup_logging};
-pub use status::{DaemonStatus, SessionStatus, StatusWriter};
+pub use status::{
+    DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
+};
 
 #[cfg(any(test, debug_assertions))]
 #[derive(Clone)]
@@ -182,15 +184,22 @@ impl DuplicateActiveAckCache {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct DaemonRuntimeState {
     mqtt_connected: bool,
     last_transport_failure_at_ms: Option<u64>,
+    /// Per-forward runtime status (offer role). Populated after binding local
+    /// listeners; included in every emitted `DaemonStatus`.
+    forward_statuses: Vec<ForwardRuntimeStatus>,
 }
 
 impl DaemonRuntimeState {
     fn new_connected() -> Self {
-        Self { mqtt_connected: true, last_transport_failure_at_ms: None }
+        Self {
+            mqtt_connected: true,
+            last_transport_failure_at_ms: None,
+            forward_statuses: Vec::new(),
+        }
     }
 }
 
@@ -456,7 +465,9 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
     write_steady_state_status(&ctx).await;
 
-    let listeners = bind_offer_listeners(&config).await?;
+    let (listeners, forward_statuses) = bind_offer_listeners(&config).await?;
+    ctx.runtime.forward_statuses = forward_statuses;
+    write_steady_state_status(&ctx).await;
     let mut accepted_clients = spawn_offer_accept_loops(listeners);
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
     let remote_peer_id = offer_remote_peer_id(&config)?;
@@ -2023,25 +2034,51 @@ fn spawn_offer_accept_loop(
     spawn_offer_accept_loops(vec![listener])
 }
 
-async fn bind_offer_listeners(config: &AppConfig) -> Result<Vec<OfferListener>, DaemonError> {
+/// Bind a local TCP listener for each configured offer forward. Individual forwards
+/// that fail to bind are recorded as `Error` (soft-fail) so one bad forward does not
+/// take down the others; the per-forward outcomes are returned alongside the bound
+/// listeners. It is still a daemon-level error if forwards are configured but none
+/// could bind.
+async fn bind_offer_listeners(
+    config: &AppConfig,
+) -> Result<(Vec<OfferListener>, Vec<ForwardRuntimeStatus>), DaemonError> {
     let table = ForwardTable::new(&config.forwards);
     let mut listeners = Vec::new();
+    let mut statuses = Vec::new();
     for bind in table.offer_listeners().map_err(|error| {
         DaemonError::Config(ConfigError::InvalidConfig(format!(
             "invalid offer forward listeners: {error:?}"
         )))
     })? {
+        let forward_id = bind.forward_id.to_string();
         let offer =
             ForwardOfferConfig { listen_host: bind.listen_host, listen_port: bind.listen_port };
-        let listener = OfferListener::bind(bind.forward_id, &offer).await?;
-        tracing::info!(
-            forward_id = listener.forward_id(),
-            local_addr = %listener.local_addr()?,
-            "listening for local forward clients"
-        );
-        listeners.push(listener);
+        match OfferListener::bind(bind.forward_id, &offer).await {
+            Ok(listener) => {
+                tracing::info!(
+                    forward_id = listener.forward_id(),
+                    local_addr = %listener.local_addr()?,
+                    "listening for local forward clients"
+                );
+                statuses.push(ForwardRuntimeStatus::listening(forward_id));
+                listeners.push(listener);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    forward_id = %forward_id,
+                    reason = %error,
+                    "failed to bind local forward listener; marking forward as error"
+                );
+                statuses.push(ForwardRuntimeStatus::error(forward_id, error.to_string()));
+            }
+        }
     }
-    Ok(listeners)
+    if !statuses.is_empty() && listeners.is_empty() {
+        return Err(DaemonError::Config(ConfigError::InvalidConfig(
+            "no offer forward listeners could be bound".to_owned(),
+        )));
+    }
+    Ok((listeners, statuses))
 }
 
 fn spawn_offer_accept_loops(
@@ -2093,7 +2130,8 @@ async fn write_daemon_status(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot)
             snapshot.active_session_id,
             snapshot.current_state,
             ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
-        ),
+        )
+        .with_forward_statuses(ctx.runtime.forward_statuses.clone()),
     )
     .await;
 }
@@ -2109,7 +2147,8 @@ async fn write_answer_status(ctx: &RuntimeContext<'_>, snapshot: AnswerStatusSna
             ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
             ANSWER_SESSION_CAPACITY,
             snapshot.sessions.iter().map(SessionStatusSnapshot::to_status).collect(),
-        ),
+        )
+        .with_forward_statuses(ctx.runtime.forward_statuses.clone()),
     )
     .await;
 }
@@ -3088,14 +3127,15 @@ mod tests {
     use super::{
         ActiveBusyOfferAction, ActiveBusyOfferCache, ActiveBusyOfferKey, ActiveSession,
         AnswerSessionEvent, AnswerSessionHandle, BridgeSessionState, DaemonError,
-        DaemonRuntimeState, DaemonSignalingTransport, DaemonState, IceConnectionState,
-        OfferListener, OfferSessionPayloadOutcome, RuntimeContext, SessionGeneration,
-        SessionStatusSnapshot, StatusSnapshot, StatusWriter, WebRtcPeer, apply_answer_overrides,
-        apply_offer_overrides, apply_override_pairs, classify_active_busy_offer,
-        compute_backoff_delay, decode_idle_signaling_message, duplicate_active_session_ack_message,
-        handle_answer_daemon_payload, handle_answer_incoming_data_channel,
-        handle_answer_session_event, handle_answer_session_message, handle_offer_session_message,
-        mark_transport_unusable, mark_transport_usable, maybe_ack_duplicate_active_session_message,
+        DaemonRuntimeState, DaemonSignalingTransport, DaemonState, ForwardListenState,
+        IceConnectionState, OfferListener, OfferSessionPayloadOutcome, RuntimeContext,
+        SessionGeneration, SessionStatusSnapshot, StatusSnapshot, StatusWriter, WebRtcPeer,
+        apply_answer_overrides, apply_offer_overrides, apply_override_pairs, bind_offer_listeners,
+        classify_active_busy_offer, compute_backoff_delay, decode_idle_signaling_message,
+        duplicate_active_session_ack_message, handle_answer_daemon_payload,
+        handle_answer_incoming_data_channel, handle_answer_session_event,
+        handle_answer_session_message, handle_offer_session_message, mark_transport_unusable,
+        mark_transport_usable, maybe_ack_duplicate_active_session_message,
         maybe_replace_pending_answer_session, process_answer_session_signal,
         process_offer_session_payload, recover_daemon_after_session,
         replayed_active_busy_offer_key, run_offer_daemon_with_transport_and_test_hook,
@@ -3103,6 +3143,46 @@ mod tests {
         spawn_offer_accept_loop, steady_state_for_role, write_answer_registry_status,
         write_steady_state_status,
     };
+
+    #[tokio::test]
+    async fn bind_offer_listeners_soft_fails_individual_forward() {
+        // Occupy a port so one forward fails to bind while another succeeds.
+        let occupied = TcpListener::bind("127.0.0.1:0").await.expect("occupy port");
+        let occupied_port = occupied.local_addr().expect("occupied addr").port();
+        let free = TcpListener::bind("127.0.0.1:0").await.expect("probe free port");
+        let free_port = free.local_addr().expect("free addr").port();
+        drop(free);
+
+        let mut config = sample_config();
+        config.forwards = vec![
+            ForwardRule {
+                id: "ok".to_owned(),
+                offer: Some(ForwardOfferConfig {
+                    listen_host: "127.0.0.1".to_owned(),
+                    listen_port: free_port,
+                }),
+                answer: None,
+            },
+            ForwardRule {
+                id: "busy".to_owned(),
+                offer: Some(ForwardOfferConfig {
+                    listen_host: "127.0.0.1".to_owned(),
+                    listen_port: occupied_port,
+                }),
+                answer: None,
+            },
+        ];
+
+        let (listeners, statuses) =
+            bind_offer_listeners(&config).await.expect("soft-fail, not daemon error");
+        assert_eq!(listeners.len(), 1, "only the bindable forward should listen");
+        let ok = statuses.iter().find(|s| s.id == "ok").expect("ok status");
+        assert_eq!(ok.listen_state, ForwardListenState::Listening);
+        assert!(ok.last_error.is_none());
+        let busy = statuses.iter().find(|s| s.id == "busy").expect("busy status");
+        assert_eq!(busy.listen_state, ForwardListenState::Error);
+        assert!(busy.last_error.is_some());
+    }
 
     type PublishedSignals = std::sync::Arc<Mutex<Vec<(PeerId, Vec<u8>)>>>;
 

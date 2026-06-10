@@ -388,7 +388,10 @@ mod tests {
 
     #[test]
     fn android_state_mapping_covers_connection_phases() {
-        assert_eq!(android_state_from_daemon(DaemonState::TunnelOpen), AndroidRuntimeState::Running);
+        assert_eq!(
+            android_state_from_daemon(DaemonState::TunnelOpen),
+            AndroidRuntimeState::Running
+        );
         assert_eq!(
             android_state_from_daemon(DaemonState::WaitingForLocalClient),
             AndroidRuntimeState::Running,

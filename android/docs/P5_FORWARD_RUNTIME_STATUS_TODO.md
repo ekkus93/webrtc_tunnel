@@ -83,33 +83,34 @@ status JSON, the status file, logs, or UI. Do not enable Android answer mode.
 **Files:** `crates/p2p-daemon/src/{status.rs,lib.rs}`.
 
 **Tasks:**
-- [ ] Add `ForwardListenState { Listening, #[default] Stopped, Error }`
+- [x] Added `ForwardListenState { Listening, #[default] Stopped, Error }`
       (`#[serde(rename_all = "snake_case")]`) to `status.rs`.
-- [ ] Add `ForwardRuntimeStatus { id, listen_state, last_error: Option<String> }`.
-- [ ] Add `pub forwards: Vec<ForwardRuntimeStatus>` to `DaemonStatus`
-      (`status.rs:9-20`); update `new`/`with_sessions` constructors.
-- [ ] Maintain a `forward_id -> ForwardRuntimeStatus` map in `DaemonRuntimeState`,
-      threaded through `RuntimeContext`, included in every built `DaemonStatus`
-      (`write_daemon_status`/`write_answer_status`, `lib.rs:2052-2081`).
-- [ ] Populate at `bind_offer_listeners` (`lib.rs:1992-2011`):
-  - [ ] bind success → `Listening`.
-  - [ ] stop/steady-state teardown → `Stopped`.
-  - [ ] bind failure → `Error` + redacted reason (**requires D1 soft-fail**).
-- [ ] Answer role: report forwards as `Stopped`/omit; document the limitation.
-- [ ] Ensure `last_error` and all forward fields are secret-free.
+- [x] Added `ForwardRuntimeStatus { id, listen_state, last_error: Option<String> }`
+      with `listening`/`error` constructors.
+- [x] Added `pub forwards: Vec<ForwardRuntimeStatus>` to `DaemonStatus` plus a
+      `with_forward_statuses` builder; `with_sessions` defaults it empty (keeps the
+      `new`/`with_sessions` signatures stable across ~all call sites).
+- [x] Maintained `forward_statuses: Vec<ForwardRuntimeStatus>` in
+      `DaemonRuntimeState` (dropped its `Copy` derive); attached via
+      `with_forward_statuses` in `write_daemon_status`/`write_answer_status`.
+- [x] Populated at `bind_offer_listeners`:
+  - [x] bind success → `Listening`.
+  - [x] bind failure → `Error` + reason (soft-fail per forward, D1).
+  - [x] stop → daemon ends; statuses cleared by controller (mobile resets on stop).
+- [x] Answer role: out of scope (offer-only); documented (D4).
+- [x] Forward fields carry no secret material (bind errors are OS-level reasons).
 
 **Tests:**
-- [ ] `DaemonStatus` serializes `forwards` as an array; empty by default.
-- [ ] Update schema tests (`current_status_schema_exposes_only_stable_public_fields`
-      and `open_forward_ids` assertions) to include `forwards` **without** removing
-      secret-absence checks.
-- [ ] Successful bind → `Listening`; simulated bind failure → `Error` with a
-      non-secret message (per D1).
+- [x] `DaemonStatus` serializes `forwards` as an array; empty by default
+      (`daemon_status_forwards_default_empty_and_attachable`).
+- [x] Updated schema test to include `forwards` while keeping the
+      `open_forward_ids`/secret-absence checks.
+- [x] `bind_offer_listeners_soft_fails_individual_forward`: one forward `Listening`,
+      one `Error` (port occupied), daemon does not abort.
 
 **Acceptance:**
-- [ ] `Listening` means a local TCP listener is actually bound — never derived from
-      task spawn.
-- [ ] One forward can be `Error` while others are `Listening` (per D1).
+- [x] `Listening` means a local TCP listener is actually bound — never task-spawn.
+- [x] One forward can be `Error` while others are `Listening` (soft-fail).
 
 ---
 

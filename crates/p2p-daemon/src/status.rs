@@ -17,6 +17,45 @@ pub struct DaemonStatus {
     pub session_capacity: usize,
     pub sessions: Vec<SessionStatus>,
     pub configured_forwards: Vec<String>,
+    /// Per-forward runtime state (offer role). Empty unless populated by the daemon.
+    pub forwards: Vec<ForwardRuntimeStatus>,
+}
+
+/// Runtime state of a single configured forward's local listener (offer role).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardListenState {
+    /// Local TCP listener is actually bound and accepting connections.
+    Listening,
+    /// Not currently listening (daemon stopped or forward torn down).
+    #[default]
+    Stopped,
+    /// Local listener failed to bind.
+    Error,
+}
+
+/// Per-forward runtime status surfaced to clients (e.g. the Android UI). Only the
+/// offer role binds local listeners, so this reflects the offer side; it never
+/// carries secret material.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ForwardRuntimeStatus {
+    pub id: String,
+    pub listen_state: ForwardListenState,
+    pub last_error: Option<String>,
+}
+
+impl ForwardRuntimeStatus {
+    pub fn listening(id: impl Into<String>) -> Self {
+        Self { id: id.into(), listen_state: ForwardListenState::Listening, last_error: None }
+    }
+
+    pub fn error(id: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            listen_state: ForwardListenState::Error,
+            last_error: Some(message.into()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -98,7 +137,14 @@ impl DaemonStatus {
             session_capacity,
             sessions,
             configured_forwards,
+            forwards: Vec::new(),
         }
+    }
+
+    /// Attach per-forward runtime statuses, returning the updated status.
+    pub fn with_forward_statuses(mut self, forwards: Vec<ForwardRuntimeStatus>) -> Self {
+        self.forwards = forwards;
+        self
     }
 }
 
@@ -121,10 +167,7 @@ impl StatusWriter {
         }
     }
 
-    pub fn with_sink(
-        config: &AppConfig,
-        sink: tokio::sync::watch::Sender<DaemonStatus>,
-    ) -> Self {
+    pub fn with_sink(config: &AppConfig, sink: tokio::sync::watch::Sender<DaemonStatus>) -> Self {
         Self {
             enabled: config.health.write_status_file,
             path: config.health.status_file.clone(),
@@ -157,7 +200,42 @@ mod tests {
 
     use p2p_core::{DaemonState, NodeRole};
 
-    use super::{DaemonStatus, SessionStatus, StatusWriter};
+    use super::{
+        DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
+    };
+
+    #[test]
+    fn forward_runtime_status_serializes_snake_case_without_secrets() {
+        let listening = ForwardRuntimeStatus::listening("web");
+        assert_eq!(listening.listen_state, ForwardListenState::Listening);
+        let json = serde_json::to_value(&listening).expect("serialize");
+        assert_eq!(json["id"], "web");
+        assert_eq!(json["listen_state"], "listening");
+        assert!(json["last_error"].is_null());
+
+        let errored = ForwardRuntimeStatus::error("ssh", "Address already in use");
+        let json = serde_json::to_value(&errored).expect("serialize");
+        assert_eq!(json["listen_state"], "error");
+        assert_eq!(json["last_error"], "Address already in use");
+    }
+
+    #[test]
+    fn daemon_status_forwards_default_empty_and_attachable() {
+        let base = DaemonStatus::new(
+            "offer-home".parse().expect("peer id"),
+            NodeRole::Offer,
+            true,
+            None,
+            DaemonState::Idle,
+            vec!["web".to_owned()],
+        );
+        assert!(base.forwards.is_empty());
+        let with = base.with_forward_statuses(vec![ForwardRuntimeStatus::listening("web")]);
+        let json = serde_json::to_value(&with).expect("serialize");
+        assert_eq!(json["forwards"][0]["id"], "web");
+        assert_eq!(json["forwards"][0]["listen_state"], "listening");
+        assert!(json["forwards"][0]["last_error"].is_null());
+    }
 
     #[tokio::test]
     async fn write_broadcasts_to_sink_even_when_file_disabled() {
@@ -322,6 +400,7 @@ mod tests {
             "session_capacity",
             "sessions",
             "configured_forwards",
+            "forwards",
         ] {
             assert!(json.get(field).is_some(), "missing status field {field}");
         }
