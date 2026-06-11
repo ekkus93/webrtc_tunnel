@@ -31,6 +31,10 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 
+private const val MAX_PORT = 65535
+private const val BROKER_PROBE_TIMEOUT_MS = 2_500
+private const val LOCAL_PORT_TEST_TIMEOUT_MS = 1200
+
 enum class SetupStep {
     Mode,
     Identity,
@@ -159,13 +163,13 @@ class SetupViewModel(
         return when (state.currentStep) {
             SetupStep.Mode -> true
             SetupStep.Identity -> state.localPublicIdentity.isNotBlank() || state.importIdentityPath.isNotBlank()
-            SetupStep.Broker -> state.input.brokerHost.isNotBlank() && state.input.brokerPort in 1..65535
+            SetupStep.Broker -> state.input.brokerHost.isNotBlank() && state.input.brokerPort in 1..MAX_PORT
             SetupStep.Peer -> state.input.remotePeerId.isNotBlank() && state.importPublicIdentity.isNotBlank()
             SetupStep.Forwards -> forwards.isNotEmpty() && deps.configRepository.validateForwards(forwards) == null
             SetupStep.NetworkPolicy -> true
             SetupStep.Review -> {
                 state.input.brokerHost.isNotBlank() &&
-                    state.input.brokerPort in 1..65535 &&
+                    state.input.brokerPort in 1..MAX_PORT &&
                     state.input.remotePeerId.isNotBlank() &&
                     state.importPublicIdentity.isNotBlank() &&
                     forwards.isNotEmpty() &&
@@ -446,7 +450,7 @@ class SetupViewModel(
         val current = _state.value
         val host = current.input.brokerHost.trim()
         val port = current.input.brokerPort
-        if (host.isBlank() || port !in 1..65535) {
+        if (host.isBlank() || port !in 1..MAX_PORT) {
             _state.value =
                 current
                     .copy(brokerTestMessage = "Broker host/port is invalid")
@@ -457,7 +461,7 @@ class SetupViewModel(
             val message =
                 runCatching {
                     Socket().use { socket ->
-                        socket.connect(InetSocketAddress(host, port), 2_500)
+                        socket.connect(InetSocketAddress(host, port), BROKER_PROBE_TIMEOUT_MS)
                     }
                     "TCP connection to $host:$port succeeded. Full MQTT/TLS auth is confirmed when the tunnel connects."
                 }.getOrElse {
@@ -657,7 +661,7 @@ class SetupViewModel(
             SetupStep.Broker ->
                 when {
                     input.brokerHost.isBlank() -> "Broker host is required"
-                    input.brokerPort !in 1..65535 -> "Broker port must be between 1 and 65535"
+                    input.brokerPort !in 1..MAX_PORT -> "Broker port must be between 1 and 65535"
                     else -> null
                 }
             SetupStep.Peer -> {
@@ -793,7 +797,7 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
             val resultMessage =
                 runCatching {
                     Socket().use { socket ->
-                        socket.connect(InetSocketAddress(host, forward.localPort), 1200)
+                        socket.connect(InetSocketAddress(host, forward.localPort), LOCAL_PORT_TEST_TIMEOUT_MS)
                     }
                     "Local port test succeeded for $host:${forward.localPort}"
                 }.getOrElse {

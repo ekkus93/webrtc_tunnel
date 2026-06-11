@@ -11,16 +11,16 @@ import androidx.compose.ui.unit.sp
 
 private val Colors =
     lightColorScheme(
-        primary = Color(0xFF08245C),
-        onPrimary = Color(0xFFFFFFFF),
-        secondary = Color(0xFF1D4ED8),
-        tertiary = Color(0xFF2E7D32),
-        background = Color(0xFFF6F8FB),
-        onBackground = Color(0xFF111827),
-        surface = Color(0xFFFFFFFF),
-        onSurface = Color(0xFF111827),
-        error = Color(0xFFD32F2F),
-        outline = Color(0xFFE5E7EB),
+        primary = Color(color = 0xFF08245C),
+        onPrimary = Color(color = 0xFFFFFFFF),
+        secondary = Color(color = 0xFF1D4ED8),
+        tertiary = Color(color = 0xFF2E7D32),
+        background = Color(color = 0xFFF6F8FB),
+        onBackground = Color(color = 0xFF111827),
+        surface = Color(color = 0xFFFFFFFF),
+        onSurface = Color(color = 0xFF111827),
+        error = Color(color = 0xFFD32F2F),
+        outline = Color(color = 0xFFE5E7EB),
     )
 
 private val AppTypography =

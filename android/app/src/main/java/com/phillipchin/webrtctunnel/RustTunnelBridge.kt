@@ -185,6 +185,8 @@ class RustTunnelBridge : TunnelNativeBridge {
     private external fun nativeLastError(handle: Long): String
 }
 
+private const val FAKE_LOG_LIMIT = 3
+
 class FakeTunnelBridge : TunnelNativeBridge {
     private var state = "stopped"
     private var mode = "offer"
@@ -223,7 +225,7 @@ class FakeTunnelBridge : TunnelNativeBridge {
     override fun getRecentLogsJson(maxEvents: Int): String =
         Json.encodeToString(
             ListSerializer(NativeLogEventDto.serializer()),
-            List(maxEvents.coerceAtMost(3)) { NativeLogEventDto(0L, "info", "fake log $it") },
+            List(maxEvents.coerceAtMost(FAKE_LOG_LIMIT)) { NativeLogEventDto(0L, "info", "fake log $it") },
         )
 
     override fun validateConfig(configPath: String): ValidationResult = ValidationResult(true, null)

@@ -89,7 +89,41 @@ private val logTimestampFormatter: DateTimeFormatter =
 
 private fun formatLogTimestamp(unixMs: Long): String = logTimestampFormatter.format(Instant.ofEpochMilli(unixMs))
 
-private fun truncateIdentity(key: String): String = if (key.length > 28) "${key.take(16)}…${key.takeLast(8)}" else key
+private const val IDENTITY_DISPLAY_MAX = 28
+private const val IDENTITY_PREFIX_CHARS = 16
+private const val IDENTITY_SUFFIX_CHARS = 8
+private const val SECONDS_PER_HOUR = 3600
+private const val SECONDS_PER_MINUTE = 60
+private const val UPTIME_TICK_MS = 1_000L
+private const val LOG_REFRESH_INTERVAL_MS = 2_000L
+
+// Local ports that usually serve HTTP-like content (offer "Open in browser" hint).
+private const val PORT_HTTP = 80
+private const val PORT_HTTP_8080 = 8080
+private const val PORT_HTTP_8000 = 8000
+private const val PORT_DEV_3000 = 3000
+private const val PORT_FLASK_5000 = 5000
+private const val PORT_VITE = 5173
+private const val PORT_GRADIO = 7860
+private const val PORT_OLLAMA = 11434
+private val HTTP_LIKE_PORTS =
+    setOf(
+        PORT_HTTP,
+        PORT_HTTP_8080,
+        PORT_HTTP_8000,
+        PORT_DEV_3000,
+        PORT_FLASK_5000,
+        PORT_VITE,
+        PORT_GRADIO,
+        PORT_OLLAMA,
+    )
+
+private fun truncateIdentity(key: String): String =
+    if (key.length > IDENTITY_DISPLAY_MAX) {
+        "${key.take(IDENTITY_PREFIX_CHARS)}…${key.takeLast(IDENTITY_SUFFIX_CHARS)}"
+    } else {
+        key
+    }
 
 private data class HomeStatusUi(val title: String, val description: String)
 
@@ -114,8 +148,7 @@ private fun mapStatusUi(status: TunnelStatus): HomeStatusUi =
 
 private fun isBrowserOpenable(forward: ForwardConfig): Boolean {
     val name = "${forward.name} ${forward.remoteForwardId}".lowercase()
-    val httpLikePorts = setOf(80, 8080, 8000, 3000, 5000, 5173, 7860, 11434)
-    if (forward.localPort in httpLikePorts) return true
+    if (forward.localPort in HTTP_LIKE_PORTS) return true
     return listOf("http", "web", "api", "llama", "ollama").any { token -> name.contains(token) }
 }
 
@@ -158,9 +191,9 @@ internal fun mapForwardListenLabel(state: String): String =
     }
 
 private fun formatUptime(seconds: Long): String {
-    val hours = seconds / 3600
-    val minutes = (seconds % 3600) / 60
-    val secs = seconds % 60
+    val hours = seconds / SECONDS_PER_HOUR
+    val minutes = (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE
+    val secs = seconds % SECONDS_PER_MINUTE
     return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, secs)
 }
 
@@ -196,7 +229,7 @@ private fun NetworkTypeIcon(networkType: NetworkType) {
             NetworkType.NoNetwork -> Icons.Filled.WifiOff to "No network"
             NetworkType.Unknown -> Icons.Filled.Info to "Unknown network"
         }
-    Icon(icon, contentDescription = description, tint = Color(0xFF6B7280))
+    Icon(icon, contentDescription = description, tint = Color(color = 0xFF6B7280))
 }
 
 @Composable
@@ -232,7 +265,7 @@ fun HomeScreen(
     LaunchedEffect(isRunning, status.uptimeSeconds) {
         displayedUptimeSeconds = status.uptimeSeconds
         while (isRunning) {
-            delay(1_000L)
+            delay(UPTIME_TICK_MS)
             displayedUptimeSeconds = displayedUptimeSeconds?.let { it + 1L }
         }
     }
@@ -633,7 +666,7 @@ fun LogsScreen(
     LaunchedEffect(paused) {
         while (!paused) {
             vm.refresh()
-            delay(2_000L)
+            delay(LOG_REFRESH_INTERVAL_MS)
         }
     }
     val logs by vm.filteredLogs.collectAsStateWithLifecycle()
@@ -728,16 +761,16 @@ fun LogsScreen(
             items(visibleLogs) { event ->
                 val levelColor =
                     when (event.level.lowercase()) {
-                        "warn" -> Color(0xFFF59E0B)
-                        "error" -> Color(0xFFD32F2F)
-                        "debug" -> Color(0xFF6B7280)
+                        "warn" -> Color(color = 0xFFF59E0B)
+                        "error" -> Color(color = 0xFFD32F2F)
+                        "debug" -> Color(color = 0xFF6B7280)
                         else -> MaterialTheme.colorScheme.onSurface
                     }
                 StatusCard {
                     Text(
                         formatLogTimestamp(event.unixMs),
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF6B7280),
+                        color = Color(color = 0xFF6B7280),
                     )
                     Text(event.level.uppercase(), color = levelColor, style = MaterialTheme.typography.labelLarge)
                     Text(SensitiveDataRedactor.redactText(event.message))
@@ -781,7 +814,7 @@ fun SettingsScreen(
             Text(
                 "Cellular / metered: ${if (prefs.allowMetered) "Allowed" else "Blocked"}",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF6B7280),
+                color = Color(color = 0xFF6B7280),
             )
             OutlinedButton(onClick = onOpenNetworkPolicy, modifier = Modifier.fillMaxWidth()) {
                 Text("Open network policy details")
@@ -874,7 +907,7 @@ fun SettingsScreen(
                 Text(
                     "Answer mode: not available on Android",
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF6B7280),
+                    color = Color(color = 0xFF6B7280),
                 )
                 OutlinedButton(
                     onClick = { clipboard.setText(AnnotatedString(vm.statusJson())) },
@@ -892,7 +925,7 @@ fun SettingsScreen(
             Text(
                 "Version ${BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF6B7280),
+                color = Color(color = 0xFF6B7280),
             )
         }
     }

@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
 
+private const val MILLIS_PER_SECOND = 1000L
+
 class TunnelRepository(
     bridgeFactory: () -> TunnelNativeBridge = { RustTunnelBridge() },
 ) {
@@ -204,7 +206,7 @@ class TunnelRepository(
         val uptimeSeconds =
             startedAtUnixMs?.let { startedAt ->
                 val elapsedMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
-                elapsedMs / 1000L
+                elapsedMs / MILLIS_PER_SECOND
             }
         val mappedForwards =
             forwards.map { forward ->

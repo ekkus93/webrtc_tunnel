@@ -44,12 +44,14 @@ import com.phillipchin.webrtctunnel.viewmodel.SetupStep
 import com.phillipchin.webrtctunnel.viewmodel.SetupViewModel
 import com.phillipchin.webrtctunnel.viewmodel.SetupWizardState
 
+private const val MAX_PORT = 65535
+
 internal fun suggestNewForwardPort(
     existingForwards: List<ForwardConfig>,
     startPort: Int = 8080,
 ): Int {
     val usedPorts = existingForwards.filter { it.enabled }.map { it.localPort }.toSet()
-    for (port in startPort..65535) {
+    for (port in startPort..MAX_PORT) {
         if (port !in usedPorts) {
             return port
         }
@@ -146,7 +148,7 @@ fun SetupWizardScreen(
         }
         state.saveResult?.let {
             Spacer(Modifier.height(8.dp))
-            Text(it, color = Color(0xFF2E7D32))
+            Text(it, color = Color(color = 0xFF2E7D32))
         }
         Spacer(Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

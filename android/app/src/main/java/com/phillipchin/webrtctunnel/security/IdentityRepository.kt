@@ -104,10 +104,10 @@ class AndroidKeystoreIdentityCrypto : IdentityCrypto {
     }
 
     override fun decrypt(payload: ByteArray): ByteArray {
-        val iv = payload.copyOfRange(0, 12)
-        val ciphertext = payload.copyOfRange(12, payload.size)
+        val iv = payload.copyOfRange(0, GCM_IV_BYTES)
+        val ciphertext = payload.copyOfRange(GCM_IV_BYTES, payload.size)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, loadOrCreateKey(), GCMParameterSpec(128, iv))
+        cipher.init(Cipher.DECRYPT_MODE, loadOrCreateKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
         return cipher.doFinal(ciphertext)
     }
 
@@ -132,5 +132,7 @@ class AndroidKeystoreIdentityCrypto : IdentityCrypto {
 
     private companion object {
         const val KEY_ALIAS = "webrtc_tunnel_identity_key"
+        const val GCM_IV_BYTES = 12
+        const val GCM_TAG_BITS = 128
     }
 }

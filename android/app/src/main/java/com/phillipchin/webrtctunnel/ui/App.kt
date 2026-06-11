@@ -191,7 +191,7 @@ fun WebRtcTunnelApp(deps: AppDependencies) {
 
 @Composable
 private fun NotificationPermissionGate() {
-    if (Build.VERSION.SDK_INT < 33) return
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
     val context = LocalContext.current
     val hasPermission =
         ContextCompat.checkSelfPermission(

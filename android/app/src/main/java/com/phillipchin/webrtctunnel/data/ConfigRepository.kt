@@ -19,6 +19,8 @@ import java.nio.file.StandardCopyOption
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
 
+private const val MAX_PORT = 65535
+
 class ConfigRepository(private val context: Context) {
     private val configFile: File get() = File(context.filesDir, "config.toml")
     private val forwardsFile: File get() = File(context.filesDir, "forwards.json")
@@ -250,7 +252,7 @@ class ConfigRepository(private val context: Context) {
         if (missingRemote != null) {
             return "Remote forward ID is required"
         }
-        val invalidPort = enabled.firstOrNull { it.localPort !in 1..65535 }
+        val invalidPort = enabled.firstOrNull { it.localPort !in 1..MAX_PORT }
         if (invalidPort != null) {
             return "Port must be between 1 and 65535"
         }

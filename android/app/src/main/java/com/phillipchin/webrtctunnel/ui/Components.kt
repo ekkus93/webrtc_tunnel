@@ -35,9 +35,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
-private val Success = Color(0xFF2E7D32)
-private val Warning = Color(0xFFF59E0B)
-private val Error = Color(0xFFD32F2F)
+private val Success = Color(color = 0xFF2E7D32)
+private val Warning = Color(color = 0xFFF59E0B)
+private val Error = Color(color = 0xFFD32F2F)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,7 +49,7 @@ fun TunnelTopAppBar(
         title = { Text(title, style = MaterialTheme.typography.titleSmall) },
         colors =
             TopAppBarDefaults.topAppBarColors(
-                containerColor = Color(0xFF061A3D),
+                containerColor = Color(color = 0xFF061A3D),
                 titleContentColor = Color.White,
                 navigationIconContentColor = Color.White,
             ),
@@ -64,7 +64,7 @@ fun SectionHeader(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, style = MaterialTheme.typography.titleLarge)
-        subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280)) }
+        subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Color(color = 0xFF6B7280)) }
     }
 }
 
@@ -102,9 +102,9 @@ fun forwardStatusChipColors(label: String): StatusChipColors =
             StatusChipColors(Error, Color.White)
         label.contains("paused", ignoreCase = true) ||
             label.contains("starting", ignoreCase = true) ->
-            StatusChipColors(Warning, Color(0xFF1F2937))
+            StatusChipColors(Warning, Color(color = 0xFF1F2937))
         // Neutral pair for Stopped / Disabled / Configured and any unknown label.
-        else -> StatusChipColors(Color(0xFFE5E7EB), Color(0xFF374151))
+        else -> StatusChipColors(Color(color = 0xFFE5E7EB), Color(color = 0xFF374151))
     }
 
 @Composable
@@ -132,7 +132,7 @@ fun ForwardSummaryRow(
     ) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(color = 0xFF6B7280))
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Surface(
@@ -148,7 +148,7 @@ fun ForwardSummaryRow(
                 )
             }
             if (onClick != null) {
-                Text("›", style = MaterialTheme.typography.titleLarge, color = Color(0xFF6B7280))
+                Text("›", style = MaterialTheme.typography.titleLarge, color = Color(color = 0xFF6B7280))
             }
         }
     }
@@ -176,7 +176,7 @@ fun ErrorResolutionCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF5F5)),
+        colors = CardDefaults.cardColors(containerColor = Color(color = 0xFFFFF5F5)),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(summary, color = Error, style = MaterialTheme.typography.titleMedium)
@@ -187,7 +187,7 @@ fun ErrorResolutionCard(
                 }
                 if (showDetails) {
                     HorizontalDivider()
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = Color(color = 0xFF6B7280))
                 }
             }
             action?.invoke()
@@ -209,7 +209,7 @@ fun WizardStepper(
                     when {
                         active -> MaterialTheme.colorScheme.primary
                         completed -> MaterialTheme.colorScheme.primaryContainer
-                        else -> Color(0xFFE5E7EB)
+                        else -> Color(color = 0xFFE5E7EB)
                     }
                 Box(
                     modifier =
@@ -231,7 +231,7 @@ fun WizardStepper(
                         ) {
                             Text(
                                 "${index + 1}",
-                                color = if (active) Color.White else Color(0xFF374151),
+                                color = if (active) Color.White else Color(color = 0xFF374151),
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
@@ -243,7 +243,13 @@ fun WizardStepper(
                                         .heightIn(min = 2.dp)
                                         .padding(horizontal = 4.dp)
                                         .background(
-                                            if (completed) MaterialTheme.colorScheme.primary else Color(0xFFD1D5DB),
+                                            if (completed) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                Color(
+                                                    color = 0xFFD1D5DB,
+                                                )
+                                            },
                                         ),
                             )
                         }
@@ -328,5 +334,5 @@ fun stateColorToken(state: String): Color =
         state.contains("connected", ignoreCase = true) || state.contains("listening", ignoreCase = true) -> Success
         state.contains("paused", ignoreCase = true) || state.contains("starting", ignoreCase = true) -> Warning
         state.contains("error", ignoreCase = true) || state.contains("invalid", ignoreCase = true) -> Error
-        else -> Color(0xFF6B7280)
+        else -> Color(color = 0xFF6B7280)
     }
