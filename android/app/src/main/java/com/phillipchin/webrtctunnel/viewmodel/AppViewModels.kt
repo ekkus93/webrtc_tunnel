@@ -246,24 +246,27 @@ private fun canAdvance(
     deps: AppDependencies,
     state: SetupWizardState,
     forwards: List<ForwardConfig>,
-): Boolean {
-    return when (state.currentStep) {
+): Boolean =
+    when (state.currentStep) {
         SetupStep.Mode -> true
         SetupStep.Identity -> state.localPublicIdentity.isNotBlank() || state.importIdentityPath.isNotBlank()
-        SetupStep.Broker -> state.input.brokerHost.isNotBlank() && state.input.brokerPort in 1..MAX_PORT
-        SetupStep.Peer -> state.input.remotePeerId.isNotBlank() && state.importPublicIdentity.isNotBlank()
-        SetupStep.Forwards -> forwards.isNotEmpty() && deps.forwardsStore.validateForwards(forwards) == null
+        SetupStep.Broker -> brokerInputReady(state.input)
+        SetupStep.Peer -> peerInputReady(state)
+        SetupStep.Forwards -> forwardsReady(deps, forwards)
         SetupStep.NetworkPolicy -> true
-        SetupStep.Review -> {
-            state.input.brokerHost.isNotBlank() &&
-                state.input.brokerPort in 1..MAX_PORT &&
-                state.input.remotePeerId.isNotBlank() &&
-                state.importPublicIdentity.isNotBlank() &&
-                forwards.isNotEmpty() &&
-                deps.forwardsStore.validateForwards(forwards) == null
-        }
+        SetupStep.Review -> brokerInputReady(state.input) && peerInputReady(state) && forwardsReady(deps, forwards)
     }
-}
+
+private fun brokerInputReady(input: SetupConfigInput): Boolean =
+    input.brokerHost.isNotBlank() && input.brokerPort in 1..MAX_PORT
+
+private fun peerInputReady(state: SetupWizardState): Boolean =
+    state.input.remotePeerId.isNotBlank() && state.importPublicIdentity.isNotBlank()
+
+private fun forwardsReady(
+    deps: AppDependencies,
+    forwards: List<ForwardConfig>,
+): Boolean = forwards.isNotEmpty() && deps.forwardsStore.validateForwards(forwards) == null
 
 private fun loadStoredSetupInput(
     deps: AppDependencies,
