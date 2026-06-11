@@ -7,13 +7,14 @@ import com.phillipchin.webrtctunnel.security.IdentityRepository
 class AppDependencies(
     context: Context,
     val configRepository: ConfigRepository = ConfigRepository(context.applicationContext),
-    val tunnelRepository: TunnelRepository = TunnelRepository(context.applicationContext),
+    val tunnelRepository: TunnelRepository = TunnelRepository(),
     val networkPolicyManager: NetworkPolicyManager = NetworkPolicyManager(context.applicationContext),
     val identityRepository: IdentityRepository = IdentityRepository(context.applicationContext),
-    val diagnosticsRepository: DiagnosticsRepository = DiagnosticsRepository(
-        context.applicationContext,
-        configRepository = configRepository,
-    ),
+    val diagnosticsRepository: DiagnosticsRepository =
+        DiagnosticsRepository(
+            context.applicationContext,
+            configRepository = configRepository,
+        ),
 ) {
     val context: Context = context.applicationContext
 }

@@ -44,11 +44,12 @@ class NotificationControllerTest {
     @Test
     fun showSkipsWhenPermissionDenied() {
         var notified = false
-        val deniedController = NotificationController(
-            context = context,
-            notificationsAllowedProvider = { false },
-            notifyAction = { _, _ -> notified = true },
-        )
+        val deniedController =
+            NotificationController(
+                context = context,
+                notificationsAllowedProvider = { false },
+                notifyAction = { _, _ -> notified = true },
+            )
         deniedController.show(controller.buildStatusNotification(ServiceState.Connected, "ok"))
         assertTrue(!notified)
     }
@@ -56,22 +57,24 @@ class NotificationControllerTest {
     @Test
     fun showCallsNotifyWhenAllowed() {
         var count = 0
-        val allowedController = NotificationController(
-            context = context,
-            notificationsAllowedProvider = { true },
-            notifyAction = { _, _ -> count += 1 },
-        )
+        val allowedController =
+            NotificationController(
+                context = context,
+                notificationsAllowedProvider = { true },
+                notifyAction = { _, _ -> count += 1 },
+            )
         allowedController.show(controller.buildStatusNotification(ServiceState.Connected, "ok"))
         assertEquals(1, count)
     }
 
     @Test
     fun showSwallowsNotifyFailure() {
-        val failingController = NotificationController(
-            context = context,
-            notificationsAllowedProvider = { true },
-            notifyAction = { _, _ -> error("boom") },
-        )
+        val failingController =
+            NotificationController(
+                context = context,
+                notificationsAllowedProvider = { true },
+                notifyAction = { _, _ -> error("boom") },
+            )
         failingController.show(controller.buildStatusNotification(ServiceState.Connected, "ok"))
     }
 }

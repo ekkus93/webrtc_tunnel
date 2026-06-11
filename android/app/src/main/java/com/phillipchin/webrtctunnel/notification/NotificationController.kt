@@ -1,14 +1,13 @@
 package com.phillipchin.webrtctunnel.notification
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -33,8 +32,17 @@ class NotificationController(
         const val NOTIFICATION_ID = 1001
     }
 
-    @SuppressLint("MissingPermission")
-    private fun notifyWithManager(id: Int, notification: android.app.Notification) {
+    private fun notifyWithManager(
+        id: Int,
+        notification: android.app.Notification,
+    ) {
+        // Explicit runtime check so Android lint can verify POST_NOTIFICATIONS is held
+        // (pre-Tiramisu this permission is install-granted, so the check passes there).
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
         NotificationManagerCompat.from(context).notify(id, notification)
     }
 
@@ -48,26 +56,32 @@ class NotificationController(
         manager.createNotificationChannels(listOf(status, errors))
     }
 
-    fun buildStatusNotification(state: ServiceState, body: String): android.app.Notification {
-        val openIntent = PendingIntent.getActivity(
-            context,
-            0,
-            Intent(context, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val action = PendingIntent.getService(
-            context,
-            1,
-            Intent(context, com.phillipchin.webrtctunnel.TunnelForegroundService::class.java).apply {
-                action = com.phillipchin.webrtctunnel.TunnelForegroundService.ACTION_STOP
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val title = when (state) {
-            ServiceState.PausedMeteredBlocked -> "WebRTC Tunnel paused"
-            ServiceState.Error, ServiceState.ConfigInvalid -> "WebRTC Tunnel error"
-            else -> "WebRTC Tunnel running"
-        }
+    fun buildStatusNotification(
+        state: ServiceState,
+        body: String,
+    ): android.app.Notification {
+        val openIntent =
+            PendingIntent.getActivity(
+                context,
+                0,
+                Intent(context, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        val action =
+            PendingIntent.getService(
+                context,
+                1,
+                Intent(context, com.phillipchin.webrtctunnel.TunnelForegroundService::class.java).apply {
+                    action = com.phillipchin.webrtctunnel.TunnelForegroundService.ACTION_STOP
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        val title =
+            when (state) {
+                ServiceState.PausedMeteredBlocked -> "WebRTC Tunnel paused"
+                ServiceState.Error, ServiceState.ConfigInvalid -> "WebRTC Tunnel error"
+                else -> "WebRTC Tunnel running"
+            }
         return NotificationCompat.Builder(context, CHANNEL_STATUS)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)

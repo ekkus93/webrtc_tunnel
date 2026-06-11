@@ -1,16 +1,13 @@
 package com.phillipchin.webrtctunnel.data
 
-import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.TunnelNativeBridge
+import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.ListenState
-import com.phillipchin.webrtctunnel.model.LogEvent
 import com.phillipchin.webrtctunnel.model.NativeLogEventDto
 import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.ValidationResult
-import com.phillipchin.webrtctunnel.model.IdentityValidationResult
-import java.util.ArrayDeque
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -19,17 +16,17 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.util.ArrayDeque
 
 @RunWith(RobolectricTestRunner::class)
 class TunnelRepositoryTest {
-    private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
     private lateinit var bridge: RecordingBridge
     private lateinit var repository: TunnelRepository
 
     @Before
     fun setUp() {
         bridge = RecordingBridge()
-        repository = TunnelRepository(context, bridge)
+        repository = TunnelRepository(bridge)
     }
 
     @Test
@@ -178,17 +175,18 @@ class TunnelRepositoryTest {
 
     @Test
     fun refreshStatusMapsMeasuredDaemonFields() {
-        bridge.statusPayload = Json.encodeToString(
-            NativeRuntimeStatusDto(
-                state = "running",
-                mode = "offer",
-                config_path = "/tmp/config.toml",
-                active = true,
-                mqtt_connected = true,
-                active_session_count = 2,
-                session_capacity = 16,
-            ),
-        )
+        bridge.statusPayload =
+            Json.encodeToString(
+                NativeRuntimeStatusDto(
+                    state = "running",
+                    mode = "offer",
+                    config_path = "/tmp/config.toml",
+                    active = true,
+                    mqtt_connected = true,
+                    active_session_count = 2,
+                    session_capacity = 16,
+                ),
+            )
         repository.refreshStatus()
         val status = repository.status.value
         assertEquals(true, status.mqttConnected)
@@ -208,13 +206,14 @@ class TunnelRepositoryTest {
 
     @Test
     fun refreshStatusMapsForwardRuntimeStatus() {
-        bridge.statusPayload = """
+        bridge.statusPayload =
+            """
             {"state":"running","mode":"offer","active":true,
              "forwards":[
                {"id":"web","local_host":"127.0.0.1","local_port":8080,"listen_state":"listening"},
                {"id":"ssh","local_host":"127.0.0.1","local_port":2222,"listen_state":"error","last_error":"Address already in use"}
              ]}
-        """.trimIndent()
+            """.trimIndent()
         repository.refreshStatus()
         val forwards = repository.status.value.forwards
         assertEquals(2, forwards.size)
@@ -272,7 +271,10 @@ class TunnelRepositoryTest {
         assertEquals(false, repository.status.value.allowMeteredForCurrentSession)
     }
 
-    private fun statusJson(state: String, mode: String): String =
+    private fun statusJson(
+        state: String,
+        mode: String,
+    ): String =
         Json.encodeToString(
             NativeRuntimeStatusDto(
                 state = state,
@@ -292,15 +294,19 @@ class TunnelRepositoryTest {
         val offerResults: ArrayDeque<Result<Unit>> = ArrayDeque()
         val answerResults: ArrayDeque<Result<Unit>> = ArrayDeque()
         val stopResults: ArrayDeque<Result<Unit>> = ArrayDeque()
-        var statusPayload: String = Json.encodeToString(
-            NativeRuntimeStatusDto(state = "stopped", mode = "offer"),
-        )
+        var statusPayload: String =
+            Json.encodeToString(
+                NativeRuntimeStatusDto(state = "stopped", mode = "offer"),
+            )
         val statusPayloads: ArrayDeque<String> = ArrayDeque()
         var logsJson: String = "[]"
         val logsPayloads: ArrayDeque<String> = ArrayDeque()
         var validationResult: ValidationResult = ValidationResult(true, null)
 
-        override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> {
+        override fun startOffer(
+            configPath: String,
+            identityBytes: ByteArray?,
+        ): Result<Unit> {
             offerConfigPath = configPath
             return offerResults.pollFirst()
                 ?: if (failOffer) Result.failure(IllegalStateException("offer failed")) else Result.success(Unit)
@@ -323,12 +329,29 @@ class TunnelRepositoryTest {
         override fun getRecentLogsJson(maxEvents: Int): String = logsPayloads.pollFirst() ?: logsJson
 
         override fun validateConfig(configPath: String): ValidationResult = validationResult
-        override fun validateConfigWithIdentity(configPath: String, identityBytes: ByteArray): ValidationResult = validationResult
+
+        override fun validateConfigWithIdentity(
+            configPath: String,
+            identityBytes: ByteArray,
+        ): ValidationResult = validationResult
+
         override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
-            IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = identityToml, peer_id = "peer")
+            IdentityValidationResult(
+                valid = true,
+                canonical_public_identity = "canon",
+                canonical_private_identity = identityToml,
+                peer_id = "peer",
+            )
+
         override fun validatePublicIdentity(line: String): IdentityValidationResult =
             IdentityValidationResult(valid = true, canonical_public_identity = line.trim(), peer_id = "peer")
+
         override fun generateIdentity(peerId: String): IdentityValidationResult =
-            IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = "private", peer_id = peerId)
+            IdentityValidationResult(
+                valid = true,
+                canonical_public_identity = "canon",
+                canonical_private_identity = "private",
+                peer_id = peerId,
+            )
     }
 }

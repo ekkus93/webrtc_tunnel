@@ -9,7 +9,10 @@ object SensitiveDataRedactor {
         return input
             .replace(Regex("""(?im)^\s*sign\.private\s*=\s*".*"$"""), "sign.private = \"***REDACTED***\"")
             .replace(Regex("""(?im)^\s*kex\.private\s*=\s*".*"$"""), "kex.private = \"***REDACTED***\"")
-            .replace(Regex("""(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"""), "***REDACTED_PRIVATE_KEY_BLOCK***")
+            .replace(
+                Regex("""(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"""),
+                "***REDACTED_PRIVATE_KEY_BLOCK***",
+            )
             .replace(Regex("""(?i)\bpassword[^,\s]*\s*=\s*\S+"""), "password=***REDACTED***")
             .replace(Regex("""(?i)\btoken[^,\s]*\s*=\s*\S+"""), "token=***REDACTED***")
             .replace(Regex("""(?i)\bbearer\s+[A-Za-z0-9\-\._~\+/]+=*"""), "Bearer ***REDACTED***")
@@ -26,12 +29,14 @@ object SensitiveDataRedactor {
 
     fun redactLogEvent(event: LogEvent): LogEvent = event.copy(message = redactText(event.message))
 
-    fun redactStatus(status: TunnelStatus): TunnelStatus = status.copy(
-        lastError = status.lastError?.redacted(),
-    )
+    fun redactStatus(status: TunnelStatus): TunnelStatus =
+        status.copy(
+            lastError = status.lastError?.redacted(),
+        )
 
-    private fun TunnelError.redacted(): TunnelError = copy(
-        message = redactText(message),
-        details = details?.let(::redactText),
-    )
+    private fun TunnelError.redacted(): TunnelError =
+        copy(
+            message = redactText(message),
+            details = details?.let(::redactText),
+        )
 }

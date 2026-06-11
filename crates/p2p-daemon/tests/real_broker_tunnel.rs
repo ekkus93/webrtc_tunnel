@@ -209,18 +209,30 @@ async fn spawn_echo_target(port: u16) {
     });
 }
 
-#[allow(clippy::too_many_arguments)]
-fn peer_config(
+struct PeerParams<'a> {
     role: NodeRole,
-    peer_id: &str,
-    remote_peer_id: &str,
-    broker_url: &str,
-    ca_file: &Path,
+    peer_id: &'a str,
+    remote_peer_id: &'a str,
+    broker_url: &'a str,
+    ca_file: &'a Path,
     listen_port: u16,
     target_port: u16,
-    state_dir: &Path,
+    state_dir: &'a Path,
     status_file: PathBuf,
-) -> AppConfig {
+}
+
+fn peer_config(params: PeerParams) -> AppConfig {
+    let PeerParams {
+        role,
+        peer_id,
+        remote_peer_id,
+        broker_url,
+        ca_file,
+        listen_port,
+        target_port,
+        state_dir,
+        status_file,
+    } = params;
     let peer_id: p2p_core::PeerId = peer_id.parse().expect("peer id");
     let client_id = peer_id.to_string();
     AppConfig {
@@ -362,28 +374,28 @@ async fn full_tunnel_over_real_tls_broker() {
     let offer_status = offer_state.path().join("status.json");
     let answer_status = answer_state.path().join("status.json");
 
-    let offer_config = peer_config(
-        NodeRole::Offer,
-        OFFER_PEER,
-        ANSWER_PEER,
-        &broker_url,
-        &ca_path,
+    let offer_config = peer_config(PeerParams {
+        role: NodeRole::Offer,
+        peer_id: OFFER_PEER,
+        remote_peer_id: ANSWER_PEER,
+        broker_url: &broker_url,
+        ca_file: &ca_path,
         listen_port,
         target_port,
-        offer_state.path(),
-        offer_status.clone(),
-    );
-    let answer_config = peer_config(
-        NodeRole::Answer,
-        ANSWER_PEER,
-        OFFER_PEER,
-        &broker_url,
-        &ca_path,
+        state_dir: offer_state.path(),
+        status_file: offer_status.clone(),
+    });
+    let answer_config = peer_config(PeerParams {
+        role: NodeRole::Answer,
+        peer_id: ANSWER_PEER,
+        remote_peer_id: OFFER_PEER,
+        broker_url: &broker_url,
+        ca_file: &ca_path,
         listen_port,
         target_port,
-        answer_state.path(),
-        answer_status.clone(),
-    );
+        state_dir: answer_state.path(),
+        status_file: answer_status.clone(),
+    });
 
     let answer_keys = authorized_keys_for(&offer_id);
     let offer_keys = authorized_keys_for(&answer_id);

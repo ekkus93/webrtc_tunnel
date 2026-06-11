@@ -23,7 +23,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,19 +31,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.NetworkStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.viewmodel.SetupStep
-import com.phillipchin.webrtctunnel.viewmodel.SetupWizardState
 import com.phillipchin.webrtctunnel.viewmodel.SetupViewModel
+import com.phillipchin.webrtctunnel.viewmodel.SetupWizardState
 
-internal fun suggestNewForwardPort(existingForwards: List<ForwardConfig>, startPort: Int = 8080): Int {
+internal fun suggestNewForwardPort(
+    existingForwards: List<ForwardConfig>,
+    startPort: Int = 8080,
+): Int {
     val usedPorts = existingForwards.filter { it.enabled }.map { it.localPort }.toSet()
     for (port in startPort..65535) {
         if (port !in usedPorts) {
@@ -54,14 +57,15 @@ internal fun suggestNewForwardPort(existingForwards: List<ForwardConfig>, startP
     return startPort
 }
 
-internal fun defaultNewForward(existingForwards: List<ForwardConfig>): ForwardConfig = ForwardConfig(
-    id = "forward_${System.currentTimeMillis()}",
-    name = "",
-    localHost = "127.0.0.1",
-    localPort = suggestNewForwardPort(existingForwards),
-    remoteForwardId = "",
-    enabled = true,
-)
+internal fun defaultNewForward(existingForwards: List<ForwardConfig>): ForwardConfig =
+    ForwardConfig(
+        id = "forward_${System.currentTimeMillis()}",
+        name = "",
+        localHost = "127.0.0.1",
+        localPort = suggestNewForwardPort(existingForwards),
+        remoteForwardId = "",
+        enabled = true,
+    )
 
 @Composable
 fun SetupWizardScreen(
@@ -76,20 +80,22 @@ fun SetupWizardScreen(
     )
     val canAdvance = state.canAdvance
     val clipboard = LocalClipboardManager.current
-    val importPublicIdentityLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        if (uri != null) {
-            vm.importPublicIdentityFromUri(uri)
+    val importPublicIdentityLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument(),
+        ) { uri ->
+            if (uri != null) {
+                vm.importPublicIdentityFromUri(uri)
+            }
         }
-    }
-    val importIdentityLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        if (uri != null) {
-            vm.importIdentityFromUri(uri)
+    val importIdentityLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument(),
+        ) { uri ->
+            if (uri != null) {
+                vm.importIdentityFromUri(uri)
+            }
         }
-    }
     var editingForward by remember { mutableStateOf<ForwardEditorState?>(null) }
 
     ScrollableScreenSurface(padding) {
@@ -102,29 +108,32 @@ fun SetupWizardScreen(
         Spacer(Modifier.height(12.dp))
         when (state.currentStep) {
             SetupStep.Mode -> ModeStepContent()
-            SetupStep.Identity -> IdentityStepContent(
-                vm = vm,
-                state = state,
-                onImportIdentityFile = { importIdentityLauncher.launch(arrayOf("text/*", "application/toml")) },
-            )
+            SetupStep.Identity ->
+                IdentityStepContent(
+                    vm = vm,
+                    state = state,
+                    onImportIdentityFile = { importIdentityLauncher.launch(arrayOf("text/*", "application/toml")) },
+                )
             SetupStep.Broker -> BrokerStepContent(vm, state)
-            SetupStep.Peer -> PeerStepContent(
-                vm = vm,
-                state = state,
-                onPaste = {
-                    val text = clipboard.getText()?.text.orEmpty()
-                    vm.setImportPublicIdentity(text)
-                    vm.validateRemotePublicIdentity()
-                },
-                onImportFile = { importPublicIdentityLauncher.launch(arrayOf("text/*")) },
-            )
-            SetupStep.Forwards -> ForwardsStepContent(
-                vm,
-                forwards,
-                onAdd = { editingForward = beginAddForwardEdit(forwards) },
-                onEdit = { editingForward = beginEditForward(it) },
-                onDelete = vm::deleteForward,
-            )
+            SetupStep.Peer ->
+                PeerStepContent(
+                    vm = vm,
+                    state = state,
+                    onPaste = {
+                        val text = clipboard.getText()?.text.orEmpty()
+                        vm.setImportPublicIdentity(text)
+                        vm.validateRemotePublicIdentity()
+                    },
+                    onImportFile = { importPublicIdentityLauncher.launch(arrayOf("text/*")) },
+                )
+            SetupStep.Forwards ->
+                ForwardsStepContent(
+                    vm,
+                    forwards,
+                    onAdd = { editingForward = beginAddForwardEdit(forwards) },
+                    onEdit = { editingForward = beginEditForward(it) },
+                    onDelete = vm::deleteForward,
+                )
             SetupStep.NetworkPolicy -> PolicyStepContent(vm, state, networkStatus)
             SetupStep.Review -> ReviewStepContent(state, forwards)
         }
@@ -175,15 +184,16 @@ fun SetupWizardScreen(
     }
 }
 
-private fun stepLabel(step: SetupStep): String = when (step) {
-    SetupStep.Mode -> "Mode"
-    SetupStep.Identity -> "Identity"
-    SetupStep.Broker -> "Broker"
-    SetupStep.Peer -> "Remote Peer"
-    SetupStep.Forwards -> "Forwards"
-    SetupStep.NetworkPolicy -> "Network Policy"
-    SetupStep.Review -> "Review"
-}
+private fun stepLabel(step: SetupStep): String =
+    when (step) {
+        SetupStep.Mode -> "Mode"
+        SetupStep.Identity -> "Identity"
+        SetupStep.Broker -> "Broker"
+        SetupStep.Peer -> "Remote Peer"
+        SetupStep.Forwards -> "Forwards"
+        SetupStep.NetworkPolicy -> "Network Policy"
+        SetupStep.Review -> "Review"
+    }
 
 @Composable
 private fun ModeStepContent() {
@@ -202,12 +212,18 @@ private fun ModeStepContent() {
 }
 
 @Composable
-private fun IdentityStepContent(vm: SetupViewModel, state: SetupWizardState, onImportIdentityFile: () -> Unit) {
+private fun IdentityStepContent(
+    vm: SetupViewModel,
+    state: SetupWizardState,
+    onImportIdentityFile: () -> Unit,
+) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var showRawPathImport by remember { mutableStateOf(false) }
     StatusCard {
-        OutlinedTextField(value = state.input.localPeerId, onValueChange = { vm.setInput(state.input.copy(localPeerId = it)) }, label = { Text("Local peer id") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = state.input.localPeerId, onValueChange = {
+            vm.setInput(state.input.copy(localPeerId = it))
+        }, label = { Text("Local peer id") }, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onImportIdentityFile, modifier = Modifier.weight(1f)) { Text("Import identity file") }
             OutlinedButton(onClick = vm::generateIdentity, modifier = Modifier.weight(1f)) { Text("Generate identity") }
@@ -238,12 +254,18 @@ private fun IdentityStepContent(vm: SetupViewModel, state: SetupWizardState, onI
                 ) { Text("Copy Public Key") }
                 OutlinedButton(
                     onClick = {
-                        val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(android.content.Intent.EXTRA_SUBJECT, "WebRTC Tunnel public identity")
-                            putExtra(android.content.Intent.EXTRA_TEXT, state.localPublicIdentity)
-                        }
-                        context.startActivity(android.content.Intent.createChooser(share, "Share public identity").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                        val share =
+                            android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(android.content.Intent.EXTRA_SUBJECT, "WebRTC Tunnel public identity")
+                                putExtra(android.content.Intent.EXTRA_TEXT, state.localPublicIdentity)
+                            }
+                        context.startActivity(
+                            android.content.Intent.createChooser(
+                                share,
+                                "Share public identity",
+                            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
                     },
                     modifier = Modifier.weight(1f),
                 ) { Text("Share Public Key") }
@@ -253,16 +275,26 @@ private fun IdentityStepContent(vm: SetupViewModel, state: SetupWizardState, onI
 }
 
 @Composable
-private fun BrokerStepContent(vm: SetupViewModel, state: SetupWizardState) {
+private fun BrokerStepContent(
+    vm: SetupViewModel,
+    state: SetupWizardState,
+) {
     StatusCard {
-        OutlinedTextField(value = state.input.brokerHost, onValueChange = { vm.setInput(state.input.copy(brokerHost = it)) }, label = { Text("Broker host") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = state.input.brokerPort.toString(), onValueChange = { value -> vm.setInput(state.input.copy(brokerPort = value.toIntOrNull() ?: 0)) }, label = { Text("Broker port") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = state.input.brokerHost, onValueChange = {
+            vm.setInput(state.input.copy(brokerHost = it))
+        }, label = { Text("Broker host") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = state.input.brokerPort.toString(), onValueChange = {
+                value ->
+            vm.setInput(state.input.copy(brokerPort = value.toIntOrNull() ?: 0))
+        }, label = { Text("Broker port") }, modifier = Modifier.fillMaxWidth())
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Use TLS")
             Spacer(Modifier.weight(1f))
             Switch(checked = state.input.brokerUseTls, onCheckedChange = { vm.setInput(state.input.copy(brokerUseTls = it)) })
         }
-        OutlinedTextField(value = state.input.brokerUsername, onValueChange = { vm.setInput(state.input.copy(brokerUsername = it)) }, label = { Text("Broker username") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = state.input.brokerUsername, onValueChange = {
+            vm.setInput(state.input.copy(brokerUsername = it))
+        }, label = { Text("Broker username") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(
             value = state.input.brokerPassword,
             onValueChange = { vm.setInput(state.input.copy(brokerPassword = it)) },
@@ -274,12 +306,16 @@ private fun BrokerStepContent(vm: SetupViewModel, state: SetupWizardState) {
             Text(if (state.advancedExpanded) "Hide advanced" else "Show advanced")
         }
         if (state.advancedExpanded) {
-            OutlinedTextField(value = state.input.topicPrefix, onValueChange = { vm.setInput(state.input.copy(topicPrefix = it)) }, label = { Text("Topic prefix") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = state.input.topicPrefix, onValueChange = {
+                vm.setInput(state.input.copy(topicPrefix = it))
+            }, label = { Text("Topic prefix") }, modifier = Modifier.fillMaxWidth())
             Text(
                 "Change topic prefix only if your broker requires isolation from other users.",
                 style = MaterialTheme.typography.bodySmall,
             )
-            OutlinedTextField(value = state.input.brokerPasswordFile, onValueChange = { vm.setInput(state.input.copy(brokerPasswordFile = it)) }, label = { Text("Broker password file (advanced)") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = state.input.brokerPasswordFile, onValueChange = {
+                vm.setInput(state.input.copy(brokerPasswordFile = it))
+            }, label = { Text("Broker password file (advanced)") }, modifier = Modifier.fillMaxWidth())
             Text(
                 "Use this instead of the password field if your credentials are stored in a file on device.",
                 style = MaterialTheme.typography.bodySmall,
@@ -296,8 +332,12 @@ private fun PeerStepContent(
     onImportFile: () -> Unit,
 ) {
     StatusCard {
-        OutlinedTextField(value = state.input.remotePeerId, onValueChange = { vm.setInput(state.input.copy(remotePeerId = it)) }, label = { Text("Remote peer id") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = state.importPublicIdentity, onValueChange = vm::setImportPublicIdentity, label = { Text("Remote public identity") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = state.input.remotePeerId, onValueChange = {
+            vm.setInput(state.input.copy(remotePeerId = it))
+        }, label = { Text("Remote peer id") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = state.importPublicIdentity, onValueChange = vm::setImportPublicIdentity, label = {
+            Text("Remote public identity")
+        }, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = vm::validateRemotePublicIdentity, modifier = Modifier.weight(1f)) { Text("Validate remote identity") }
         }
@@ -318,7 +358,11 @@ private fun ForwardsStepContent(
     onDelete: (String) -> Unit,
 ) {
     StatusCard {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text("Forward rules", style = MaterialTheme.typography.titleMedium)
             IconButton(onClick = onAdd) { Icon(Icons.Default.Add, contentDescription = "Add forward") }
         }
@@ -327,7 +371,11 @@ private fun ForwardsStepContent(
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 forwards.forEach { forward ->
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Column(Modifier.weight(1f)) {
                             Text(forward.name, style = MaterialTheme.typography.titleSmall)
                             Text("${forward.localHost}:${forward.localPort} -> ${forward.remoteForwardId}")
@@ -346,7 +394,11 @@ private fun ForwardsStepContent(
 }
 
 @Composable
-private fun PolicyStepContent(vm: SetupViewModel, state: SetupWizardState, networkStatus: NetworkStatus) {
+private fun PolicyStepContent(
+    vm: SetupViewModel,
+    state: SetupWizardState,
+    networkStatus: NetworkStatus,
+) {
     var showMeteredWarningDialog by remember { mutableStateOf(false) }
     StatusCard {
         Text("Current network: ${mapNetworkTypeLabel(networkStatus.networkType)}")
@@ -385,7 +437,10 @@ private fun PolicyStepContent(vm: SetupViewModel, state: SetupWizardState, netwo
 }
 
 @Composable
-private fun ReviewStepContent(state: SetupWizardState, forwards: List<ForwardConfig>) {
+private fun ReviewStepContent(
+    state: SetupWizardState,
+    forwards: List<ForwardConfig>,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         StatusCard {
             Text("Mode", style = MaterialTheme.typography.titleMedium)
@@ -436,25 +491,28 @@ internal data class ForwardEditorState(
     val draft: ForwardConfig,
 )
 
-internal fun beginAddForwardEdit(existingForwards: List<ForwardConfig>): ForwardEditorState = ForwardEditorState(
-    mode = ForwardEditorMode.Add,
-    draft = defaultNewForward(existingForwards),
-)
+internal fun beginAddForwardEdit(existingForwards: List<ForwardConfig>): ForwardEditorState =
+    ForwardEditorState(
+        mode = ForwardEditorMode.Add,
+        draft = defaultNewForward(existingForwards),
+    )
 
-internal fun beginEditForward(existingForward: ForwardConfig): ForwardEditorState = ForwardEditorState(
-    mode = ForwardEditorMode.Edit,
-    draft = existingForward,
-)
+internal fun beginEditForward(existingForward: ForwardConfig): ForwardEditorState =
+    ForwardEditorState(
+        mode = ForwardEditorMode.Edit,
+        draft = existingForward,
+    )
 
 internal data class ForwardEditorLabels(
     val title: String,
     val action: String,
 )
 
-internal fun forwardEditorLabels(mode: ForwardEditorMode): ForwardEditorLabels = when (mode) {
-    ForwardEditorMode.Add -> ForwardEditorLabels(title = "Add Forward", action = "Add")
-    ForwardEditorMode.Edit -> ForwardEditorLabels(title = "Edit Forward", action = "Save")
-}
+internal fun forwardEditorLabels(mode: ForwardEditorMode): ForwardEditorLabels =
+    when (mode) {
+        ForwardEditorMode.Add -> ForwardEditorLabels(title = "Add Forward", action = "Add")
+        ForwardEditorMode.Edit -> ForwardEditorLabels(title = "Edit Forward", action = "Save")
+    }
 
 @Composable
 internal fun EditForwardDialog(
@@ -473,10 +531,18 @@ internal fun EditForwardDialog(
         title = { Text(labels.title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = value.name, onValueChange = { value = value.copy(name = it) }, label = { Text("Display name") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = value.localHost, onValueChange = { value = value.copy(localHost = it) }, label = { Text("Local host") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = value.localPort.toString(), onValueChange = { value = value.copy(localPort = it.toIntOrNull() ?: 0) }, label = { Text("Local port") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = value.remoteForwardId, onValueChange = { value = value.copy(remoteForwardId = it) }, label = { Text("Remote forward ID") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = value.name, onValueChange = {
+                    value = value.copy(name = it)
+                }, label = { Text("Display name") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = value.localHost, onValueChange = {
+                    value = value.copy(localHost = it)
+                }, label = { Text("Local host") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = value.localPort.toString(), onValueChange = {
+                    value = value.copy(localPort = it.toIntOrNull() ?: 0)
+                }, label = { Text("Local port") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = value.remoteForwardId, onValueChange = {
+                    value = value.copy(remoteForwardId = it)
+                }, label = { Text("Remote forward ID") }, modifier = Modifier.fillMaxWidth())
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Enabled")
                     Spacer(Modifier.weight(1f))

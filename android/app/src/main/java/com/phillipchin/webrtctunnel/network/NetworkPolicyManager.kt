@@ -6,13 +6,13 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import com.phillipchin.webrtctunnel.model.NetworkStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.channels.awaitClose
 
 class NetworkPolicyManager internal constructor(
     private val classifier: () -> Pair<NetworkType, Boolean>,
@@ -36,49 +36,53 @@ class NetworkPolicyManager internal constructor(
         return evaluateWithPolicy(allowMetered).tunnelAllowed
     }
 
-    fun monitor(context: Context): Flow<NetworkStatus> = callbackFlow {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) {
-                val current = evaluate(classifier(), allowMetered = false)
-                _status.value = current
-                trySend(current)
-            }
+    fun monitor(context: Context): Flow<NetworkStatus> =
+        callbackFlow {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val callback =
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: android.net.Network) {
+                        val current = evaluate(classifier(), allowMetered = false)
+                        _status.value = current
+                        trySend(current)
+                    }
 
-            override fun onLost(network: android.net.Network) {
-                val current = evaluate(classifier(), allowMetered = false)
-                _status.value = current
-                trySend(current)
-            }
+                    override fun onLost(network: android.net.Network) {
+                        val current = evaluate(classifier(), allowMetered = false)
+                        _status.value = current
+                        trySend(current)
+                    }
 
-            override fun onCapabilitiesChanged(
-                network: android.net.Network,
-                networkCapabilities: NetworkCapabilities,
-            ) {
-                val current = evaluate(classifier(), allowMetered = false)
-                _status.value = current
-                trySend(current)
-            }
-        }
-        val request = NetworkRequest.Builder().build()
-        cm.registerNetworkCallback(request, callback)
-        trySend(evaluate(classifier(), allowMetered = false))
-        awaitClose { cm.unregisterNetworkCallback(callback) }
-    }.conflate()
+                    override fun onCapabilitiesChanged(
+                        network: android.net.Network,
+                        networkCapabilities: NetworkCapabilities,
+                    ) {
+                        val current = evaluate(classifier(), allowMetered = false)
+                        _status.value = current
+                        trySend(current)
+                    }
+                }
+            val request = NetworkRequest.Builder().build()
+            cm.registerNetworkCallback(request, callback)
+            trySend(evaluate(classifier(), allowMetered = false))
+            awaitClose { cm.unregisterNetworkCallback(callback) }
+        }.conflate()
 
     private companion object {
         fun classifyCurrentNetwork(context: Context): Pair<NetworkType, Boolean> {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val network = cm.activeNetwork ?: return NetworkType.NoNetwork to false
-            val capabilities = cm.getNetworkCapabilities(network)
-                ?: return NetworkType.Unknown to false
+            val capabilities =
+                cm.getNetworkCapabilities(network)
+                    ?: return NetworkType.Unknown to false
             val metered = cm.isActiveNetworkMetered
-            val networkType = when {
-                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !metered -> NetworkType.UnmeteredWifi
-                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkType.MeteredWifi
-                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkType.Cellular
-                else -> NetworkType.Unknown
-            }
+            val networkType =
+                when {
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !metered -> NetworkType.UnmeteredWifi
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkType.MeteredWifi
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkType.Cellular
+                    else -> NetworkType.Unknown
+                }
             return networkType to metered
         }
 
@@ -88,17 +92,19 @@ class NetworkPolicyManager internal constructor(
         ): NetworkStatus {
             val (networkType, isMetered) = snapshot
             val allowedByDefault = networkType == NetworkType.UnmeteredWifi
-            val allowedByUserPolicy = when (networkType) {
-                NetworkType.UnmeteredWifi -> true
-                NetworkType.MeteredWifi, NetworkType.Cellular -> allowMetered
-                NetworkType.NoNetwork, NetworkType.Unknown -> false
-            }
-            val reason = when {
-                networkType == NetworkType.NoNetwork -> "No network"
-                networkType == NetworkType.Unknown -> "Unknown network"
-                allowedByUserPolicy -> null
-                else -> "Tunnel blocked by policy"
-            }
+            val allowedByUserPolicy =
+                when (networkType) {
+                    NetworkType.UnmeteredWifi -> true
+                    NetworkType.MeteredWifi, NetworkType.Cellular -> allowMetered
+                    NetworkType.NoNetwork, NetworkType.Unknown -> false
+                }
+            val reason =
+                when {
+                    networkType == NetworkType.NoNetwork -> "No network"
+                    networkType == NetworkType.Unknown -> "Unknown network"
+                    allowedByUserPolicy -> null
+                    else -> "Tunnel blocked by policy"
+                }
             return NetworkStatus(
                 networkType = networkType,
                 isMetered = isMetered,

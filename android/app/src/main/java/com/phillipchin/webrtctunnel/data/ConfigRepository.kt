@@ -25,9 +25,10 @@ class ConfigRepository(private val context: Context) {
     private val setupInputFile: File get() = File(context.filesDir, "setup_input.json")
     val configPath: String get() = configFile.absolutePath
 
-    val preferences: Flow<AndroidAppPreferences> = context.dataStore.data.map { prefs ->
-        prefs.toAppPreferences()
-    }
+    val preferences: Flow<AndroidAppPreferences> =
+        context.dataStore.data.map { prefs ->
+            prefs.toAppPreferences()
+        }
 
     suspend fun savePreferences(update: AndroidAppPreferences) {
         context.dataStore.edit { prefs ->
@@ -48,7 +49,8 @@ class ConfigRepository(private val context: Context) {
         }
     }
 
-    fun defaultConfigTemplate(): String = """
+    fun defaultConfigTemplate(): String =
+        """
         # Generated for Android app-private storage.
         format = "p2ptunnel-config-v3"
 
@@ -139,7 +141,7 @@ class ConfigRepository(private val context: Context) {
         status_socket = ""
         write_status_file = true
         status_file = ${tomlString(File(context.filesDir, "state/status.json").absolutePath)}
-    """.trimIndent()
+        """.trimIndent()
 
     fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()
 
@@ -162,16 +164,17 @@ class ConfigRepository(private val context: Context) {
 
     fun loadForwards(): List<ForwardConfig> {
         if (!forwardsFile.exists()) {
-            val defaults = listOf(
-                ForwardConfig(
-                    id = "llama",
-                    name = "Llama server",
-                    localHost = "127.0.0.1",
-                    localPort = 8080,
-                    remoteForwardId = "llama",
-                    enabled = true,
-                ),
-            )
+            val defaults =
+                listOf(
+                    ForwardConfig(
+                        id = "llama",
+                        name = "Llama server",
+                        localHost = "127.0.0.1",
+                        localPort = 8080,
+                        remoteForwardId = "llama",
+                        enabled = true,
+                    ),
+                )
             saveForwards(defaults)
             return defaults
         }
@@ -199,14 +202,15 @@ class ConfigRepository(private val context: Context) {
     }
 
     fun upsertForward(forward: ForwardConfig): ValidationResult {
-        val updated = loadForwards().toMutableList().apply {
-            val index = indexOfFirst { it.id == forward.id }
-            if (index >= 0) {
-                set(index, forward)
-            } else {
-                add(forward)
+        val updated =
+            loadForwards().toMutableList().apply {
+                val index = indexOfFirst { it.id == forward.id }
+                if (index >= 0) {
+                    set(index, forward)
+                } else {
+                    add(forward)
+                }
             }
-        }
         val error = validateForwards(updated)
         if (error != null) {
             return ValidationResult(false, error)
@@ -233,11 +237,12 @@ class ConfigRepository(private val context: Context) {
         if (duplicatePort != null) {
             return "Duplicate local port: $duplicatePort"
         }
-        val duplicateRemoteForwardId = enabled
-            .groupBy { it.remoteForwardId.trim() }
-            .entries
-            .firstOrNull { it.key.isNotBlank() && it.value.size > 1 }
-            ?.key
+        val duplicateRemoteForwardId =
+            enabled
+                .groupBy { it.remoteForwardId.trim() }
+                .entries
+                .firstOrNull { it.key.isNotBlank() && it.value.size > 1 }
+                ?.key
         if (duplicateRemoteForwardId != null) {
             return "Duplicate remote forward ID: $duplicateRemoteForwardId"
         }
@@ -256,17 +261,21 @@ class ConfigRepository(private val context: Context) {
         return null
     }
 
-    fun renderOfferConfig(input: SetupConfigInput, forwards: List<ForwardConfig>): String {
-        val forwardsToml = forwards.joinToString(separator = "\n\n") { forward ->
-            """
-            [[forwards]]
-            id = ${tomlString(forward.remoteForwardId)}
+    fun renderOfferConfig(
+        input: SetupConfigInput,
+        forwards: List<ForwardConfig>,
+    ): String {
+        val forwardsToml =
+            forwards.joinToString(separator = "\n\n") { forward ->
+                """
+                [[forwards]]
+                id = ${tomlString(forward.remoteForwardId)}
 
-            [forwards.offer]
-            listen_host = ${tomlString(forward.localHost)}
-            listen_port = ${forward.localPort}
-            """.trimIndent()
-        }
+                [forwards.offer]
+                listen_host = ${tomlString(forward.localHost)}
+                listen_port = ${forward.localPort}
+                """.trimIndent()
+            }
         val username = input.brokerUsername
         val passwordFile = resolveBrokerPasswordFile(input)
         val scheme = if (input.brokerUseTls) "mqtts" else "mqtt"
@@ -372,14 +381,15 @@ class ConfigRepository(private val context: Context) {
         val advancedSettingsEnabled = booleanPreferencesKey("advanced_settings_enabled")
     }
 
-    private fun Preferences.toAppPreferences() = AndroidAppPreferences(
-        allowMetered = this[Keys.allowMetered] ?: false,
-        resumeOnUnmetered = this[Keys.resumeOnUnmetered] ?: true,
-        showMeteredWarning = this[Keys.showMeteredWarning] ?: true,
-        startTunnelWhenAppOpens = this[Keys.startTunnelWhenAppOpens] ?: false,
-        debugLogsEnabled = this[Keys.debugLogsEnabled] ?: false,
-        advancedSettingsEnabled = this[Keys.advancedSettingsEnabled] ?: false,
-    )
+    private fun Preferences.toAppPreferences() =
+        AndroidAppPreferences(
+            allowMetered = this[Keys.allowMetered] ?: false,
+            resumeOnUnmetered = this[Keys.resumeOnUnmetered] ?: true,
+            showMeteredWarning = this[Keys.showMeteredWarning] ?: true,
+            startTunnelWhenAppOpens = this[Keys.startTunnelWhenAppOpens] ?: false,
+            debugLogsEnabled = this[Keys.debugLogsEnabled] ?: false,
+            advancedSettingsEnabled = this[Keys.advancedSettingsEnabled] ?: false,
+        )
 
     private fun resolveBrokerPasswordFile(input: SetupConfigInput): String {
         val advancedPath = input.brokerPasswordFile.trim()
@@ -397,20 +407,21 @@ class ConfigRepository(private val context: Context) {
     }
 
     private fun tomlString(value: String): String {
-        val escaped = buildString(value.length + 2) {
-            append('"')
-            value.forEach { ch ->
-                when (ch) {
-                    '\\' -> append("\\\\")
-                    '"' -> append("\\\"")
-                    '\n' -> append("\\n")
-                    '\r' -> append("\\r")
-                    '\t' -> append("\\t")
-                    else -> append(ch)
+        val escaped =
+            buildString(value.length + 2) {
+                append('"')
+                value.forEach { ch ->
+                    when (ch) {
+                        '\\' -> append("\\\\")
+                        '"' -> append("\\\"")
+                        '\n' -> append("\\n")
+                        '\r' -> append("\\r")
+                        '\t' -> append("\\t")
+                        else -> append(ch)
+                    }
                 }
+                append('"')
             }
-            append('"')
-        }
         return escaped
     }
 }

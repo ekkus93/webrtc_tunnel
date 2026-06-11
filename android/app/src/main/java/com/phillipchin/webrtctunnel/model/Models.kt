@@ -127,13 +127,14 @@ data class TunnelStatus(
     val activeSessionCount: Int = 0,
     val sessionCapacity: Int? = null,
     val uptimeSeconds: Long? = null,
-    val networkStatus: NetworkStatus = NetworkStatus(
-        networkType = NetworkType.NoNetwork,
-        isMetered = false,
-        allowedByDefault = false,
-        allowedByUserPolicy = false,
-        tunnelAllowed = false,
-    ),
+    val networkStatus: NetworkStatus =
+        NetworkStatus(
+            networkType = NetworkType.NoNetwork,
+            isMetered = false,
+            allowedByDefault = false,
+            allowedByUserPolicy = false,
+            tunnelAllowed = false,
+        ),
     val allowMeteredForCurrentSession: Boolean = false,
     val forwards: List<ForwardStatus> = emptyList(),
     val lastError: TunnelError? = null,

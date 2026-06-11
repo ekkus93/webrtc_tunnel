@@ -7,10 +7,11 @@ import org.junit.Test
 class FlowScreensTest {
     @Test
     fun defaultNewForwardUsesSafeDefaults() {
-        val existing = listOf(
-            ForwardConfig(id = "a", name = "A", localHost = "127.0.0.1", localPort = 8080, remoteForwardId = "a", enabled = true),
-            ForwardConfig(id = "b", name = "B", localHost = "127.0.0.1", localPort = 8081, remoteForwardId = "b", enabled = true),
-        )
+        val existing =
+            listOf(
+                ForwardConfig(id = "a", name = "A", localHost = "127.0.0.1", localPort = 8080, remoteForwardId = "a", enabled = true),
+                ForwardConfig(id = "b", name = "B", localHost = "127.0.0.1", localPort = 8081, remoteForwardId = "b", enabled = true),
+            )
 
         val draft = defaultNewForward(existing)
 
@@ -22,10 +23,11 @@ class FlowScreensTest {
 
     @Test
     fun suggestNewForwardPortSkipsDisabledEntries() {
-        val existing = listOf(
-            ForwardConfig(id = "a", name = "A", localHost = "127.0.0.1", localPort = 8080, remoteForwardId = "a", enabled = false),
-            ForwardConfig(id = "b", name = "B", localHost = "127.0.0.1", localPort = 8081, remoteForwardId = "b", enabled = true),
-        )
+        val existing =
+            listOf(
+                ForwardConfig(id = "a", name = "A", localHost = "127.0.0.1", localPort = 8080, remoteForwardId = "a", enabled = false),
+                ForwardConfig(id = "b", name = "B", localHost = "127.0.0.1", localPort = 8081, remoteForwardId = "b", enabled = true),
+            )
 
         val port = suggestNewForwardPort(existing, startPort = 8080)
 
@@ -40,16 +42,17 @@ class FlowScreensTest {
 
     @Test
     fun beginAddForwardEditUsesAddModeAndDefaultDraft() {
-        val existing = listOf(
-            ForwardConfig(
-                id = "svc",
-                name = "svc",
-                localHost = "127.0.0.1",
-                localPort = 8080,
-                remoteForwardId = "svc",
-                enabled = true,
-            ),
-        )
+        val existing =
+            listOf(
+                ForwardConfig(
+                    id = "svc",
+                    name = "svc",
+                    localHost = "127.0.0.1",
+                    localPort = 8080,
+                    remoteForwardId = "svc",
+                    enabled = true,
+                ),
+            )
         val editor = beginAddForwardEdit(existing)
         assertEquals(ForwardEditorMode.Add, editor.mode)
         assertEquals("Add Forward", forwardEditorLabels(editor.mode).title)
@@ -61,14 +64,15 @@ class FlowScreensTest {
 
     @Test
     fun beginEditForwardUsesEditModeAndExistingDraft() {
-        val existingForward = ForwardConfig(
-            id = "svc",
-            name = "svc",
-            localHost = "127.0.0.1",
-            localPort = 8080,
-            remoteForwardId = "svc",
-            enabled = true,
-        )
+        val existingForward =
+            ForwardConfig(
+                id = "svc",
+                name = "svc",
+                localHost = "127.0.0.1",
+                localPort = 8080,
+                remoteForwardId = "svc",
+                enabled = true,
+            )
         val editor = beginEditForward(existingForward)
         assertEquals(ForwardEditorMode.Edit, editor.mode)
         assertEquals("Edit Forward", forwardEditorLabels(editor.mode).title)

@@ -4,10 +4,9 @@ import android.app.Application
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.TunnelRepository
+import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
 import com.phillipchin.webrtctunnel.model.ServiceState
-import com.phillipchin.webrtctunnel.model.TunnelMode
-import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
@@ -31,10 +30,15 @@ class TestWebRtcTunnelApplication : Application(), HasAppDependencies {
         val bridge = RecordingBridge()
         TestTunnelHooks.bridge = bridge
         val configRepository = ConfigRepository(this)
-        val identityRepository = IdentityRepository(this, object : IdentityCrypto {
-            override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
-            override fun decrypt(payload: ByteArray): ByteArray = payload
-        })
+        val identityRepository =
+            IdentityRepository(
+                this,
+                object : IdentityCrypto {
+                    override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
+
+                    override fun decrypt(payload: ByteArray): ByteArray = payload
+                },
+            )
         identityRepository.storeEncryptedIdentity(
             """
             [identity]
@@ -44,15 +48,17 @@ class TestWebRtcTunnelApplication : Application(), HasAppDependencies {
             """.trimIndent().toByteArray(),
             "android-phone ssh-ed25519 AAAA test",
         )
-        appDependencies = AppDependencies(
-            context = this,
-            configRepository = configRepository,
-            tunnelRepository = TunnelRepository(this, bridge),
-            networkPolicyManager = NetworkPolicyManager {
-                com.phillipchin.webrtctunnel.model.NetworkType.UnmeteredWifi to false
-            },
-            identityRepository = identityRepository,
-        )
+        appDependencies =
+            AppDependencies(
+                context = this,
+                configRepository = configRepository,
+                tunnelRepository = TunnelRepository(bridge),
+                networkPolicyManager =
+                    NetworkPolicyManager {
+                        com.phillipchin.webrtctunnel.model.NetworkType.UnmeteredWifi to false
+                    },
+                identityRepository = identityRepository,
+            )
         configRepository.ensureDefaultConfig(configRepository.defaultConfigTemplate())
     }
 }
@@ -108,7 +114,10 @@ class RecordingBridge : TunnelNativeBridge {
         validationRelease.countDown()
     }
 
-    override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> {
+    override fun startOffer(
+        configPath: String,
+        identityBytes: ByteArray?,
+    ): Result<Unit> {
         startOfferEnterCalls += 1
         if (blockStartOffer) {
             startOfferEntered.countDown()
@@ -134,24 +143,30 @@ class RecordingBridge : TunnelNativeBridge {
         return Result.success(Unit)
     }
 
-    override fun getStatusJson(): String = Json.encodeToString(
-        NativeRuntimeStatusDto(
-            state = when (state) {
-                ServiceState.Connected, ServiceState.Serving -> "running"
-                ServiceState.Starting -> "starting"
-                ServiceState.Stopping -> "stopping"
-                ServiceState.Error -> "error"
-                else -> "stopped"
-            },
-            mode = if (state == ServiceState.Serving) "answer" else "offer",
-            active = state == ServiceState.Connected || state == ServiceState.Serving,
-        ),
-    )
+    override fun getStatusJson(): String =
+        Json.encodeToString(
+            NativeRuntimeStatusDto(
+                state =
+                    when (state) {
+                        ServiceState.Connected, ServiceState.Serving -> "running"
+                        ServiceState.Starting -> "starting"
+                        ServiceState.Stopping -> "stopping"
+                        ServiceState.Error -> "error"
+                        else -> "stopped"
+                    },
+                mode = if (state == ServiceState.Serving) "answer" else "offer",
+                active = state == ServiceState.Connected || state == ServiceState.Serving,
+            ),
+        )
 
     override fun getRecentLogsJson(maxEvents: Int): String = "[]"
 
     override fun validateConfig(configPath: String): ValidationResult = ValidationResult(true, null)
-    override fun validateConfigWithIdentity(configPath: String, identityBytes: ByteArray): ValidationResult =
+
+    override fun validateConfigWithIdentity(
+        configPath: String,
+        identityBytes: ByteArray,
+    ): ValidationResult =
         if (blockValidation) {
             validationEntered.countDown()
             validationRelease.await(5, TimeUnit.SECONDS)
@@ -160,10 +175,28 @@ class RecordingBridge : TunnelNativeBridge {
         } else {
             ValidationResult(true, null)
         }
+
     override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
-        IdentityValidationResult(valid = true, canonical_public_identity = "android-phone ssh-ed25519 AAAA test", canonical_private_identity = identityToml, peer_id = "android-phone")
+        IdentityValidationResult(
+            valid = true,
+            canonical_public_identity = "android-phone ssh-ed25519 AAAA test",
+            canonical_private_identity = identityToml,
+            peer_id = "android-phone",
+        )
+
     override fun validatePublicIdentity(line: String): IdentityValidationResult =
-        IdentityValidationResult(valid = line.isNotBlank(), message = if (line.isBlank()) "empty" else null, canonical_public_identity = line.trim(), peer_id = "desktop-peer")
+        IdentityValidationResult(
+            valid = line.isNotBlank(),
+            message = if (line.isBlank()) "empty" else null,
+            canonical_public_identity = line.trim(),
+            peer_id = "desktop-peer",
+        )
+
     override fun generateIdentity(peerId: String): IdentityValidationResult =
-        IdentityValidationResult(valid = true, canonical_public_identity = "$peerId ssh-ed25519 AAAA generated", canonical_private_identity = "[identity]\npeer_id = \"$peerId\"\n", peer_id = peerId)
+        IdentityValidationResult(
+            valid = true,
+            canonical_public_identity = "$peerId ssh-ed25519 AAAA generated",
+            canonical_private_identity = "[identity]\npeer_id = \"$peerId\"\n",
+            peer_id = peerId,
+        )
 }

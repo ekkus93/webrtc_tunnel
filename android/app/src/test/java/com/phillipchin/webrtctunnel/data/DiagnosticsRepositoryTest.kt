@@ -39,12 +39,13 @@ class DiagnosticsRepositoryTest {
         )
         val output = File(context.filesDir, "diag.txt")
         output.delete()
-        val result = diagnosticsRepository.exportRedactedDiagnostics(
-            outputPath = output.absolutePath,
-            status = TunnelStatus(serviceState = ServiceState.Connected, mode = TunnelMode.Offer, localPeerId = "android-phone"),
-            logs = listOf(LogEvent(1L, "info", "sdp=foo candidate=bar password=abc token=xyz")),
-            networkStatus = NetworkStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
-        )
+        val result =
+            diagnosticsRepository.exportRedactedDiagnostics(
+                outputPath = output.absolutePath,
+                status = TunnelStatus(serviceState = ServiceState.Connected, mode = TunnelMode.Offer, localPeerId = "android-phone"),
+                logs = listOf(LogEvent(1L, "info", "sdp=foo candidate=bar password=abc token=xyz")),
+                networkStatus = NetworkStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
+            )
         assertTrue(result.isSuccess)
         val text = output.readText()
         assertTrue(text.contains("***REDACTED***"))
@@ -54,11 +55,12 @@ class DiagnosticsRepositoryTest {
 
     @Test
     fun buildPayloadReturnsRedactedTextForSharing() {
-        val payload = diagnosticsRepository.buildRedactedDiagnosticsPayload(
-            status = TunnelStatus(serviceState = ServiceState.Error, mode = TunnelMode.Offer, localPeerId = "android-phone"),
-            logs = listOf(LogEvent(1L, "error", "password=abc token=xyz")),
-            networkStatus = NetworkStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
-        )
+        val payload =
+            diagnosticsRepository.buildRedactedDiagnosticsPayload(
+                status = TunnelStatus(serviceState = ServiceState.Error, mode = TunnelMode.Offer, localPeerId = "android-phone"),
+                logs = listOf(LogEvent(1L, "error", "password=abc token=xyz")),
+                networkStatus = NetworkStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
+            )
         assertTrue(payload.contains("***REDACTED***"))
         assertFalse(payload.contains("password=abc"))
     }

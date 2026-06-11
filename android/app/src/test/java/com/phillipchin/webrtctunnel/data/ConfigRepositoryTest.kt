@@ -3,9 +3,9 @@ package com.phillipchin.webrtctunnel.data
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.test.core.app.ApplicationProvider
+import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
-import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -72,43 +72,47 @@ class ConfigRepositoryTest {
     }
 
     @Test
-    fun preferencesDefaultValuesAreSafe() = runBlocking {
-        val prefs = repository.preferences.first()
-        assertEquals(
-            AndroidAppPreferences(
-                allowMetered = false,
-                resumeOnUnmetered = true,
-                showMeteredWarning = true,
-                startTunnelWhenAppOpens = false,
-                debugLogsEnabled = false,
-            ),
-            prefs,
-        )
-    }
-
-    @Test
-    fun savePreferencesPersistsAllFields() = runBlocking {
-        val update = AndroidAppPreferences(
-            allowMetered = true,
-            resumeOnUnmetered = false,
-            showMeteredWarning = false,
-            startTunnelWhenAppOpens = true,
-            debugLogsEnabled = true,
-        )
-        repository.savePreferences(update)
-        assertEquals(update, repository.preferences.first())
-    }
-
-    @Test
-    fun partialPreferenceStateFallsBackToDefaults() = runBlocking {
-        context.dataStore.edit { preferences ->
-            preferences[booleanPreferencesKey("allow_metered")] = true
-            preferences.remove(booleanPreferencesKey("pause_on_metered"))
+    fun preferencesDefaultValuesAreSafe() =
+        runBlocking {
+            val prefs = repository.preferences.first()
+            assertEquals(
+                AndroidAppPreferences(
+                    allowMetered = false,
+                    resumeOnUnmetered = true,
+                    showMeteredWarning = true,
+                    startTunnelWhenAppOpens = false,
+                    debugLogsEnabled = false,
+                ),
+                prefs,
+            )
         }
-        val prefs = repository.preferences.first()
-        assertTrue(prefs.allowMetered)
-        assertTrue(prefs.resumeOnUnmetered)
-    }
+
+    @Test
+    fun savePreferencesPersistsAllFields() =
+        runBlocking {
+            val update =
+                AndroidAppPreferences(
+                    allowMetered = true,
+                    resumeOnUnmetered = false,
+                    showMeteredWarning = false,
+                    startTunnelWhenAppOpens = true,
+                    debugLogsEnabled = true,
+                )
+            repository.savePreferences(update)
+            assertEquals(update, repository.preferences.first())
+        }
+
+    @Test
+    fun partialPreferenceStateFallsBackToDefaults() =
+        runBlocking {
+            context.dataStore.edit { preferences ->
+                preferences[booleanPreferencesKey("allow_metered")] = true
+                preferences.remove(booleanPreferencesKey("pause_on_metered"))
+            }
+            val prefs = repository.preferences.first()
+            assertTrue(prefs.allowMetered)
+            assertTrue(prefs.resumeOnUnmetered)
+        }
 
     @Test
     fun latestWriteWins() {
@@ -127,59 +131,66 @@ class ConfigRepositoryTest {
 
     @Test
     fun forwardsValidationRejectsDuplicateEnabledPorts() {
-        val forwards = listOf(
-            ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "a", enabled = true),
-            ForwardConfig(id = "b", name = "b", localPort = 9000, remoteForwardId = "b", enabled = true),
-        )
+        val forwards =
+            listOf(
+                ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "a", enabled = true),
+                ForwardConfig(id = "b", name = "b", localPort = 9000, remoteForwardId = "b", enabled = true),
+            )
         assertTrue(repository.validateForwards(forwards)?.contains("Duplicate local port") == true)
     }
 
     @Test
     fun forwardsValidationRejectsBlankEnabledForwardName() {
-        val forwards = listOf(
-            ForwardConfig(id = "a", name = "", localPort = 9000, remoteForwardId = "a", enabled = true),
-        )
+        val forwards =
+            listOf(
+                ForwardConfig(id = "a", name = "", localPort = 9000, remoteForwardId = "a", enabled = true),
+            )
         assertEquals("Forward name is required", repository.validateForwards(forwards))
     }
 
     @Test
     fun forwardsValidationRejectsDuplicateEnabledRemoteForwardIds() {
-        val forwards = listOf(
-            ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "llama", enabled = true),
-            ForwardConfig(id = "b", name = "b", localPort = 9001, remoteForwardId = "llama", enabled = true),
-        )
+        val forwards =
+            listOf(
+                ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "llama", enabled = true),
+                ForwardConfig(id = "b", name = "b", localPort = 9001, remoteForwardId = "llama", enabled = true),
+            )
         assertEquals("Duplicate remote forward ID: llama", repository.validateForwards(forwards))
     }
 
     @Test
     fun forwardsValidationAllowsDuplicateRemoteForwardIdWhenOneDisabled() {
-        val forwards = listOf(
-            ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "llama", enabled = true),
-            ForwardConfig(id = "b", name = "b", localPort = 9001, remoteForwardId = "llama", enabled = false),
-        )
+        val forwards =
+            listOf(
+                ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "llama", enabled = true),
+                ForwardConfig(id = "b", name = "b", localPort = 9001, remoteForwardId = "llama", enabled = false),
+            )
         assertEquals(null, repository.validateForwards(forwards))
     }
 
     @Test
     fun forwardsRoundTripPersistsJson() {
-        val forwards = listOf(
-            ForwardConfig(id = "svc", name = "Service", localHost = "127.0.0.1", localPort = 18080, remoteForwardId = "svc"),
-        )
+        val forwards =
+            listOf(
+                ForwardConfig(id = "svc", name = "Service", localHost = "127.0.0.1", localPort = 18080, remoteForwardId = "svc"),
+            )
         repository.saveForwards(forwards)
         assertEquals(forwards, repository.loadForwards())
     }
 
     @Test
     fun renderOfferConfigIncludesForwardAndPeer() {
-        val input = SetupConfigInput(
-            localPeerId = "android-peer",
-            brokerHost = "broker.local",
-            remotePeerId = "desktop-peer",
-        )
-        val text = repository.renderOfferConfig(
-            input,
-            listOf(ForwardConfig(id = "llama", name = "Llama", localPort = 8080, remoteForwardId = "llama")),
-        )
+        val input =
+            SetupConfigInput(
+                localPeerId = "android-peer",
+                brokerHost = "broker.local",
+                remotePeerId = "desktop-peer",
+            )
+        val text =
+            repository.renderOfferConfig(
+                input,
+                listOf(ForwardConfig(id = "llama", name = "Llama", localPort = 8080, remoteForwardId = "llama")),
+            )
         assertTrue(text.contains("url = \"mqtts://broker.local:8883\""))
         assertTrue(text.contains("remote_peer_id = \"desktop-peer\""))
         assertTrue(text.contains("listen_port = 8080"))
@@ -187,23 +198,25 @@ class ConfigRepositoryTest {
 
     @Test
     fun renderOfferConfigEscapesInjectedTomlStrings() {
-        val input = SetupConfigInput(
-            localPeerId = "android\"peer",
-            brokerHost = "broker.local\"\\n[[forwards]]\\nid = \"evil\"",
-            remotePeerId = "desktop\"peer",
-            topicPrefix = "topic\nprefix",
-        )
-        val text = repository.renderOfferConfig(
-            input,
-            listOf(
-                ForwardConfig(
-                    id = "llama",
-                    name = "Llama",
-                    localPort = 8080,
-                    remoteForwardId = "llama\"inject",
+        val input =
+            SetupConfigInput(
+                localPeerId = "android\"peer",
+                brokerHost = "broker.local\"\\n[[forwards]]\\nid = \"evil\"",
+                remotePeerId = "desktop\"peer",
+                topicPrefix = "topic\nprefix",
+            )
+        val text =
+            repository.renderOfferConfig(
+                input,
+                listOf(
+                    ForwardConfig(
+                        id = "llama",
+                        name = "Llama",
+                        localPort = 8080,
+                        remoteForwardId = "llama\"inject",
+                    ),
                 ),
-            ),
-        )
+            )
         assertTrue(text.contains("topic_prefix = \"topic\\nprefix\""))
         assertTrue(text.contains("id = \"llama\\\"inject\""))
         assertFalse(text.contains("\n[[forwards]]\nid = \"evil\""))
@@ -211,12 +224,13 @@ class ConfigRepositoryTest {
 
     @Test
     fun setupInputRoundTripPersistsState() {
-        val input = SetupConfigInput(
-            localPeerId = "android-peer",
-            brokerHost = "broker.local",
-            remotePeerId = "desktop-peer",
-            allowMetered = true,
-        )
+        val input =
+            SetupConfigInput(
+                localPeerId = "android-peer",
+                brokerHost = "broker.local",
+                remotePeerId = "desktop-peer",
+                allowMetered = true,
+            )
         repository.saveSetupInput(input)
         assertEquals(input, repository.loadSetupInput())
     }

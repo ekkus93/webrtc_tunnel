@@ -24,13 +24,14 @@ class NetworkPolicyManagerTest {
 
     @Test
     fun transitionsUpdateStatus() {
-        val sequence = ArrayDeque(
-            listOf(
-                NetworkType.UnmeteredWifi to false,
-                NetworkType.MeteredWifi to true,
-                NetworkType.NoNetwork to false,
-            ),
-        )
+        val sequence =
+            ArrayDeque(
+                listOf(
+                    NetworkType.UnmeteredWifi to false,
+                    NetworkType.MeteredWifi to true,
+                    NetworkType.NoNetwork to false,
+                ),
+            )
         val manager = NetworkPolicyManager { sequence.removeFirst() }
         assertEquals(NetworkType.UnmeteredWifi, manager.status.value.networkType)
         manager.refresh()

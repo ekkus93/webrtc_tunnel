@@ -6,21 +6,21 @@ import android.content.Intent
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.phillipchin.webrtctunnel.model.ServiceState
-import com.phillipchin.webrtctunnel.model.TunnelMode
-import com.phillipchin.webrtctunnel.notification.NotificationController
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
-import com.phillipchin.webrtctunnel.security.IdentityRepository
 import com.phillipchin.webrtctunnel.data.TunnelRepository
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.NetworkType
+import com.phillipchin.webrtctunnel.model.ServiceState
+import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+import com.phillipchin.webrtctunnel.notification.NotificationController
+import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
@@ -58,29 +58,34 @@ class TunnelForegroundService : Service() {
         identityRepository = deps.identityRepository
         networkPolicyManager = deps.networkPolicyManager
         repository.updateSessionMeteredAllowance(false)
-        networkMonitorJob = serviceScope.launch {
-            networkPolicyManager.monitor(this@TunnelForegroundService).collect { _ ->
-                val prefs = withContext(Dispatchers.IO) { configRepository.preferences.first() }
-                val policy = evaluatePolicy(prefs)
-                repository.updateNetworkStatus(policy)
-                if (policy.networkType == NetworkType.UnmeteredWifi) {
-                    if (pausedByPolicy && prefs.resumeOnUnmetered) {
-                        pausedByPolicy = false
-                        serviceScope.launch { resume() }
-                    }
-                } else if (!policy.tunnelAllowed) {
-                    val current = repository.status.value.serviceState
-                    if (current == ServiceState.Connected || current == ServiceState.Serving) {
-                        serviceScope.launch {
-                            pauseForPolicy(policy.blockReason ?: "Tunnel paused: network policy blocks metered/cellular")
+        networkMonitorJob =
+            serviceScope.launch {
+                networkPolicyManager.monitor(this@TunnelForegroundService).collect { _ ->
+                    val prefs = withContext(Dispatchers.IO) { configRepository.preferences.first() }
+                    val policy = evaluatePolicy(prefs)
+                    repository.updateNetworkStatus(policy)
+                    if (policy.networkType == NetworkType.UnmeteredWifi) {
+                        if (pausedByPolicy && prefs.resumeOnUnmetered) {
+                            pausedByPolicy = false
+                            serviceScope.launch { resume() }
+                        }
+                    } else if (!policy.tunnelAllowed) {
+                        val current = repository.status.value.serviceState
+                        if (current == ServiceState.Connected || current == ServiceState.Serving) {
+                            serviceScope.launch {
+                                pauseForPolicy(policy.blockReason ?: "Tunnel paused: network policy blocks metered/cellular")
+                            }
                         }
                     }
                 }
             }
-        }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         if (intent == null) {
             stopSelf(startId)
             return START_NOT_STICKY
@@ -119,9 +124,10 @@ class TunnelForegroundService : Service() {
             }
             lifecycleGeneration += 1
             generation = lifecycleGeneration
-            startupJob = serviceScope.launch {
-                doStartOffer(generation)
-            }
+            startupJob =
+                serviceScope.launch {
+                    doStartOffer(generation)
+                }
         }
         if (generation == 0L) {
             return
@@ -139,19 +145,21 @@ class TunnelForegroundService : Service() {
             publishStatus(policy.blockReason ?: "Tunnel blocked by network policy")
             return
         }
-        val identity = withContext(Dispatchers.IO) {
-            runCatching { identityRepository.readPrivateIdentityPlaintext() }
-        }
-            .getOrElse {
-                publishError(
-                    message = "Unable to decrypt private identity: ${it.message}",
-                    code = "identity_decrypt_failed",
-                )
-                return
+        val identity =
+            withContext(Dispatchers.IO) {
+                runCatching { identityRepository.readPrivateIdentityPlaintext() }
             }
-        val validation = withContext(Dispatchers.IO) {
-            repository.validateConfigWithIdentity(configRepository.configPath, identity)
-        }
+                .getOrElse {
+                    publishError(
+                        message = "Unable to decrypt private identity: ${it.message}",
+                        code = "identity_decrypt_failed",
+                    )
+                    return
+                }
+        val validation =
+            withContext(Dispatchers.IO) {
+                repository.validateConfigWithIdentity(configRepository.configPath, identity)
+            }
         if (!validation.valid) {
             publishError(
                 message = validation.message ?: "Config validation failed",
@@ -164,14 +172,15 @@ class TunnelForegroundService : Service() {
         if (!stillCurrentBeforeStart) {
             return
         }
-        val result = try {
-            withContext(Dispatchers.IO) {
-                repository.start(TunnelMode.Offer, configRepository.configPath, identity)
+        val result =
+            try {
+                withContext(Dispatchers.IO) {
+                    repository.start(TunnelMode.Offer, configRepository.configPath, identity)
+                }
+            } catch (_: CancellationException) {
+                withContext(Dispatchers.IO) { repository.stop() }
+                return
             }
-        } catch (_: CancellationException) {
-            withContext(Dispatchers.IO) { repository.stop() }
-            return
-        }
         val stillCurrent = lifecycleMutex.withLock { lifecycleGeneration == startGeneration }
         if (!stillCurrent) {
             withContext(Dispatchers.IO) { repository.stop() }
@@ -250,15 +259,16 @@ class TunnelForegroundService : Service() {
 
     private fun publishStatus(body: String? = null) {
         val state = repository.status.value.serviceState
-        val text = body ?: when (state) {
-            ServiceState.Connected -> "Connected"
-            ServiceState.Serving -> "Serving"
-            ServiceState.Listening -> "Listening"
-            ServiceState.PausedMeteredBlocked -> "Cellular/metered network blocked"
-            ServiceState.NoNetwork -> "No network"
-            ServiceState.Error, ServiceState.ConfigInvalid -> repository.status.value.lastError?.message ?: "Error"
-            else -> "WebRTC Tunnel running"
-        }
+        val text =
+            body ?: when (state) {
+                ServiceState.Connected -> "Connected"
+                ServiceState.Serving -> "Serving"
+                ServiceState.Listening -> "Listening"
+                ServiceState.PausedMeteredBlocked -> "Cellular/metered network blocked"
+                ServiceState.NoNetwork -> "No network"
+                ServiceState.Error, ServiceState.ConfigInvalid -> repository.status.value.lastError?.message ?: "Error"
+                else -> "WebRTC Tunnel running"
+            }
         notifications.show(notifications.buildStatusNotification(state, SensitiveDataRedactor.redactText(text)))
     }
 
@@ -286,22 +296,23 @@ class TunnelForegroundService : Service() {
     override fun onDestroy() {
         networkMonitorJob?.cancel()
         stopStatusPolling()
-        val pendingStop = serviceScope.launch {
-            lifecycleMutex.withLock {
-                lifecycleGeneration += 1
-                cancelStartupJobLocked()
-                withContext(Dispatchers.IO) {
-                    repository.stop()
-                }.onFailure {
-                    publishError(
-                        message = it.message ?: "Unable to stop tunnel",
-                        code = "stop_failed",
-                    )
+        val pendingStop =
+            serviceScope.launch {
+                lifecycleMutex.withLock {
+                    lifecycleGeneration += 1
+                    cancelStartupJobLocked()
+                    withContext(Dispatchers.IO) {
+                        repository.stop()
+                    }.onFailure {
+                        publishError(
+                            message = it.message ?: "Unable to stop tunnel",
+                            code = "stop_failed",
+                        )
+                    }
+                    pausedByPolicy = false
+                    clearTemporaryMeteredAllowance()
                 }
-                pausedByPolicy = false
-                clearTemporaryMeteredAllowance()
             }
-        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         pendingStop.invokeOnCompletion { serviceScope.coroutineContext.cancel() }
         super.onDestroy()
@@ -351,20 +362,21 @@ class TunnelForegroundService : Service() {
      */
     private fun startStatusPolling() {
         if (statusPollJob?.isActive == true) return
-        statusPollJob = serviceScope.launch {
-            var lastState = repository.status.value.serviceState
-            while (true) {
-                delay(STATUS_POLL_INTERVAL_MS)
-                if (pausedByPolicy) break
-                withContext(Dispatchers.IO) { runCatching { repository.refreshStatus() } }
-                val state = repository.status.value.serviceState
-                if (state != lastState) {
-                    lastState = state
-                    publishStatus()
+        statusPollJob =
+            serviceScope.launch {
+                var lastState = repository.status.value.serviceState
+                while (true) {
+                    delay(STATUS_POLL_INTERVAL_MS)
+                    if (pausedByPolicy) break
+                    withContext(Dispatchers.IO) { runCatching { repository.refreshStatus() } }
+                    val state = repository.status.value.serviceState
+                    if (state != lastState) {
+                        lastState = state
+                        publishStatus()
+                    }
+                    if (state !in ACTIVE_STATES) break
                 }
-                if (state !in ACTIVE_STATES) break
             }
-        }
     }
 
     private fun stopStatusPolling() {
@@ -381,13 +393,14 @@ class TunnelForegroundService : Service() {
         const val ACTION_ALLOW_METERED_SESSION = "com.phillipchin.webrtctunnel.action.ALLOW_METERED_SESSION"
         const val NOTIFICATION_ID = NotificationController.NOTIFICATION_ID
         private const val STATUS_POLL_INTERVAL_MS = 1_500L
-        private val ACTIVE_STATES = setOf(
-            ServiceState.Starting,
-            ServiceState.Connecting,
-            ServiceState.Reconnecting,
-            ServiceState.Connected,
-            ServiceState.Listening,
-            ServiceState.Serving,
-        )
+        private val ACTIVE_STATES =
+            setOf(
+                ServiceState.Starting,
+                ServiceState.Connecting,
+                ServiceState.Reconnecting,
+                ServiceState.Connected,
+                ServiceState.Listening,
+                ServiceState.Serving,
+            )
     }
 }

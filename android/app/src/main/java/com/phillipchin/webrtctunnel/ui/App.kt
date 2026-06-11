@@ -6,17 +6,19 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -27,8 +29,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -45,12 +45,19 @@ import com.phillipchin.webrtctunnel.viewmodel.AppViewModelFactory
 
 private sealed class Route(val value: String, val title: String) {
     data object Home : Route("home", "WebRTC Tunnel")
+
     data object Forwards : Route("forwards", "Forwards")
+
     data object Logs : Route("logs", "Logs")
+
     data object Settings : Route("settings", "Settings")
+
     data object Setup : Route("setup", "Setup Wizard")
+
     data object NetworkPolicy : Route("network_policy", "Network Policy")
+
     data object ImportExport : Route("import_export", "Import / Export")
+
     data object ForwardDetails : Route("forwardDetails/{forwardId}", "Forward Details")
 }
 
@@ -60,19 +67,21 @@ private data class BottomTab(
     val icon: @Composable () -> Unit,
 )
 
-private val mainTabs = listOf(
-    BottomTab(Route.Home, "Home", { Icon(Icons.Default.Home, "Home tab icon") }),
-    BottomTab(Route.Forwards, "Forwards", { Icon(Icons.AutoMirrored.Filled.List, "Forwards tab icon") }),
-    BottomTab(Route.Logs, "Logs", { Icon(Icons.Default.Terminal, "Logs tab icon") }),
-    BottomTab(Route.Settings, "Settings", { Icon(Icons.Default.Settings, "Settings tab icon") }),
-)
+private val mainTabs =
+    listOf(
+        BottomTab(Route.Home, "Home", { Icon(Icons.Default.Home, "Home tab icon") }),
+        BottomTab(Route.Forwards, "Forwards", { Icon(Icons.AutoMirrored.Filled.List, "Forwards tab icon") }),
+        BottomTab(Route.Logs, "Logs", { Icon(Icons.Default.Terminal, "Logs tab icon") }),
+        BottomTab(Route.Settings, "Settings", { Icon(Icons.Default.Settings, "Settings tab icon") }),
+    )
 
-private val secondaryRoutes = setOf(
-    Route.Setup.value,
-    Route.NetworkPolicy.value,
-    Route.ImportExport.value,
-    "forwardDetails/{forwardId}",
-)
+private val secondaryRoutes =
+    setOf(
+        Route.Setup.value,
+        Route.NetworkPolicy.value,
+        Route.ImportExport.value,
+        "forwardDetails/{forwardId}",
+    )
 
 @Composable
 fun WebRtcTunnelApp(deps: AppDependencies) {
@@ -98,11 +107,18 @@ fun WebRtcTunnelApp(deps: AppDependencies) {
             topBar = {
                 TunnelTopAppBar(
                     title = title,
-                    navigationIcon = if (showBackArrow) ({
-                        IconButton(onClick = { navController.navigateUp() }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                        }
-                    }) else null,
+                    navigationIcon =
+                        if (showBackArrow) {
+                            (
+                                {
+                                    IconButton(onClick = { navController.navigateUp() }) {
+                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                                    }
+                                }
+                            )
+                        } else {
+                            null
+                        },
                 )
             },
             bottomBar = {
@@ -169,7 +185,6 @@ fun WebRtcTunnelApp(deps: AppDependencies) {
                     )
                 }
             }
-
         }
     }
 }
@@ -178,27 +193,37 @@ fun WebRtcTunnelApp(deps: AppDependencies) {
 private fun NotificationPermissionGate() {
     if (Build.VERSION.SDK_INT < 33) return
     val context = LocalContext.current
-    val hasPermission = ContextCompat.checkSelfPermission(
-        context,
-        Manifest.permission.POST_NOTIFICATIONS,
-    ) == PackageManager.PERMISSION_GRANTED
+    val hasPermission =
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
     if (hasPermission) return
 
     var openDialog by remember { mutableStateOf(true) }
     var denied by remember { mutableStateOf(false) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        denied = !granted
-        openDialog = !granted
-    }
+    val launcher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            denied = !granted
+            openDialog = !granted
+        }
     if (openDialog) {
         AlertDialog(
             onDismissRequest = { openDialog = false },
             title = { Text("Notification permission") },
             text = {
-                Text("Rust WebRTC Tunnel needs notifications so Android can keep the tunnel service visible while it is running in the background.")
+                Text(
+                    "Rust WebRTC Tunnel needs notifications so Android can keep the tunnel " +
+                        "service visible while it is running in the background.",
+                )
             },
             confirmButton = { TextButton(onClick = { launcher.launch(Manifest.permission.POST_NOTIFICATIONS) }) { Text("Allow") } },
-            dismissButton = { TextButton(onClick = { denied = true; openDialog = false }) { Text("Not now") } },
+            dismissButton = {
+                TextButton(onClick = {
+                    denied = true
+                    openDialog = false
+                }) { Text("Not now") }
+            },
         )
     }
     if (denied) {
@@ -209,10 +234,11 @@ private fun NotificationPermissionGate() {
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val intent = Intent(
-                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                            Uri.fromParts("package", context.packageName, null),
-                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        val intent =
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", context.packageName, null),
+                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         context.startActivity(intent)
                         denied = false
                     },
@@ -251,14 +277,15 @@ private fun NavDestination?.isOnRoute(route: String): Boolean {
     return this?.hierarchy?.any { it.route == route } == true
 }
 
-private fun routeTitle(route: String?): String = when {
-    route == Route.Home.value -> Route.Home.title
-    route == Route.Forwards.value -> Route.Forwards.title
-    route == Route.Logs.value -> Route.Logs.title
-    route == Route.Settings.value -> Route.Settings.title
-    route == Route.Setup.value -> Route.Setup.title
-    route == Route.NetworkPolicy.value -> Route.NetworkPolicy.title
-    route == Route.ImportExport.value -> Route.ImportExport.title
-    route?.startsWith("forwardDetails/") == true -> Route.ForwardDetails.title
-    else -> "WebRTC Tunnel"
-}
+private fun routeTitle(route: String?): String =
+    when {
+        route == Route.Home.value -> Route.Home.title
+        route == Route.Forwards.value -> Route.Forwards.title
+        route == Route.Logs.value -> Route.Logs.title
+        route == Route.Settings.value -> Route.Settings.title
+        route == Route.Setup.value -> Route.Setup.title
+        route == Route.NetworkPolicy.value -> Route.NetworkPolicy.title
+        route == Route.ImportExport.value -> Route.ImportExport.title
+        route?.startsWith("forwardDetails/") == true -> Route.ForwardDetails.title
+        else -> "WebRTC Tunnel"
+    }

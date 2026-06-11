@@ -33,20 +33,26 @@ class TunnelForegroundServiceInstrumentationTest {
 
     @Test
     fun startOfferActionStartsOfferPath() {
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         assertTrue(waitForCondition(timeoutMs = 10_000) { TestTunnelHooks.bridge.startOfferCalls >= 1 })
     }
 
     @Test
     fun stopActionStopsTunnel() {
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))
         assertTrue(waitForCondition(timeoutMs = 3_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
     }
 
     @Test
     fun duplicateStopIsSafe() {
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))
         assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
@@ -54,7 +60,9 @@ class TunnelForegroundServiceInstrumentationTest {
 
     @Test
     fun serviceStaysActiveWhenActivityBackgrounded() {
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.moveToState(Lifecycle.State.CREATED)
         }
@@ -63,15 +71,21 @@ class TunnelForegroundServiceInstrumentationTest {
 
     @Test
     fun duplicateStartDoesNotLaunchDuplicateRuntime() {
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         assertTrue(waitForCondition(timeoutMs = 10_000) { TestTunnelHooks.bridge.startOfferCalls == 1 })
     }
 
     @Test
     fun stopDuringPendingStartIsSafe() {
         TestTunnelHooks.bridge.blockNextStartOffer()
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         assertTrue(TestTunnelHooks.bridge.awaitStartOfferEntered(10_000))
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))
         assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
@@ -85,7 +99,9 @@ class TunnelForegroundServiceInstrumentationTest {
     @Test
     fun stopBeforeNativeStartSkipsNativeStartCall() {
         TestTunnelHooks.bridge.blockNextValidation()
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         assertTrue(TestTunnelHooks.bridge.awaitValidationEntered(5_000))
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))
         assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
@@ -97,7 +113,9 @@ class TunnelForegroundServiceInstrumentationTest {
     @Test
     fun pauseDuringPendingStartIsSafe() {
         TestTunnelHooks.bridge.blockNextStartOffer()
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         assertTrue(TestTunnelHooks.bridge.awaitStartOfferEntered(10_000))
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_PAUSE))
         assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
@@ -111,7 +129,9 @@ class TunnelForegroundServiceInstrumentationTest {
     @Test
     fun pauseBeforeNativeStartSkipsNativeStartCall() {
         TestTunnelHooks.bridge.blockNextValidation()
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         assertTrue(TestTunnelHooks.bridge.awaitValidationEntered(5_000))
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_PAUSE))
         assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
@@ -122,16 +142,22 @@ class TunnelForegroundServiceInstrumentationTest {
 
     @Test
     fun startStopStartWorks() {
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.startOfferCalls >= 1 })
         context.startService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP))
         assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
         stopService()
-        assertTrue(waitForCondition(timeoutMs = 5_000) {
-            (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState ==
-                com.phillipchin.webrtctunnel.model.ServiceState.Stopped
-        })
-        context.startForegroundService(Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER))
+        assertTrue(
+            waitForCondition(timeoutMs = 5_000) {
+                (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState ==
+                    com.phillipchin.webrtctunnel.model.ServiceState.Stopped
+            },
+        )
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
         assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.startOfferCalls >= 2 })
     }
 
@@ -163,11 +189,12 @@ class TunnelForegroundServiceInstrumentationTest {
         )
         assertTrue(
             waitForCondition(timeoutMs = 8_000) {
-                val status = (context.applicationContext as HasAppDependencies)
-                    .deps
-                    .tunnelRepository
-                    .status
-                    .value
+                val status =
+                    (context.applicationContext as HasAppDependencies)
+                        .deps
+                        .tunnelRepository
+                        .status
+                        .value
                 status.serviceState == com.phillipchin.webrtctunnel.model.ServiceState.Stopped &&
                     !status.allowMeteredForCurrentSession
             },
@@ -190,7 +217,10 @@ class TunnelForegroundServiceInstrumentationTest {
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
     }
 
-    private fun waitForCondition(timeoutMs: Long, condition: () -> Boolean): Boolean {
+    private fun waitForCondition(
+        timeoutMs: Long,
+        condition: () -> Boolean,
+    ): Boolean {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
         while (System.nanoTime() < deadline) {
             InstrumentationRegistry.getInstrumentation().waitForIdleSync()

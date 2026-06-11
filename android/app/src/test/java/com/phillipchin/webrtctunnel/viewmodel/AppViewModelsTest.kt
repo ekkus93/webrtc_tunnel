@@ -17,6 +17,12 @@ import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
@@ -26,12 +32,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.net.ServerSocket
 
@@ -47,19 +47,26 @@ class AppViewModelsTest {
     fun setUp() {
         configRepository = ConfigRepository(app)
         recordingBridge = RecordingBridge()
-        tunnelRepository = TunnelRepository(app, recordingBridge)
-        deps = AppDependencies(
-            context = app,
-            configRepository = configRepository,
-            tunnelRepository = tunnelRepository,
-            networkPolicyManager = NetworkPolicyManager {
-                NetworkType.UnmeteredWifi to false
-            },
-            identityRepository = IdentityRepository(app, object : IdentityCrypto {
-                override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
-                override fun decrypt(payload: ByteArray): ByteArray = payload
-            }),
-        )
+        tunnelRepository = TunnelRepository(recordingBridge)
+        deps =
+            AppDependencies(
+                context = app,
+                configRepository = configRepository,
+                tunnelRepository = tunnelRepository,
+                networkPolicyManager =
+                    NetworkPolicyManager {
+                        NetworkType.UnmeteredWifi to false
+                    },
+                identityRepository =
+                    IdentityRepository(
+                        app,
+                        object : IdentityCrypto {
+                            override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
+
+                            override fun decrypt(payload: ByteArray): ByteArray = payload
+                        },
+                    ),
+            )
     }
 
     @Test
@@ -91,24 +98,25 @@ class AppViewModelsTest {
     }
 
     @Test
-    fun homeViewModelAllowMeteredTemporarilyDoesNotPersistPreference() = runBlocking {
-        configRepository.savePreferences(
-            com.phillipchin.webrtctunnel.model.AndroidAppPreferences(
-                allowMetered = false,
-                resumeOnUnmetered = true,
-                showMeteredWarning = true,
-                startTunnelWhenAppOpens = false,
-                debugLogsEnabled = false,
-                advancedSettingsEnabled = false,
-            ),
-        )
-        val viewModel = HomeViewModel(deps)
-        viewModel.allowMeteredTemporarily()
-        val started = Shadows.shadowOf(app).nextStartedService
-        assertNotNull(started)
-        assertEquals(TunnelForegroundService.ACTION_ALLOW_METERED_SESSION, started.action)
-        assertEquals(false, configRepository.preferences.first().allowMetered)
-    }
+    fun homeViewModelAllowMeteredTemporarilyDoesNotPersistPreference() =
+        runBlocking {
+            configRepository.savePreferences(
+                com.phillipchin.webrtctunnel.model.AndroidAppPreferences(
+                    allowMetered = false,
+                    resumeOnUnmetered = true,
+                    showMeteredWarning = true,
+                    startTunnelWhenAppOpens = false,
+                    debugLogsEnabled = false,
+                    advancedSettingsEnabled = false,
+                ),
+            )
+            val viewModel = HomeViewModel(deps)
+            viewModel.allowMeteredTemporarily()
+            val started = Shadows.shadowOf(app).nextStartedService
+            assertNotNull(started)
+            assertEquals(TunnelForegroundService.ACTION_ALLOW_METERED_SESSION, started.action)
+            assertEquals(false, configRepository.preferences.first().allowMetered)
+        }
 
     @Test
     fun homeViewModelRefreshDelegatesToRepository() {
@@ -138,13 +146,14 @@ class AppViewModelsTest {
     @Test
     fun settingsViewModelReadsPublicIdentityExactlyOnce() {
         var readCount = 0
-        val viewModel = SettingsViewModel(
-            deps = deps,
-            loadPublicIdentity = {
-                readCount += 1
-                "peer_id = \"android-phone\""
-            },
-        )
+        val viewModel =
+            SettingsViewModel(
+                deps = deps,
+                loadPublicIdentity = {
+                    readCount += 1
+                    "peer_id = \"android-phone\""
+                },
+            )
         awaitSettingsState(viewModel) { it.publicIdentity != null }
         assertEquals(1, readCount)
     }
@@ -168,10 +177,11 @@ class AppViewModelsTest {
 
     @Test
     fun settingsViewModelHandlesPublicIdentityReadError() {
-        val viewModel = SettingsViewModel(
-            deps = deps,
-            loadPublicIdentity = { throw IllegalStateException("identity read failed") },
-        )
+        val viewModel =
+            SettingsViewModel(
+                deps = deps,
+                loadPublicIdentity = { throw IllegalStateException("identity read failed") },
+            )
         val state = awaitSettingsState(viewModel) { it.publicIdentityLoadError != null }
         assertTrue(state.publicIdentityLoadError?.isNotBlank() == true)
         assertEquals(null, state.publicIdentity)
@@ -180,9 +190,10 @@ class AppViewModelsTest {
     @Test
     fun setupViewModelBlocksNextWhenBrokerInvalid() {
         val viewModel = SetupViewModel(deps)
-        val identityFile = File(app.filesDir, "incoming_identity_for_validation.toml").apply {
-            writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
-        }
+        val identityFile =
+            File(app.filesDir, "incoming_identity_for_validation.toml").apply {
+                writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
+            }
         viewModel.goNext()
         viewModel.setImportIdentityPath(identityFile.absolutePath)
         viewModel.goNext()
@@ -195,9 +206,10 @@ class AppViewModelsTest {
     @Test
     fun setupViewModelBlocksSaveWhenLocalPeerIdMismatchesIdentityPeerId() {
         val viewModel = SetupViewModel(deps)
-        val identityFile = File(app.filesDir, "incoming_identity_peer_mismatch.toml").apply {
-            writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
-        }
+        val identityFile =
+            File(app.filesDir, "incoming_identity_peer_mismatch.toml").apply {
+                writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
+            }
         configRepository.saveForwards(
             listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
         )
@@ -223,9 +235,10 @@ class AppViewModelsTest {
     @Test
     fun setupViewModelBlocksStartWhenRemotePeerDoesNotMatchPublicIdentityPeerId() {
         val viewModel = SetupViewModel(deps)
-        val identityFile = File(app.filesDir, "incoming_identity_remote_mismatch.toml").apply {
-            writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
-        }
+        val identityFile =
+            File(app.filesDir, "incoming_identity_remote_mismatch.toml").apply {
+                writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
+            }
         configRepository.saveForwards(
             listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
         )
@@ -251,13 +264,14 @@ class AppViewModelsTest {
     @Test
     fun setupViewModelStartTunnelWaitsForPreferenceSave() {
         val gate = CompletableDeferred<Unit>()
-        val viewModel = SetupViewModel(
-            deps,
-            persistPreferences = {
-                gate.await()
-                deps.configRepository.savePreferences(it)
-            },
-        )
+        val viewModel =
+            SetupViewModel(
+                deps,
+                persistPreferences = {
+                    gate.await()
+                    deps.configRepository.savePreferences(it)
+                },
+            )
         prepareValidReviewState(viewModel)
         viewModel.startTunnelFromReview()
         assertEquals(null, Shadows.shadowOf(app).nextStartedService)
@@ -269,10 +283,11 @@ class AppViewModelsTest {
 
     @Test
     fun setupViewModelFailedPreferenceSavePreventsStartAndShowsError() {
-        val viewModel = SetupViewModel(
-            deps,
-            persistPreferences = { throw IllegalStateException("prefs save failed") },
-        )
+        val viewModel =
+            SetupViewModel(
+                deps,
+                persistPreferences = { throw IllegalStateException("prefs save failed") },
+            )
         prepareValidReviewState(viewModel)
         viewModel.startTunnelFromReview()
         val state = awaitSetupState(viewModel) { it.errorMessage != null }
@@ -338,30 +353,61 @@ class AppViewModelsTest {
 
     @Test
     fun importExportViewModelDeletesTempFileOnThrownValidationError() {
-        val throwingBridge = object : TunnelNativeBridge {
-            override fun startOffer(configPath: String, identityBytes: ByteArray?) = Result.success(Unit)
-            override fun startAnswer(configPath: String) = Result.success(Unit)
-            override fun stop() = Result.success(Unit)
-            override fun getStatusJson(): String = recordingBridge.getStatusJson()
-            override fun getRecentLogsJson(maxEvents: Int): String = "[]"
-            override fun validateConfig(configPath: String): ValidationResult = throw RuntimeException("boom")
-            override fun validateConfigWithIdentity(configPath: String, identityBytes: ByteArray): ValidationResult = throw RuntimeException("boom")
-            override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
-                IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = identityToml, peer_id = "android-phone")
-            override fun validatePublicIdentity(line: String): IdentityValidationResult =
-                IdentityValidationResult(valid = true, canonical_public_identity = line.trim(), peer_id = "remote-peer")
-            override fun generateIdentity(peerId: String): IdentityValidationResult =
-                IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = "private", peer_id = peerId)
-        }
-        val throwingDeps = AppDependencies(
-            context = app,
-            configRepository = configRepository,
-            tunnelRepository = TunnelRepository(app, throwingBridge),
-            networkPolicyManager = NetworkPolicyManager {
-                NetworkType.UnmeteredWifi to false
-            },
-            identityRepository = deps.identityRepository,
-        )
+        val throwingBridge =
+            object : TunnelNativeBridge {
+                override fun startOffer(
+                    configPath: String,
+                    identityBytes: ByteArray?,
+                ) = Result.success(Unit)
+
+                override fun startAnswer(configPath: String) = Result.success(Unit)
+
+                override fun stop() = Result.success(Unit)
+
+                override fun getStatusJson(): String = recordingBridge.getStatusJson()
+
+                override fun getRecentLogsJson(maxEvents: Int): String = "[]"
+
+                override fun validateConfig(configPath: String): ValidationResult = throw RuntimeException("boom")
+
+                override fun validateConfigWithIdentity(
+                    configPath: String,
+                    identityBytes: ByteArray,
+                ): ValidationResult =
+                    throw RuntimeException(
+                        "boom",
+                    )
+
+                override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
+                    IdentityValidationResult(
+                        valid = true,
+                        canonical_public_identity = "canon",
+                        canonical_private_identity = identityToml,
+                        peer_id = "android-phone",
+                    )
+
+                override fun validatePublicIdentity(line: String): IdentityValidationResult =
+                    IdentityValidationResult(valid = true, canonical_public_identity = line.trim(), peer_id = "remote-peer")
+
+                override fun generateIdentity(peerId: String): IdentityValidationResult =
+                    IdentityValidationResult(
+                        valid = true,
+                        canonical_public_identity = "canon",
+                        canonical_private_identity = "private",
+                        peer_id = peerId,
+                    )
+            }
+        val throwingDeps =
+            AppDependencies(
+                context = app,
+                configRepository = configRepository,
+                tunnelRepository = TunnelRepository(throwingBridge),
+                networkPolicyManager =
+                    NetworkPolicyManager {
+                        NetworkType.UnmeteredWifi to false
+                    },
+                identityRepository = deps.identityRepository,
+            )
         val vm = ImportExportViewModel(throwingDeps)
         val tempFile = File(app.cacheDir, "config-import-candidate.toml")
         tempFile.delete()
@@ -377,30 +423,33 @@ class AppViewModelsTest {
         runBlocking {
             val server = ServerSocket(0)
             val successVm = ForwardsViewModel(deps)
-            val successForward = ForwardConfig(
-                id = "svc-open",
-                name = "svc-open",
-                localHost = "127.0.0.1",
-                localPort = server.localPort,
-                remoteForwardId = "svc-open",
-                enabled = true,
-            )
-            val successMessage = async {
-                withTimeout(5_000) {
-                    successVm.message.first { it?.contains("succeeded") == true }
+            val successForward =
+                ForwardConfig(
+                    id = "svc-open",
+                    name = "svc-open",
+                    localHost = "127.0.0.1",
+                    localPort = server.localPort,
+                    remoteForwardId = "svc-open",
+                    enabled = true,
+                )
+            val successMessage =
+                async {
+                    withTimeout(5_000) {
+                        successVm.message.first { it?.contains("succeeded") == true }
+                    }
                 }
-            }
             successVm.testLocalPort(successForward)
             assertTrue(successMessage.await()?.contains("succeeded") == true)
             server.close()
 
             val failureVm = ForwardsViewModel(deps)
             val failureForward = successForward.copy(id = "svc-closed", localPort = successForward.localPort)
-            val failureMessage = async {
-                withTimeout(5_000) {
-                    failureVm.message.first { it?.contains("failed") == true }
+            val failureMessage =
+                async {
+                    withTimeout(5_000) {
+                        failureVm.message.first { it?.contains("failed") == true }
+                    }
                 }
-            }
             failureVm.testLocalPort(failureForward)
             assertTrue(failureMessage.await()?.contains("failed") == true)
         }
@@ -410,7 +459,10 @@ class AppViewModelsTest {
         var statusReads = 0
         var validationResult: ValidationResult = ValidationResult(true, null)
 
-        override fun startOffer(configPath: String, identityBytes: ByteArray?): Result<Unit> = Result.success(Unit)
+        override fun startOffer(
+            configPath: String,
+            identityBytes: ByteArray?,
+        ): Result<Unit> = Result.success(Unit)
 
         override fun startAnswer(configPath: String): Result<Unit> = Result.success(Unit)
 
@@ -427,19 +479,37 @@ class AppViewModelsTest {
         override fun getRecentLogsJson(maxEvents: Int): String = "[]"
 
         override fun validateConfig(configPath: String): ValidationResult = validationResult
-        override fun validateConfigWithIdentity(configPath: String, identityBytes: ByteArray): ValidationResult = validationResult
+
+        override fun validateConfigWithIdentity(
+            configPath: String,
+            identityBytes: ByteArray,
+        ): ValidationResult = validationResult
+
         override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
-            IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = identityToml, peer_id = "android-phone")
+            IdentityValidationResult(
+                valid = true,
+                canonical_public_identity = "canon",
+                canonical_private_identity = identityToml,
+                peer_id = "android-phone",
+            )
+
         override fun validatePublicIdentity(line: String): IdentityValidationResult =
             IdentityValidationResult(valid = true, canonical_public_identity = line.trim(), peer_id = "remote-peer")
+
         override fun generateIdentity(peerId: String): IdentityValidationResult =
-            IdentityValidationResult(valid = true, canonical_public_identity = "canon", canonical_private_identity = "private", peer_id = peerId)
+            IdentityValidationResult(
+                valid = true,
+                canonical_public_identity = "canon",
+                canonical_private_identity = "private",
+                peer_id = peerId,
+            )
     }
 
     private fun prepareValidReviewState(viewModel: SetupViewModel) {
-        val identityFile = File(app.filesDir, "incoming_identity.toml").apply {
-            writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
-        }
+        val identityFile =
+            File(app.filesDir, "incoming_identity.toml").apply {
+                writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
+            }
         val forward = ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)
         configRepository.saveForwards(listOf(forward))
         recordingBridge.validationResult = ValidationResult(true, null)
@@ -459,38 +529,40 @@ class AppViewModelsTest {
     private fun awaitSetupState(
         viewModel: SetupViewModel,
         predicate: (SetupWizardState) -> Boolean,
-    ): SetupWizardState = runBlocking {
-        withTimeout(5_000) {
-            var matched: SetupWizardState? = null
-            while (true) {
-                val current = viewModel.state.value
-                if (predicate(current)) {
-                    matched = current
-                    break
+    ): SetupWizardState =
+        runBlocking {
+            withTimeout(5_000) {
+                var matched: SetupWizardState? = null
+                while (true) {
+                    val current = viewModel.state.value
+                    if (predicate(current)) {
+                        matched = current
+                        break
+                    }
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    delay(10)
                 }
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                delay(10)
+                matched ?: error("Timed out waiting for setup state")
             }
-            matched ?: error("Timed out waiting for setup state")
         }
-    }
 
     private fun awaitSettingsState(
         viewModel: SettingsViewModel,
         predicate: (SettingsUiState) -> Boolean,
-    ): SettingsUiState = runBlocking {
-        withTimeout(5_000) {
-            var matched: SettingsUiState? = null
-            while (true) {
-                val current = viewModel.uiState.value
-                if (predicate(current)) {
-                    matched = current
-                    break
+    ): SettingsUiState =
+        runBlocking {
+            withTimeout(5_000) {
+                var matched: SettingsUiState? = null
+                while (true) {
+                    val current = viewModel.uiState.value
+                    if (predicate(current)) {
+                        matched = current
+                        break
+                    }
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    delay(10)
                 }
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                delay(10)
+                matched ?: error("Timed out waiting for settings state")
             }
-            matched ?: error("Timed out waiting for settings state")
         }
-    }
 }

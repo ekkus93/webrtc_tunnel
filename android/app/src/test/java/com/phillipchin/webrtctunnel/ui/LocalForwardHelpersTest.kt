@@ -5,7 +5,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class LocalForwardHelpersTest {
-    private fun forward(host: String, port: Int = 8080) = ForwardConfig(
+    private fun forward(
+        host: String,
+        port: Int = 8080,
+    ) = ForwardConfig(
         id = "f",
         name = "f",
         localHost = host,

@@ -18,7 +18,10 @@ class IdentityRepository(
 
     fun hasEncryptedIdentity(): Boolean = identityFile.exists()
 
-    fun storeEncryptedIdentity(privateIdentity: ByteArray, publicIdentity: String) {
+    fun storeEncryptedIdentity(
+        privateIdentity: ByteArray,
+        publicIdentity: String,
+    ) {
         identityFile.writeBytes(crypto.encrypt(privateIdentity))
         publicFile.writeText(publicIdentity)
     }
@@ -33,27 +36,30 @@ class IdentityRepository(
 
     fun readPublicIdentity(): String = if (publicFile.exists()) publicFile.readText() else ""
 
-    fun readPrivateIdentityFile(path: String): Result<String> = runCatching {
-        val source = File(path)
-        require(source.exists()) { "Identity file not found: $path" }
-        val value = source.readText()
-        require(value.isNotBlank()) { "Identity file is empty" }
-        value
-    }
+    fun readPrivateIdentityFile(path: String): Result<String> =
+        runCatching {
+            val source = File(path)
+            require(source.exists()) { "Identity file not found: $path" }
+            val value = source.readText()
+            require(value.isNotBlank()) { "Identity file is empty" }
+            value
+        }
 
-    fun appendAuthorizedPublicIdentity(line: String): Result<Unit> = runCatching {
-        val trimmed = line.trim()
-        require(trimmed.isNotEmpty()) { "Public identity line is empty" }
-        val existing = if (authorizedKeysFile.exists()) {
-            authorizedKeysFile.readLines().map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
-        } else {
-            mutableSetOf()
+    fun appendAuthorizedPublicIdentity(line: String): Result<Unit> =
+        runCatching {
+            val trimmed = line.trim()
+            require(trimmed.isNotEmpty()) { "Public identity line is empty" }
+            val existing =
+                if (authorizedKeysFile.exists()) {
+                    authorizedKeysFile.readLines().map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+                } else {
+                    mutableSetOf()
+                }
+            if (existing.add(trimmed)) {
+                authorizedKeysFile.parentFile?.mkdirs()
+                authorizedKeysFile.writeText(existing.toList().sorted().joinToString("\n"))
+            }
         }
-        if (existing.add(trimmed)) {
-            authorizedKeysFile.parentFile?.mkdirs()
-            authorizedKeysFile.writeText(existing.toList().sorted().joinToString("\n"))
-        }
-    }
 
     fun writeAuthorizedPublicIdentities(lines: List<String>) {
         val unique = lines.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
@@ -61,25 +67,31 @@ class IdentityRepository(
         authorizedKeysFile.writeText(unique.joinToString("\n"))
     }
 
-    fun exportPrivateIdentity(outputPath: String, confirmRisk: Boolean): Result<Unit> = runCatching {
-        require(confirmRisk) { "Private export requires explicit confirmation" }
-        require(hasEncryptedIdentity()) { "No private identity available" }
-        val output = File(outputPath)
-        output.parentFile?.mkdirs()
-        output.writeBytes(readPrivateIdentityPlaintext())
-    }
+    fun exportPrivateIdentity(
+        outputPath: String,
+        confirmRisk: Boolean,
+    ): Result<Unit> =
+        runCatching {
+            require(confirmRisk) { "Private export requires explicit confirmation" }
+            require(hasEncryptedIdentity()) { "No private identity available" }
+            val output = File(outputPath)
+            output.parentFile?.mkdirs()
+            output.writeBytes(readPrivateIdentityPlaintext())
+        }
 
-    fun exportPublicIdentity(outputPath: String): Result<Unit> = runCatching {
-        val value = readPublicIdentity()
-        require(value.isNotBlank()) { "No public identity available" }
-        val output = File(outputPath)
-        output.parentFile?.mkdirs()
-        output.writeText(value)
-    }
+    fun exportPublicIdentity(outputPath: String): Result<Unit> =
+        runCatching {
+            val value = readPublicIdentity()
+            require(value.isNotBlank()) { "No public identity available" }
+            val output = File(outputPath)
+            output.parentFile?.mkdirs()
+            output.writeText(value)
+        }
 }
 
 interface IdentityCrypto {
     fun encrypt(plaintext: ByteArray): ByteArray
+
     fun decrypt(payload: ByteArray): ByteArray
 }
 
@@ -104,14 +116,15 @@ class AndroidKeystoreIdentityCrypto : IdentityCrypto {
         val existing = (keyStore.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
         if (existing != null) return existing
         val generator = KeyGenerator.getInstance("AES", "AndroidKeyStore")
-        val spec = android.security.keystore.KeyGenParameterSpec.Builder(
-            KEY_ALIAS,
-            android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT,
-        )
-            .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setUserAuthenticationRequired(false)
-            .build()
+        val spec =
+            android.security.keystore.KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT,
+            )
+                .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setUserAuthenticationRequired(false)
+                .build()
         generator.init(spec)
         return generator.generateKey()
     }

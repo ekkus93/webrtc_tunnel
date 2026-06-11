@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -21,10 +22,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,20 +41,27 @@ private val Error = Color(0xFFD32F2F)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TunnelTopAppBar(title: String, navigationIcon: @Composable (() -> Unit)? = null) {
+fun TunnelTopAppBar(
+    title: String,
+    navigationIcon: @Composable (() -> Unit)? = null,
+) {
     TopAppBar(
         title = { Text(title, style = MaterialTheme.typography.titleSmall) },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = Color(0xFF061A3D),
-            titleContentColor = Color.White,
-            navigationIconContentColor = Color.White,
-        ),
+        colors =
+            TopAppBarDefaults.topAppBarColors(
+                containerColor = Color(0xFF061A3D),
+                titleContentColor = Color.White,
+                navigationIconContentColor = Color.White,
+            ),
         navigationIcon = { navigationIcon?.invoke() },
     )
 }
 
 @Composable
-fun SectionHeader(title: String, subtitle: String? = null) {
+fun SectionHeader(
+    title: String,
+    subtitle: String? = null,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, style = MaterialTheme.typography.titleLarge)
         subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280)) }
@@ -83,38 +90,41 @@ fun NetworkStatusCard(content: @Composable () -> Unit) = StatusCard(content = co
 data class StatusChipColors(val container: Color, val content: Color)
 
 /** Contrast-safe container/content colors for a forward status chip label. */
-fun forwardStatusChipColors(label: String): StatusChipColors = when {
-    label.contains("listening", ignoreCase = true) ||
-        label.contains("connected", ignoreCase = true) ||
-        label.contains("serving", ignoreCase = true) ->
-        StatusChipColors(Success, Color.White)
-    label.contains("error", ignoreCase = true) ||
-        label.contains("invalid", ignoreCase = true) ||
-        label.contains("attention", ignoreCase = true) ->
-        StatusChipColors(Error, Color.White)
-    label.contains("paused", ignoreCase = true) ||
-        label.contains("starting", ignoreCase = true) ->
-        StatusChipColors(Warning, Color(0xFF1F2937))
-    // Neutral pair for Stopped / Disabled / Configured and any unknown label.
-    else -> StatusChipColors(Color(0xFFE5E7EB), Color(0xFF374151))
-}
+fun forwardStatusChipColors(label: String): StatusChipColors =
+    when {
+        label.contains("listening", ignoreCase = true) ||
+            label.contains("connected", ignoreCase = true) ||
+            label.contains("serving", ignoreCase = true) ->
+            StatusChipColors(Success, Color.White)
+        label.contains("error", ignoreCase = true) ||
+            label.contains("invalid", ignoreCase = true) ||
+            label.contains("attention", ignoreCase = true) ->
+            StatusChipColors(Error, Color.White)
+        label.contains("paused", ignoreCase = true) ||
+            label.contains("starting", ignoreCase = true) ->
+            StatusChipColors(Warning, Color(0xFF1F2937))
+        // Neutral pair for Stopped / Disabled / Configured and any unknown label.
+        else -> StatusChipColors(Color(0xFFE5E7EB), Color(0xFF374151))
+    }
 
 @Composable
 fun ForwardSummaryRow(
     title: String,
     subtitle: String,
     status: String,
-    statusColors: StatusChipColors = StatusChipColors(
-        MaterialTheme.colorScheme.primaryContainer,
-        MaterialTheme.colorScheme.onPrimaryContainer,
-    ),
+    statusColors: StatusChipColors =
+        StatusChipColors(
+            MaterialTheme.colorScheme.primaryContainer,
+            MaterialTheme.colorScheme.onPrimaryContainer,
+        ),
     onClick: (() -> Unit)? = null,
 ) {
-    val rowModifier = if (onClick != null) {
-        Modifier.fillMaxWidth().clickable(onClick = onClick)
-    } else {
-        Modifier.fillMaxWidth()
-    }
+    val rowModifier =
+        if (onClick != null) {
+            Modifier.fillMaxWidth().clickable(onClick = onClick)
+        } else {
+            Modifier.fillMaxWidth()
+        }
     Row(
         modifier = rowModifier,
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -156,7 +166,12 @@ fun EmptyStateCard(message: String) {
 }
 
 @Composable
-fun ErrorResolutionCard(summary: String, fix: String, details: String? = null, action: @Composable (() -> Unit)? = null) {
+fun ErrorResolutionCard(
+    summary: String,
+    fix: String,
+    details: String? = null,
+    action: @Composable (() -> Unit)? = null,
+) {
     var showDetails by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -181,20 +196,25 @@ fun ErrorResolutionCard(summary: String, fix: String, details: String? = null, a
 }
 
 @Composable
-fun WizardStepper(steps: List<String>, currentIndex: Int) {
+fun WizardStepper(
+    steps: List<String>,
+    currentIndex: Int,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             steps.forEachIndexed { index, _ ->
                 val active = index == currentIndex
                 val completed = index < currentIndex
-                val circleColor = when {
-                    active -> MaterialTheme.colorScheme.primary
-                    completed -> MaterialTheme.colorScheme.primaryContainer
-                    else -> Color(0xFFE5E7EB)
-                }
+                val circleColor =
+                    when {
+                        active -> MaterialTheme.colorScheme.primary
+                        completed -> MaterialTheme.colorScheme.primaryContainer
+                        else -> Color(0xFFE5E7EB)
+                    }
                 Box(
-                    modifier = Modifier
-                        .weight(1f),
+                    modifier =
+                        Modifier
+                            .weight(1f),
                     contentAlignment = Alignment.Center,
                 ) {
                     Row(
@@ -202,10 +222,11 @@ fun WizardStepper(steps: List<String>, currentIndex: Int) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(
-                            modifier = Modifier
-                                .heightIn(min = 32.dp)
-                                .background(circleColor, RoundedCornerShape(999.dp))
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            modifier =
+                                Modifier
+                                    .heightIn(min = 32.dp)
+                                    .background(circleColor, RoundedCornerShape(999.dp))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
@@ -216,11 +237,12 @@ fun WizardStepper(steps: List<String>, currentIndex: Int) {
                         }
                         if (index < steps.lastIndex) {
                             Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .heightIn(min = 2.dp)
-                                    .padding(horizontal = 4.dp)
-                                    .background(if (completed) MaterialTheme.colorScheme.primary else Color(0xFFD1D5DB)),
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 2.dp)
+                                        .padding(horizontal = 4.dp)
+                                        .background(if (completed) MaterialTheme.colorScheme.primary else Color(0xFFD1D5DB)),
                             )
                         }
                     }
@@ -235,7 +257,10 @@ fun WizardStepper(steps: List<String>, currentIndex: Int) {
 }
 
 @Composable
-fun SettingsSection(title: String, content: @Composable () -> Unit) {
+fun SettingsSection(
+    title: String,
+    content: @Composable () -> Unit,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -248,35 +273,46 @@ fun SettingsSection(title: String, content: @Composable () -> Unit) {
     }
 }
 
-const val MeteredWarningMessage =
-    "WebRTC Tunnel can use significant mobile data and may incur overage charges or throttling. Enable cellular or metered use only if you understand and accept this risk."
+const val METERED_WARNING_MESSAGE =
+    "WebRTC Tunnel can use significant mobile data and may incur overage charges or " +
+        "throttling. Enable cellular or metered use only if you understand and accept this risk."
 
 @Composable
-fun MeteredWarningDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+fun MeteredWarningDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Cellular / Metered Data Warning") },
-        text = { Text(MeteredWarningMessage) },
+        text = { Text(METERED_WARNING_MESSAGE) },
         confirmButton = { TextButton(onClick = onConfirm) { Text("I understand") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
 @Composable
-fun ScrollableScreenSurface(padding: androidx.compose.foundation.layout.PaddingValues, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+fun ScrollableScreenSurface(
+    padding: androidx.compose.foundation.layout.PaddingValues,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
         verticalArrangement = Arrangement.Top,
         content = content,
     )
 }
 
 @Composable
-fun DestructiveActionButton(text: String, onClick: () -> Unit) {
+fun DestructiveActionButton(
+    text: String,
+    onClick: () -> Unit,
+) {
     OutlinedButton(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
@@ -285,9 +321,10 @@ fun DestructiveActionButton(text: String, onClick: () -> Unit) {
     }
 }
 
-fun stateColorToken(state: String): Color = when {
-    state.contains("connected", ignoreCase = true) || state.contains("listening", ignoreCase = true) -> Success
-    state.contains("paused", ignoreCase = true) || state.contains("starting", ignoreCase = true) -> Warning
-    state.contains("error", ignoreCase = true) || state.contains("invalid", ignoreCase = true) -> Error
-    else -> Color(0xFF6B7280)
-}
+fun stateColorToken(state: String): Color =
+    when {
+        state.contains("connected", ignoreCase = true) || state.contains("listening", ignoreCase = true) -> Success
+        state.contains("paused", ignoreCase = true) || state.contains("starting", ignoreCase = true) -> Warning
+        state.contains("error", ignoreCase = true) || state.contains("invalid", ignoreCase = true) -> Error
+        else -> Color(0xFF6B7280)
+    }

@@ -7,14 +7,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.TunnelForegroundService
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.LogEvent
-import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
-import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -27,9 +27,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.io.File
 
 enum class SetupStep {
     Mode,
@@ -77,18 +77,19 @@ class HomeViewModel(private val deps: AppDependencies) : ViewModel() {
     private val _configuredForwards = MutableStateFlow(deps.configRepository.loadForwards())
     val configuredForwards: StateFlow<List<ForwardConfig>> = _configuredForwards.asStateFlow()
 
-    fun startTunnel(mode: TunnelMode): Unit {
-        val action = when (mode) {
-            TunnelMode.Offer -> TunnelForegroundService.ACTION_START_OFFER
-            TunnelMode.Answer -> return
-        }
+    fun startTunnel(mode: TunnelMode) {
+        val action =
+            when (mode) {
+                TunnelMode.Offer -> TunnelForegroundService.ACTION_START_OFFER
+                TunnelMode.Answer -> return
+            }
         ContextCompat.startForegroundService(
             deps.context,
             Intent(deps.context, TunnelForegroundService::class.java).setAction(action),
         )
     }
 
-    fun stopTunnel(): Unit {
+    fun stopTunnel() {
         deps.context.startService(
             Intent(deps.context, TunnelForegroundService::class.java)
                 .setAction(TunnelForegroundService.ACTION_STOP),
@@ -120,9 +121,10 @@ class SetupViewModel(
     private val _forwards = MutableStateFlow(emptyList<ForwardConfig>())
     val forwards: StateFlow<List<ForwardConfig>> = _forwards.asStateFlow()
     private val steps = SetupStep.entries
-    val networkStatus = combine(deps.networkPolicyManager.status, state) { _, wizardState ->
-        deps.networkPolicyManager.evaluateWithPolicy(wizardState.input.allowMetered)
-    }
+    val networkStatus =
+        combine(deps.networkPolicyManager.status, state) { _, wizardState ->
+            deps.networkPolicyManager.evaluateWithPolicy(wizardState.input.allowMetered)
+        }
     val preferences = deps.configRepository.preferences
 
     init {
@@ -133,10 +135,14 @@ class SetupViewModel(
 
     fun validateConfig(): ValidationResult = deps.tunnelRepository.validateConfig(deps.configRepository.configPath)
 
-    fun validateForwardDraft(draft: ForwardConfig, currentForwards: List<ForwardConfig>): String? {
-        val updated = currentForwards.map { if (it.id == draft.id) draft else it }.let { candidates ->
-            if (candidates.none { it.id == draft.id }) candidates + draft else candidates
-        }
+    fun validateForwardDraft(
+        draft: ForwardConfig,
+        currentForwards: List<ForwardConfig>,
+    ): String? {
+        val updated =
+            currentForwards.map { if (it.id == draft.id) draft else it }.let { candidates ->
+                if (candidates.none { it.id == draft.id }) candidates + draft else candidates
+            }
         return deps.configRepository.validateForwards(updated)
     }
 
@@ -144,7 +150,10 @@ class SetupViewModel(
         return copy(canAdvance = canAdvance(this, forwards))
     }
 
-    private fun canAdvance(state: SetupWizardState, forwards: List<ForwardConfig>): Boolean {
+    private fun canAdvance(
+        state: SetupWizardState,
+        forwards: List<ForwardConfig>,
+    ): Boolean {
         return when (state.currentStep) {
             SetupStep.Mode -> true
             SetupStep.Identity -> state.localPublicIdentity.isNotBlank() || state.importIdentityPath.isNotBlank()
@@ -204,60 +213,67 @@ class SetupViewModel(
             _state.value = current.copy(errorMessage = "Choose an identity file path to import").withCanAdvance(_forwards.value)
             return
         }
-        val resolved = runCatching {
-            val privateIdentity = deps.identityRepository.readPrivateIdentityFile(trimmed).getOrThrow()
-            val validated = deps.tunnelRepository.validatePrivateIdentity(privateIdentity)
-            require(validated.valid) { validated.message ?: "Invalid private identity" }
-            val peerId = validated.peer_id ?: throw IllegalArgumentException("Missing identity peer id")
-            val canonicalPublic = validated.canonical_public_identity ?: ""
-            peerId to canonicalPublic
-        }
+        val resolved =
+            runCatching {
+                val privateIdentity = deps.identityRepository.readPrivateIdentityFile(trimmed).getOrThrow()
+                val validated = deps.tunnelRepository.validatePrivateIdentity(privateIdentity)
+                require(validated.valid) { validated.message ?: "Invalid private identity" }
+                val peerId = validated.peer_id ?: throw IllegalArgumentException("Missing identity peer id")
+                val canonicalPublic = validated.canonical_public_identity ?: ""
+                peerId to canonicalPublic
+            }
         resolved.onSuccess { (peerId, canonicalPublic) ->
-            _state.value = current.copy(
-                importIdentityPath = trimmed,
-                identityPeerId = peerId,
-                localPublicIdentity = canonicalPublic,
-                input = current.input.copy(localPeerId = peerId),
-                errorMessage = null,
-                saveResult = "Identity imported",
-            ).withCanAdvance(_forwards.value)
+            _state.value =
+                current.copy(
+                    importIdentityPath = trimmed,
+                    identityPeerId = peerId,
+                    localPublicIdentity = canonicalPublic,
+                    input = current.input.copy(localPeerId = peerId),
+                    errorMessage = null,
+                    saveResult = "Identity imported",
+                ).withCanAdvance(_forwards.value)
         }.onFailure {
-            _state.value = current.copy(
-                identityPeerId = null,
-                localPublicIdentity = "",
-                errorMessage = it.message ?: "Invalid private identity file",
-                saveResult = null,
-            ).withCanAdvance(_forwards.value)
+            _state.value =
+                current.copy(
+                    identityPeerId = null,
+                    localPublicIdentity = "",
+                    errorMessage = it.message ?: "Invalid private identity file",
+                    saveResult = null,
+                ).withCanAdvance(_forwards.value)
         }
     }
 
     fun importIdentityFromUri(uri: Uri) {
         val current = _state.value
-        val resolved = runCatching {
-            val privateIdentity = deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                ?: error("Unable to read private identity from selected URI")
-            val validated = deps.tunnelRepository.validatePrivateIdentity(privateIdentity)
-            require(validated.valid) { validated.message ?: "Invalid private identity" }
-            val canonicalPrivate = validated.canonical_private_identity ?: privateIdentity
-            val canonicalPublic = validated.canonical_public_identity ?: ""
-            val peerId = validated.peer_id ?: throw IllegalArgumentException("Missing identity peer id")
-            deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
-            Triple(peerId, canonicalPublic, canonicalPrivate)
-        }
+        val resolved =
+            runCatching {
+                val privateIdentity =
+                    deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        ?: error("Unable to read private identity from selected URI")
+                val validated = deps.tunnelRepository.validatePrivateIdentity(privateIdentity)
+                require(validated.valid) { validated.message ?: "Invalid private identity" }
+                val canonicalPrivate = validated.canonical_private_identity ?: privateIdentity
+                val canonicalPublic = validated.canonical_public_identity ?: ""
+                val peerId = validated.peer_id ?: throw IllegalArgumentException("Missing identity peer id")
+                deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
+                Triple(peerId, canonicalPublic, canonicalPrivate)
+            }
         resolved.onSuccess { (peerId, canonicalPublic, _) ->
-            _state.value = current.copy(
-                identityPeerId = peerId,
-                localPublicIdentity = canonicalPublic,
-                input = current.input.copy(localPeerId = peerId),
-                importIdentityPath = "",
-                errorMessage = null,
-                saveResult = "Identity imported",
-            ).withCanAdvance(_forwards.value)
+            _state.value =
+                current.copy(
+                    identityPeerId = peerId,
+                    localPublicIdentity = canonicalPublic,
+                    input = current.input.copy(localPeerId = peerId),
+                    importIdentityPath = "",
+                    errorMessage = null,
+                    saveResult = "Identity imported",
+                ).withCanAdvance(_forwards.value)
         }.onFailure {
-            _state.value = current.copy(
-                errorMessage = it.message ?: "Invalid private identity file",
-                saveResult = null,
-            ).withCanAdvance(_forwards.value)
+            _state.value =
+                current.copy(
+                    errorMessage = it.message ?: "Invalid private identity file",
+                    saveResult = null,
+                ).withCanAdvance(_forwards.value)
         }
     }
 
@@ -265,26 +281,36 @@ class SetupViewModel(
         val current = _state.value
         val value = current.importPublicIdentity.trim()
         if (value.isBlank()) {
-            _state.value = current.copy(remoteIdentityPeerId = null, errorMessage = "Remote public identity is required").withCanAdvance(_forwards.value)
+            _state.value =
+                current
+                    .copy(remoteIdentityPeerId = null, errorMessage = "Remote public identity is required")
+                    .withCanAdvance(_forwards.value)
             return
         }
 
         val validated = deps.tunnelRepository.validatePublicIdentity(value)
         if (!validated.valid) {
-            _state.value = current.copy(remoteIdentityPeerId = null, errorMessage = validated.message ?: "Invalid remote public identity").withCanAdvance(_forwards.value)
+            _state.value =
+                current
+                    .copy(remoteIdentityPeerId = null, errorMessage = validated.message ?: "Invalid remote public identity")
+                    .withCanAdvance(_forwards.value)
             return
         }
 
         if (validated.peer_id == current.input.localPeerId) {
-            _state.value = current.copy(remoteIdentityPeerId = null, errorMessage = "Remote public identity cannot match local identity").withCanAdvance(_forwards.value)
+            _state.value =
+                current
+                    .copy(remoteIdentityPeerId = null, errorMessage = "Remote public identity cannot match local identity")
+                    .withCanAdvance(_forwards.value)
             return
         }
-        _state.value = current.copy(
-            importPublicIdentity = validated.canonical_public_identity ?: value,
-            remoteIdentityPeerId = validated.peer_id,
-            errorMessage = null,
-            saveResult = "Remote public identity validated",
-        ).withCanAdvance(_forwards.value)
+        _state.value =
+            current.copy(
+                importPublicIdentity = validated.canonical_public_identity ?: value,
+                remoteIdentityPeerId = validated.peer_id,
+                errorMessage = null,
+                saveResult = "Remote public identity validated",
+            ).withCanAdvance(_forwards.value)
     }
 
     fun importPublicIdentityFromUri(uri: Uri) {
@@ -295,7 +321,10 @@ class SetupViewModel(
             setImportPublicIdentity(text)
             validateRemotePublicIdentity()
         }.onFailure {
-            _state.value = _state.value.copy(errorMessage = it.message ?: "Failed importing remote public identity").withCanAdvance(_forwards.value)
+            _state.value =
+                _state.value
+                    .copy(errorMessage = it.message ?: "Failed importing remote public identity")
+                    .withCanAdvance(_forwards.value)
         }
     }
 
@@ -314,13 +343,14 @@ class SetupViewModel(
         }
         deps.identityRepository.storeEncryptedIdentity(privateIdentity.toByteArray(), publicIdentity)
         val peerId = generated.peer_id ?: current.input.localPeerId
-        _state.value = current.copy(
-            input = current.input.copy(localPeerId = peerId),
-            localPublicIdentity = publicIdentity,
-            identityPeerId = peerId,
-            errorMessage = null,
-            saveResult = "Identity generated",
-        ).withCanAdvance(_forwards.value)
+        _state.value =
+            current.copy(
+                input = current.input.copy(localPeerId = peerId),
+                localPublicIdentity = publicIdentity,
+                identityPeerId = peerId,
+                errorMessage = null,
+                saveResult = "Identity generated",
+            ).withCanAdvance(_forwards.value)
     }
 
     fun goBack() {
@@ -386,14 +416,15 @@ class SetupViewModel(
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
-            val message = runCatching {
-                Socket().use { socket ->
-                    socket.connect(InetSocketAddress(host, port), 2_500)
+            val message =
+                runCatching {
+                    Socket().use { socket ->
+                        socket.connect(InetSocketAddress(host, port), 2_500)
+                    }
+                    "TCP connection to $host:$port succeeded. Full MQTT/TLS auth is confirmed when the tunnel connects."
+                }.getOrElse {
+                    "TCP connection to $host:$port failed: ${it.message ?: "unknown error"}"
                 }
-                "TCP connection to $host:$port succeeded. Full MQTT/TLS auth is confirmed when the tunnel connects."
-            }.getOrElse {
-                "TCP connection to $host:$port failed: ${it.message ?: "unknown error"}"
-            }
             _state.value = _state.value.copy(brokerTestMessage = SensitiveDataRedactor.redactText(message))
         }
     }
@@ -414,31 +445,35 @@ class SetupViewModel(
             return false
         }
 
-        val importedIdentity = if (current.importIdentityPath.isNotBlank()) {
-            val imported = withContext(Dispatchers.IO) {
-                importPrivateIdentity(current.importIdentityPath)
+        val importedIdentity =
+            if (current.importIdentityPath.isNotBlank()) {
+                val imported =
+                    withContext(Dispatchers.IO) {
+                        importPrivateIdentity(current.importIdentityPath)
+                    }
+                if (imported.isFailure) {
+                    _state.value =
+                        current.copy(
+                            errorMessage = imported.exceptionOrNull()?.message ?: "Failed importing private identity",
+                            saveResult = null,
+                        ).withCanAdvance(_forwards.value)
+                    return false
+                }
+                imported.getOrNull()
+            } else {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val bytes = deps.identityRepository.readPrivateIdentityPlaintext()
+                        val validated = deps.tunnelRepository.validatePrivateIdentity(bytes.decodeToString())
+                        require(validated.valid) { validated.message ?: "Stored private identity is invalid" }
+                        val peerId = validated.peer_id ?: throw IllegalArgumentException("Missing identity peer id")
+                        val publicIdentity =
+                            validated.canonical_public_identity
+                                ?: deps.identityRepository.readPublicIdentity()
+                        Triple(bytes, publicIdentity, peerId)
+                    }.getOrNull()
+                }
             }
-            if (imported.isFailure) {
-                _state.value = current.copy(
-                    errorMessage = imported.exceptionOrNull()?.message ?: "Failed importing private identity",
-                    saveResult = null,
-                ).withCanAdvance(_forwards.value)
-                return false
-            }
-            imported.getOrNull()
-        } else {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val bytes = deps.identityRepository.readPrivateIdentityPlaintext()
-                    val validated = deps.tunnelRepository.validatePrivateIdentity(bytes.decodeToString())
-                    require(validated.valid) { validated.message ?: "Stored private identity is invalid" }
-                    val peerId = validated.peer_id ?: throw IllegalArgumentException("Missing identity peer id")
-                    val publicIdentity = validated.canonical_public_identity
-                        ?: deps.identityRepository.readPublicIdentity()
-                    Triple(bytes, publicIdentity, peerId)
-                }.getOrNull()
-            }
-        }
         val identityBytes = importedIdentity?.first
         if (identityBytes == null || identityBytes.isEmpty()) {
             repositoryError(current, "Missing encrypted identity")
@@ -460,36 +495,42 @@ class SetupViewModel(
             }
         }
         val candidate = deps.configRepository.renderOfferConfig(input, forwards)
-        val result = withContext(Dispatchers.IO) {
-            validateCandidateConfig(candidate, identityBytes)
-        }
+        val result =
+            withContext(Dispatchers.IO) {
+                validateCandidateConfig(candidate, identityBytes)
+            }
         if (!result.valid) {
-            _state.value = current.copy(errorMessage = result.message ?: "Config validation failed", saveResult = null).withCanAdvance(_forwards.value)
+            _state.value =
+                current
+                    .copy(errorMessage = result.message ?: "Config validation failed", saveResult = null)
+                    .withCanAdvance(_forwards.value)
             return false
         }
-        val persistResult = runCatching {
-            withContext(Dispatchers.IO) {
-                deps.configRepository.writeConfigAtomically(candidate)
-                deps.configRepository.saveSetupInput(input)
-                val existing = loadPreferences()
-                persistPreferences(
-                    existing.copy(
-                        allowMetered = input.allowMetered,
-                        resumeOnUnmetered = input.resumeOnUnmetered,
-                    ),
-                )
+        val persistResult =
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    deps.configRepository.writeConfigAtomically(candidate)
+                    deps.configRepository.saveSetupInput(input)
+                    val existing = loadPreferences()
+                    persistPreferences(
+                        existing.copy(
+                            allowMetered = input.allowMetered,
+                            resumeOnUnmetered = input.resumeOnUnmetered,
+                        ),
+                    )
+                }
             }
-        }
         if (persistResult.isFailure) {
             repositoryError(current, persistResult.exceptionOrNull()?.message ?: "Failed saving configuration")
             return false
         }
-        _state.value = current.copy(
-            localPublicIdentity = importedIdentity.second,
-            identityPeerId = identityPeerId,
-            errorMessage = null,
-            saveResult = "Configuration saved",
-        ).withCanAdvance(_forwards.value)
+        _state.value =
+            current.copy(
+                localPublicIdentity = importedIdentity.second,
+                identityPeerId = identityPeerId,
+                errorMessage = null,
+                saveResult = "Configuration saved",
+            ).withCanAdvance(_forwards.value)
         return true
     }
 
@@ -509,32 +550,41 @@ class SetupViewModel(
         }
     }
 
-    private fun importPrivateIdentity(path: String): Result<Triple<ByteArray, String, String>> = runCatching {
-        val privateIdentity = deps.identityRepository.readPrivateIdentityFile(path).getOrThrow()
-        val validated = deps.tunnelRepository.validatePrivateIdentity(privateIdentity)
-        require(validated.valid) { validated.message ?: "Invalid private identity" }
-        val canonicalPrivate = validated.canonical_private_identity ?: privateIdentity
-        val canonicalPublic = validated.canonical_public_identity
-            ?: throw IllegalArgumentException("Missing canonical public identity")
-        val peerId = validated.peer_id ?: throw IllegalArgumentException("Missing canonical peer id")
-        deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
-        Triple(canonicalPrivate.toByteArray(), canonicalPublic, peerId)
-    }
-
-    private fun importPublicIdentity(line: String, expectedRemotePeerId: String): Result<String> = runCatching {
-        val validated = deps.tunnelRepository.validatePublicIdentity(line)
-        require(validated.valid) { validated.message ?: "Invalid public identity" }
-        val peerId = validated.peer_id ?: throw IllegalArgumentException("Public identity missing peer ID")
-        require(peerId == expectedRemotePeerId) {
-            "Remote peer ID must match imported public identity peer ID ($peerId)"
+    private fun importPrivateIdentity(path: String): Result<Triple<ByteArray, String, String>> =
+        runCatching {
+            val privateIdentity = deps.identityRepository.readPrivateIdentityFile(path).getOrThrow()
+            val validated = deps.tunnelRepository.validatePrivateIdentity(privateIdentity)
+            require(validated.valid) { validated.message ?: "Invalid private identity" }
+            val canonicalPrivate = validated.canonical_private_identity ?: privateIdentity
+            val canonicalPublic =
+                validated.canonical_public_identity
+                    ?: throw IllegalArgumentException("Missing canonical public identity")
+            val peerId = validated.peer_id ?: throw IllegalArgumentException("Missing canonical peer id")
+            deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
+            Triple(canonicalPrivate.toByteArray(), canonicalPublic, peerId)
         }
-        deps.identityRepository.appendAuthorizedPublicIdentity(
-            validated.canonical_public_identity ?: line.trim(),
-        ).getOrThrow()
-        peerId
-    }
 
-    private fun validateCandidateConfig(candidate: String, identityBytes: ByteArray): ValidationResult {
+    private fun importPublicIdentity(
+        line: String,
+        expectedRemotePeerId: String,
+    ): Result<String> =
+        runCatching {
+            val validated = deps.tunnelRepository.validatePublicIdentity(line)
+            require(validated.valid) { validated.message ?: "Invalid public identity" }
+            val peerId = validated.peer_id ?: throw IllegalArgumentException("Public identity missing peer ID")
+            require(peerId == expectedRemotePeerId) {
+                "Remote peer ID must match imported public identity peer ID ($peerId)"
+            }
+            deps.identityRepository.appendAuthorizedPublicIdentity(
+                validated.canonical_public_identity ?: line.trim(),
+            ).getOrThrow()
+            peerId
+        }
+
+    private fun validateCandidateConfig(
+        candidate: String,
+        identityBytes: ByteArray,
+    ): ValidationResult {
         val temp = File(deps.context.cacheDir, "config-candidate.toml")
         return runCatching {
             temp.parentFile?.mkdirs()
@@ -545,7 +595,10 @@ class SetupViewModel(
         }
     }
 
-    private fun validateStep(step: SetupStep, state: SetupWizardState): String? {
+    private fun validateStep(
+        step: SetupStep,
+        state: SetupWizardState,
+    ): String? {
         val input = state.input
         return when (step) {
             SetupStep.Mode -> null
@@ -557,15 +610,18 @@ class SetupViewModel(
                     null
                 }
             }
-            SetupStep.Broker -> when {
-                input.brokerHost.isBlank() -> "Broker host is required"
-                input.brokerPort !in 1..65535 -> "Broker port must be between 1 and 65535"
-                else -> null
-            }
+            SetupStep.Broker ->
+                when {
+                    input.brokerHost.isBlank() -> "Broker host is required"
+                    input.brokerPort !in 1..65535 -> "Broker port must be between 1 and 65535"
+                    else -> null
+                }
             SetupStep.Peer -> {
-                if (input.remotePeerId.isBlank()) "Remote peer id is required"
-                else if (state.importPublicIdentity.isBlank()) "Remote public identity is required"
-                else {
+                if (input.remotePeerId.isBlank()) {
+                    "Remote peer id is required"
+                } else if (state.importPublicIdentity.isBlank()) {
+                    "Remote public identity is required"
+                } else {
                     val validated = deps.tunnelRepository.validatePublicIdentity(state.importPublicIdentity)
                     when {
                         !validated.valid -> validated.message ?: "Invalid remote public identity"
@@ -576,8 +632,9 @@ class SetupViewModel(
                     }
                 }
             }
-            SetupStep.Forwards -> deps.configRepository.validateForwards(deps.configRepository.loadForwards())
-                ?: if (deps.configRepository.loadForwards().none { it.enabled }) "Enable at least one forward" else null
+            SetupStep.Forwards ->
+                deps.configRepository.validateForwards(deps.configRepository.loadForwards())
+                    ?: if (deps.configRepository.loadForwards().none { it.enabled }) "Enable at least one forward" else null
             SetupStep.NetworkPolicy -> null
             SetupStep.Review -> {
                 validateStep(SetupStep.Identity, state)
@@ -595,8 +652,14 @@ class SetupViewModel(
         }
     }
 
-    private fun repositoryError(current: SetupWizardState, message: String) {
-        _state.value = current.copy(errorMessage = SensitiveDataRedactor.redactText(message), saveResult = null).withCanAdvance(_forwards.value)
+    private fun repositoryError(
+        current: SetupWizardState,
+        message: String,
+    ) {
+        _state.value =
+            current
+                .copy(errorMessage = SensitiveDataRedactor.redactText(message), saveResult = null)
+                .withCanAdvance(_forwards.value)
     }
 
     private fun loadStoredIdentity() {
@@ -613,7 +676,6 @@ class SetupViewModel(
         }
     }
 }
-
 
 class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
     val status: StateFlow<TunnelStatus> = deps.tunnelRepository.status
@@ -658,10 +720,14 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
         _message.value = "Forward deleted"
     }
 
-    fun validateForwardDraft(draft: ForwardConfig, currentForwards: List<ForwardConfig>): String? {
-        val updated = currentForwards.map { if (it.id == draft.id) draft else it }.let { candidates ->
-            if (candidates.none { it.id == draft.id }) candidates + draft else candidates
-        }
+    fun validateForwardDraft(
+        draft: ForwardConfig,
+        currentForwards: List<ForwardConfig>,
+    ): String? {
+        val updated =
+            currentForwards.map { if (it.id == draft.id) draft else it }.let { candidates ->
+                if (candidates.none { it.id == draft.id }) candidates + draft else candidates
+            }
         return deps.configRepository.validateForwards(updated)
     }
 
@@ -670,14 +736,15 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
             // Connect to the configured local host (blank falls back to loopback),
             // and report the host actually tested rather than a hardcoded address.
             val host = forward.localHost.trim().ifBlank { "127.0.0.1" }
-            val resultMessage = runCatching {
-                Socket().use { socket ->
-                    socket.connect(InetSocketAddress(host, forward.localPort), 1200)
+            val resultMessage =
+                runCatching {
+                    Socket().use { socket ->
+                        socket.connect(InetSocketAddress(host, forward.localPort), 1200)
+                    }
+                    "Local port test succeeded for $host:${forward.localPort}"
+                }.getOrElse {
+                    "Local port test failed for $host:${forward.localPort}: ${it.message}"
                 }
-                "Local port test succeeded for $host:${forward.localPort}"
-            }.getOrElse {
-                "Local port test failed for $host:${forward.localPort}: ${it.message}"
-            }
             _message.value = SensitiveDataRedactor.redactText(resultMessage)
         }
     }
@@ -691,11 +758,12 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
         return runCatching {
             temp.parentFile?.mkdirs()
             temp.writeText(candidate)
-            val result = if (identity != null && identity.isNotEmpty()) {
-                deps.tunnelRepository.validateConfigWithIdentity(temp.absolutePath, identity)
-            } else {
-                deps.tunnelRepository.validateConfig(temp.absolutePath)
-            }
+            val result =
+                if (identity != null && identity.isNotEmpty()) {
+                    deps.tunnelRepository.validateConfigWithIdentity(temp.absolutePath, identity)
+                } else {
+                    deps.tunnelRepository.validateConfig(temp.absolutePath)
+                }
             if (result.valid) {
                 deps.configRepository.writeConfigAtomically(candidate)
             }
@@ -714,9 +782,10 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
-    val filteredLogs: StateFlow<List<LogEvent>> = combine(_logs, _filter) { logs, level ->
-        if (level == "all") logs else logs.filter { it.level.equals(level, ignoreCase = true) }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val filteredLogs: StateFlow<List<LogEvent>> =
+        combine(_logs, _filter) { logs, level ->
+            if (level == "all") logs else logs.filter { it.level.equals(level, ignoreCase = true) }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun refresh(maxEvents: Int = 200) {
         _logs.value = deps.tunnelRepository.recentLogs(maxEvents)
@@ -730,7 +799,10 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
         _logs.value = emptyList()
     }
 
-    fun exportDiagnostics(path: String, networkStatus: com.phillipchin.webrtctunnel.model.NetworkStatus) {
+    fun exportDiagnostics(
+        path: String,
+        networkStatus: com.phillipchin.webrtctunnel.model.NetworkStatus,
+    ) {
         deps.diagnosticsRepository.exportRedactedDiagnostics(
             outputPath = path,
             status = deps.tunnelRepository.status.value,
@@ -743,13 +815,17 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
         }
     }
 
-    fun exportDiagnosticsToUri(uri: Uri, networkStatus: com.phillipchin.webrtctunnel.model.NetworkStatus) {
+    fun exportDiagnosticsToUri(
+        uri: Uri,
+        networkStatus: com.phillipchin.webrtctunnel.model.NetworkStatus,
+    ) {
         runCatching {
-            val payload = deps.diagnosticsRepository.buildRedactedDiagnosticsPayload(
-                status = deps.tunnelRepository.status.value,
-                logs = _logs.value,
-                networkStatus = networkStatus,
-            )
+            val payload =
+                deps.diagnosticsRepository.buildRedactedDiagnosticsPayload(
+                    status = deps.tunnelRepository.status.value,
+                    logs = _logs.value,
+                    networkStatus = networkStatus,
+                )
             deps.context.contentResolver.openOutputStream(uri, "wt")?.use { stream ->
                 stream.write(payload.toByteArray())
             } ?: error("Unable to open destination URI")
@@ -761,11 +837,12 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
     }
 
     fun diagnosticsShareIntent(networkStatus: com.phillipchin.webrtctunnel.model.NetworkStatus): Intent {
-        val payload = deps.diagnosticsRepository.buildRedactedDiagnosticsPayload(
-            status = deps.tunnelRepository.status.value,
-            logs = _logs.value,
-            networkStatus = networkStatus,
-        )
+        val payload =
+            deps.diagnosticsRepository.buildRedactedDiagnosticsPayload(
+                status = deps.tunnelRepository.status.value,
+                logs = _logs.value,
+                networkStatus = networkStatus,
+            )
         return Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_SUBJECT, "WebRTC Tunnel diagnostics (redacted)")
@@ -798,29 +875,36 @@ class SettingsViewModel(
         viewModelScope.launch {
             runCatching { loadPublicIdentity().ifBlank { null } }
                 .onSuccess { publicIdentity ->
-                    _uiState.value = _uiState.value.copy(
-                        publicIdentity = publicIdentity,
-                        publicIdentityLoadError = null,
-                    )
+                    _uiState.value =
+                        _uiState.value.copy(
+                            publicIdentity = publicIdentity,
+                            publicIdentityLoadError = null,
+                        )
                 }
                 .onFailure { error ->
-                    _uiState.value = _uiState.value.copy(
-                        publicIdentity = null,
-                        publicIdentityLoadError = SensitiveDataRedactor.redactText(error.message ?: "Unable to load local public identity"),
-                    )
+                    _uiState.value =
+                        _uiState.value.copy(
+                            publicIdentity = null,
+                            publicIdentityLoadError =
+                                SensitiveDataRedactor.redactText(
+                                    error.message ?: "Unable to load local public identity",
+                                ),
+                        )
                 }
         }
     }
 
-    fun statusJson(): String = runCatching {
-        Json.encodeToString(SensitiveDataRedactor.redactStatus(deps.tunnelRepository.status.value))
-    }.getOrDefault("{}")
+    fun statusJson(): String =
+        runCatching {
+            Json.encodeToString(SensitiveDataRedactor.redactStatus(deps.tunnelRepository.status.value))
+        }.getOrDefault("{}")
 
-    fun redactedConfigOrEmpty(): String = runCatching {
-        val configPath = deps.configRepository.configPath
-        val raw = File(configPath).takeIf { it.exists() }?.readText() ?: return@runCatching ""
-        SensitiveDataRedactor.redactText(raw)
-    }.getOrDefault("")
+    fun redactedConfigOrEmpty(): String =
+        runCatching {
+            val configPath = deps.configRepository.configPath
+            val raw = File(configPath).takeIf { it.exists() }?.readText() ?: return@runCatching ""
+            SensitiveDataRedactor.redactText(raw)
+        }.getOrDefault("")
 
     fun resetConfiguration() {
         runCatching {
@@ -831,10 +915,11 @@ class SettingsViewModel(
     }
 
     fun diagnosticsShareIntent(): Intent {
-        val payload = buildString {
-            appendLine("status_json=${statusJson()}")
-            appendLine("config_redacted=${redactedConfigOrEmpty()}")
-        }
+        val payload =
+            buildString {
+                appendLine("status_json=${statusJson()}")
+                appendLine("config_redacted=${redactedConfigOrEmpty()}")
+            }
         return Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_SUBJECT, "WebRTC Tunnel diagnostics (redacted)")
@@ -844,9 +929,10 @@ class SettingsViewModel(
 }
 
 class NetworkPolicyViewModel(private val deps: AppDependencies) : ViewModel() {
-    val networkStatus = combine(deps.networkPolicyManager.status, deps.configRepository.preferences) { _, prefs ->
-        deps.networkPolicyManager.evaluateWithPolicy(prefs.allowMetered)
-    }
+    val networkStatus =
+        combine(deps.networkPolicyManager.status, deps.configRepository.preferences) { _, prefs ->
+            deps.networkPolicyManager.evaluateWithPolicy(prefs.allowMetered)
+        }
     val preferences = deps.configRepository.preferences
 
     fun savePreferences(updated: com.phillipchin.webrtctunnel.model.AndroidAppPreferences) {
@@ -877,8 +963,9 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
 
     fun importConfigFromUri(uri: Uri) {
         runCatching {
-            val candidate = deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                ?: error("Unable to read config from selected URI")
+            val candidate =
+                deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: error("Unable to read config from selected URI")
             importConfigContent(candidate)
         }.onSuccess {
             _state.value = _state.value.copy(resultMessage = "Config imported")
@@ -889,9 +976,10 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
 
     fun importPrivateIdentity() {
         runCatching {
-            val privateIdentity = deps.identityRepository
-                .readPrivateIdentityFile(_state.value.privateIdentityImportPath.trim())
-                .getOrThrow()
+            val privateIdentity =
+                deps.identityRepository
+                    .readPrivateIdentityFile(_state.value.privateIdentityImportPath.trim())
+                    .getOrThrow()
             importPrivateIdentityContent(privateIdentity)
         }.onSuccess {
             _state.value = _state.value.copy(resultMessage = "Private identity imported")
@@ -902,8 +990,9 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
 
     fun importPrivateIdentityFromUri(uri: Uri) {
         runCatching {
-            val privateIdentity = deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                ?: error("Unable to read private identity from selected URI")
+            val privateIdentity =
+                deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: error("Unable to read private identity from selected URI")
             importPrivateIdentityContent(privateIdentity)
         }.onSuccess {
             _state.value = _state.value.copy(resultMessage = "Private identity imported")
@@ -924,8 +1013,9 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
 
     fun importPublicIdentityFromUri(uri: Uri) {
         runCatching {
-            val value = deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                ?: error("Unable to read public identity from selected URI")
+            val value =
+                deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: error("Unable to read public identity from selected URI")
             importPublicIdentityLine(value)
         }.onSuccess {
             _state.value = _state.value.copy(resultMessage = "Public identity imported")
@@ -947,7 +1037,10 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         }
     }
 
-    fun exportConfigToUri(uri: Uri, confirmSensitive: Boolean) {
+    fun exportConfigToUri(
+        uri: Uri,
+        confirmSensitive: Boolean,
+    ) {
         runCatching {
             require(confirmSensitive) { "Raw config export requires explicit confirmation" }
             val payload = exportConfigText(confirmSensitive)
@@ -992,7 +1085,10 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         }
     }
 
-    fun exportPrivateIdentityToUri(uri: Uri, confirmRisk: Boolean) {
+    fun exportPrivateIdentityToUri(
+        uri: Uri,
+        confirmRisk: Boolean,
+    ) {
         runCatching {
             require(confirmRisk) { "Private export requires explicit confirmation" }
             val payload = deps.identityRepository.readPrivateIdentityPlaintext()
@@ -1018,11 +1114,12 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         try {
             temp.writeText(candidate)
             val identity = runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }.getOrNull()
-            val validation = if (identity != null && identity.isNotEmpty()) {
-                deps.tunnelRepository.validateConfigWithIdentity(temp.absolutePath, identity)
-            } else {
-                deps.tunnelRepository.validateConfig(temp.absolutePath)
-            }
+            val validation =
+                if (identity != null && identity.isNotEmpty()) {
+                    deps.tunnelRepository.validateConfigWithIdentity(temp.absolutePath, identity)
+                } else {
+                    deps.tunnelRepository.validateConfig(temp.absolutePath)
+                }
             require(validation.valid) { validation.message ?: "Config validation failed" }
             deps.configRepository.writeConfigAtomically(candidate)
         } finally {
@@ -1055,10 +1152,16 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
 
 class AppViewModelFactory(private val deps: AppDependencies) {
     fun home() = HomeViewModel(deps)
+
     fun setup() = SetupViewModel(deps)
+
     fun forwards() = ForwardsViewModel(deps)
+
     fun logs() = LogsViewModel(deps)
+
     fun settings() = SettingsViewModel(deps)
+
     fun networkPolicy() = NetworkPolicyViewModel(deps)
+
     fun importExport() = ImportExportViewModel(deps)
 }

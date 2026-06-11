@@ -1,0 +1,8 @@
+root = true
+
+[*.{kt,kts}]
+# Jetpack Compose @Composable functions use PascalCase by official convention, so
+# ktlint's function-naming rule must ignore them. This aligns ktlint with the
+# framework — non-@Composable function names are still checked. It is configuration
+# to match Compose, not a suppression of a real finding. See CLAUDE.md.
+ktlint_function_naming_ignore_when_annotated_with = Composable

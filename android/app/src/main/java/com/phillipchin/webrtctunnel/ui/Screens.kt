@@ -6,24 +6,23 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
@@ -48,7 +47,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,6 +62,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.phillipchin.webrtctunnel.BuildConfig
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
@@ -79,8 +78,7 @@ import com.phillipchin.webrtctunnel.viewmodel.ImportExportViewModel
 import com.phillipchin.webrtctunnel.viewmodel.LogsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.NetworkPolicyViewModel
 import com.phillipchin.webrtctunnel.viewmodel.SettingsViewModel
-import com.phillipchin.webrtctunnel.BuildConfig
-import com.phillipchin.webrtctunnel.ui.ForwardEditorMode
+import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -89,27 +87,26 @@ import java.util.Locale
 private val logTimestampFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
 
-private fun formatLogTimestamp(unixMs: Long): String =
-    logTimestampFormatter.format(Instant.ofEpochMilli(unixMs))
+private fun formatLogTimestamp(unixMs: Long): String = logTimestampFormatter.format(Instant.ofEpochMilli(unixMs))
 
-private fun truncateIdentity(key: String): String =
-    if (key.length > 28) "${key.take(16)}…${key.takeLast(8)}" else key
+private fun truncateIdentity(key: String): String = if (key.length > 28) "${key.take(16)}…${key.takeLast(8)}" else key
 
 private data class HomeStatusUi(val title: String, val description: String)
 
-private fun mapStatusUi(status: TunnelStatus): HomeStatusUi = when (status.serviceState) {
-    ServiceState.Stopped -> HomeStatusUi("Stopped", "Tunnel service is not running.")
-    ServiceState.Starting, ServiceState.Connecting, ServiceState.Reconnecting -> {
-        HomeStatusUi("Starting", "Starting tunnel and waiting for peer connectivity.")
+private fun mapStatusUi(status: TunnelStatus): HomeStatusUi =
+    when (status.serviceState) {
+        ServiceState.Stopped -> HomeStatusUi("Stopped", "Tunnel service is not running.")
+        ServiceState.Starting, ServiceState.Connecting, ServiceState.Reconnecting -> {
+            HomeStatusUi("Starting", "Starting tunnel and waiting for peer connectivity.")
+        }
+        ServiceState.Connected -> HomeStatusUi("Connected", "Tunnel is active and ready to use.")
+        ServiceState.Listening, ServiceState.Serving -> HomeStatusUi("Listening", "Tunnel is active and waiting for local use.")
+        ServiceState.PausedMeteredBlocked -> HomeStatusUi("Paused", "Cellular/metered network blocked.")
+        ServiceState.NoNetwork -> HomeStatusUi("No network", "Connect to Wi-Fi to start the tunnel.")
+        ServiceState.ConfigInvalid -> HomeStatusUi("Configuration needs attention", "Open setup to fix configuration.")
+        ServiceState.Stopping -> HomeStatusUi("Stopping", "Stopping tunnel service.")
+        ServiceState.Error -> HomeStatusUi("Error", "Tunnel encountered an error.")
     }
-    ServiceState.Connected -> HomeStatusUi("Connected", "Tunnel is active and ready to use.")
-    ServiceState.Listening, ServiceState.Serving -> HomeStatusUi("Listening", "Tunnel is active and waiting for local use.")
-    ServiceState.PausedMeteredBlocked -> HomeStatusUi("Paused", "Cellular/metered network blocked.")
-    ServiceState.NoNetwork -> HomeStatusUi("No network", "Connect to Wi-Fi to start the tunnel.")
-    ServiceState.ConfigInvalid -> HomeStatusUi("Configuration needs attention", "Open setup to fix configuration.")
-    ServiceState.Stopping -> HomeStatusUi("Stopping", "Stopping tunnel service.")
-    ServiceState.Error -> HomeStatusUi("Error", "Tunnel encountered an error.")
-}
 
 private fun isBrowserOpenable(forward: ForwardConfig): Boolean {
     val name = "${forward.name} ${forward.remoteForwardId}".lowercase()
@@ -119,40 +116,42 @@ private fun isBrowserOpenable(forward: ForwardConfig): Boolean {
 }
 
 /** Display/copy address for a local forward, using the host exactly as configured. */
-internal fun localForwardAddress(forward: ForwardConfig): String =
-    "${forward.localHost}:${forward.localPort}"
+internal fun localForwardAddress(forward: ForwardConfig): String = "${forward.localHost}:${forward.localPort}"
 
 /**
  * Host to open in a browser. Wildcard/unspecified bind addresses are normalized to
  * loopback since they are not reachable as a destination. Validation currently only
  * permits `127.0.0.1`/`localhost`, so the wildcard cases are future-proofing.
  */
-internal fun browserHostForLocalForward(host: String): String = when (host.trim().lowercase()) {
-    "", "0.0.0.0", "::", "[::]" -> "127.0.0.1"
-    else -> host.trim()
-}
+internal fun browserHostForLocalForward(host: String): String =
+    when (host.trim().lowercase()) {
+        "", "0.0.0.0", "::", "[::]" -> "127.0.0.1"
+        else -> host.trim()
+    }
 
 /** Browser URL for a local forward, with the host normalized for reachability. */
 internal fun browserUrlForForward(forward: ForwardConfig): String =
     "http://${browserHostForLocalForward(forward.localHost)}:${forward.localPort}"
 
-internal fun mapNetworkTypeLabel(networkType: NetworkType): String = when (networkType) {
-    NetworkType.UnmeteredWifi -> "Wi-Fi"
-    NetworkType.MeteredWifi -> "Metered Wi-Fi"
-    NetworkType.Cellular -> "Cellular"
-    NetworkType.NoNetwork -> "No network"
-    NetworkType.Unknown -> "Unknown"
-}
+internal fun mapNetworkTypeLabel(networkType: NetworkType): String =
+    when (networkType) {
+        NetworkType.UnmeteredWifi -> "Wi-Fi"
+        NetworkType.MeteredWifi -> "Metered Wi-Fi"
+        NetworkType.Cellular -> "Cellular"
+        NetworkType.NoNetwork -> "No network"
+        NetworkType.Unknown -> "Unknown"
+    }
 
-internal fun mapForwardListenLabel(state: String): String = when (state.lowercase()) {
-    "listening" -> "Listening"
-    "stopped" -> "Stopped"
-    "error" -> "Error"
-    "disabled" -> "Disabled"
-    "paused" -> "Paused"
-    "configured" -> "Configured"
-    else -> state
-}
+internal fun mapForwardListenLabel(state: String): String =
+    when (state.lowercase()) {
+        "listening" -> "Listening"
+        "stopped" -> "Stopped"
+        "error" -> "Error"
+        "disabled" -> "Disabled"
+        "paused" -> "Paused"
+        "configured" -> "Configured"
+        else -> state
+    }
 
 private fun formatUptime(seconds: Long): String {
     val hours = seconds / 3600
@@ -161,35 +160,38 @@ private fun formatUptime(seconds: Long): String {
     return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, secs)
 }
 
-private fun ForwardStatus.toConfig(): ForwardConfig = ForwardConfig(
-    id = id,
-    name = name,
-    localHost = localHost,
-    localPort = localPort,
-    remoteForwardId = remoteForwardId,
-    enabled = enabled,
-)
+private fun ForwardStatus.toConfig(): ForwardConfig =
+    ForwardConfig(
+        id = id,
+        name = name,
+        localHost = localHost,
+        localPort = localPort,
+        remoteForwardId = remoteForwardId,
+        enabled = enabled,
+    )
 
 @Composable
 private fun HomeStatusIcon(title: String) {
-    val (icon, tint) = when {
-        title.equals("Connected", ignoreCase = true) || title.equals("Listening", ignoreCase = true) ->
-            Icons.Filled.CheckCircle to stateColorToken(title)
-        title.equals("Error", ignoreCase = true) || title.contains("attention", ignoreCase = true) ->
-            Icons.Filled.Warning to stateColorToken(title)
-        else -> Icons.Filled.Info to stateColorToken(title)
-    }
+    val (icon, tint) =
+        when {
+            title.equals("Connected", ignoreCase = true) || title.equals("Listening", ignoreCase = true) ->
+                Icons.Filled.CheckCircle to stateColorToken(title)
+            title.equals("Error", ignoreCase = true) || title.contains("attention", ignoreCase = true) ->
+                Icons.Filled.Warning to stateColorToken(title)
+            else -> Icons.Filled.Info to stateColorToken(title)
+        }
     Icon(icon, contentDescription = "Tunnel status", tint = tint, modifier = Modifier.size(40.dp))
 }
 
 @Composable
 private fun NetworkTypeIcon(networkType: NetworkType) {
-    val (icon, description) = when (networkType) {
-        NetworkType.UnmeteredWifi, NetworkType.MeteredWifi -> Icons.Filled.Wifi to "Wi-Fi network"
-        NetworkType.Cellular -> Icons.Filled.SignalCellularAlt to "Cellular network"
-        NetworkType.NoNetwork -> Icons.Filled.WifiOff to "No network"
-        NetworkType.Unknown -> Icons.Filled.Info to "Unknown network"
-    }
+    val (icon, description) =
+        when (networkType) {
+            NetworkType.UnmeteredWifi, NetworkType.MeteredWifi -> Icons.Filled.Wifi to "Wi-Fi network"
+            NetworkType.Cellular -> Icons.Filled.SignalCellularAlt to "Cellular network"
+            NetworkType.NoNetwork -> Icons.Filled.WifiOff to "No network"
+            NetworkType.Unknown -> Icons.Filled.Info to "Unknown network"
+        }
     Icon(icon, contentDescription = description, tint = Color(0xFF6B7280))
 }
 
@@ -208,10 +210,11 @@ fun HomeScreen(
     val statusUi = mapStatusUi(status)
     val context = LocalContext.current
     val browserForward = (configuredForwards + status.forwards.map { it.toConfig() }).firstOrNull { isBrowserOpenable(it) }
-    val displayedForwards = configuredForwards.map { config ->
-        val runtime = status.forwards.firstOrNull { it.id == config.id }
-        config to runtime
-    }
+    val displayedForwards =
+        configuredForwards.map { config ->
+            val runtime = status.forwards.firstOrNull { it.id == config.id }
+            config to runtime
+        }
     var showMeteredWarningDialog by remember { mutableStateOf(false) }
     var showAddForwardDialog by remember { mutableStateOf(false) }
     var displayedUptimeSeconds by remember { mutableStateOf(status.uptimeSeconds) }
@@ -309,12 +312,13 @@ fun HomeScreen(
             onOpenLogs = onOpenLogs,
             onOpenSettings = onOpenSettings,
             onAllowMeteredTemporary = { showMeteredWarningDialog = true },
-            onOpenBrowser = browserForward?.let {
-                {
-                    val url = browserUrlForForward(it)
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }
-            },
+            onOpenBrowser =
+                browserForward?.let {
+                    {
+                        val url = browserUrlForForward(it)
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                },
         )
     }
     if (showMeteredWarningDialog) {
@@ -397,16 +401,21 @@ private fun HomeActionRow(
 }
 
 @Composable
-fun ForwardsScreen(padding: PaddingValues, vm: ForwardsViewModel, onOpenDetails: (String) -> Unit) {
+fun ForwardsScreen(
+    padding: PaddingValues,
+    vm: ForwardsViewModel,
+    onOpenDetails: (String) -> Unit,
+) {
     val forwards by vm.forwards.collectAsStateWithLifecycle()
     val status by vm.status.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     var showAddDialog by remember { mutableStateOf(false) }
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)
-            .padding(16.dp),
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
@@ -429,17 +438,22 @@ fun ForwardsScreen(padding: PaddingValues, vm: ForwardsViewModel, onOpenDetails:
             items(forwards) { forward ->
                 StatusCard {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenDetails(forward.id) },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onOpenDetails(forward.id) },
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(forward.name, style = MaterialTheme.typography.titleMedium)
-                            Text("${forward.localHost}:${forward.localPort} -> ${forward.remoteForwardId}", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "${forward.localHost}:${forward.localPort} -> ${forward.remoteForwardId}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                             val runtime = status.forwards.firstOrNull { it.id == forward.id }
-                            val stateLabel = mapForwardListenLabel(runtime?.listenState?.name ?: if (forward.enabled) "configured" else "disabled")
+                            val stateLabel =
+                                mapForwardListenLabel(runtime?.listenState?.name ?: if (forward.enabled) "configured" else "disabled")
                             Text(stateLabel, color = stateColorToken(stateLabel))
                         }
                         Text("›", style = MaterialTheme.typography.titleLarge)
@@ -565,7 +579,11 @@ fun ForwardDetailsScreen(
 }
 
 @Composable
-fun LogsScreen(padding: PaddingValues, vm: LogsViewModel, networkVm: NetworkPolicyViewModel) {
+fun LogsScreen(
+    padding: PaddingValues,
+    vm: LogsViewModel,
+    networkVm: NetworkPolicyViewModel,
+) {
     val context = LocalContext.current
     val filter by vm.filter.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
@@ -576,9 +594,10 @@ fun LogsScreen(padding: PaddingValues, vm: LogsViewModel, networkVm: NetworkPoli
     val clipboard = LocalClipboardManager.current
     var paused by remember { mutableStateOf(false) }
     var showActionsMenu by remember { mutableStateOf(false) }
-    val diagnosticsCreateDocumentLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("text/plain"),
-    ) { uri -> if (uri != null) vm.exportDiagnosticsToUri(uri, networkStatus) }
+    val diagnosticsCreateDocumentLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.CreateDocument("text/plain"),
+        ) { uri -> if (uri != null) vm.exportDiagnosticsToUri(uri, networkStatus) }
     LaunchedEffect(paused) {
         while (!paused) {
             vm.refresh()
@@ -587,17 +606,19 @@ fun LogsScreen(padding: PaddingValues, vm: LogsViewModel, networkVm: NetworkPoli
     }
     val logs by vm.filteredLogs.collectAsStateWithLifecycle()
     val copyLogs = {
-        val text = logs
-            .map(SensitiveDataRedactor::redactLogEvent)
-            .joinToString("\n") { "${it.unixMs} ${it.level} ${it.message}" }
+        val text =
+            logs
+                .map(SensitiveDataRedactor::redactLogEvent)
+                .joinToString("\n") { "${it.unixMs} ${it.level} ${it.message}" }
         clipboard.setText(AnnotatedString(text))
     }
     val exportDiagnostics = { diagnosticsCreateDocumentLauncher.launch("webrtc_diagnostics_redacted.txt") }
     val shareDiagnostics = {
-        val share = Intent.createChooser(
-            vm.diagnosticsShareIntent(networkStatus),
-            "Share diagnostics",
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val share =
+            Intent.createChooser(
+                vm.diagnosticsShareIntent(networkStatus),
+                "Share diagnostics",
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(share)
     }
 
@@ -605,10 +626,11 @@ fun LogsScreen(padding: PaddingValues, vm: LogsViewModel, networkVm: NetworkPoli
     val debugHidden = logs.any { it.level.equals("debug", true) && !prefs.debugLogsEnabled }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)
-            .padding(horizontal = 16.dp),
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
     ) {
         Spacer(Modifier.height(16.dp))
         SectionHeader("Logs", "Redacted runtime events")
@@ -668,12 +690,13 @@ fun LogsScreen(padding: PaddingValues, vm: LogsViewModel, networkVm: NetworkPoli
                 item { EmptyStateCard("No logs available.") }
             }
             items(visibleLogs) { event ->
-                val levelColor = when (event.level.lowercase()) {
-                    "warn" -> Color(0xFFF59E0B)
-                    "error" -> Color(0xFFD32F2F)
-                    "debug" -> Color(0xFF6B7280)
-                    else -> MaterialTheme.colorScheme.onSurface
-                }
+                val levelColor =
+                    when (event.level.lowercase()) {
+                        "warn" -> Color(0xFFF59E0B)
+                        "error" -> Color(0xFFD32F2F)
+                        "debug" -> Color(0xFF6B7280)
+                        else -> MaterialTheme.colorScheme.onSurface
+                    }
                 StatusCard {
                     Text(formatLogTimestamp(event.unixMs), style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
                     Text(event.level.uppercase(), color = levelColor, style = MaterialTheme.typography.labelLarge)
@@ -746,11 +769,12 @@ fun SettingsScreen(
                 ) { Text("Copy identity") }
                 OutlinedButton(
                     onClick = {
-                        val share = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "WebRTC Tunnel public identity")
-                            putExtra(Intent.EXTRA_TEXT, publicIdentity)
-                        }
+                        val share =
+                            Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "WebRTC Tunnel public identity")
+                                putExtra(Intent.EXTRA_TEXT, publicIdentity)
+                            }
                         context.startActivity(Intent.createChooser(share, "Share public identity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     },
                     modifier = Modifier.weight(1f),
@@ -764,8 +788,9 @@ fun SettingsScreen(
             OutlinedButton(onClick = onOpenLogs, modifier = Modifier.fillMaxWidth()) { Text("Open logs / export diagnostics") }
             OutlinedButton(
                 onClick = {
-                    val share = Intent.createChooser(vm.diagnosticsShareIntent(), "Share diagnostics")
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    val share =
+                        Intent.createChooser(vm.diagnosticsShareIntent(), "Share diagnostics")
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     context.startActivity(share)
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -780,7 +805,10 @@ fun SettingsScreen(
             if (prefs.advancedSettingsEnabled) {
                 PreferenceSwitch("Enable debug logs", prefs.debugLogsEnabled) { vm.savePreferences(prefs.copy(debugLogsEnabled = it)) }
                 OutlinedButton(onClick = onOpenSetup, modifier = Modifier.fillMaxWidth()) { Text("Edit custom topic prefix") }
-                OutlinedButton(onClick = onOpenSetup, modifier = Modifier.fillMaxWidth()) { Text("Configure non-localhost bind (advanced)") }
+                OutlinedButton(
+                    onClick = onOpenSetup,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Configure non-localhost bind (advanced)") }
                 Text("Answer mode: not available on Android", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6B7280))
                 OutlinedButton(
                     onClick = { clipboard.setText(AnnotatedString(vm.statusJson())) },
@@ -824,7 +852,10 @@ fun SettingsScreen(
 }
 
 @Composable
-fun NetworkPolicyScreen(padding: PaddingValues, vm: NetworkPolicyViewModel) {
+fun NetworkPolicyScreen(
+    padding: PaddingValues,
+    vm: NetworkPolicyViewModel,
+) {
     val status by vm.networkStatus.collectAsStateWithLifecycle(
         initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
     )
@@ -863,7 +894,10 @@ fun NetworkPolicyScreen(padding: PaddingValues, vm: NetworkPolicyViewModel) {
 }
 
 @Composable
-fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
+fun ImportExportScreen(
+    padding: PaddingValues,
+    vm: ImportExportViewModel,
+) {
     val context = LocalContext.current
     val state by vm.state.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
@@ -871,54 +905,75 @@ fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
     var showRawConfigExportWarning by remember { mutableStateOf(false) }
     var showAdvanced by remember { mutableStateOf(false) }
     var rawConfigExportViaPicker by remember { mutableStateOf(false) }
-    val openTextDocumentLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.importConfigFromUri(uri)
-    }
-    val openPrivateIdentityLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.importPrivateIdentityFromUri(uri)
-    }
-    val openPublicIdentityLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.importPublicIdentityFromUri(uri)
-    }
-    val exportConfigLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        if (uri != null) vm.exportConfigToUri(uri, confirmSensitive = true)
-    }
-    val exportPublicIdentityLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        if (uri != null) vm.exportPublicIdentityToUri(uri)
-    }
-    val exportPrivateIdentityLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        if (uri != null) vm.exportPrivateIdentityToUri(uri, confirmRisk = true)
-    }
+    val openTextDocumentLauncher =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) vm.importConfigFromUri(uri)
+        }
+    val openPrivateIdentityLauncher =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) vm.importPrivateIdentityFromUri(uri)
+        }
+    val openPublicIdentityLauncher =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) vm.importPublicIdentityFromUri(uri)
+        }
+    val exportConfigLauncher =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri != null) vm.exportConfigToUri(uri, confirmSensitive = true)
+        }
+    val exportPublicIdentityLauncher =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri != null) vm.exportPublicIdentityToUri(uri)
+        }
+    val exportPrivateIdentityLauncher =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri != null) vm.exportPrivateIdentityToUri(uri, confirmRisk = true)
+        }
 
     ScrollableScreenSurface(padding) {
         SectionHeader("Import / Export", "Use Android document picker and share actions")
         Spacer(Modifier.height(8.dp))
         SettingsSection("Primary actions") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { openTextDocumentLauncher.launch(arrayOf("text/*", "application/toml")) }, modifier = Modifier.weight(1f)) { Text("Import config") }
-                OutlinedButton(onClick = { rawConfigExportViaPicker = true; showRawConfigExportWarning = true }, modifier = Modifier.weight(1f)) { Text("Export config") }
+                OutlinedButton(onClick = {
+                    openTextDocumentLauncher.launch(arrayOf("text/*", "application/toml"))
+                }, modifier = Modifier.weight(1f)) { Text("Import config") }
+                OutlinedButton(onClick = {
+                    rawConfigExportViaPicker = true
+                    showRawConfigExportWarning = true
+                }, modifier = Modifier.weight(1f)) { Text("Export config") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { openPrivateIdentityLauncher.launch(arrayOf("text/*")) }, modifier = Modifier.weight(1f)) { Text("Import identity") }
-                OutlinedButton(onClick = { showPrivateExportWarning = true }, modifier = Modifier.weight(1f)) { Text("Export private identity") }
+                OutlinedButton(onClick = {
+                    openPrivateIdentityLauncher.launch(arrayOf("text/*"))
+                }, modifier = Modifier.weight(1f)) { Text("Import identity") }
+                OutlinedButton(
+                    onClick = { showPrivateExportWarning = true },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Export private identity") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { openPublicIdentityLauncher.launch(arrayOf("text/*")) }, modifier = Modifier.weight(1f)) { Text("Import public identity") }
-                OutlinedButton(onClick = { exportPublicIdentityLauncher.launch("identity-public.txt") }, modifier = Modifier.weight(1f)) { Text("Export public identity") }
+                OutlinedButton(onClick = {
+                    openPublicIdentityLauncher.launch(arrayOf("text/*"))
+                }, modifier = Modifier.weight(1f)) { Text("Import public identity") }
+                OutlinedButton(onClick = {
+                    exportPublicIdentityLauncher.launch("identity-public.txt")
+                }, modifier = Modifier.weight(1f)) { Text("Export public identity") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = {
                         runCatching {
                             val payload = vm.publicIdentityForShare()
-                            val intent = Intent.createChooser(
-                                Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_SUBJECT, "WebRTC Tunnel public identity")
-                                    putExtra(Intent.EXTRA_TEXT, payload)
-                                },
-                                "Share public identity",
-                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            val intent =
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, "WebRTC Tunnel public identity")
+                                        putExtra(Intent.EXTRA_TEXT, payload)
+                                    },
+                                    "Share public identity",
+                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             context.startActivity(intent)
                         }
                     },
@@ -954,9 +1009,15 @@ fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Button(onClick = vm::importConfig, modifier = Modifier.fillMaxWidth()) { Text("Import config path") }
-                OutlinedTextField(value = state.privateIdentityImportPath, onValueChange = { value -> vm.updateState { it.copy(privateIdentityImportPath = value) } }, label = { Text("Private identity import path") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = state.privateIdentityImportPath, onValueChange = {
+                        value ->
+                    vm.updateState { it.copy(privateIdentityImportPath = value) }
+                }, label = { Text("Private identity import path") }, modifier = Modifier.fillMaxWidth())
                 Button(onClick = vm::importPrivateIdentity, modifier = Modifier.fillMaxWidth()) { Text("Import identity path") }
-                OutlinedTextField(value = state.publicIdentityLine, onValueChange = { value -> vm.updateState { it.copy(publicIdentityLine = value) } }, label = { Text("Remote public identity line") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = state.publicIdentityLine, onValueChange = {
+                        value ->
+                    vm.updateState { it.copy(publicIdentityLine = value) }
+                }, label = { Text("Remote public identity line") }, modifier = Modifier.fillMaxWidth())
                 Button(onClick = vm::importPublicIdentity, modifier = Modifier.fillMaxWidth()) { Text("Import public identity line") }
             }
         }
@@ -973,7 +1034,13 @@ fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
             confirmButton = {
                 TextButton(
                     onClick = {
-                        if (rawConfigExportViaPicker) exportConfigLauncher.launch("p2ptunnel-config.toml") else vm.exportConfig(confirmSensitive = true)
+                        if (rawConfigExportViaPicker) {
+                            exportConfigLauncher.launch(
+                                "p2ptunnel-config.toml",
+                            )
+                        } else {
+                            vm.exportConfig(confirmSensitive = true)
+                        }
                         showRawConfigExportWarning = false
                     },
                 ) { Text("Export") }
@@ -997,11 +1064,16 @@ fun ImportExportScreen(padding: PaddingValues, vm: ImportExportViewModel) {
 }
 
 @Composable
-private fun PreferenceSwitch(title: String, checked: Boolean, onToggle: (Boolean) -> Unit) {
+private fun PreferenceSwitch(
+    title: String,
+    checked: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .height(48.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1009,4 +1081,3 @@ private fun PreferenceSwitch(title: String, checked: Boolean, onToggle: (Boolean
         Switch(checked = checked, onCheckedChange = onToggle)
     }
 }
-
