@@ -35,6 +35,13 @@ private const val MAX_PORT = 65535
 private const val BROKER_PROBE_TIMEOUT_MS = 2_500
 private const val LOCAL_PORT_TEST_TIMEOUT_MS = 1200
 
+// Carries a save-flow failure plus whether its message is safe to show verbatim.
+// Identity/persist failures are redacted; validation messages are shown as-is.
+private class SaveError(
+    message: String,
+    val redact: Boolean,
+) : Exception(message)
+
 enum class SetupStep {
     Mode,
     Identity,
@@ -474,76 +481,71 @@ class SetupViewModel(
         val current = _state.value
         val input = current.input
         val forwards = _forwards.value.filter { it.enabled }
-        val validationError = validateStep(SetupStep.Review, current)
-        if (validationError != null) {
-            _state.value =
-                current
-                    .copy(errorMessage = validationError, saveResult = null)
-                    .withCanAdvance(_forwards.value)
-            return false
-        }
-
-        val importedIdentity =
-            if (current.importIdentityPath.isNotBlank()) {
-                val imported =
-                    withContext(Dispatchers.IO) {
-                        importPrivateIdentity(current.importIdentityPath)
-                    }
-                if (imported.isFailure) {
-                    _state.value =
-                        current.copy(
-                            errorMessage = imported.exceptionOrNull()?.message ?: "Failed importing private identity",
-                            saveResult = null,
-                        ).withCanAdvance(_forwards.value)
-                    return false
+        val outcome =
+            runCatching {
+                validateStep(SetupStep.Review, current)?.let { saveError(it, redact = false) }
+                val identity = resolveSaveIdentity(current)
+                if (identity.third != input.localPeerId) {
+                    saveError(
+                        "Local peer ID must match private identity peer ID (${identity.third})",
+                        redact = true,
+                    )
                 }
-                imported.getOrNull()
+                if (current.importPublicIdentity.isNotBlank()) {
+                    importPublicIdentity(current.importPublicIdentity, input.remotePeerId)
+                        .getOrElse { saveError(it.message ?: "Failed importing public identity", redact = true) }
+                }
+                val candidate = deps.configRepository.renderOfferConfig(input, forwards)
+                val validation = withContext(Dispatchers.IO) { validateCandidateConfig(candidate, identity.first) }
+                if (!validation.valid) {
+                    saveError(validation.message ?: "Config validation failed", redact = false)
+                }
+                persistConfig(candidate, input)
+                identity
+            }
+        return outcome.fold(
+            onSuccess = { identity ->
+                _state.value =
+                    current.copy(
+                        localPublicIdentity = identity.second,
+                        identityPeerId = identity.third,
+                        errorMessage = null,
+                        saveResult = "Configuration saved",
+                    ).withCanAdvance(_forwards.value)
+                true
+            },
+            onFailure = { error ->
+                // Preserve the per-step redaction map: SaveError carries whether its
+                // message is safe to show verbatim; anything else is redacted.
+                val message = error.message ?: "Failed saving configuration"
+                val text =
+                    if (error is SaveError && !error.redact) {
+                        message
+                    } else {
+                        SensitiveDataRedactor.redactText(
+                            message,
+                        )
+                    }
+                _state.value = current.copy(errorMessage = text, saveResult = null).withCanAdvance(_forwards.value)
+                false
+            },
+        )
+    }
+
+    // Resolves the private identity for save: imported from a file (errors shown
+    // verbatim, as before) or the stored encrypted identity (absence redacted).
+    private suspend fun resolveSaveIdentity(current: SetupWizardState): Triple<ByteArray, String, String> {
+        val resolved =
+            if (current.importIdentityPath.isNotBlank()) {
+                withContext(Dispatchers.IO) { importPrivateIdentity(current.importIdentityPath) }
+                    .getOrElse { saveError(it.message ?: "Failed importing private identity", redact = false) }
             } else {
                 resolveStoredIdentity()
             }
-        val identityBytes = importedIdentity?.first
-        if (identityBytes == null || identityBytes.isEmpty()) {
-            repositoryError(current, "Missing encrypted identity")
-            return false
+        if (resolved == null || resolved.first.isEmpty()) {
+            saveError("Missing encrypted identity", redact = true)
         }
-        val identityPeerId = importedIdentity.third
-        if (identityPeerId != input.localPeerId) {
-            repositoryError(
-                current,
-                "Local peer ID must match private identity peer ID ($identityPeerId)",
-            )
-            return false
-        }
-        if (current.importPublicIdentity.isNotBlank()) {
-            val imported = importPublicIdentity(current.importPublicIdentity, input.remotePeerId)
-            if (imported.isFailure) {
-                repositoryError(current, imported.exceptionOrNull()?.message ?: "Failed importing public identity")
-                return false
-            }
-        }
-        val candidate = deps.configRepository.renderOfferConfig(input, forwards)
-        val result =
-            withContext(Dispatchers.IO) {
-                validateCandidateConfig(candidate, identityBytes)
-            }
-        if (!result.valid) {
-            _state.value =
-                current
-                    .copy(errorMessage = result.message ?: "Config validation failed", saveResult = null)
-                    .withCanAdvance(_forwards.value)
-            return false
-        }
-        if (!persistConfig(candidate, input, current)) {
-            return false
-        }
-        _state.value =
-            current.copy(
-                localPublicIdentity = importedIdentity.second,
-                identityPeerId = identityPeerId,
-                errorMessage = null,
-                saveResult = "Configuration saved",
-            ).withCanAdvance(_forwards.value)
-        return true
+        return resolved
     }
 
     private suspend fun resolveStoredIdentity(): Triple<ByteArray, String, String>? =
@@ -559,32 +561,25 @@ class SetupViewModel(
             }.getOrNull()
         }
 
-    // Persists config/input/preferences off the main thread. Returns true on success;
-    // sets a redacted repository error and returns false on failure.
+    // Persists config/input/preferences off the main thread. Throws SaveError
+    // (redacted) on failure.
     private suspend fun persistConfig(
         candidate: String,
         input: SetupConfigInput,
-        current: SetupWizardState,
-    ): Boolean {
-        val persistResult =
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    deps.configRepository.writeConfigAtomically(candidate)
-                    deps.configRepository.saveSetupInput(input)
-                    val existing = loadPreferences()
-                    persistPreferences(
-                        existing.copy(
-                            allowMetered = input.allowMetered,
-                            resumeOnUnmetered = input.resumeOnUnmetered,
-                        ),
-                    )
-                }
+    ) {
+        runCatching {
+            withContext(Dispatchers.IO) {
+                deps.configRepository.writeConfigAtomically(candidate)
+                deps.configRepository.saveSetupInput(input)
+                val existing = loadPreferences()
+                persistPreferences(
+                    existing.copy(
+                        allowMetered = input.allowMetered,
+                        resumeOnUnmetered = input.resumeOnUnmetered,
+                    ),
+                )
             }
-        if (persistResult.isFailure) {
-            repositoryError(current, persistResult.exceptionOrNull()?.message ?: "Failed saving configuration")
-            return false
-        }
-        return true
+        }.getOrElse { saveError(it.message ?: "Failed saving configuration", redact = true) }
     }
 
     fun startTunnelFromReview(onSuccess: (() -> Unit)? = null) {
@@ -712,15 +707,12 @@ class SetupViewModel(
         }
     }
 
-    private fun repositoryError(
-        current: SetupWizardState,
+    // Single throw site for save-flow failures, so callers (and detekt's ThrowsCount)
+    // see a function call rather than scattered throw statements.
+    private fun saveError(
         message: String,
-    ) {
-        _state.value =
-            current
-                .copy(errorMessage = SensitiveDataRedactor.redactText(message), saveResult = null)
-                .withCanAdvance(_forwards.value)
-    }
+        redact: Boolean,
+    ): Nothing = throw SaveError(message, redact)
 
     private fun loadStoredIdentity() {
         val publicIdentity = deps.identityRepository.readPublicIdentity()
