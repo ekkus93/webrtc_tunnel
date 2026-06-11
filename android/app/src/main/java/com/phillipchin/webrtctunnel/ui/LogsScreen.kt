@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
+import com.phillipchin.webrtctunnel.model.LogEvent
 import com.phillipchin.webrtctunnel.model.NetworkStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.viewmodel.LogsViewModel
@@ -71,7 +72,6 @@ fun LogsScreen(
     )
     val clipboard = LocalClipboardManager.current
     var paused by remember { mutableStateOf(false) }
-    var showActionsMenu by remember { mutableStateOf(false) }
     val diagnosticsCreateDocumentLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.CreateDocument("text/plain"),
@@ -83,13 +83,7 @@ fun LogsScreen(
         }
     }
     val logs by vm.filteredLogs.collectAsStateWithLifecycle()
-    val copyLogs = {
-        val text =
-            logs
-                .map(SensitiveDataRedactor::redactLogEvent)
-                .joinToString("\n") { "${it.unixMs} ${it.level} ${it.message}" }
-        clipboard.setText(AnnotatedString(text))
-    }
+    val copyLogs = { clipboard.setText(AnnotatedString(redactedLogsText(logs))) }
     val exportDiagnostics = { diagnosticsCreateDocumentLauncher.launch("webrtc_diagnostics_redacted.txt") }
     val shareDiagnostics = {
         val share =
@@ -113,82 +107,129 @@ fun LogsScreen(
         Spacer(Modifier.height(16.dp))
         SectionHeader("Logs", "Redacted runtime events")
         Spacer(Modifier.height(8.dp))
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf("all", "info", "warn", "error", "debug").forEach { level ->
-                FilterChip(
-                    selected = filter == level,
-                    onClick = { vm.setFilter(level) },
-                    label = { Text(level.uppercase()) },
-                )
-            }
-        }
+        LogFilterChips(filter = filter, onSelect = vm::setFilter)
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { paused = !paused }, modifier = Modifier.weight(1f)) {
-                Text(if (paused) "Resume Logs" else "Pause Logs")
-            }
-            OutlinedButton(onClick = vm::clearLogs, modifier = Modifier.weight(1f)) { Text("Clear Logs") }
-            IconButton(onClick = { showActionsMenu = true }) {
-                Icon(Icons.Default.MoreVert, contentDescription = "Open log actions")
-            }
-            DropdownMenu(expanded = showActionsMenu, onDismissRequest = { showActionsMenu = false }) {
-                DropdownMenuItem(
-                    text = { Text("Copy Logs") },
-                    onClick = {
-                        showActionsMenu = false
-                        copyLogs()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("Export Diagnostics") },
-                    onClick = {
-                        showActionsMenu = false
-                        exportDiagnostics()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("Share Diagnostics") },
-                    onClick = {
-                        showActionsMenu = false
-                        shareDiagnostics()
-                    },
-                )
-            }
-        }
+        LogActionsRow(
+            paused = paused,
+            onTogglePause = { paused = !paused },
+            onClear = vm::clearLogs,
+            menu = LogMenuActions(onCopy = copyLogs, onExport = exportDiagnostics, onShare = shareDiagnostics),
+        )
         message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
         Spacer(Modifier.height(8.dp))
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(bottom = 16.dp),
-        ) {
-            if (debugHidden) {
-                item { EmptyStateCard("Debug logs are hidden. Enable Debug logs in Advanced to see them.") }
-            }
-            if (visibleLogs.isEmpty() && !debugHidden) {
-                item { EmptyStateCard("No logs available.") }
-            }
-            items(visibleLogs) { event ->
-                val levelColor =
-                    when (event.level.lowercase()) {
-                        "warn" -> Color(color = 0xFFF59E0B)
-                        "error" -> Color(color = 0xFFD32F2F)
-                        "debug" -> Color(color = 0xFF6B7280)
-                        else -> MaterialTheme.colorScheme.onSurface
-                    }
-                StatusCard {
-                    Text(
-                        formatLogTimestamp(event.unixMs),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(color = 0xFF6B7280),
-                    )
-                    Text(event.level.uppercase(), color = levelColor, style = MaterialTheme.typography.labelLarge)
-                    Text(SensitiveDataRedactor.redactText(event.message))
-                }
-            }
+        LogList(visibleLogs = visibleLogs, debugHidden = debugHidden, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun LogFilterChips(
+    filter: String,
+    onSelect: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        listOf("all", "info", "warn", "error", "debug").forEach { level ->
+            FilterChip(
+                selected = filter == level,
+                onClick = { onSelect(level) },
+                label = { Text(level.uppercase()) },
+            )
         }
     }
 }
+
+private data class LogMenuActions(
+    val onCopy: () -> Unit,
+    val onExport: () -> Unit,
+    val onShare: () -> Unit,
+)
+
+@Composable
+private fun LogActionsRow(
+    paused: Boolean,
+    onTogglePause: () -> Unit,
+    onClear: () -> Unit,
+    menu: LogMenuActions,
+) {
+    var showActionsMenu by remember { mutableStateOf(false) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onTogglePause, modifier = Modifier.weight(1f)) {
+            Text(if (paused) "Resume Logs" else "Pause Logs")
+        }
+        OutlinedButton(onClick = onClear, modifier = Modifier.weight(1f)) { Text("Clear Logs") }
+        IconButton(onClick = { showActionsMenu = true }) {
+            Icon(Icons.Default.MoreVert, contentDescription = "Open log actions")
+        }
+        DropdownMenu(expanded = showActionsMenu, onDismissRequest = { showActionsMenu = false }) {
+            DropdownMenuItem(
+                text = { Text("Copy Logs") },
+                onClick = {
+                    showActionsMenu = false
+                    menu.onCopy()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Export Diagnostics") },
+                onClick = {
+                    showActionsMenu = false
+                    menu.onExport()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Share Diagnostics") },
+                onClick = {
+                    showActionsMenu = false
+                    menu.onShare()
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun LogList(
+    visibleLogs: List<LogEvent>,
+    debugHidden: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    LazyColumn(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(bottom = 16.dp),
+    ) {
+        if (debugHidden) {
+            item { EmptyStateCard("Debug logs are hidden. Enable Debug logs in Advanced to see them.") }
+        }
+        if (visibleLogs.isEmpty() && !debugHidden) {
+            item { EmptyStateCard("No logs available.") }
+        }
+        items(visibleLogs) { event -> LogRow(event) }
+    }
+}
+
+@Composable
+private fun LogRow(event: LogEvent) {
+    val levelColor =
+        when (event.level.lowercase()) {
+            "warn" -> Color(color = 0xFFF59E0B)
+            "error" -> Color(color = 0xFFD32F2F)
+            "debug" -> Color(color = 0xFF6B7280)
+            else -> MaterialTheme.colorScheme.onSurface
+        }
+    StatusCard {
+        Text(
+            formatLogTimestamp(event.unixMs),
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(color = 0xFF6B7280),
+        )
+        Text(event.level.uppercase(), color = levelColor, style = MaterialTheme.typography.labelLarge)
+        Text(SensitiveDataRedactor.redactText(event.message))
+    }
+}
+
+private fun redactedLogsText(logs: List<LogEvent>): String =
+    logs
+        .map(SensitiveDataRedactor::redactLogEvent)
+        .joinToString("\n") { "${it.unixMs} ${it.level} ${it.message}" }

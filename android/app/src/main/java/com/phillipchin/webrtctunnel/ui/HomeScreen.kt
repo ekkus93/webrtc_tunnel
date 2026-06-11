@@ -3,11 +3,9 @@ package com.phillipchin.webrtctunnel.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,7 +20,6 @@ import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -32,14 +29,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.ForwardStatus
@@ -56,7 +49,7 @@ private const val SECONDS_PER_HOUR = 3600
 private const val SECONDS_PER_MINUTE = 60
 private const val UPTIME_TICK_MS = 1_000L
 
-private data class HomeStatusUi(val title: String, val description: String)
+internal data class HomeStatusUi(val title: String, val description: String)
 
 private fun mapStatusUi(status: TunnelStatus): HomeStatusUi =
     when (status.serviceState) {
@@ -77,7 +70,7 @@ private fun mapStatusUi(status: TunnelStatus): HomeStatusUi =
         ServiceState.Error -> HomeStatusUi("Error", "Tunnel encountered an error.")
     }
 
-private fun formatUptime(seconds: Long): String {
+internal fun formatUptime(seconds: Long): String {
     val hours = seconds / SECONDS_PER_HOUR
     val minutes = (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE
     val secs = seconds % SECONDS_PER_MINUTE
@@ -95,7 +88,7 @@ private fun ForwardStatus.toConfig(): ForwardConfig =
     )
 
 @Composable
-private fun HomeStatusIcon(title: String) {
+internal fun HomeStatusIcon(title: String) {
     val (icon, tint) =
         when {
             title.equals("Connected", ignoreCase = true) || title.equals("Listening", ignoreCase = true) ->
@@ -108,7 +101,7 @@ private fun HomeStatusIcon(title: String) {
 }
 
 @Composable
-private fun NetworkTypeIcon(networkType: NetworkType) {
+internal fun NetworkTypeIcon(networkType: NetworkType) {
     val (icon, description) =
         when (networkType) {
             NetworkType.UnmeteredWifi, NetworkType.MeteredWifi -> Icons.Filled.Wifi to "Wi-Fi network"
@@ -133,137 +126,38 @@ fun HomeScreen(
     forwardsVm: ForwardsViewModel,
     nav: HomeNavActions,
 ) {
-    val onOpenSetup = nav.onOpenSetup
-    val onOpenLogs = nav.onOpenLogs
-    val onOpenSettings = nav.onOpenSettings
-    val onOpenForwardDetails = nav.onOpenForwardDetails
     val status by vm.status.collectAsStateWithLifecycle()
     val configuredForwards by vm.configuredForwards.collectAsStateWithLifecycle()
     val statusUi = mapStatusUi(status)
-    val context = LocalContext.current
-    val browserForward =
-        (configuredForwards + status.forwards.map { it.toConfig() }).firstOrNull {
-            isBrowserOpenable(
-                it,
-            )
-        }
-    val displayedForwards =
-        configuredForwards.map { config ->
-            val runtime = status.forwards.firstOrNull { it.id == config.id }
-            config to runtime
-        }
     var showMeteredWarningDialog by remember { mutableStateOf(false) }
     var showAddForwardDialog by remember { mutableStateOf(false) }
-    var displayedUptimeSeconds by remember { mutableStateOf(status.uptimeSeconds) }
     val isRunning = status.serviceState in setOf(ServiceState.Connected, ServiceState.Listening, ServiceState.Serving)
     LaunchedEffect(Unit) { vm.refreshForwards() }
-    LaunchedEffect(isRunning, status.uptimeSeconds) {
-        displayedUptimeSeconds = status.uptimeSeconds
-        while (isRunning) {
-            delay(UPTIME_TICK_MS)
-            displayedUptimeSeconds = displayedUptimeSeconds?.let { it + 1L }
-        }
-    }
+    val displayedUptimeSeconds = rememberDisplayedUptime(status, isRunning)
     ScrollableScreenSurface(padding) {
         SectionHeader("WebRTC Tunnel", "Current runtime state and quick actions")
         Spacer(Modifier.height(12.dp))
-        StatusCard {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                HomeStatusIcon(statusUi.title)
-                Column {
-                    Text(
-                        statusUi.title,
-                        color = stateColorToken(statusUi.title),
-                        style = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
-                    )
-                    Text(statusUi.description)
-                }
-            }
-            Text("Mode: ${if (status.mode == TunnelMode.Offer) "Offer (client)" else "Answer (server)"}")
-            Text("Remote peer: ${status.remotePeerId ?: "Not configured"}")
-            if (status.mode != TunnelMode.Offer) {
-                Text("Active sessions: ${status.activeSessionCount}")
-            }
-            displayedUptimeSeconds?.let { Text("Uptime: ${formatUptime(it)}") }
-        }
+        TunnelStatusCard(status = status, statusUi = statusUi, uptimeSeconds = displayedUptimeSeconds)
         Spacer(Modifier.height(12.dp))
-        NetworkStatusCard {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                NetworkTypeIcon(status.networkStatus.networkType)
-                Text("Network", style = MaterialTheme.typography.titleMedium)
-            }
-            Text("Type: ${mapNetworkTypeLabel(status.networkStatus.networkType)}")
-            Text(if (status.networkStatus.isMetered) "Metered" else "Unmetered")
-            Text(if (status.networkStatus.tunnelAllowed) "Tunnel allowed" else "Tunnel blocked")
-            status.networkStatus.blockReason?.let { Text("Reason: $it") }
-            if (status.allowMeteredForCurrentSession) {
-                Text("Metered override: active for this app run")
-            }
-        }
+        HomeNetworkCard(
+            networkStatus = status.networkStatus,
+            allowMeteredForCurrentSession = status.allowMeteredForCurrentSession,
+        )
         Spacer(Modifier.height(12.dp))
-        StatusCard {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Forwards (${configuredForwards.size})", style = MaterialTheme.typography.titleMedium)
-                IconButton(onClick = { showAddForwardDialog = true }) {
-                    Icon(Icons.Filled.Add, contentDescription = "Add forward")
-                }
-            }
-            if (configuredForwards.isEmpty()) {
-                EmptyStateCard("No forwards configured.")
-            } else {
-                displayedForwards.forEach { (forward, runtime) ->
-                    val stateLabel =
-                        mapForwardListenLabel(
-                            runtime?.listenState?.name ?: if (forward.enabled) "configured" else "disabled",
-                        )
-                    ForwardSummaryRow(
-                        title = forward.name,
-                        subtitle = "${forward.localHost}:${forward.localPort} -> ${forward.remoteForwardId}",
-                        status = stateLabel,
-                        statusColors = forwardStatusChipColors(stateLabel),
-                        onClick = { onOpenForwardDetails(forward.id) },
-                    )
-                }
-            }
-        }
-        status.lastError?.let { err ->
-            Spacer(Modifier.height(12.dp))
-            ErrorResolutionCard(
-                summary = err.message,
-                fix = "Open logs for details, then fix setup or broker/network settings and retry.",
-                details = err.details,
-                action = { OutlinedButton(onClick = onOpenLogs) { Text("View Logs") } },
-            )
-        }
-        Spacer(Modifier.height(12.dp))
-        HomeActionRow(
+        HomeForwardsCard(
+            configuredForwards = configuredForwards,
             status = status,
-            actions =
-                HomeRowActions(
-                    onStart = { vm.startTunnel(TunnelMode.Offer) },
-                    onStop = vm::stopTunnel,
-                    onOpenSetup = onOpenSetup,
-                    onOpenLogs = onOpenLogs,
-                    onOpenSettings = onOpenSettings,
-                    onAllowMeteredTemporary = { showMeteredWarningDialog = true },
-                    onOpenBrowser =
-                        browserForward?.let {
-                            {
-                                val url = browserUrlForForward(it)
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                                )
-                            }
-                        },
-                ),
+            onAdd = { showAddForwardDialog = true },
+            onOpenDetails = nav.onOpenForwardDetails,
+        )
+        HomeErrorCard(error = status.lastError, onOpenLogs = nav.onOpenLogs)
+        Spacer(Modifier.height(12.dp))
+        HomeBottomActions(
+            status = status,
+            vm = vm,
+            nav = nav,
+            configuredForwards = configuredForwards,
+            onAllowMetered = { showMeteredWarningDialog = true },
         )
     }
     if (showMeteredWarningDialog) {
@@ -275,19 +169,85 @@ fun HomeScreen(
             onDismiss = { showMeteredWarningDialog = false },
         )
     }
-    if (showAddForwardDialog) {
-        EditForwardDialog(
-            editor = ForwardEditorState(ForwardEditorMode.Add, defaultNewForward(configuredForwards)),
-            existingForwards = configuredForwards,
-            validateDraft = forwardsVm::validateForwardDraft,
-            onDismiss = { showAddForwardDialog = false },
-            onSave = {
-                forwardsVm.saveForward(it)
-                vm.refreshForwards()
-                showAddForwardDialog = false
-            },
-        )
+    HomeAddForwardDialog(
+        show = showAddForwardDialog,
+        configuredForwards = configuredForwards,
+        forwardsVm = forwardsVm,
+        onRefresh = { vm.refreshForwards() },
+        onDismiss = { showAddForwardDialog = false },
+    )
+}
+
+@Composable
+private fun rememberDisplayedUptime(
+    status: TunnelStatus,
+    isRunning: Boolean,
+): Long? {
+    var displayed by remember { mutableStateOf(status.uptimeSeconds) }
+    LaunchedEffect(isRunning, status.uptimeSeconds) {
+        displayed = status.uptimeSeconds
+        while (isRunning) {
+            delay(UPTIME_TICK_MS)
+            displayed = displayed?.let { it + 1L }
+        }
     }
+    return displayed
+}
+
+@Composable
+private fun HomeAddForwardDialog(
+    show: Boolean,
+    configuredForwards: List<ForwardConfig>,
+    forwardsVm: ForwardsViewModel,
+    onRefresh: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (!show) return
+    EditForwardDialog(
+        editor = ForwardEditorState(ForwardEditorMode.Add, defaultNewForward(configuredForwards)),
+        existingForwards = configuredForwards,
+        validateDraft = forwardsVm::validateForwardDraft,
+        onDismiss = onDismiss,
+        onSave = {
+            forwardsVm.saveForward(it)
+            onRefresh()
+            onDismiss()
+        },
+    )
+}
+
+@Composable
+private fun HomeBottomActions(
+    status: TunnelStatus,
+    vm: HomeViewModel,
+    nav: HomeNavActions,
+    configuredForwards: List<ForwardConfig>,
+    onAllowMetered: () -> Unit,
+) {
+    val context = LocalContext.current
+    val browserForward =
+        (configuredForwards + status.forwards.map { it.toConfig() }).firstOrNull { isBrowserOpenable(it) }
+    HomeActionRow(
+        status = status,
+        actions =
+            HomeRowActions(
+                onStart = { vm.startTunnel(TunnelMode.Offer) },
+                onStop = vm::stopTunnel,
+                onOpenSetup = nav.onOpenSetup,
+                onOpenLogs = nav.onOpenLogs,
+                onOpenSettings = nav.onOpenSettings,
+                onAllowMeteredTemporary = onAllowMetered,
+                onOpenBrowser =
+                    browserForward?.let {
+                        {
+                            val url = browserUrlForForward(it)
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                    },
+            ),
+    )
 }
 
 private data class HomeRowActions(
