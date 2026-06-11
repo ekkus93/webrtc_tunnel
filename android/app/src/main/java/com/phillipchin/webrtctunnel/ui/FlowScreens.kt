@@ -66,10 +66,10 @@ fun SetupWizardScreen(
         EditForwardDialog(
             editor = editor,
             existingForwards = forwards,
-            validateDraft = vm::validateForwardDraft,
+            validateDraft = vm.forwardsEditor::validateForwardDraft,
             onDismiss = { editingForward = null },
             onSave = { updated ->
-                vm.upsertForward(updated)
+                vm.forwardsEditor.upsertForward(updated)
                 editingForward = null
             },
         )
@@ -88,13 +88,13 @@ private fun WizardStepContent(
     val importPublicIdentityLauncher =
         rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
-                vm.importPublicIdentityFromUri(uri)
+                vm.identity.importPublicIdentityFromUri(uri)
             }
         }
     val importIdentityLauncher =
         rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
-                vm.importIdentityFromUri(uri)
+                vm.identity.importIdentityFromUri(uri)
             }
         }
     when (state.currentStep) {
@@ -113,7 +113,7 @@ private fun WizardStepContent(
                 onPaste = {
                     val text = clipboard.getText()?.text.orEmpty()
                     vm.setImportPublicIdentity(text)
-                    vm.validateRemotePublicIdentity()
+                    vm.identity.validateRemotePublicIdentity()
                 },
                 onImportFile = { importPublicIdentityLauncher.launch(arrayOf("text/*")) },
             )
@@ -122,7 +122,7 @@ private fun WizardStepContent(
                 forwards,
                 onAdd = { onEditForward(beginAddForwardEdit(forwards)) },
                 onEdit = { onEditForward(beginEditForward(it)) },
-                onDelete = vm::deleteForward,
+                onDelete = vm.forwardsEditor::deleteForward,
             )
         SetupStep.NetworkPolicy -> PolicyStepContent(vm, state, networkStatus)
         SetupStep.Review -> ReviewStepContent(state, forwards)

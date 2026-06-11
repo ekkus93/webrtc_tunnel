@@ -33,6 +33,7 @@ class WizardStateAccess(
     val state: () -> SetupWizardState,
     val forwards: () -> List<ForwardConfig>,
     val applyState: (SetupWizardState) -> Unit,
+    val setForwards: (List<ForwardConfig>) -> Unit,
 )
 
 class SetupSaveController(

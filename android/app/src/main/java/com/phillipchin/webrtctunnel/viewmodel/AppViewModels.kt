@@ -132,17 +132,12 @@ class SetupViewModel(
         }
     val preferences = deps.configRepository.preferences
 
-    init {
-        loadStoredSetupInput()
-        loadStoredIdentity()
-        refreshForwards()
-    }
-
     private val stateAccess =
         WizardStateAccess(
             state = { _state.value },
             forwards = { _forwards.value },
             applyState = ::applyState,
+            setForwards = { _forwards.value = it },
         )
 
     val save =
@@ -154,50 +149,23 @@ class SetupViewModel(
             access = stateAccess,
         )
 
+    val identity = SetupIdentityController(deps, stateAccess)
+
+    val forwardsEditor = SetupForwardsController(deps, stateAccess)
+
+    init {
+        loadStoredSetupInput(deps, stateAccess)
+        identity.loadStoredIdentity()
+        forwardsEditor.refreshForwards()
+    }
+
     private fun applyState(newState: SetupWizardState) {
-        _state.value = newState.copy(canAdvance = canAdvance(newState, _forwards.value))
-    }
-
-    fun validateForwardDraft(
-        draft: ForwardConfig,
-        currentForwards: List<ForwardConfig>,
-    ): String? {
-        val updated =
-            currentForwards.map { if (it.id == draft.id) draft else it }.let { candidates ->
-                if (candidates.none { it.id == draft.id }) candidates + draft else candidates
-            }
-        return deps.forwardsStore.validateForwards(updated)
-    }
-
-    private fun SetupWizardState.withCanAdvance(forwards: List<ForwardConfig>): SetupWizardState {
-        return copy(canAdvance = canAdvance(this, forwards))
-    }
-
-    private fun canAdvance(
-        state: SetupWizardState,
-        forwards: List<ForwardConfig>,
-    ): Boolean {
-        return when (state.currentStep) {
-            SetupStep.Mode -> true
-            SetupStep.Identity -> state.localPublicIdentity.isNotBlank() || state.importIdentityPath.isNotBlank()
-            SetupStep.Broker -> state.input.brokerHost.isNotBlank() && state.input.brokerPort in 1..MAX_PORT
-            SetupStep.Peer -> state.input.remotePeerId.isNotBlank() && state.importPublicIdentity.isNotBlank()
-            SetupStep.Forwards -> forwards.isNotEmpty() && deps.forwardsStore.validateForwards(forwards) == null
-            SetupStep.NetworkPolicy -> true
-            SetupStep.Review -> {
-                state.input.brokerHost.isNotBlank() &&
-                    state.input.brokerPort in 1..MAX_PORT &&
-                    state.input.remotePeerId.isNotBlank() &&
-                    state.importPublicIdentity.isNotBlank() &&
-                    forwards.isNotEmpty() &&
-                    deps.forwardsStore.validateForwards(forwards) == null
-            }
-        }
+        _state.value = newState.copy(canAdvance = canAdvance(deps, newState, _forwards.value))
     }
 
     private fun updateState(transform: (SetupWizardState) -> SetupWizardState) {
         val updated = transform(_state.value)
-        _state.value = updated.copy(canAdvance = canAdvance(updated, _forwards.value))
+        _state.value = updated.copy(canAdvance = canAdvance(deps, updated, _forwards.value))
     }
 
     fun setInput(update: SetupConfigInput) {
@@ -229,161 +197,6 @@ class SetupViewModel(
         updateState { current -> current.copy(advancedExpanded = expanded) }
     }
 
-    fun importIdentityFromPath() {
-        val current = _state.value
-        val trimmed = current.importIdentityPath.trim()
-        if (trimmed.isBlank()) {
-            _state.value =
-                current
-                    .copy(errorMessage = "Choose an identity file path to import")
-                    .withCanAdvance(_forwards.value)
-            return
-        }
-        val resolved =
-            runCatching {
-                val privateIdentity = deps.identityRepository.readPrivateIdentityFile(trimmed).getOrThrow()
-                val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
-                require(validated.valid) { validated.message ?: "Invalid private identity" }
-                val peerId = validated.peerId ?: throw IllegalArgumentException("Missing identity peer id")
-                val canonicalPublic = validated.canonicalPublicIdentity ?: ""
-                peerId to canonicalPublic
-            }
-        resolved.onSuccess { (peerId, canonicalPublic) ->
-            _state.value =
-                current.copy(
-                    importIdentityPath = trimmed,
-                    identityPeerId = peerId,
-                    localPublicIdentity = canonicalPublic,
-                    input = current.input.copy(localPeerId = peerId),
-                    errorMessage = null,
-                    saveResult = "Identity imported",
-                ).withCanAdvance(_forwards.value)
-        }.onFailure {
-            _state.value =
-                current.copy(
-                    identityPeerId = null,
-                    localPublicIdentity = "",
-                    errorMessage = it.message ?: "Invalid private identity file",
-                    saveResult = null,
-                ).withCanAdvance(_forwards.value)
-        }
-    }
-
-    fun importIdentityFromUri(uri: Uri) {
-        val current = _state.value
-        val resolved =
-            runCatching {
-                val privateIdentity =
-                    deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                        ?: error("Unable to read private identity from selected URI")
-                val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
-                require(validated.valid) { validated.message ?: "Invalid private identity" }
-                val canonicalPrivate = validated.canonicalPrivateIdentity ?: privateIdentity
-                val canonicalPublic = validated.canonicalPublicIdentity ?: ""
-                val peerId = validated.peerId ?: throw IllegalArgumentException("Missing identity peer id")
-                deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
-                Triple(peerId, canonicalPublic, canonicalPrivate)
-            }
-        resolved.onSuccess { (peerId, canonicalPublic, _) ->
-            _state.value =
-                current.copy(
-                    identityPeerId = peerId,
-                    localPublicIdentity = canonicalPublic,
-                    input = current.input.copy(localPeerId = peerId),
-                    importIdentityPath = "",
-                    errorMessage = null,
-                    saveResult = "Identity imported",
-                ).withCanAdvance(_forwards.value)
-        }.onFailure {
-            _state.value =
-                current.copy(
-                    errorMessage = it.message ?: "Invalid private identity file",
-                    saveResult = null,
-                ).withCanAdvance(_forwards.value)
-        }
-    }
-
-    fun validateRemotePublicIdentity() {
-        val current = _state.value
-        val value = current.importPublicIdentity.trim()
-        if (value.isBlank()) {
-            _state.value =
-                current
-                    .copy(remoteIdentityPeerId = null, errorMessage = "Remote public identity is required")
-                    .withCanAdvance(_forwards.value)
-            return
-        }
-
-        val validated = deps.identityValidation.validatePublicIdentity(value)
-        val updated =
-            when {
-                !validated.valid ->
-                    current.copy(
-                        remoteIdentityPeerId = null,
-                        errorMessage = validated.message ?: "Invalid remote public identity",
-                    )
-                validated.peerId == current.input.localPeerId ->
-                    current.copy(
-                        remoteIdentityPeerId = null,
-                        errorMessage = "Remote public identity cannot match local identity",
-                    )
-                else ->
-                    current.copy(
-                        importPublicIdentity = validated.canonicalPublicIdentity ?: value,
-                        remoteIdentityPeerId = validated.peerId,
-                        errorMessage = null,
-                        saveResult = "Remote public identity validated",
-                    )
-            }
-        _state.value = updated.withCanAdvance(_forwards.value)
-    }
-
-    fun importPublicIdentityFromUri(uri: Uri) {
-        runCatching {
-            deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                ?: error("Unable to read remote public identity from selected URI")
-        }.onSuccess { text ->
-            setImportPublicIdentity(text)
-            validateRemotePublicIdentity()
-        }.onFailure {
-            _state.value =
-                _state.value
-                    .copy(errorMessage = it.message ?: "Failed importing remote public identity")
-                    .withCanAdvance(_forwards.value)
-        }
-    }
-
-    fun generateIdentity() {
-        val current = _state.value
-        val generated = deps.identityValidation.generateIdentity(current.input.localPeerId)
-        if (!generated.valid) {
-            _state.value =
-                current
-                    .copy(errorMessage = generated.message ?: "Identity generation failed")
-                    .withCanAdvance(_forwards.value)
-            return
-        }
-        val privateIdentity = generated.canonicalPrivateIdentity
-        val publicIdentity = generated.canonicalPublicIdentity
-        if (privateIdentity.isNullOrBlank() || publicIdentity.isNullOrBlank()) {
-            _state.value =
-                current
-                    .copy(errorMessage = "Identity generation returned incomplete data")
-                    .withCanAdvance(_forwards.value)
-            return
-        }
-        deps.identityRepository.storeEncryptedIdentity(privateIdentity.toByteArray(), publicIdentity)
-        val peerId = generated.peerId ?: current.input.localPeerId
-        _state.value =
-            current.copy(
-                input = current.input.copy(localPeerId = peerId),
-                localPublicIdentity = publicIdentity,
-                identityPeerId = peerId,
-                errorMessage = null,
-                saveResult = "Identity generated",
-            ).withCanAdvance(_forwards.value)
-    }
-
     fun goBack() {
         val current = _state.value.currentStep
         val index = steps.indexOf(current)
@@ -391,13 +204,13 @@ class SetupViewModel(
             _state.value =
                 _state.value
                     .copy(currentStep = steps[index - 1], errorMessage = null)
-                    .withCanAdvance(_forwards.value)
+                    .withCanAdvance(deps, _forwards.value)
         }
     }
 
     fun cancel() {
         _state.value = SetupWizardState()
-        refreshForwards()
+        forwardsEditor.refreshForwards()
     }
 
     fun goNext() {
@@ -407,7 +220,7 @@ class SetupViewModel(
             _state.value =
                 current
                     .copy(errorMessage = validationError)
-                    .withCanAdvance(_forwards.value)
+                    .withCanAdvance(deps, _forwards.value)
             return
         }
         val index = steps.indexOf(current.currentStep)
@@ -415,65 +228,50 @@ class SetupViewModel(
             _state.value =
                 current
                     .copy(currentStep = steps[index + 1], errorMessage = null)
-                    .withCanAdvance(_forwards.value)
+                    .withCanAdvance(deps, _forwards.value)
         }
     }
 
     fun canAdvanceFromCurrentStep(): Boolean {
         return _state.value.canAdvance
     }
+}
 
-    fun loadSavedForwards(): List<ForwardConfig> = deps.forwardsStore.loadForwards()
+private fun SetupWizardState.withCanAdvance(
+    deps: AppDependencies,
+    forwards: List<ForwardConfig>,
+): SetupWizardState = copy(canAdvance = canAdvance(deps, this, forwards))
 
-    fun refreshForwards() {
-        _forwards.value = deps.forwardsStore.loadForwards()
-        _state.value = _state.value.withCanAdvance(_forwards.value)
-    }
-
-    fun upsertForward(forward: ForwardConfig): ValidationResult {
-        val result = deps.forwardsStore.upsertForward(forward)
-        if (!result.valid) {
-            _state.value =
-                _state.value
-                    .copy(errorMessage = result.message ?: "Forward update failed")
-                    .withCanAdvance(_forwards.value)
-            return result
-        }
-        refreshForwards()
-        _state.value =
-            _state.value
-                .copy(errorMessage = null, saveResult = "Forward saved")
-                .withCanAdvance(_forwards.value)
-        return result
-    }
-
-    fun deleteForward(forwardId: String) {
-        deps.forwardsStore.deleteForward(forwardId)
-        refreshForwards()
-        _state.value =
-            _state.value
-                .copy(errorMessage = null, saveResult = "Forward deleted")
-                .withCanAdvance(_forwards.value)
-    }
-
-    private fun loadStoredIdentity() {
-        val publicIdentity = deps.identityRepository.readPublicIdentity()
-        if (publicIdentity.isNotBlank()) {
-            _state.value =
-                _state.value
-                    .copy(localPublicIdentity = publicIdentity)
-                    .withCanAdvance(_forwards.value)
+private fun canAdvance(
+    deps: AppDependencies,
+    state: SetupWizardState,
+    forwards: List<ForwardConfig>,
+): Boolean {
+    return when (state.currentStep) {
+        SetupStep.Mode -> true
+        SetupStep.Identity -> state.localPublicIdentity.isNotBlank() || state.importIdentityPath.isNotBlank()
+        SetupStep.Broker -> state.input.brokerHost.isNotBlank() && state.input.brokerPort in 1..MAX_PORT
+        SetupStep.Peer -> state.input.remotePeerId.isNotBlank() && state.importPublicIdentity.isNotBlank()
+        SetupStep.Forwards -> forwards.isNotEmpty() && deps.forwardsStore.validateForwards(forwards) == null
+        SetupStep.NetworkPolicy -> true
+        SetupStep.Review -> {
+            state.input.brokerHost.isNotBlank() &&
+                state.input.brokerPort in 1..MAX_PORT &&
+                state.input.remotePeerId.isNotBlank() &&
+                state.importPublicIdentity.isNotBlank() &&
+                forwards.isNotEmpty() &&
+                deps.forwardsStore.validateForwards(forwards) == null
         }
     }
+}
 
-    private fun loadStoredSetupInput() {
-        val saved = runCatching { deps.configRepository.loadSetupInput() }.getOrNull() ?: return
-        if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
-            _state.value =
-                _state.value
-                    .copy(input = saved)
-                    .withCanAdvance(_forwards.value)
-        }
+private fun loadStoredSetupInput(
+    deps: AppDependencies,
+    access: WizardStateAccess,
+) {
+    val saved = runCatching { deps.configRepository.loadSetupInput() }.getOrNull() ?: return
+    if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
+        access.applyState(access.state().copy(input = saved))
     }
 }
 

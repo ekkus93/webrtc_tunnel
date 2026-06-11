@@ -214,9 +214,9 @@ class AppViewModelsTest {
             listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
         )
         viewModel.setImportIdentityPath(identityFile.absolutePath)
-        viewModel.importIdentityFromPath()
+        viewModel.identity.importIdentityFromPath()
         viewModel.setImportPublicIdentity("kid peer")
-        viewModel.validateRemotePublicIdentity()
+        viewModel.identity.validateRemotePublicIdentity()
         viewModel.setInput(
             viewModel.state.value.input.copy(
                 localPeerId = "different-peer",

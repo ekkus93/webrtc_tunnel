@@ -63,7 +63,10 @@ internal fun IdentityStepContent(
         }, label = { Text("Local peer id") }, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onImportIdentityFile, modifier = Modifier.weight(1f)) { Text("Import identity file") }
-            OutlinedButton(onClick = vm::generateIdentity, modifier = Modifier.weight(1f)) { Text("Generate identity") }
+            OutlinedButton(
+                onClick = vm.identity::generateIdentity,
+                modifier = Modifier.weight(1f),
+            ) { Text("Generate identity") }
         }
         OutlinedButton(onClick = { showRawPathImport = !showRawPathImport }, modifier = Modifier.fillMaxWidth()) {
             Text(if (showRawPathImport) "Hide advanced import options" else "Show advanced import options")
@@ -80,7 +83,7 @@ internal fun IdentityStepContent(
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedButton(
-                onClick = vm::importIdentityFromPath,
+                onClick = vm.identity::importIdentityFromPath,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Import from path") }
         }
@@ -193,7 +196,7 @@ internal fun PeerStepContent(
         }, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
-                onClick = vm::validateRemotePublicIdentity,
+                onClick = vm.identity::validateRemotePublicIdentity,
                 modifier = Modifier.weight(1f),
             ) { Text("Validate remote identity") }
         }
