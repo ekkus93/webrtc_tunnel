@@ -52,11 +52,17 @@ class TunnelForegroundService : Service() {
     private var lifecycleGeneration: Long = 0
     private val lifecycleMutex = Mutex()
 
+    // Notification + status-polling slice; accesses the shared lifecycle fields directly.
+    private val reporter = StatusReporter()
+
+    // Offer start/pause/stop state machine; accesses the shared lifecycle fields directly.
+    private val offer = OfferCoordinator()
+
     override fun onCreate() {
         super.onCreate()
         notifications = NotificationController(this)
         notifications.ensureChannels()
-        startForeground(NOTIFICATION_ID, loadingNotification("Preparing tunnel service"))
+        startForeground(NOTIFICATION_ID, reporter.loadingNotification("Preparing tunnel service"))
         val deps = (application as HasAppDependencies).deps
         configRepository = deps.configRepository
         repository = deps.tunnelRepository
@@ -73,13 +79,13 @@ class TunnelForegroundService : Service() {
                     if (policy.networkType == NetworkType.UnmeteredWifi) {
                         if (pausedByPolicy && prefs.resumeOnUnmetered) {
                             pausedByPolicy = false
-                            serviceScope.launch { resume() }
+                            serviceScope.launch { offer.resume() }
                         }
                     } else if (!policy.tunnelAllowed) {
                         val current = repository.status.value.serviceState
                         if (current == ServiceState.Connected || current == ServiceState.Serving) {
                             serviceScope.launch {
-                                pauseForPolicy(
+                                offer.pauseForPolicy(
                                     policy.blockReason ?: "Tunnel paused: network policy blocks metered/cellular",
                                 )
                             }
@@ -99,7 +105,7 @@ class TunnelForegroundService : Service() {
             return START_NOT_STICKY
         }
         when (intent.action) {
-            ACTION_START_OFFER -> serviceScope.launch { startOffer() }
+            ACTION_START_OFFER -> serviceScope.launch { offer.startOffer() }
             ACTION_START_ANSWER -> {
                 publishError(
                     message = "Answer mode is not available on Android",
@@ -108,113 +114,14 @@ class TunnelForegroundService : Service() {
                 stopSelf(startId)
             }
             ACTION_STOP -> {
-                serviceScope.launch { stopServiceWork() }
+                serviceScope.launch { offer.stopServiceWork() }
             }
-            ACTION_PAUSE -> serviceScope.launch { pause() }
-            ACTION_RESUME -> serviceScope.launch { resume() }
-            ACTION_ALLOW_METERED_SESSION -> serviceScope.launch { allowMeteredForSessionAndStart() }
+            ACTION_PAUSE -> serviceScope.launch { offer.pause() }
+            ACTION_RESUME -> serviceScope.launch { offer.resume() }
+            ACTION_ALLOW_METERED_SESSION -> serviceScope.launch { offer.allowMeteredForSessionAndStart() }
             else -> stopSelf(startId)
         }
         return START_NOT_STICKY
-    }
-
-    private suspend fun startOffer() {
-        var generation = 0L
-        lifecycleMutex.withLock {
-            if (startupJob?.isActive == true) {
-                publishStatus("Tunnel startup already in progress")
-                return
-            }
-            val current = repository.status.value.serviceState
-            if (current == ServiceState.Connected || current == ServiceState.Serving) {
-                publishStatus("Tunnel already running")
-                return
-            }
-            lifecycleGeneration += 1
-            generation = lifecycleGeneration
-            startupJob =
-                serviceScope.launch {
-                    doStartOffer(generation)
-                }
-        }
-    }
-
-    private suspend fun doStartOffer(startGeneration: Long) {
-        lastMode = TunnelMode.Offer
-        startForeground(NOTIFICATION_ID, loadingNotification("Starting tunnel"))
-        val identity =
-            try {
-                prepareOfferIdentity()
-            } catch (_: StartupAborted) {
-                return
-            }
-        runOfferStart(identity, startGeneration)
-    }
-
-    // Loads + validates prerequisites for an offer start. Returns the private identity
-    // bytes, or throws StartupAborted after publishing the appropriate state/error.
-    private suspend fun prepareOfferIdentity(): ByteArray {
-        val prefs = withContext(Dispatchers.IO) { configRepository.preferences.first() }
-        val policy = evaluatePolicy(prefs)
-        repository.updateNetworkStatus(policy)
-        if (!policy.tunnelAllowed) {
-            repository.setPolicyBlocked(policy.blockReason ?: "Tunnel blocked by current network policy")
-            publishStatus(policy.blockReason ?: "Tunnel blocked by network policy")
-            throw StartupAborted()
-        }
-        val identity =
-            withContext(Dispatchers.IO) {
-                runCatching { identityRepository.readPrivateIdentityPlaintext() }
-            }
-                .getOrElse {
-                    abortStartup("Unable to decrypt private identity: ${it.message}", "identity_decrypt_failed")
-                }
-        val validation =
-            withContext(Dispatchers.IO) {
-                identityValidation.validateConfigWithIdentity(configRepository.configPath, identity)
-            }
-        if (!validation.valid) {
-            abortStartup(
-                validation.message ?: "Config validation failed",
-                "config_validation_failed",
-                ServiceState.ConfigInvalid,
-            )
-        }
-        return identity
-    }
-
-    // Starts the tunnel under the lifecycle-generation guard: aborts if a newer start
-    // superseded this one (before or after the native start) or if it was cancelled.
-    private suspend fun runOfferStart(
-        identity: ByteArray,
-        startGeneration: Long,
-    ) {
-        if (!isCurrentGeneration(startGeneration)) {
-            return
-        }
-        val result =
-            try {
-                withContext(Dispatchers.IO) {
-                    repository.start(TunnelMode.Offer, configRepository.configPath, identity)
-                }
-            } catch (_: CancellationException) {
-                withContext(Dispatchers.IO) { repository.stop() }
-                return
-            }
-        if (!isCurrentGeneration(startGeneration)) {
-            withContext(Dispatchers.IO) { repository.stop() }
-        } else {
-            result.onSuccess {
-                pausedByPolicy = false
-                publishStatus()
-                startStatusPolling()
-            }.onFailure {
-                publishError(
-                    message = it.message ?: "Unable to start tunnel",
-                    code = "native_start_failed",
-                )
-            }
-        }
     }
 
     private suspend fun isCurrentGeneration(startGeneration: Long): Boolean =
@@ -229,104 +136,17 @@ class TunnelForegroundService : Service() {
         throw StartupAborted()
     }
 
-    private suspend fun allowMeteredForSessionAndStart() {
-        lifecycleMutex.withLock {
-            allowMeteredForCurrentRun = true
-            repository.updateSessionMeteredAllowance(true)
-            pausedByPolicy = false
-        }
-        startOffer()
-    }
-
-    private fun startAnswer() {
-        publishError(
-            message = "Answer mode is not available on Android",
-            code = "answer_mode_disabled",
-        )
-    }
-
-    private suspend fun pause() {
-        lifecycleMutex.withLock {
-            lifecycleGeneration += 1
-            stopStatusPolling()
-            cancelStartupJobLocked()
-            withContext(Dispatchers.IO) {
-                repository.stop()
-            }.onFailure {
-                publishError(
-                    message = it.message ?: "Unable to stop tunnel",
-                    code = "stop_failed",
-                )
-            }
-            publishStatus("Tunnel paused")
-        }
-    }
-
-    private suspend fun resume() {
-        when (lastMode) {
-            TunnelMode.Offer -> startOffer()
-            TunnelMode.Answer -> startAnswer()
-        }
-    }
-
-    private suspend fun pauseForPolicy(reason: String) {
-        lifecycleMutex.withLock {
-            lifecycleGeneration += 1
-            pausedByPolicy = true
-            stopStatusPolling()
-            cancelStartupJobLocked()
-            withContext(Dispatchers.IO) {
-                repository.stop()
-            }.onFailure {
-                publishError(
-                    message = it.message ?: "Failed stopping tunnel after policy block",
-                    code = "stop_failed",
-                )
-            }
-            repository.setPolicyBlocked(reason)
-            publishStatus(reason)
-        }
-    }
-
-    private fun publishStatus(body: String? = null) {
-        val state = repository.status.value.serviceState
-        val text =
-            body ?: when (state) {
-                ServiceState.Connected -> "Connected"
-                ServiceState.Serving -> "Serving"
-                ServiceState.Listening -> "Listening"
-                ServiceState.PausedMeteredBlocked -> "Cellular/metered network blocked"
-                ServiceState.NoNetwork -> "No network"
-                ServiceState.Error, ServiceState.ConfigInvalid -> repository.status.value.lastError?.message ?: "Error"
-                else -> "WebRTC Tunnel running"
-            }
-        notifications.show(notifications.buildStatusNotification(state, SensitiveDataRedactor.redactText(text)))
-    }
-
     private fun publishError(
         message: String,
         code: String = "service_error",
         state: ServiceState = ServiceState.Error,
-    ) {
-        val redacted = SensitiveDataRedactor.redactText(message)
-        repository.setLocalError(code = code, message = redacted, state = state)
-        Log.e(tag, redacted)
-        notifications.show(notifications.buildStatusNotification(state, redacted))
-    }
-
-    private fun loadingNotification(body: String): Notification =
-        NotificationCompat.Builder(this, NotificationController.CHANNEL_STATUS)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("WebRTC Tunnel starting")
-            .setContentText(body)
-            .setOngoing(true)
-            .build()
+    ) = reporter.publishError(message = message, code = code, state = state)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         networkMonitorJob?.cancel()
-        stopStatusPolling()
+        reporter.stopStatusPolling()
         val pendingStop =
             serviceScope.launch {
                 lifecycleMutex.withLock {
@@ -349,27 +169,6 @@ class TunnelForegroundService : Service() {
         super.onDestroy()
     }
 
-    private suspend fun stopServiceWork() {
-        lifecycleMutex.withLock {
-            lifecycleGeneration += 1
-            stopStatusPolling()
-            cancelStartupJobLocked()
-            withContext(Dispatchers.IO) {
-                repository.stop()
-            }.onFailure {
-                publishError(
-                    message = it.message ?: "Unable to stop tunnel",
-                    code = "stop_failed",
-                )
-            }
-            pausedByPolicy = false
-            clearTemporaryMeteredAllowance()
-            notifications.show(notifications.buildStatusNotification(ServiceState.Stopped, "Tunnel stopped"))
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-        }
-    }
-
     private fun evaluatePolicy(prefs: AndroidAppPreferences) =
         networkPolicyManager.evaluateWithPolicy(prefs.allowMetered || allowMeteredForCurrentRun)
 
@@ -383,37 +182,257 @@ class TunnelForegroundService : Service() {
         startupJob = null
     }
 
-    /**
-     * Poll native runtime status while the tunnel is active so the UI and
-     * notification reflect changes (e.g. a post-start error) without the user
-     * navigating or manually refreshing. Stops when the tunnel leaves an active
-     * state or is paused by policy. [TunnelRepository.refreshStatus] independently
-     * refuses to resurrect policy-paused states, so a poll racing a policy pause
-     * cannot flip the UI back to Connected.
-     */
-    private fun startStatusPolling() {
-        if (statusPollJob?.isActive == true) return
-        statusPollJob =
-            serviceScope.launch {
-                var lastState = repository.status.value.serviceState
-                var active = true
-                while (active && !pausedByPolicy) {
-                    delay(STATUS_POLL_INTERVAL_MS)
-                    if (pausedByPolicy) break
-                    withContext(Dispatchers.IO) { runCatching { repository.refreshStatus() } }
-                    val state = repository.status.value.serviceState
-                    if (state != lastState) {
-                        lastState = state
-                        publishStatus()
-                    }
-                    active = state in ACTIVE_STATES
+    // Notification rendering and status polling for the active tunnel.
+    inner class StatusReporter {
+        fun publishStatus(body: String? = null) {
+            val state = repository.status.value.serviceState
+            val text =
+                body ?: when (state) {
+                    ServiceState.Connected -> "Connected"
+                    ServiceState.Serving -> "Serving"
+                    ServiceState.Listening -> "Listening"
+                    ServiceState.PausedMeteredBlocked -> "Cellular/metered network blocked"
+                    ServiceState.NoNetwork -> "No network"
+                    ServiceState.Error, ServiceState.ConfigInvalid ->
+                        repository.status.value.lastError?.message ?: "Error"
+                    else -> "WebRTC Tunnel running"
                 }
-            }
+            notifications.show(notifications.buildStatusNotification(state, SensitiveDataRedactor.redactText(text)))
+        }
+
+        fun publishError(
+            message: String,
+            code: String = "service_error",
+            state: ServiceState = ServiceState.Error,
+        ) {
+            val redacted = SensitiveDataRedactor.redactText(message)
+            repository.setLocalError(code = code, message = redacted, state = state)
+            Log.e(tag, redacted)
+            notifications.show(notifications.buildStatusNotification(state, redacted))
+        }
+
+        fun loadingNotification(body: String): Notification =
+            NotificationCompat.Builder(this@TunnelForegroundService, NotificationController.CHANNEL_STATUS)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("WebRTC Tunnel starting")
+                .setContentText(body)
+                .setOngoing(true)
+                .build()
+
+        /**
+         * Poll native runtime status while the tunnel is active so the UI and
+         * notification reflect changes (e.g. a post-start error) without the user
+         * navigating or manually refreshing. Stops when the tunnel leaves an active
+         * state or is paused by policy. [TunnelRepository.refreshStatus] independently
+         * refuses to resurrect policy-paused states, so a poll racing a policy pause
+         * cannot flip the UI back to Connected.
+         */
+        fun startStatusPolling() {
+            if (statusPollJob?.isActive == true) return
+            statusPollJob =
+                serviceScope.launch {
+                    var lastState = repository.status.value.serviceState
+                    var active = true
+                    while (active && !pausedByPolicy) {
+                        delay(STATUS_POLL_INTERVAL_MS)
+                        if (pausedByPolicy) break
+                        withContext(Dispatchers.IO) { runCatching { repository.refreshStatus() } }
+                        val state = repository.status.value.serviceState
+                        if (state != lastState) {
+                            lastState = state
+                            publishStatus()
+                        }
+                        active = state in ACTIVE_STATES
+                    }
+                }
+        }
+
+        fun stopStatusPolling() {
+            statusPollJob?.cancel()
+            statusPollJob = null
+        }
     }
 
-    private fun stopStatusPolling() {
-        statusPollJob?.cancel()
-        statusPollJob = null
+    // Offer-mode start plus pause/stop transitions, guarded by the lifecycle generation.
+    inner class OfferCoordinator {
+        suspend fun startOffer() {
+            var generation = 0L
+            lifecycleMutex.withLock {
+                if (startupJob?.isActive == true) {
+                    reporter.publishStatus("Tunnel startup already in progress")
+                    return
+                }
+                val current = repository.status.value.serviceState
+                if (current == ServiceState.Connected || current == ServiceState.Serving) {
+                    reporter.publishStatus("Tunnel already running")
+                    return
+                }
+                lifecycleGeneration += 1
+                generation = lifecycleGeneration
+                startupJob =
+                    serviceScope.launch {
+                        doStartOffer(generation)
+                    }
+            }
+        }
+
+        private suspend fun doStartOffer(startGeneration: Long) {
+            lastMode = TunnelMode.Offer
+            startForeground(NOTIFICATION_ID, reporter.loadingNotification("Starting tunnel"))
+            val identity =
+                try {
+                    prepareOfferIdentity()
+                } catch (_: StartupAborted) {
+                    return
+                }
+            runOfferStart(identity, startGeneration)
+        }
+
+        // Loads + validates prerequisites for an offer start. Returns the private identity
+        // bytes, or throws StartupAborted after publishing the appropriate state/error.
+        private suspend fun prepareOfferIdentity(): ByteArray {
+            val prefs = withContext(Dispatchers.IO) { configRepository.preferences.first() }
+            val policy = evaluatePolicy(prefs)
+            repository.updateNetworkStatus(policy)
+            if (!policy.tunnelAllowed) {
+                repository.setPolicyBlocked(policy.blockReason ?: "Tunnel blocked by current network policy")
+                reporter.publishStatus(policy.blockReason ?: "Tunnel blocked by network policy")
+                throw StartupAborted()
+            }
+            val identity =
+                withContext(Dispatchers.IO) {
+                    runCatching { identityRepository.readPrivateIdentityPlaintext() }
+                }
+                    .getOrElse {
+                        abortStartup("Unable to decrypt private identity: ${it.message}", "identity_decrypt_failed")
+                    }
+            val validation =
+                withContext(Dispatchers.IO) {
+                    identityValidation.validateConfigWithIdentity(configRepository.configPath, identity)
+                }
+            if (!validation.valid) {
+                abortStartup(
+                    validation.message ?: "Config validation failed",
+                    "config_validation_failed",
+                    ServiceState.ConfigInvalid,
+                )
+            }
+            return identity
+        }
+
+        // Starts the tunnel under the lifecycle-generation guard: aborts if a newer start
+        // superseded this one (before or after the native start) or if it was cancelled.
+        private suspend fun runOfferStart(
+            identity: ByteArray,
+            startGeneration: Long,
+        ) {
+            if (!isCurrentGeneration(startGeneration)) {
+                return
+            }
+            val result =
+                try {
+                    withContext(Dispatchers.IO) {
+                        repository.start(TunnelMode.Offer, configRepository.configPath, identity)
+                    }
+                } catch (_: CancellationException) {
+                    withContext(Dispatchers.IO) { repository.stop() }
+                    return
+                }
+            if (!isCurrentGeneration(startGeneration)) {
+                withContext(Dispatchers.IO) { repository.stop() }
+            } else {
+                result.onSuccess {
+                    pausedByPolicy = false
+                    reporter.publishStatus()
+                    reporter.startStatusPolling()
+                }.onFailure {
+                    reporter.publishError(
+                        message = it.message ?: "Unable to start tunnel",
+                        code = "native_start_failed",
+                    )
+                }
+            }
+        }
+
+        suspend fun allowMeteredForSessionAndStart() {
+            lifecycleMutex.withLock {
+                allowMeteredForCurrentRun = true
+                repository.updateSessionMeteredAllowance(true)
+                pausedByPolicy = false
+            }
+            startOffer()
+        }
+
+        private fun startAnswer() {
+            reporter.publishError(
+                message = "Answer mode is not available on Android",
+                code = "answer_mode_disabled",
+            )
+        }
+
+        suspend fun resume() {
+            when (lastMode) {
+                TunnelMode.Offer -> startOffer()
+                TunnelMode.Answer -> startAnswer()
+            }
+        }
+
+        suspend fun pause() {
+            lifecycleMutex.withLock {
+                lifecycleGeneration += 1
+                reporter.stopStatusPolling()
+                cancelStartupJobLocked()
+                withContext(Dispatchers.IO) {
+                    repository.stop()
+                }.onFailure {
+                    reporter.publishError(
+                        message = it.message ?: "Unable to stop tunnel",
+                        code = "stop_failed",
+                    )
+                }
+                reporter.publishStatus("Tunnel paused")
+            }
+        }
+
+        suspend fun pauseForPolicy(reason: String) {
+            lifecycleMutex.withLock {
+                lifecycleGeneration += 1
+                pausedByPolicy = true
+                reporter.stopStatusPolling()
+                cancelStartupJobLocked()
+                withContext(Dispatchers.IO) {
+                    repository.stop()
+                }.onFailure {
+                    reporter.publishError(
+                        message = it.message ?: "Failed stopping tunnel after policy block",
+                        code = "stop_failed",
+                    )
+                }
+                repository.setPolicyBlocked(reason)
+                reporter.publishStatus(reason)
+            }
+        }
+
+        suspend fun stopServiceWork() {
+            lifecycleMutex.withLock {
+                lifecycleGeneration += 1
+                reporter.stopStatusPolling()
+                cancelStartupJobLocked()
+                withContext(Dispatchers.IO) {
+                    repository.stop()
+                }.onFailure {
+                    reporter.publishError(
+                        message = it.message ?: "Unable to stop tunnel",
+                        code = "stop_failed",
+                    )
+                }
+                pausedByPolicy = false
+                clearTemporaryMeteredAllowance()
+                notifications.show(notifications.buildStatusNotification(ServiceState.Stopped, "Tunnel stopped"))
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
     }
 
     companion object {
