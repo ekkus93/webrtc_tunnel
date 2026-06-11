@@ -85,7 +85,7 @@ data class SettingsUiState(
 
 class HomeViewModel(private val deps: AppDependencies) : ViewModel() {
     val status: StateFlow<TunnelStatus> = deps.tunnelRepository.status
-    private val _configuredForwards = MutableStateFlow(deps.configRepository.loadForwards())
+    private val _configuredForwards = MutableStateFlow(deps.forwardsStore.loadForwards())
     val configuredForwards: StateFlow<List<ForwardConfig>> = _configuredForwards.asStateFlow()
 
     fun startTunnel(mode: TunnelMode) {
@@ -118,7 +118,7 @@ class HomeViewModel(private val deps: AppDependencies) : ViewModel() {
     fun refresh() = deps.tunnelRepository.refreshStatus()
 
     fun refreshForwards() {
-        _configuredForwards.value = deps.configRepository.loadForwards()
+        _configuredForwards.value = deps.forwardsStore.loadForwards()
     }
 }
 
@@ -156,7 +156,7 @@ class SetupViewModel(
             currentForwards.map { if (it.id == draft.id) draft else it }.let { candidates ->
                 if (candidates.none { it.id == draft.id }) candidates + draft else candidates
             }
-        return deps.configRepository.validateForwards(updated)
+        return deps.forwardsStore.validateForwards(updated)
     }
 
     private fun SetupWizardState.withCanAdvance(forwards: List<ForwardConfig>): SetupWizardState {
@@ -172,7 +172,7 @@ class SetupViewModel(
             SetupStep.Identity -> state.localPublicIdentity.isNotBlank() || state.importIdentityPath.isNotBlank()
             SetupStep.Broker -> state.input.brokerHost.isNotBlank() && state.input.brokerPort in 1..MAX_PORT
             SetupStep.Peer -> state.input.remotePeerId.isNotBlank() && state.importPublicIdentity.isNotBlank()
-            SetupStep.Forwards -> forwards.isNotEmpty() && deps.configRepository.validateForwards(forwards) == null
+            SetupStep.Forwards -> forwards.isNotEmpty() && deps.forwardsStore.validateForwards(forwards) == null
             SetupStep.NetworkPolicy -> true
             SetupStep.Review -> {
                 state.input.brokerHost.isNotBlank() &&
@@ -180,7 +180,7 @@ class SetupViewModel(
                     state.input.remotePeerId.isNotBlank() &&
                     state.importPublicIdentity.isNotBlank() &&
                     forwards.isNotEmpty() &&
-                    deps.configRepository.validateForwards(forwards) == null
+                    deps.forwardsStore.validateForwards(forwards) == null
             }
         }
     }
@@ -413,15 +413,15 @@ class SetupViewModel(
         return _state.value.canAdvance
     }
 
-    fun loadSavedForwards(): List<ForwardConfig> = deps.configRepository.loadForwards()
+    fun loadSavedForwards(): List<ForwardConfig> = deps.forwardsStore.loadForwards()
 
     fun refreshForwards() {
-        _forwards.value = deps.configRepository.loadForwards()
+        _forwards.value = deps.forwardsStore.loadForwards()
         _state.value = _state.value.withCanAdvance(_forwards.value)
     }
 
     fun upsertForward(forward: ForwardConfig): ValidationResult {
-        val result = deps.configRepository.upsertForward(forward)
+        val result = deps.forwardsStore.upsertForward(forward)
         if (!result.valid) {
             _state.value =
                 _state.value
@@ -438,7 +438,7 @@ class SetupViewModel(
     }
 
     fun deleteForward(forwardId: String) {
-        deps.configRepository.deleteForward(forwardId)
+        deps.forwardsStore.deleteForward(forwardId)
         refreshForwards()
         _state.value =
             _state.value
@@ -684,8 +684,8 @@ class SetupViewModel(
                 }
             }
             SetupStep.Forwards ->
-                deps.configRepository.validateForwards(deps.configRepository.loadForwards())
-                    ?: if (deps.configRepository.loadForwards().none { it.enabled }) {
+                deps.forwardsStore.validateForwards(deps.forwardsStore.loadForwards())
+                    ?: if (deps.forwardsStore.loadForwards().none { it.enabled }) {
                         "Enable at least one forward"
                     } else {
                         null
@@ -737,25 +737,25 @@ class SetupViewModel(
 
 class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
     val status: StateFlow<TunnelStatus> = deps.tunnelRepository.status
-    private val _forwards = MutableStateFlow(deps.configRepository.loadForwards())
+    private val _forwards = MutableStateFlow(deps.forwardsStore.loadForwards())
     val forwards: StateFlow<List<ForwardConfig>> = _forwards.asStateFlow()
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
     fun reload() {
-        _forwards.value = deps.configRepository.loadForwards()
+        _forwards.value = deps.forwardsStore.loadForwards()
     }
 
     fun saveForward(forward: ForwardConfig) {
-        val before = deps.configRepository.loadForwards()
-        val result = deps.configRepository.upsertForward(forward)
+        val before = deps.forwardsStore.loadForwards()
+        val result = deps.forwardsStore.upsertForward(forward)
         if (!result.valid) {
             _message.value = result.message ?: "Forward update failed"
             return
         }
         val sync = regenerateActiveConfig()
         if (!sync.valid) {
-            deps.configRepository.saveForwards(before)
+            deps.forwardsStore.saveForwards(before)
             reload()
             _message.value = sync.message ?: "Forward update failed"
             return
@@ -765,11 +765,11 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
     }
 
     fun deleteForward(forwardId: String) {
-        val before = deps.configRepository.loadForwards()
-        deps.configRepository.deleteForward(forwardId)
+        val before = deps.forwardsStore.loadForwards()
+        deps.forwardsStore.deleteForward(forwardId)
         val sync = regenerateActiveConfig()
         if (!sync.valid) {
-            deps.configRepository.saveForwards(before)
+            deps.forwardsStore.saveForwards(before)
             reload()
             _message.value = sync.message ?: "Forward delete failed"
             return
@@ -786,7 +786,7 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
             currentForwards.map { if (it.id == draft.id) draft else it }.let { candidates ->
                 if (candidates.none { it.id == draft.id }) candidates + draft else candidates
             }
-        return deps.configRepository.validateForwards(updated)
+        return deps.forwardsStore.validateForwards(updated)
     }
 
     fun testLocalPort(forward: ForwardConfig) {
@@ -809,7 +809,7 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
 
     private fun regenerateActiveConfig(): ValidationResult {
         val input = deps.configRepository.loadSetupInput()
-        val forwards = deps.configRepository.loadForwards().filter { it.enabled }
+        val forwards = deps.forwardsStore.loadForwards().filter { it.enabled }
         val candidate = deps.configRepository.renderOfferConfig(input, forwards)
         val temp = File(deps.context.cacheDir, "config-forwards-candidate.toml")
         val identity = runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }.getOrNull()
@@ -968,7 +968,7 @@ class SettingsViewModel(
         runCatching {
             deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
             deps.configRepository.saveSetupInput(SetupConfigInput())
-            deps.configRepository.saveForwards(emptyList())
+            deps.forwardsStore.saveForwards(emptyList())
         }
     }
 

@@ -20,6 +20,8 @@ class AppDependencies(
 ) {
     val context: Context = context.applicationContext
 
+    val forwardsStore: ForwardsConfigStore = ForwardsConfigStore(this.context)
+
     // TunnelRepository (runtime/status) and IdentityValidationClient (config/identity
     // validation) are separate collaborators that must share a single native bridge,
     // created lazily on first use.

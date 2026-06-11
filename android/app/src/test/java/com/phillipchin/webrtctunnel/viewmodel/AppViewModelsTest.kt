@@ -210,7 +210,7 @@ class AppViewModelsTest {
             File(app.filesDir, "incoming_identity_peer_mismatch.toml").apply {
                 writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
             }
-        configRepository.saveForwards(
+        deps.forwardsStore.saveForwards(
             listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
         )
         viewModel.setImportIdentityPath(identityFile.absolutePath)
@@ -239,7 +239,7 @@ class AppViewModelsTest {
             File(app.filesDir, "incoming_identity_remote_mismatch.toml").apply {
                 writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
             }
-        configRepository.saveForwards(
+        deps.forwardsStore.saveForwards(
             listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
         )
         viewModel.setImportIdentityPath(identityFile.absolutePath)
@@ -516,7 +516,7 @@ class AppViewModelsTest {
                 writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
             }
         val forward = ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)
-        configRepository.saveForwards(listOf(forward))
+        deps.forwardsStore.saveForwards(listOf(forward))
         recordingBridge.validationResult = ValidationResult(true, null)
         viewModel.setImportIdentityPath(identityFile.absolutePath)
         viewModel.setImportPublicIdentity("kid peer")

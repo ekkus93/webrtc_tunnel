@@ -21,10 +21,12 @@ import java.io.File
 class ConfigRepositoryTest {
     private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
     private lateinit var repository: ConfigRepository
+    private lateinit var forwardsStore: ForwardsConfigStore
 
     @Before
     fun setUp() {
         repository = ConfigRepository(context)
+        forwardsStore = ForwardsConfigStore(context)
         File(context.filesDir, "config.toml").delete()
         File(context.filesDir, "forwards.json").delete()
         runBlocking {
@@ -136,7 +138,7 @@ class ConfigRepositoryTest {
                 ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "a", enabled = true),
                 ForwardConfig(id = "b", name = "b", localPort = 9000, remoteForwardId = "b", enabled = true),
             )
-        assertTrue(repository.validateForwards(forwards)?.contains("Duplicate local port") == true)
+        assertTrue(forwardsStore.validateForwards(forwards)?.contains("Duplicate local port") == true)
     }
 
     @Test
@@ -145,7 +147,7 @@ class ConfigRepositoryTest {
             listOf(
                 ForwardConfig(id = "a", name = "", localPort = 9000, remoteForwardId = "a", enabled = true),
             )
-        assertEquals("Forward name is required", repository.validateForwards(forwards))
+        assertEquals("Forward name is required", forwardsStore.validateForwards(forwards))
     }
 
     @Test
@@ -155,7 +157,7 @@ class ConfigRepositoryTest {
                 ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "llama", enabled = true),
                 ForwardConfig(id = "b", name = "b", localPort = 9001, remoteForwardId = "llama", enabled = true),
             )
-        assertEquals("Duplicate remote forward ID: llama", repository.validateForwards(forwards))
+        assertEquals("Duplicate remote forward ID: llama", forwardsStore.validateForwards(forwards))
     }
 
     @Test
@@ -165,7 +167,7 @@ class ConfigRepositoryTest {
                 ForwardConfig(id = "a", name = "a", localPort = 9000, remoteForwardId = "llama", enabled = true),
                 ForwardConfig(id = "b", name = "b", localPort = 9001, remoteForwardId = "llama", enabled = false),
             )
-        assertEquals(null, repository.validateForwards(forwards))
+        assertEquals(null, forwardsStore.validateForwards(forwards))
     }
 
     @Test
@@ -180,8 +182,8 @@ class ConfigRepositoryTest {
                     remoteForwardId = "svc",
                 ),
             )
-        repository.saveForwards(forwards)
-        assertEquals(forwards, repository.loadForwards())
+        forwardsStore.saveForwards(forwards)
+        assertEquals(forwards, forwardsStore.loadForwards())
     }
 
     @Test
