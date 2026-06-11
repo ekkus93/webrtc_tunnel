@@ -191,13 +191,15 @@ pub async fn run_multiplex_offer(
                         let frame = TunnelFrameCodec::decode(&payload)?;
                         handle_offer_frame(
                             frame,
-                            tunnel_config,
-                            &frame_tx,
-                            &tcp_frame_tx,
+                            &OfferIo {
+                                tunnel_config,
+                                frame_tx: &frame_tx,
+                                tcp_frame_tx: &tcp_frame_tx,
+                                stream_event_tx: &stream_event_tx,
+                            },
                             &mut manager,
                             &mut opening_streams,
                             &mut streams,
-                            &stream_event_tx,
                         ).await?;
                         if !accepting_clients && manager.active_count() == 0 && opening_streams.is_empty() && streams.is_empty() {
                             break Ok(());
@@ -271,11 +273,9 @@ pub async fn run_multiplex_answer(
                         let frame = TunnelFrameCodec::decode(&payload)?;
                         handle_answer_frame(
                             frame,
-                            tunnel_config,
                             &forward_table,
                             &remote_peer_id,
                             &frame_tx,
-                            &tcp_frame_tx,
                             &target_connect_tx,
                             &mut manager,
                             &mut streams,
@@ -319,17 +319,23 @@ async fn register_offer_client(
         .map_err(|_| TunnelError::WriterClosed)
 }
 
-#[allow(clippy::too_many_arguments)]
+// Borrowed session I/O shared by the offer-side frame handler: the tunnel
+// config plus the channels it writes frames and stream events to.
+struct OfferIo<'a> {
+    tunnel_config: &'a TunnelConfig,
+    frame_tx: &'a mpsc::Sender<TunnelFrame>,
+    tcp_frame_tx: &'a mpsc::Sender<TunnelFrame>,
+    stream_event_tx: &'a mpsc::Sender<StreamRuntimeEvent>,
+}
+
 async fn handle_offer_frame(
     frame: TunnelFrame,
-    tunnel_config: &TunnelConfig,
-    frame_tx: &mpsc::Sender<TunnelFrame>,
-    tcp_frame_tx: &mpsc::Sender<TunnelFrame>,
+    io: &OfferIo<'_>,
     manager: &mut StreamManager,
     opening_streams: &mut HashMap<u32, TcpStream>,
     streams: &mut HashMap<u32, RuntimeStream>,
-    stream_event_tx: &mpsc::Sender<StreamRuntimeEvent>,
 ) -> Result<(), TunnelError> {
+    let &OfferIo { tunnel_config, frame_tx, tcp_frame_tx, stream_event_tx } = io;
     match frame.frame_type {
         TunnelFrameType::Open => {
             let stream_id = frame.stream_id;
@@ -401,14 +407,11 @@ async fn handle_offer_frame(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_answer_frame(
     frame: TunnelFrame,
-    _tunnel_config: &TunnelConfig,
     forward_table: &ForwardTable,
     remote_peer_id: &PeerId,
     frame_tx: &mpsc::Sender<TunnelFrame>,
-    _tcp_frame_tx: &mpsc::Sender<TunnelFrame>,
     target_connect_tx: &mpsc::Sender<TargetConnectResult>,
     manager: &mut StreamManager,
     streams: &mut HashMap<u32, RuntimeStream>,
@@ -848,10 +851,11 @@ mod tests {
     use tokio::time::timeout;
 
     use super::{
-        RuntimeStream, StreamIdAllocator, StreamLifecycle, StreamManager, StreamRuntimeEvent,
-        StreamState, TcpWriteCommand, cleanup_all_streams, close_stream, handle_answer_frame,
-        handle_offer_frame, handle_stream_runtime_event, register_offer_client,
-        run_multiplex_answer, run_multiplex_offer, spawn_tcp_bridge, spawn_writer_only,
+        OfferIo, RuntimeStream, StreamIdAllocator, StreamLifecycle, StreamManager,
+        StreamRuntimeEvent, StreamState, TcpWriteCommand, cleanup_all_streams, close_stream,
+        handle_answer_frame, handle_offer_frame, handle_stream_runtime_event,
+        register_offer_client, run_multiplex_answer, run_multiplex_offer, spawn_tcp_bridge,
+        spawn_writer_only,
     };
     use crate::{ErrorPayload, OfferClient, OpenPayload, TunnelError, TunnelFrame};
 
@@ -1516,13 +1520,15 @@ mod tests {
 
         handle_offer_frame(
             TunnelFrame::open_ack(1),
-            &sample_tunnel_config(),
-            &frame_tx,
-            &tcp_frame_tx,
+            &OfferIo {
+                tunnel_config: &sample_tunnel_config(),
+                frame_tx: &frame_tx,
+                tcp_frame_tx: &tcp_frame_tx,
+                stream_event_tx: &stream_event_tx,
+            },
             &mut manager,
             &mut opening_streams,
             &mut streams,
-            &stream_event_tx,
         )
         .await
         .expect("ack should handle");
@@ -1551,13 +1557,15 @@ mod tests {
         handle_offer_frame(
             TunnelFrame::open(1, OpenPayload { forward_id: "ssh".to_owned() })
                 .expect("malformed ack frame"),
-            &sample_tunnel_config(),
-            &frame_tx,
-            &tcp_frame_tx,
+            &OfferIo {
+                tunnel_config: &sample_tunnel_config(),
+                frame_tx: &frame_tx,
+                tcp_frame_tx: &tcp_frame_tx,
+                stream_event_tx: &stream_event_tx,
+            },
             &mut manager,
             &mut opening_streams,
             &mut streams,
-            &stream_event_tx,
         )
         .await
         .expect("malformed ack should be handled as stream error");
@@ -1584,13 +1592,15 @@ mod tests {
 
         handle_offer_frame(
             TunnelFrame::open_ack(1),
-            &sample_tunnel_config(),
-            &frame_tx,
-            &tcp_frame_tx,
+            &OfferIo {
+                tunnel_config: &sample_tunnel_config(),
+                frame_tx: &frame_tx,
+                tcp_frame_tx: &tcp_frame_tx,
+                stream_event_tx: &stream_event_tx,
+            },
             &mut manager,
             &mut opening_streams,
             &mut streams,
-            &stream_event_tx,
         )
         .await
         .expect("duplicate ack should be ignored");
@@ -1754,13 +1764,15 @@ mod tests {
 
         handle_offer_frame(
             TunnelFrame::data(1, b"payload".to_vec()),
-            &sample_tunnel_config(),
-            &frame_tx,
-            &tcp_frame_tx,
+            &OfferIo {
+                tunnel_config: &sample_tunnel_config(),
+                frame_tx: &frame_tx,
+                tcp_frame_tx: &tcp_frame_tx,
+                stream_event_tx: &stream_event_tx,
+            },
             &mut manager,
             &mut opening_streams,
             &mut streams,
-            &stream_event_tx,
         )
         .await
         .expect("closed queue should be stream-local");
@@ -1775,13 +1787,15 @@ mod tests {
 
         handle_offer_frame(
             TunnelFrame::data(2, b"still-open".to_vec()),
-            &sample_tunnel_config(),
-            &frame_tx,
-            &tcp_frame_tx,
+            &OfferIo {
+                tunnel_config: &sample_tunnel_config(),
+                frame_tx: &frame_tx,
+                tcp_frame_tx: &tcp_frame_tx,
+                stream_event_tx: &stream_event_tx,
+            },
             &mut manager,
             &mut opening_streams,
             &mut streams,
-            &stream_event_tx,
         )
         .await
         .expect("other stream should remain usable");
@@ -1810,13 +1824,15 @@ mod tests {
         ] {
             handle_offer_frame(
                 frame,
-                &sample_tunnel_config(),
-                &frame_tx,
-                &tcp_frame_tx,
+                &OfferIo {
+                    tunnel_config: &sample_tunnel_config(),
+                    frame_tx: &frame_tx,
+                    tcp_frame_tx: &tcp_frame_tx,
+                    stream_event_tx: &stream_event_tx,
+                },
                 &mut manager,
                 &mut opening_streams,
                 &mut streams,
-                &stream_event_tx,
             )
             .await
             .expect("late frame should be harmless");
@@ -1872,7 +1888,6 @@ mod tests {
         let mut manager = StreamManager::new();
         let mut streams = HashMap::new();
         let (frame_tx, _frame_rx) = mpsc::channel(4);
-        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
         let (target_connect_tx, _target_connect_rx) = mpsc::channel(4);
 
         timeout(
@@ -1880,11 +1895,9 @@ mod tests {
             handle_answer_frame(
                 TunnelFrame::open(7, OpenPayload { forward_id: "ssh".to_owned() })
                     .expect("open frame"),
-                &sample_tunnel_config(),
                 &table,
                 &"offer-home".parse().expect("peer id"),
                 &frame_tx,
-                &tcp_frame_tx,
                 &target_connect_tx,
                 &mut manager,
                 &mut streams,
@@ -1908,16 +1921,13 @@ mod tests {
             let mut manager = StreamManager::new();
             let mut streams = HashMap::new();
             let (frame_tx, mut frame_rx) = mpsc::channel(4);
-            let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
             let (target_connect_tx, mut target_connect_rx) = mpsc::channel(4);
 
             handle_answer_frame(
                 TunnelFrame::new(TunnelFrameType::Open, 7, payload),
-                &sample_tunnel_config(),
                 &table,
                 &"offer-home".parse().expect("peer id"),
                 &frame_tx,
-                &tcp_frame_tx,
                 &target_connect_tx,
                 &mut manager,
                 &mut streams,
@@ -1943,16 +1953,13 @@ mod tests {
         let (stream_b_tx, mut stream_b_rx) = mpsc::channel(1);
         let mut streams = HashMap::from([(2_u32, RuntimeStream::open(stream_b_tx, Vec::new()))]);
         let (frame_tx, mut frame_rx) = mpsc::channel(4);
-        let (tcp_frame_tx, _tcp_frame_rx) = mpsc::channel(4);
         let (target_connect_tx, _target_connect_rx) = mpsc::channel(4);
 
         handle_answer_frame(
             TunnelFrame::new(TunnelFrameType::Open, 1, b"{".to_vec()),
-            &sample_tunnel_config(),
             &table,
             &"offer-home".parse().expect("peer id"),
             &frame_tx,
-            &tcp_frame_tx,
             &target_connect_tx,
             &mut manager,
             &mut streams,
@@ -1965,11 +1972,9 @@ mod tests {
 
         handle_answer_frame(
             TunnelFrame::data(2, b"still-open".to_vec()),
-            &sample_tunnel_config(),
             &table,
             &"offer-home".parse().expect("peer id"),
             &frame_tx,
-            &tcp_frame_tx,
             &target_connect_tx,
             &mut manager,
             &mut streams,
@@ -1982,11 +1987,9 @@ mod tests {
 
         handle_answer_frame(
             TunnelFrame::open(3, OpenPayload { forward_id: "ssh".to_owned() }).expect("open frame"),
-            &sample_tunnel_config(),
             &table,
             &"offer-home".parse().expect("peer id"),
             &frame_tx,
-            &tcp_frame_tx,
             &target_connect_tx,
             &mut manager,
             &mut streams,
@@ -2031,13 +2034,15 @@ mod tests {
 
         handle_offer_frame(
             TunnelFrame::data(99, b"lost".to_vec()),
-            &sample_tunnel_config(),
-            &frame_tx,
-            &tcp_frame_tx,
+            &OfferIo {
+                tunnel_config: &sample_tunnel_config(),
+                frame_tx: &frame_tx,
+                tcp_frame_tx: &tcp_frame_tx,
+                stream_event_tx: &stream_event_tx,
+            },
             &mut manager,
             &mut opening_streams,
             &mut streams,
-            &stream_event_tx,
         )
         .await
         .expect("unknown data should be ignored");
@@ -2058,13 +2063,15 @@ mod tests {
         for _ in 0..2 {
             handle_offer_frame(
                 TunnelFrame::close(1),
-                &sample_tunnel_config(),
-                &frame_tx,
-                &tcp_frame_tx,
+                &OfferIo {
+                    tunnel_config: &sample_tunnel_config(),
+                    frame_tx: &frame_tx,
+                    tcp_frame_tx: &tcp_frame_tx,
+                    stream_event_tx: &stream_event_tx,
+                },
                 &mut manager,
                 &mut opening_streams,
                 &mut streams,
-                &stream_event_tx,
             )
             .await
             .expect("close should be idempotent");
@@ -2092,13 +2099,15 @@ mod tests {
 
         handle_offer_frame(
             TunnelFrame::data(1, b"overflow".to_vec()),
-            &sample_tunnel_config(),
-            &frame_tx,
-            &tcp_frame_tx,
+            &OfferIo {
+                tunnel_config: &sample_tunnel_config(),
+                frame_tx: &frame_tx,
+                tcp_frame_tx: &tcp_frame_tx,
+                stream_event_tx: &stream_event_tx,
+            },
             &mut manager,
             &mut opening_streams,
             &mut streams,
-            &stream_event_tx,
         )
         .await
         .expect("overflow should be stream-local");
