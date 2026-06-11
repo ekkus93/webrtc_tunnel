@@ -298,34 +298,27 @@ class SetupViewModel(
         }
 
         val validated = deps.tunnelRepository.validatePublicIdentity(value)
-        if (!validated.valid) {
-            _state.value =
-                current
-                    .copy(
+        val updated =
+            when {
+                !validated.valid ->
+                    current.copy(
                         remoteIdentityPeerId = null,
                         errorMessage = validated.message ?: "Invalid remote public identity",
                     )
-                    .withCanAdvance(_forwards.value)
-            return
-        }
-
-        if (validated.peerId == current.input.localPeerId) {
-            _state.value =
-                current
-                    .copy(
+                validated.peerId == current.input.localPeerId ->
+                    current.copy(
                         remoteIdentityPeerId = null,
                         errorMessage = "Remote public identity cannot match local identity",
                     )
-                    .withCanAdvance(_forwards.value)
-            return
-        }
-        _state.value =
-            current.copy(
-                importPublicIdentity = validated.canonicalPublicIdentity ?: value,
-                remoteIdentityPeerId = validated.peerId,
-                errorMessage = null,
-                saveResult = "Remote public identity validated",
-            ).withCanAdvance(_forwards.value)
+                else ->
+                    current.copy(
+                        importPublicIdentity = validated.canonicalPublicIdentity ?: value,
+                        remoteIdentityPeerId = validated.peerId,
+                        errorMessage = null,
+                        saveResult = "Remote public identity validated",
+                    )
+            }
+        _state.value = updated.withCanAdvance(_forwards.value)
     }
 
     fun importPublicIdentityFromUri(uri: Uri) {

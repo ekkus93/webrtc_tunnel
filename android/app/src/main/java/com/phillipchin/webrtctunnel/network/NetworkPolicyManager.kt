@@ -71,20 +71,18 @@ class NetworkPolicyManager internal constructor(
     private companion object {
         fun classifyCurrentNetwork(context: Context): Pair<NetworkType, Boolean> {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val network = cm.activeNetwork ?: return NetworkType.NoNetwork to false
-            val capabilities =
-                cm.getNetworkCapabilities(network)
-                    ?: return NetworkType.Unknown to false
+            val network = cm.activeNetwork
+            val capabilities = network?.let { cm.getNetworkCapabilities(it) }
             val metered = cm.isActiveNetworkMetered
-            val networkType =
-                when {
-                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !metered ->
-                        NetworkType.UnmeteredWifi
-                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkType.MeteredWifi
-                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkType.Cellular
-                    else -> NetworkType.Unknown
-                }
-            return networkType to metered
+            return when {
+                network == null -> NetworkType.NoNetwork to false
+                capabilities == null -> NetworkType.Unknown to false
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !metered ->
+                    NetworkType.UnmeteredWifi to metered
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkType.MeteredWifi to metered
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkType.Cellular to metered
+                else -> NetworkType.Unknown to metered
+            }
         }
 
         fun evaluate(

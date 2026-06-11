@@ -227,40 +227,25 @@ class ConfigRepository(private val context: Context) {
 
     fun validateForwards(forwards: List<ForwardConfig>): String? {
         val duplicateId = forwards.groupBy { it.id }.entries.firstOrNull { it.value.size > 1 }?.key
-        if (duplicateId != null) {
-            return "Duplicate forward id: $duplicateId"
-        }
         val enabled = forwards.filter { it.enabled }
-        val missingName = enabled.firstOrNull { it.name.trim().isBlank() }
-        if (missingName != null) {
-            return "Forward name is required"
-        }
         val duplicatePort = enabled.groupBy { it.localPort }.entries.firstOrNull { it.value.size > 1 }?.key
-        if (duplicatePort != null) {
-            return "Duplicate local port: $duplicatePort"
-        }
         val duplicateRemoteForwardId =
             enabled
                 .groupBy { it.remoteForwardId.trim() }
                 .entries
                 .firstOrNull { it.key.isNotBlank() && it.value.size > 1 }
                 ?.key
-        if (duplicateRemoteForwardId != null) {
-            return "Duplicate remote forward ID: $duplicateRemoteForwardId"
+        return when {
+            duplicateId != null -> "Duplicate forward id: $duplicateId"
+            enabled.any { it.name.trim().isBlank() } -> "Forward name is required"
+            duplicatePort != null -> "Duplicate local port: $duplicatePort"
+            duplicateRemoteForwardId != null -> "Duplicate remote forward ID: $duplicateRemoteForwardId"
+            enabled.any { it.remoteForwardId.isBlank() } -> "Remote forward ID is required"
+            enabled.any { it.localPort !in 1..MAX_PORT } -> "Port must be between 1 and 65535"
+            enabled.any { it.localHost != "127.0.0.1" && it.localHost != "localhost" } ->
+                "Non-localhost bind requires advanced warning"
+            else -> null
         }
-        val missingRemote = enabled.firstOrNull { it.remoteForwardId.isBlank() }
-        if (missingRemote != null) {
-            return "Remote forward ID is required"
-        }
-        val invalidPort = enabled.firstOrNull { it.localPort !in 1..MAX_PORT }
-        if (invalidPort != null) {
-            return "Port must be between 1 and 65535"
-        }
-        val invalidHost = enabled.firstOrNull { it.localHost != "127.0.0.1" && it.localHost != "localhost" }
-        if (invalidHost != null) {
-            return "Non-localhost bind requires advanced warning"
-        }
-        return null
     }
 
     fun renderOfferConfig(
@@ -395,17 +380,17 @@ class ConfigRepository(private val context: Context) {
 
     private fun resolveBrokerPasswordFile(input: SetupConfigInput): String {
         val advancedPath = input.brokerPasswordFile.trim()
-        if (advancedPath.isNotBlank()) {
-            return advancedPath
-        }
         val password = input.brokerPassword
-        if (password.isBlank()) {
-            return ""
+        return when {
+            advancedPath.isNotBlank() -> advancedPath
+            password.isBlank() -> ""
+            else -> {
+                val passwordFile = File(context.filesDir, "runtime/mqtt_password.txt")
+                passwordFile.parentFile?.mkdirs()
+                passwordFile.writeText(password)
+                passwordFile.absolutePath
+            }
         }
-        val passwordFile = File(context.filesDir, "runtime/mqtt_password.txt")
-        passwordFile.parentFile?.mkdirs()
-        passwordFile.writeText(password)
-        return passwordFile.absolutePath
     }
 
     private fun tomlString(value: String): String {
