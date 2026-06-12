@@ -96,12 +96,14 @@ class SettingsViewModel(
             Json.encodeToString(SensitiveDataRedactor.redactStatus(deps.tunnelRepository.status.value))
         }.getOrDefault("{}")
 
-    fun redactedConfigOrEmpty(): String =
-        runCatching {
-            val configPath = deps.configRepository.configPath
-            val raw = File(configPath).takeIf { it.exists() }?.readText() ?: return@runCatching ""
-            SensitiveDataRedactor.redactText(raw)
-        }.getOrDefault("")
+    suspend fun redactedConfigOrEmpty(): String =
+        withContext(deps.dispatchers.io) {
+            runCatching {
+                val configPath = deps.configRepository.configPath
+                val raw = File(configPath).takeIf { it.exists() }?.readText() ?: return@runCatching ""
+                SensitiveDataRedactor.redactText(raw)
+            }.getOrDefault("")
+        }
 
     fun resetConfiguration() {
         viewModelScope.launch {
@@ -115,11 +117,13 @@ class SettingsViewModel(
         }
     }
 
-    fun diagnosticsShareIntent(): Intent {
+    suspend fun diagnosticsShareIntent(): Intent {
+        val statusJson = statusJson()
+        val redactedConfig = redactedConfigOrEmpty()
         val payload =
             buildString {
-                appendLine("status_json=${statusJson()}")
-                appendLine("config_redacted=${redactedConfigOrEmpty()}")
+                appendLine("status_json=$statusJson")
+                appendLine("config_redacted=$redactedConfig")
             }
         return Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"

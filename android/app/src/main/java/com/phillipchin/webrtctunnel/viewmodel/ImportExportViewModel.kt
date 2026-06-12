@@ -103,11 +103,12 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         } ?: error("Unable to open destination URI")
     }
 
-    fun publicIdentityForShare(): String {
-        val value = deps.identityRepository.readPublicIdentity()
-        require(value.isNotBlank()) { "No public identity available" }
-        return value
-    }
+    suspend fun publicIdentityForShare(): String =
+        withContext(deps.dispatchers.io) {
+            val value = deps.identityRepository.readPublicIdentity()
+            require(value.isNotBlank()) { "No public identity available" }
+            value
+        }
 }
 
 /**
@@ -122,7 +123,7 @@ private class ImportExportOps(
     fun run(
         successMessage: String,
         failureFallback: String,
-        block: () -> Unit,
+        block: suspend () -> Unit,
     ) {
         if (state.value.isBusy) return
         scope.launch {

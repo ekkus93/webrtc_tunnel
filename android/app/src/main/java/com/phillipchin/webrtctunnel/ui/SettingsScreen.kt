@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -28,6 +29,7 @@ import com.phillipchin.webrtctunnel.BuildConfig
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.viewmodel.SettingsUiState
 import com.phillipchin.webrtctunnel.viewmodel.SettingsViewModel
+import kotlinx.coroutines.launch
 
 private const val IDENTITY_DISPLAY_MAX = 28
 private const val IDENTITY_PREFIX_CHARS = 16
@@ -209,6 +211,7 @@ private fun SettingsDiagnosticsSection(
     onOpenLogs: () -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     SettingsSection("Diagnostics") {
         OutlinedButton(
             onClick = onOpenLogs,
@@ -216,10 +219,12 @@ private fun SettingsDiagnosticsSection(
         ) { Text("Open logs / export diagnostics") }
         OutlinedButton(
             onClick = {
-                val share =
-                    Intent.createChooser(vm.diagnosticsShareIntent(), "Share diagnostics")
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(share)
+                scope.launch {
+                    val share =
+                        Intent.createChooser(vm.diagnosticsShareIntent(), "Share diagnostics")
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(share)
+                }
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Share diagnostics") }
@@ -233,6 +238,7 @@ private fun SettingsAdvancedSection(
     onOpenSetup: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     SettingsSection("Advanced") {
         OutlinedButton(
             onClick = { vm.savePreferences(prefs.copy(advancedSettingsEnabled = !prefs.advancedSettingsEnabled)) },
@@ -261,7 +267,7 @@ private fun SettingsAdvancedSection(
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Copy status JSON") }
             OutlinedButton(
-                onClick = { clipboard.setText(AnnotatedString(vm.redactedConfigOrEmpty())) },
+                onClick = { scope.launch { clipboard.setText(AnnotatedString(vm.redactedConfigOrEmpty())) } },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Copy redacted config") }
         }

@@ -30,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -46,6 +47,7 @@ import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.viewmodel.LogsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.NetworkPolicyViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -71,6 +73,7 @@ fun LogsScreen(
         initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
     )
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     var paused by remember { mutableStateOf(false) }
     val diagnosticsCreateDocumentLauncher =
         rememberLauncherForActivityResult(
@@ -85,13 +88,13 @@ fun LogsScreen(
     val logs by vm.filteredLogs.collectAsStateWithLifecycle()
     val copyLogs = { clipboard.setText(AnnotatedString(redactedLogsText(logs))) }
     val exportDiagnostics = { diagnosticsCreateDocumentLauncher.launch("webrtc_diagnostics_redacted.txt") }
-    val shareDiagnostics = {
-        val share =
-            Intent.createChooser(
-                vm.diagnosticsShareIntent(networkStatus),
-                "Share diagnostics",
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(share)
+    val shareDiagnostics: () -> Unit = {
+        scope.launch {
+            val share =
+                Intent.createChooser(vm.diagnosticsShareIntent(networkStatus), "Share diagnostics")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(share)
+        }
     }
 
     val visibleLogs = logs.filterNot { it.level.equals("debug", true) && !prefs.debugLogsEnabled }
