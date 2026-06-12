@@ -53,6 +53,24 @@ cd android
 ./gradlew testDebugUnitTest
 ```
 
+## Local Kotlin-only workflow (skip the Rust build)
+
+By default every Gradle build verifies/builds the Rust JNI libraries (via
+`preBuild` → `verifyRustJniLibs`), which requires `cargo-ndk`. For fast local
+Kotlin lint/unit-test cycles you can skip that step:
+
+```bash
+cd android
+./gradlew testDebugUnitTest -PskipRustBuild=true
+./gradlew lintDebug -PskipRustBuild=true
+```
+
+`-PskipRustBuild=true` only affects the build/verify-before-everything step;
+packaging tasks (`assembleDebug`/`packageDebug`/release) still run
+`requireRustJniLibs`, so an APK/AAB is never produced without the native
+libraries — they fail clearly if the `.so` files are missing. A normal
+`./gradlew assembleDebug` (no flag) builds and verifies the native libs as before.
+
 ## Full validation commands used in this repo
 
 From repository root:

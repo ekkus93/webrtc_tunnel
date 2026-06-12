@@ -112,18 +112,25 @@ tasks.register<Exec>("buildRustAndroid") {
     )
 }
 
+// `-PskipRustBuild=true` lets local Kotlin-only workflows (unit tests, lint) run
+// without cargo-ndk / a Rust rebuild. Packaging still verifies native libs exist
+// (see requireRustJniLibs) so an APK is never produced without them.
+val skipRustBuild = (project.findProperty("skipRustBuild") as String?)?.toBoolean() == true
+
+fun requiredJniLibs(): List<File> {
+    val libsDir = file("src/main/jniLibs")
+    return listOf(
+        file("${libsDir.path}/arm64-v8a/libp2p_mobile.so"),
+        file("${libsDir.path}/x86_64/libp2p_mobile.so"),
+    )
+}
+
 tasks.register("verifyRustJniLibs") {
     group = "verification"
-    description = "Ensures required Rust JNI libraries exist before packaging."
+    description = "Builds and ensures required Rust JNI libraries exist before packaging."
     dependsOn("buildRustAndroid")
     doLast {
-        val libsDir = file("src/main/jniLibs")
-        val required =
-            listOf(
-                file("${libsDir.path}/arm64-v8a/libp2p_mobile.so"),
-                file("${libsDir.path}/x86_64/libp2p_mobile.so"),
-            )
-        required.forEach { lib ->
+        requiredJniLibs().forEach { lib ->
             if (!lib.exists()) {
                 throw GradleException("Missing JNI library: ${lib.path}")
             }
@@ -131,8 +138,34 @@ tasks.register("verifyRustJniLibs") {
     }
 }
 
+tasks.register("requireRustJniLibs") {
+    group = "verification"
+    description = "Fails packaging if native libraries are missing (no build; used with -PskipRustBuild)."
+    doLast {
+        requiredJniLibs().forEach { lib ->
+            if (!lib.exists()) {
+                throw GradleException(
+                    "Missing JNI library: ${lib.path}. Build it with ./gradlew buildRustAndroid " +
+                        "or omit -PskipRustBuild.",
+                )
+            }
+        }
+    }
+}
+
 tasks.named("preBuild") {
-    dependsOn("verifyRustJniLibs")
+    // Skipped for local lint/unit-test cycles via -PskipRustBuild=true; on by default.
+    if (!skipRustBuild) {
+        dependsOn("verifyRustJniLibs")
+    }
+}
+
+// Packaging always verifies native libraries are present, even with -PskipRustBuild,
+// so an APK/AAB is never assembled without them.
+tasks.configureEach {
+    if (name == "packageDebug" || name == "packageRelease") {
+        dependsOn("requireRustJniLibs")
+    }
 }
 
 detekt {
