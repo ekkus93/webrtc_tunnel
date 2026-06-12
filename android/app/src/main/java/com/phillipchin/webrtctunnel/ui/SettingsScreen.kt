@@ -57,7 +57,6 @@ fun SettingsScreen(
 ) {
     val prefs by vm.preferences.collectAsStateWithLifecycle(initialValue = AndroidAppPreferences())
     val uiState by vm.uiState.collectAsStateWithLifecycle()
-    var showMeteredWarningDialog by remember { mutableStateOf(false) }
     var showResetConfirmDialog by remember { mutableStateOf(false) }
     ScrollableScreenSurface(padding) {
         SectionHeader("Settings", "Tunnel and app behavior")
@@ -79,15 +78,6 @@ fun SettingsScreen(
         SettingsAdvancedSection(prefs = prefs, vm = vm, onOpenSetup = nav.onOpenSetup)
         Spacer(Modifier.height(12.dp))
         SettingsAboutSection()
-    }
-    if (showMeteredWarningDialog) {
-        MeteredWarningDialog(
-            onConfirm = {
-                vm.savePreferences(prefs.copy(allowMetered = true))
-                showMeteredWarningDialog = false
-            },
-            onDismiss = { showMeteredWarningDialog = false },
-        )
     }
     if (showResetConfirmDialog) {
         ResetConfigDialog(
