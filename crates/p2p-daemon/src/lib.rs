@@ -17,6 +17,7 @@ mod logging;
 mod messages;
 mod predicates;
 mod status;
+mod types;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -37,17 +38,14 @@ use p2p_signaling::{
 use p2p_tunnel::{OfferClient, OfferListener};
 use p2p_webrtc::{DataChannelHandle, IceCandidateSignal, IceConnectionState, WebRtcPeer};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
 #[cfg(test)]
 pub(crate) use busy::{
-    ActiveBusyOfferAction, classify_active_busy_offer, replayed_active_busy_offer_key,
+    ActiveBusyOfferAction, ActiveBusyOfferCache, classify_active_busy_offer,
+    replayed_active_busy_offer_key,
 };
-pub(crate) use busy::{
-    ActiveBusyOfferCache, ActiveBusyOfferKey, DuplicateActiveAckCache,
-    is_peer_allowed_for_active_busy_reply,
-};
+pub(crate) use busy::{ActiveBusyOfferKey, is_peer_allowed_for_active_busy_reply};
 pub use config::{
     apply_answer_overrides, apply_env_overrides, apply_offer_overrides, compute_backoff_delay,
 };
@@ -72,6 +70,13 @@ pub(crate) use predicates::{
 pub use status::{
     DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
 };
+pub(crate) use types::{
+    ANSWER_SESSION_CAPACITY, AnswerSessionEvent, AnswerSessionHandle, AnswerStatusSnapshot,
+    BridgeSessionState, DAEMON_RUNTIME_RETRY_DELAY, DaemonRuntimeState, OfferSessionPayloadOutcome,
+    OutgoingSignal, PublishRequest, PublishedSignal, RuntimeContext, SessionGeneration,
+    SessionStatusSnapshot, StatusSnapshot,
+};
+pub use types::{ActiveSession, DaemonSignalingTransport};
 
 #[cfg(any(test, debug_assertions))]
 #[derive(Clone)]
@@ -97,228 +102,6 @@ type OfferBridgeFuture<'a> = Pin<
             + 'a,
     >,
 >;
-
-const DAEMON_RUNTIME_RETRY_DELAY: Duration = Duration::from_secs(1);
-const ANSWER_SESSION_CAPACITY: usize = 16;
-
-pub trait DaemonSignalingTransport {
-    fn subscribe_own_topic(&mut self) -> impl Future<Output = Result<(), SignalingError>> + Send;
-
-    fn publish_signal(
-        &mut self,
-        peer_id: &PeerId,
-        topic_prefix: &str,
-        payload: Vec<u8>,
-    ) -> impl Future<Output = Result<(), SignalingError>> + Send;
-
-    fn poll_signal_payload(
-        &mut self,
-    ) -> impl Future<Output = Result<Option<Vec<u8>>, SignalingError>> + Send;
-}
-
-impl DaemonSignalingTransport for MqttSignalingTransport {
-    async fn subscribe_own_topic(&mut self) -> Result<(), SignalingError> {
-        MqttSignalingTransport::subscribe_own_topic(self).await
-    }
-
-    async fn publish_signal(
-        &mut self,
-        peer_id: &PeerId,
-        topic_prefix: &str,
-        payload: Vec<u8>,
-    ) -> Result<(), SignalingError> {
-        MqttSignalingTransport::publish_signal(self, peer_id, topic_prefix, payload).await
-    }
-
-    async fn poll_signal_payload(&mut self) -> Result<Option<Vec<u8>>, SignalingError> {
-        MqttSignalingTransport::poll_signal_payload(self).await
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BridgeSessionState {
-    Pending,
-    Active,
-    Reconnecting,
-    Closed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct DaemonRuntimeState {
-    mqtt_connected: bool,
-    last_transport_failure_at_ms: Option<u64>,
-    /// Per-forward runtime status (offer role). Populated after binding local
-    /// listeners; included in every emitted `DaemonStatus`.
-    forward_statuses: Vec<ForwardRuntimeStatus>,
-}
-
-impl DaemonRuntimeState {
-    fn new_connected() -> Self {
-        Self {
-            mqtt_connected: true,
-            last_transport_failure_at_ms: None,
-            forward_statuses: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct StatusSnapshot {
-    active_session_id: Option<SessionId>,
-    current_state: DaemonState,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-struct SessionGeneration(u64);
-
-#[derive(Clone, Debug)]
-struct SessionStatusSnapshot {
-    session_id: SessionId,
-    generation: SessionGeneration,
-    remote_peer_id: PeerId,
-    state: DaemonState,
-    data_channel_open: bool,
-    configured_forward_ids: Vec<String>,
-}
-
-impl SessionStatusSnapshot {
-    fn from_session(
-        config: &AppConfig,
-        session: &ActiveSession,
-        generation: SessionGeneration,
-    ) -> Self {
-        Self {
-            session_id: session.session_id,
-            generation,
-            remote_peer_id: session.remote_peer_id.clone(),
-            state: session.state,
-            data_channel_open: session
-                .data_channel
-                .as_ref()
-                .is_some_and(|channel| channel.is_open()),
-            configured_forward_ids: config
-                .forwards
-                .iter()
-                .map(|forward| forward.id.clone())
-                .collect(),
-        }
-    }
-
-    fn to_status(&self) -> SessionStatus {
-        SessionStatus::new(
-            self.session_id,
-            self.remote_peer_id.clone(),
-            self.state,
-            self.data_channel_open,
-            self.configured_forward_ids.clone(),
-        )
-    }
-}
-
-#[derive(Clone, Debug)]
-struct AnswerStatusSnapshot {
-    current_state: DaemonState,
-    sessions: Vec<SessionStatusSnapshot>,
-}
-
-struct RuntimeContext<'a> {
-    config: &'a AppConfig,
-    status: &'a StatusWriter,
-    runtime: &'a mut DaemonRuntimeState,
-}
-
-struct OutgoingSignal {
-    message: InnerMessage,
-    response: bool,
-}
-
-struct PublishRequest {
-    recipient: AuthorizedKey,
-    outgoing: OutgoingSignal,
-    status: SessionStatusSnapshot,
-    result: oneshot::Sender<Result<PublishedSignal, DaemonError>>,
-}
-
-struct PublishedSignal {
-    msg_id: MsgId,
-    message_type: p2p_core::MessageType,
-    payload: Vec<u8>,
-}
-
-enum AnswerSessionEvent {
-    Publish(Box<PublishRequest>),
-    RawPublish {
-        peer_id: PeerId,
-        payload: Vec<u8>,
-        status: SessionStatusSnapshot,
-        result: oneshot::Sender<Result<(), DaemonError>>,
-    },
-    Status(SessionStatusSnapshot),
-    Replaced {
-        old_session_id: SessionId,
-        new_session_id: SessionId,
-        remote_peer_id: PeerId,
-        generation: SessionGeneration,
-        status: SessionStatusSnapshot,
-    },
-    Ended {
-        session_id: SessionId,
-        generation: SessionGeneration,
-        remote_peer_id: PeerId,
-        result: Result<(), DaemonError>,
-    },
-}
-
-struct AnswerSessionHandle {
-    generation: SessionGeneration,
-    remote_peer_id: PeerId,
-    inbound: mpsc::Sender<DecodedSignal>,
-    status: SessionStatusSnapshot,
-    task: JoinHandle<()>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OfferSessionPayloadOutcome {
-    Ignored,
-    Handled,
-}
-
-pub struct ActiveSession {
-    pub session_id: SessionId,
-    pub remote_peer_id: PeerId,
-    pub state: DaemonState,
-    remote_authorized: AuthorizedKey,
-    peer: WebRtcPeer,
-    data_channel: Option<DataChannelHandle>,
-    bridge_handle: Option<JoinHandle<Result<(), p2p_tunnel::TunnelError>>>,
-    bridge_state: BridgeSessionState,
-    active_busy_offers: ActiveBusyOfferCache,
-    duplicate_active_acks: DuplicateActiveAckCache,
-    signaling: SignalingSession,
-}
-
-impl ActiveSession {
-    fn new(
-        session_id: SessionId,
-        remote_authorized: AuthorizedKey,
-        peer: WebRtcPeer,
-        replay_cache_size: usize,
-    ) -> Self {
-        Self {
-            session_id,
-            remote_peer_id: remote_authorized.peer_id.clone(),
-            state: DaemonState::Negotiating,
-            remote_authorized,
-            peer,
-            data_channel: None,
-            bridge_handle: None,
-            bridge_state: BridgeSessionState::Pending,
-            active_busy_offers: ActiveBusyOfferCache::new(replay_cache_size),
-            duplicate_active_acks: DuplicateActiveAckCache::new(replay_cache_size),
-            signaling: SignalingSession::new(replay_cache_size),
-        }
-    }
-}
 
 pub async fn run_offer_daemon(
     config: AppConfig,
