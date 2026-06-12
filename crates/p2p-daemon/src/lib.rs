@@ -16,6 +16,7 @@ mod error;
 mod logging;
 mod messages;
 mod predicates;
+mod signaling;
 mod status;
 mod types;
 
@@ -33,11 +34,11 @@ use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile, kid_from_signing_k
 use p2p_signaling::{
     AckBody, AnswerBody, CloseBody, DecodedSignal, EndOfCandidatesBody, IceCandidateBody,
     InnerMessage, InnerMessageBuilder, MessageBody, MqttSignalingTransport, OfferBody,
-    OuterEnvelope, ReplayStatus, SignalCodec, SignalingError, SignalingSession,
+    OuterEnvelope, ReplayStatus, SignalCodec, SignalingError,
 };
 use p2p_tunnel::{OfferClient, OfferListener};
 use p2p_webrtc::{DataChannelHandle, IceCandidateSignal, IceConnectionState, WebRtcPeer};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time::{interval, sleep};
 
 #[cfg(test)]
@@ -52,11 +53,9 @@ pub use config::{
 #[cfg(test)]
 pub(crate) use config::{
     apply_override_pairs, first_answer_forward, first_answer_forward_mut, first_offer_forward,
-    first_offer_forward_mut,
+    first_offer_forward_mut, steady_state_for_role,
 };
-pub(crate) use config::{
-    offer_remote_peer_id, steady_state_for_role, validate_config_authorized_peers,
-};
+pub(crate) use config::{offer_remote_peer_id, validate_config_authorized_peers};
 pub use error::DaemonError;
 pub use logging::{redact_candidate, redact_sdp, redact_secret, setup_logging};
 pub(crate) use messages::{
@@ -67,14 +66,22 @@ pub(crate) use predicates::{
     can_attempt_same_session_ice_restart, should_ack_idle_offer, should_attempt_offer_reconnect,
     should_continue_reconnect_attempt,
 };
+#[cfg(test)]
+pub(crate) use signaling::mark_transport_usable;
+pub(crate) use signaling::{
+    mark_transport_unusable, mark_transport_usable_after_publish, poll_idle_signal_payload,
+    poll_session_signal_payload, publish_answer_session_request, publish_message,
+    recover_daemon_after_session, request_raw_session_publish, request_session_publish,
+    retry_pending_acks, send_local_candidate, write_answer_registry_status, write_daemon_status,
+    write_steady_state_status,
+};
 pub use status::{
     DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
 };
 pub(crate) use types::{
-    ANSWER_SESSION_CAPACITY, AnswerSessionEvent, AnswerSessionHandle, AnswerStatusSnapshot,
-    BridgeSessionState, DAEMON_RUNTIME_RETRY_DELAY, DaemonRuntimeState, OfferSessionPayloadOutcome,
-    OutgoingSignal, PublishRequest, PublishedSignal, RuntimeContext, SessionGeneration,
-    SessionStatusSnapshot, StatusSnapshot,
+    ANSWER_SESSION_CAPACITY, AnswerSessionEvent, AnswerSessionHandle, BridgeSessionState,
+    DAEMON_RUNTIME_RETRY_DELAY, DaemonRuntimeState, OfferSessionPayloadOutcome, OutgoingSignal,
+    RuntimeContext, SessionGeneration, SessionStatusSnapshot, StatusSnapshot,
 };
 pub use types::{ActiveSession, DaemonSignalingTransport};
 
@@ -1832,387 +1839,6 @@ fn spawn_offer_accept_loops(
     }
     drop(tx);
     rx
-}
-
-async fn write_daemon_status(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot) {
-    write_status_or_log(
-        ctx.status,
-        DaemonStatus::new(
-            ctx.config.node.peer_id.clone(),
-            ctx.config.node.role.clone(),
-            ctx.runtime.mqtt_connected,
-            snapshot.active_session_id,
-            snapshot.current_state,
-            ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
-        )
-        .with_forward_statuses(ctx.runtime.forward_statuses.clone()),
-    )
-    .await;
-}
-
-async fn write_answer_status(ctx: &RuntimeContext<'_>, snapshot: AnswerStatusSnapshot) {
-    write_status_or_log(
-        ctx.status,
-        DaemonStatus::with_sessions(
-            ctx.config.node.peer_id.clone(),
-            ctx.config.node.role.clone(),
-            ctx.runtime.mqtt_connected,
-            snapshot.current_state,
-            ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
-            ANSWER_SESSION_CAPACITY,
-            snapshot.sessions.iter().map(SessionStatusSnapshot::to_status).collect(),
-        )
-        .with_forward_statuses(ctx.runtime.forward_statuses.clone()),
-    )
-    .await;
-}
-
-async fn write_answer_registry_status(
-    ctx: &RuntimeContext<'_>,
-    sessions: &HashMap<SessionId, AnswerSessionHandle>,
-) {
-    let mut session_statuses =
-        sessions.values().map(|session| session.status.clone()).collect::<Vec<_>>();
-    session_statuses.sort_by_key(|status| status.session_id.to_string());
-    let current_state = DaemonState::Serving;
-    write_answer_status(ctx, AnswerStatusSnapshot { current_state, sessions: session_statuses })
-        .await;
-}
-
-async fn write_steady_state_status(ctx: &RuntimeContext<'_>) {
-    write_daemon_status(
-        ctx,
-        StatusSnapshot {
-            active_session_id: None,
-            current_state: steady_state_for_role(&ctx.config.node.role),
-        },
-    )
-    .await;
-}
-
-async fn recover_daemon_after_session(ctx: &RuntimeContext<'_>, result: Result<(), DaemonError>) {
-    write_steady_state_status(ctx).await;
-    if let Err(error) = result {
-        tracing::warn!(
-            reason = %error,
-            role = ?ctx.config.node.role,
-            "daemon recovered from session failure"
-        );
-    }
-}
-
-async fn write_status_or_log(status: &StatusWriter, daemon_status: DaemonStatus) {
-    if let Err(error) = status.write(daemon_status).await {
-        tracing::warn!(reason = %error, "status write failed; continuing without status update");
-    }
-}
-
-async fn mark_transport_unusable(
-    ctx: &mut RuntimeContext<'_>,
-    snapshot: StatusSnapshot,
-    error: &SignalingError,
-) {
-    ctx.runtime.mqtt_connected = false;
-    ctx.runtime.last_transport_failure_at_ms = Some(current_time_ms());
-    write_daemon_status(ctx, snapshot).await;
-    tracing::warn!(
-        reason = %error,
-        role = ?ctx.config.node.role,
-        state = ?snapshot.current_state,
-        session_id = snapshot.active_session_id.as_ref().map(ToString::to_string),
-        "signaling transport is currently unusable"
-    );
-}
-
-async fn mark_transport_usable(ctx: &mut RuntimeContext<'_>, snapshot: StatusSnapshot) {
-    if ctx.runtime.mqtt_connected {
-        return;
-    }
-    ctx.runtime.mqtt_connected = true;
-    ctx.runtime.last_transport_failure_at_ms = None;
-    write_daemon_status(ctx, snapshot).await;
-    tracing::info!(
-        role = ?ctx.config.node.role,
-        state = ?snapshot.current_state,
-        session_id = snapshot.active_session_id.as_ref().map(ToString::to_string),
-        "signaling transport recovered"
-    );
-}
-
-async fn mark_transport_usable_after_publish(
-    ctx: &mut RuntimeContext<'_>,
-    snapshot: StatusSnapshot,
-) {
-    if ctx.runtime.last_transport_failure_at_ms.is_some_and(|failure_at| {
-        current_time_ms().saturating_sub(failure_at) < DAEMON_RUNTIME_RETRY_DELAY.as_millis() as u64
-    }) {
-        return;
-    }
-    mark_transport_usable(ctx, snapshot).await;
-}
-
-async fn poll_session_signal_payload<T: DaemonSignalingTransport>(
-    ctx: &mut RuntimeContext<'_>,
-    transport: &mut T,
-    snapshot: StatusSnapshot,
-) -> Result<Option<Vec<u8>>, DaemonError> {
-    match transport.poll_signal_payload().await {
-        Ok(payload) => {
-            mark_transport_usable(ctx, snapshot).await;
-            Ok(payload)
-        }
-        Err(error) => {
-            mark_transport_unusable(ctx, snapshot, &error).await;
-            Err(error.into())
-        }
-    }
-}
-
-async fn poll_idle_signal_payload<T: DaemonSignalingTransport>(
-    ctx: &mut RuntimeContext<'_>,
-    transport: &mut T,
-) -> Option<Vec<u8>> {
-    match poll_session_signal_payload(
-        ctx,
-        transport,
-        StatusSnapshot {
-            active_session_id: None,
-            current_state: steady_state_for_role(&ctx.config.node.role),
-        },
-    )
-    .await
-    {
-        Ok(payload) => payload,
-        Err(error) => {
-            tracing::warn!(
-                reason = %error,
-                role = ?ctx.config.node.role,
-                "recoverable signaling transport error while idle; backing off before retry"
-            );
-            sleep(DAEMON_RUNTIME_RETRY_DELAY).await;
-            None
-        }
-    }
-}
-
-async fn send_local_candidate<T: DaemonSignalingTransport>(
-    ctx: &mut RuntimeContext<'_>,
-    codec: &SignalCodec<'_>,
-    transport: &mut T,
-    session: &mut ActiveSession,
-    remote: &AuthorizedKey,
-    candidate: IceCandidateSignal,
-) -> Result<(), DaemonError> {
-    let body = if candidate.candidate.is_some() {
-        MessageBody::IceCandidate(IceCandidateBody {
-            candidate: candidate.candidate,
-            sdp_mid: candidate.sdp_mid,
-            sdp_mline_index: candidate.sdp_mline_index,
-        })
-    } else {
-        MessageBody::EndOfCandidates(EndOfCandidatesBody::default())
-    };
-
-    publish_message(
-        ctx,
-        codec,
-        transport,
-        StatusSnapshot {
-            active_session_id: Some(session.session_id),
-            current_state: session.state,
-        },
-        Some(&mut session.signaling),
-        remote,
-        OutgoingSignal {
-            message: InnerMessageBuilder::new(
-                session.session_id,
-                ctx.config.node.peer_id.clone(),
-                session.remote_peer_id.clone(),
-            )
-            .build(body),
-            response: false,
-        },
-    )
-    .await
-}
-
-async fn publish_message<T: DaemonSignalingTransport>(
-    ctx: &mut RuntimeContext<'_>,
-    codec: &SignalCodec<'_>,
-    transport: &mut T,
-    snapshot: StatusSnapshot,
-    signaling: Option<&mut SignalingSession>,
-    recipient: &AuthorizedKey,
-    outgoing: OutgoingSignal,
-) -> Result<(), DaemonError> {
-    let message_type = outgoing.message.message_type;
-    let session_id = outgoing.message.session_id;
-    let recipient_peer_id = recipient.peer_id.clone();
-    let (envelope, payload) =
-        codec.encode_for_peer(recipient, &outgoing.message, outgoing.response)?;
-    tracing::debug!(
-        session_id = %session_id,
-        recipient_peer_id = %recipient_peer_id,
-        sender_kid = %envelope.sender_kid,
-        recipient_kid = %envelope.recipient_kid,
-        msg_id = %envelope.msg_id,
-        message_type = ?message_type,
-        payload_len = payload.len(),
-        response = outgoing.response,
-        "publishing signaling message"
-    );
-    match transport
-        .publish_signal(&recipient.peer_id, &ctx.config.broker.topic_prefix, payload.clone())
-        .await
-    {
-        Ok(()) => {
-            tracing::debug!(
-                session_id = %session_id,
-                recipient_peer_id = %recipient_peer_id,
-                msg_id = %envelope.msg_id,
-                message_type = ?message_type,
-                "published signaling message"
-            );
-            mark_transport_usable(ctx, snapshot).await;
-        }
-        Err(error) => {
-            mark_transport_unusable(ctx, snapshot, &error).await;
-            return Err(error.into());
-        }
-    }
-    if let Some(signaling) = signaling {
-        signaling.ack_tracker.register(
-            envelope.msg_id,
-            outgoing.message.message_type,
-            payload,
-            current_time_ms(),
-        );
-    }
-    Ok(())
-}
-
-async fn publish_answer_session_request<T: DaemonSignalingTransport>(
-    ctx: &mut RuntimeContext<'_>,
-    codec: &SignalCodec<'_>,
-    transport: &mut T,
-    request: PublishRequest,
-) {
-    let message_type = request.outgoing.message.message_type;
-    let session_id = request.outgoing.message.session_id;
-    let recipient_peer_id = request.recipient.peer_id.clone();
-    let encoded = codec.encode_for_peer(
-        &request.recipient,
-        &request.outgoing.message,
-        request.outgoing.response,
-    );
-    let result = match encoded {
-        Ok((envelope, payload)) => {
-            tracing::debug!(
-                session_id = %session_id,
-                recipient_peer_id = %recipient_peer_id,
-                sender_kid = %envelope.sender_kid,
-                recipient_kid = %envelope.recipient_kid,
-                msg_id = %envelope.msg_id,
-                message_type = ?message_type,
-                payload_len = payload.len(),
-                response = request.outgoing.response,
-                "publishing answer-session signaling message"
-            );
-            match transport
-                .publish_signal(
-                    &recipient_peer_id,
-                    &ctx.config.broker.topic_prefix,
-                    payload.clone(),
-                )
-                .await
-            {
-                Ok(()) => {
-                    mark_transport_usable_after_publish(
-                        ctx,
-                        StatusSnapshot {
-                            active_session_id: Some(request.status.session_id),
-                            current_state: request.status.state,
-                        },
-                    )
-                    .await;
-                    Ok(PublishedSignal { msg_id: envelope.msg_id, message_type, payload })
-                }
-                Err(error) => {
-                    mark_transport_unusable(
-                        ctx,
-                        StatusSnapshot {
-                            active_session_id: Some(request.status.session_id),
-                            current_state: request.status.state,
-                        },
-                        &error,
-                    )
-                    .await;
-                    Err(error.into())
-                }
-            }
-        }
-        Err(error) => Err(error.into()),
-    };
-    let _ = request.result.send(result);
-}
-
-async fn request_session_publish(
-    tx: &mpsc::Sender<AnswerSessionEvent>,
-    recipient: AuthorizedKey,
-    outgoing: OutgoingSignal,
-    track_ack: bool,
-    status: SessionStatusSnapshot,
-) -> Result<Option<PublishedSignal>, DaemonError> {
-    let (result_tx, result_rx) = oneshot::channel();
-    tx.send(AnswerSessionEvent::Publish(Box::new(PublishRequest {
-        recipient,
-        outgoing,
-        status,
-        result: result_tx,
-    })))
-    .await
-    .map_err(|_| DaemonError::Logging("answer session event loop stopped".to_owned()))?;
-    let published = result_rx.await.map_err(|_| {
-        DaemonError::Logging("answer session publish response dropped".to_owned())
-    })??;
-    Ok(track_ack.then_some(published))
-}
-
-async fn request_raw_session_publish(
-    tx: &mpsc::Sender<AnswerSessionEvent>,
-    peer_id: PeerId,
-    payload: Vec<u8>,
-    status: SessionStatusSnapshot,
-) -> Result<(), DaemonError> {
-    let (result_tx, result_rx) = oneshot::channel();
-    tx.send(AnswerSessionEvent::RawPublish { peer_id, payload, status, result: result_tx })
-        .await
-        .map_err(|_| DaemonError::Logging("answer session event loop stopped".to_owned()))?;
-    result_rx
-        .await
-        .map_err(|_| DaemonError::Logging("answer raw publish response dropped".to_owned()))?
-}
-
-async fn retry_pending_acks<T: DaemonSignalingTransport>(
-    ctx: &mut RuntimeContext<'_>,
-    transport: &mut T,
-    snapshot: StatusSnapshot,
-    session: &mut ActiveSession,
-) -> Result<(), DaemonError> {
-    let mut retries = session.signaling.ack_tracker.retry_due(current_time_ms());
-    while let Some((_msg_id, payload)) = retries.pop() {
-        match transport
-            .publish_signal(&session.remote_peer_id, &ctx.config.broker.topic_prefix, payload)
-            .await
-        {
-            Ok(()) => mark_transport_usable(ctx, snapshot).await,
-            Err(error) => {
-                mark_transport_unusable(ctx, snapshot, &error).await;
-                return Err(error.into());
-            }
-        }
-    }
-    Ok(())
 }
 
 async fn process_offer_session_payload<T: DaemonSignalingTransport>(
