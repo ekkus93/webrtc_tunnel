@@ -10,26 +10,29 @@
 //! runtime transport turbulence updates local status truthfully before the
 //! daemon retries and returns to service.
 
+mod busy;
+mod config;
 mod error;
 mod logging;
+mod messages;
+mod predicates;
 mod status;
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::env;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use p2p_core::{
-    AppConfig, ConfigError, DaemonState, FailureCode, ForwardOfferConfig, ForwardTable, Kid, MsgId,
-    NodeRole, PeerId, SessionId,
+    AppConfig, ConfigError, DaemonState, FailureCode, ForwardOfferConfig, ForwardTable, MsgId,
+    PeerId, SessionId,
 };
 use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile, kid_from_signing_key};
 use p2p_signaling::{
-    AckBody, AnswerBody, CloseBody, DecodedSignal, EndOfCandidatesBody, ErrorBody,
-    IceCandidateBody, InnerMessage, InnerMessageBuilder, MessageBody, MqttSignalingTransport,
-    OfferBody, OuterEnvelope, ReplayStatus, SignalCodec, SignalingError, SignalingSession,
+    AckBody, AnswerBody, CloseBody, DecodedSignal, EndOfCandidatesBody, IceCandidateBody,
+    InnerMessage, InnerMessageBuilder, MessageBody, MqttSignalingTransport, OfferBody,
+    OuterEnvelope, ReplayStatus, SignalCodec, SignalingError, SignalingSession,
 };
 use p2p_tunnel::{OfferClient, OfferListener};
 use p2p_webrtc::{DataChannelHandle, IceCandidateSignal, IceConnectionState, WebRtcPeer};
@@ -37,8 +40,35 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 
+#[cfg(test)]
+pub(crate) use busy::{
+    ActiveBusyOfferAction, classify_active_busy_offer, replayed_active_busy_offer_key,
+};
+pub(crate) use busy::{
+    ActiveBusyOfferCache, ActiveBusyOfferKey, DuplicateActiveAckCache,
+    is_peer_allowed_for_active_busy_reply,
+};
+pub use config::{
+    apply_answer_overrides, apply_env_overrides, apply_offer_overrides, compute_backoff_delay,
+};
+#[cfg(test)]
+pub(crate) use config::{
+    apply_override_pairs, first_answer_forward, first_answer_forward_mut, first_offer_forward,
+    first_offer_forward_mut,
+};
+pub(crate) use config::{
+    offer_remote_peer_id, steady_state_for_role, validate_config_authorized_peers,
+};
 pub use error::DaemonError;
 pub use logging::{redact_candidate, redact_sdp, redact_secret, setup_logging};
+pub(crate) use messages::{
+    build_error_message, build_hello_message, candidate_from_body, current_time_ms,
+    decode_idle_signaling_message, duplicate_active_session_ack_message,
+};
+pub(crate) use predicates::{
+    can_attempt_same_session_ice_restart, should_ack_idle_offer, should_attempt_offer_reconnect,
+    should_continue_reconnect_attempt,
+};
 pub use status::{
     DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
 };
@@ -106,83 +136,11 @@ impl DaemonSignalingTransport for MqttSignalingTransport {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BridgeSessionState {
+pub(crate) enum BridgeSessionState {
     Pending,
     Active,
     Reconnecting,
     Closed,
-}
-
-#[derive(Clone, Debug)]
-#[cfg(test)]
-enum ActiveBusyOfferAction {
-    Ignore,
-    ReplyBusy { key: ActiveBusyOfferKey, session_id: SessionId, sender: Box<AuthorizedKey> },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-struct ActiveBusyOfferKey {
-    sender_kid: Kid,
-    msg_id: MsgId,
-}
-
-#[derive(Debug)]
-struct ActiveBusyOfferCache {
-    capacity: usize,
-    order: VecDeque<ActiveBusyOfferKey>,
-    seen: HashSet<ActiveBusyOfferKey>,
-}
-
-impl ActiveBusyOfferCache {
-    fn new(capacity: usize) -> Self {
-        Self { capacity: capacity.max(1), order: VecDeque::new(), seen: HashSet::new() }
-    }
-
-    fn record_if_new(&mut self, key: ActiveBusyOfferKey) -> bool {
-        if self.seen.contains(&key) {
-            return false;
-        }
-        if self.order.len() == self.capacity {
-            if let Some(expired) = self.order.pop_front() {
-                self.seen.remove(&expired);
-            }
-        }
-        self.order.push_back(key);
-        self.seen.insert(key);
-        true
-    }
-
-    #[cfg(test)]
-    fn contains(&self, key: &ActiveBusyOfferKey) -> bool {
-        self.seen.contains(key)
-    }
-}
-
-#[derive(Debug)]
-struct DuplicateActiveAckCache {
-    capacity: usize,
-    order: VecDeque<MsgId>,
-    seen: HashSet<MsgId>,
-}
-
-impl DuplicateActiveAckCache {
-    fn new(capacity: usize) -> Self {
-        Self { capacity: capacity.max(1), order: VecDeque::new(), seen: HashSet::new() }
-    }
-
-    fn record_if_new(&mut self, msg_id: MsgId) -> bool {
-        if self.seen.contains(&msg_id) {
-            return false;
-        }
-        if self.order.len() == self.capacity {
-            if let Some(expired) = self.order.pop_front() {
-                self.seen.remove(&expired);
-            }
-        }
-        self.order.push_back(msg_id);
-        self.seen.insert(msg_id);
-        true
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -626,10 +584,6 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
     }
 }
 
-pub fn apply_env_overrides(config: &mut AppConfig) -> Result<(), ConfigError> {
-    apply_override_pairs(config, env::vars())
-}
-
 // Long-lived borrows shared across answer-daemon signaling handling.
 struct AnswerDeps<'a> {
     config: &'a Arc<AppConfig>,
@@ -987,39 +941,6 @@ async fn handle_answer_session_event<T: DaemonSignalingTransport>(
             write_answer_registry_status(ctx, sessions_by_id).await;
         }
     }
-}
-
-pub fn apply_offer_overrides(config: &mut AppConfig, broker_url: Option<String>) {
-    if let Some(broker_url) = broker_url {
-        config.broker.url = broker_url;
-    }
-}
-
-pub fn apply_answer_overrides(config: &mut AppConfig, broker_url: Option<String>) {
-    if let Some(broker_url) = broker_url {
-        config.broker.url = broker_url;
-    }
-}
-
-pub fn compute_backoff_delay(config: &AppConfig, attempt: u32) -> Duration {
-    let base_ms = if attempt == 0 {
-        config.reconnect.backoff_initial_ms
-    } else {
-        let multiplier =
-            config.reconnect.backoff_multiplier.powi(i32::try_from(attempt).unwrap_or(i32::MAX));
-        (config.reconnect.backoff_initial_ms as f64 * multiplier)
-            .min(config.reconnect.backoff_max_ms as f64) as u64
-    };
-    let jitter_window = ((base_ms as f64) * config.reconnect.jitter_ratio).round() as i64;
-    let jitter = if jitter_window == 0 {
-        0
-    } else {
-        let mut rng = rand_core::OsRng;
-        use rand_core::RngCore;
-        let span = u64::try_from(jitter_window * 2 + 1).unwrap_or(1);
-        i64::try_from(rng.next_u64() % span).unwrap_or(0) - jitter_window
-    };
-    Duration::from_millis(base_ms.saturating_add_signed(jitter))
 }
 
 async fn run_offer_session<'a, T: DaemonSignalingTransport>(
@@ -2130,13 +2051,6 @@ fn spawn_offer_accept_loops(
     rx
 }
 
-fn steady_state_for_role(role: &NodeRole) -> DaemonState {
-    match role {
-        NodeRole::Offer => DaemonState::WaitingForLocalClient,
-        NodeRole::Answer => DaemonState::Serving,
-    }
-}
-
 async fn write_daemon_status(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot) {
     write_status_or_log(
         ctx.status,
@@ -2637,216 +2551,6 @@ async fn maybe_ack_duplicate_active_session_message<T: DaemonSignalingTransport>
     Ok(true)
 }
 
-fn duplicate_active_session_ack_message(
-    codec: &SignalCodec<'_>,
-    session_id: SessionId,
-    remote_authorized: &AuthorizedKey,
-    remote_peer_id: &PeerId,
-    payload: &[u8],
-    error: &SignalingError,
-) -> Option<(MsgId, InnerMessage)> {
-    let SignalingError::Protocol(message) = error else {
-        return None;
-    };
-    if message != "duplicate message detected" {
-        return None;
-    }
-
-    let envelope = OuterEnvelope::decode(payload).ok()?;
-    if !envelope.flags.ack_required {
-        return None;
-    }
-
-    let expected_sender_kid = kid_from_signing_key(&remote_authorized.public_identity.sign_public);
-    if envelope.sender_kid != expected_sender_kid {
-        return None;
-    }
-
-    Some((envelope.msg_id, codec.build_ack(remote_peer_id.clone(), session_id, envelope.msg_id)))
-}
-
-#[cfg(test)]
-fn replayed_active_busy_offer_key(
-    payload: &[u8],
-    active_busy_offers: &ActiveBusyOfferCache,
-) -> Option<ActiveBusyOfferKey> {
-    let envelope = OuterEnvelope::decode(payload).ok()?;
-    let key = ActiveBusyOfferKey { sender_kid: envelope.sender_kid, msg_id: envelope.msg_id };
-    active_busy_offers.contains(&key).then_some(key)
-}
-
-#[cfg(test)]
-fn classify_active_busy_offer(
-    config: &AppConfig,
-    codec: &SignalCodec<'_>,
-    payload: &[u8],
-    active_session_id: SessionId,
-    replay_cache_size: usize,
-) -> Option<ActiveBusyOfferAction> {
-    let mut replay_cache = p2p_signaling::ReplayCache::new(replay_cache_size);
-    let Ok((envelope, message, sender)) = codec.decode(payload, &mut replay_cache, None) else {
-        return None;
-    };
-    if !matches!(message.body, MessageBody::Offer(_)) || message.session_id == active_session_id {
-        return None;
-    }
-    if !is_peer_allowed_for_active_busy_reply(config, &sender.peer_id) {
-        tracing::warn!(
-            peer_id = %sender.peer_id,
-            active_session_id = %active_session_id,
-            "ignoring new offer during active answer session because peer is not allowlisted"
-        );
-        return Some(ActiveBusyOfferAction::Ignore);
-    }
-    Some(ActiveBusyOfferAction::ReplyBusy {
-        key: ActiveBusyOfferKey { sender_kid: envelope.sender_kid, msg_id: envelope.msg_id },
-        session_id: message.session_id,
-        sender: Box::new(sender),
-    })
-}
-
-fn is_peer_allowed_for_active_busy_reply(config: &AppConfig, sender_peer_id: &PeerId) -> bool {
-    config
-        .forwards
-        .iter()
-        .filter_map(|forward| forward.answer.as_ref())
-        .any(|answer| answer.allow_remote_peers.contains(sender_peer_id))
-}
-
-fn decode_idle_signaling_message<'a>(
-    codec: &SignalCodec<'a>,
-    payload: &[u8],
-    replay_cache: &mut p2p_signaling::ReplayCache,
-) -> Result<(p2p_signaling::OuterEnvelope, InnerMessage, AuthorizedKey), DaemonError> {
-    Ok(codec.decode(payload, replay_cache, None)?)
-}
-
-fn should_attempt_offer_reconnect(
-    config: &AppConfig,
-    pending_stream_present: bool,
-    bridge_state: BridgeSessionState,
-) -> bool {
-    config.reconnect.enable_auto_reconnect
-        && pending_stream_present
-        && matches!(bridge_state, BridgeSessionState::Pending | BridgeSessionState::Reconnecting)
-}
-
-fn should_ack_idle_offer(peer_allowed: bool, requires_ack: bool) -> bool {
-    peer_allowed && requires_ack
-}
-
-fn should_continue_reconnect_attempt(max_attempts: u32, attempt: u32) -> bool {
-    max_attempts == 0 || attempt < max_attempts
-}
-
-fn can_attempt_same_session_ice_restart(session: &ActiveSession) -> bool {
-    session.data_channel.as_ref().is_some_and(|channel| channel.is_open())
-}
-
-fn offer_remote_peer_id(config: &AppConfig) -> Result<PeerId, DaemonError> {
-    config.peer.as_ref().map(|peer| peer.remote_peer_id.clone()).ok_or_else(|| {
-        DaemonError::Config(ConfigError::InvalidConfig(
-            "[peer].remote_peer_id must be set for offer role".to_owned(),
-        ))
-    })
-}
-
-fn validate_config_authorized_peers(
-    config: &AppConfig,
-    authorized_keys: &AuthorizedKeys,
-) -> Result<(), DaemonError> {
-    match config.node.role {
-        NodeRole::Offer => {
-            let remote_peer_id = offer_remote_peer_id(config)?;
-            if authorized_keys.get_by_peer_id(&remote_peer_id).is_none() {
-                return Err(DaemonError::MissingAuthorizedPeer(remote_peer_id.to_string()));
-            }
-        }
-        NodeRole::Answer => {
-            for forward in &config.forwards {
-                if let Some(answer) = &forward.answer {
-                    for peer_id in &answer.allow_remote_peers {
-                        if authorized_keys.get_by_peer_id(peer_id).is_none() {
-                            return Err(DaemonError::MissingAuthorizedPeer(peer_id.to_string()));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn first_offer_forward(config: &AppConfig) -> Result<(&str, &ForwardOfferConfig), DaemonError> {
-    config
-        .forwards
-        .iter()
-        .find_map(|forward| forward.offer.as_ref().map(|offer| (forward.id.as_str(), offer)))
-        .ok_or_else(|| {
-            DaemonError::Config(ConfigError::InvalidConfig(
-                "at least one [forwards.offer] rule is required".to_owned(),
-            ))
-        })
-}
-
-#[cfg(test)]
-fn first_answer_forward(config: &AppConfig) -> Result<&p2p_core::ForwardAnswerConfig, DaemonError> {
-    config.forwards.iter().find_map(|forward| forward.answer.as_ref()).ok_or_else(|| {
-        DaemonError::Config(ConfigError::InvalidConfig(
-            "at least one [forwards.answer] rule is required".to_owned(),
-        ))
-    })
-}
-
-#[cfg(test)]
-fn first_offer_forward_mut(config: &mut AppConfig) -> Option<&mut ForwardOfferConfig> {
-    config.forwards.iter_mut().find_map(|forward| forward.offer.as_mut())
-}
-
-#[cfg(test)]
-fn first_answer_forward_mut(config: &mut AppConfig) -> Option<&mut p2p_core::ForwardAnswerConfig> {
-    config.forwards.iter_mut().find_map(|forward| forward.answer.as_mut())
-}
-
-fn apply_override_pairs(
-    config: &mut AppConfig,
-    overrides: impl IntoIterator<Item = (String, String)>,
-) -> Result<(), ConfigError> {
-    for (key, value) in overrides {
-        match key.as_str() {
-            "P2PTUNNEL_BROKER_URL" => config.broker.url = value,
-            "P2PTUNNEL_BROKER_USERNAME" => config.broker.username = value,
-            "P2PTUNNEL_BROKER_PASSWORD_FILE" => config.broker.password_file = value.into(),
-            "P2PTUNNEL_LISTEN_PORT" => {
-                return Err(legacy_forward_env_error(&key, "[forwards.offer].listen_port"));
-            }
-            "P2PTUNNEL_TARGET_HOST" => {
-                return Err(legacy_forward_env_error(&key, "[forwards.answer].target_host"));
-            }
-            "P2PTUNNEL_TARGET_PORT" => {
-                return Err(legacy_forward_env_error(&key, "[forwards.answer].target_port"));
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn legacy_forward_env_error(name: &str, replacement: &str) -> ConfigError {
-    ConfigError::InvalidConfig(format!(
-        "{name} is no longer supported in v0.2 config. Use {replacement} in config.toml instead."
-    ))
-}
-
-fn candidate_from_body(body: &IceCandidateBody) -> IceCandidateSignal {
-    IceCandidateSignal {
-        candidate: body.candidate.clone(),
-        sdp_mid: body.sdp_mid.clone(),
-        sdp_mline_index: body.sdp_mline_index,
-    }
-}
-
 async fn attempt_offer_reconnect<T: DaemonSignalingTransport>(
     ctx: &mut RuntimeContext<'_>,
     codec: &SignalCodec<'_>,
@@ -3074,43 +2778,6 @@ async fn wait_for_offer_reconnect_response<T: DaemonSignalingTransport>(
             }
         }
     }
-}
-
-fn build_hello_message(
-    sender_peer_id: &PeerId,
-    recipient_peer_id: &PeerId,
-    session_id: SessionId,
-    role: &str,
-) -> InnerMessage {
-    InnerMessageBuilder::new(session_id, sender_peer_id.clone(), recipient_peer_id.clone()).build(
-        MessageBody::Hello(p2p_signaling::HelloBody {
-            role: role.to_owned(),
-            caps: vec!["trickle_ice".to_owned(), "ice_restart".to_owned()],
-        }),
-    )
-}
-
-fn build_error_message(
-    sender_peer_id: &PeerId,
-    recipient_peer_id: &PeerId,
-    session_id: SessionId,
-    code: FailureCode,
-    message: &str,
-) -> InnerMessage {
-    InnerMessageBuilder::new(session_id, sender_peer_id.clone(), recipient_peer_id.clone()).build(
-        MessageBody::Error(ErrorBody {
-            code: code.as_str().to_owned(),
-            message: message.to_owned(),
-            fatal: true,
-        }),
-    )
-}
-
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time is before unix epoch")
-        .as_millis() as u64
 }
 
 #[cfg(test)]
