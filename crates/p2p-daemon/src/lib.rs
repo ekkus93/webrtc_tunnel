@@ -71,18 +71,19 @@ type OfferBridgeFuture<'a> = Pin<
 const DAEMON_RUNTIME_RETRY_DELAY: Duration = Duration::from_secs(1);
 const ANSWER_SESSION_CAPACITY: usize = 16;
 
-#[allow(async_fn_in_trait)]
 pub trait DaemonSignalingTransport {
-    async fn subscribe_own_topic(&mut self) -> Result<(), SignalingError>;
+    fn subscribe_own_topic(&mut self) -> impl Future<Output = Result<(), SignalingError>> + Send;
 
-    async fn publish_signal(
+    fn publish_signal(
         &mut self,
         peer_id: &PeerId,
         topic_prefix: &str,
         payload: Vec<u8>,
-    ) -> Result<(), SignalingError>;
+    ) -> impl Future<Output = Result<(), SignalingError>> + Send;
 
-    async fn poll_signal_payload(&mut self) -> Result<Option<Vec<u8>>, SignalingError>;
+    fn poll_signal_payload(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, SignalingError>> + Send;
 }
 
 impl DaemonSignalingTransport for MqttSignalingTransport {
@@ -3207,7 +3208,6 @@ mod tests {
         published: PublishedSignals,
     }
 
-    #[allow(async_fn_in_trait)]
     impl DaemonSignalingTransport for RecordingTransport {
         async fn subscribe_own_topic(&mut self) -> Result<(), SignalingError> {
             Ok(())
@@ -3232,7 +3232,6 @@ mod tests {
         outcomes: mpsc::UnboundedReceiver<Result<Option<Vec<u8>>, SignalingError>>,
     }
 
-    #[allow(async_fn_in_trait)]
     impl DaemonSignalingTransport for ScriptedPollingTransport {
         async fn subscribe_own_topic(&mut self) -> Result<(), SignalingError> {
             Ok(())

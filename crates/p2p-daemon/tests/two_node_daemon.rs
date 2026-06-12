@@ -170,7 +170,6 @@ struct InMemoryTransport {
     trace: TransportTrace,
 }
 
-#[allow(async_fn_in_trait)]
 impl DaemonSignalingTransport for InMemoryTransport {
     async fn subscribe_own_topic(&mut self) -> Result<(), p2p_signaling::SignalingError> {
         Ok(())
