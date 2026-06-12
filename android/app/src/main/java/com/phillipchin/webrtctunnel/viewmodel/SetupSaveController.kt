@@ -9,6 +9,7 @@ import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -42,6 +43,7 @@ class SetupSaveController(
     private val loadPreferences: suspend () -> AndroidAppPreferences,
     private val persistPreferences: suspend (AndroidAppPreferences) -> Unit,
     private val access: WizardStateAccess,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     fun testBrokerConnection() {
         val current = access.state()
@@ -51,7 +53,7 @@ class SetupSaveController(
             access.applyState(current.copy(brokerTestMessage = "Broker host/port is invalid"))
             return
         }
-        scope.launch(Dispatchers.IO) {
+        scope.launch(ioDispatcher) {
             val message =
                 runCatching {
                     Socket().use { socket ->
@@ -105,7 +107,7 @@ class SetupSaveController(
                 }
                 val candidate = deps.configRepository.renderOfferConfig(input, enabledForwards)
                 val validation =
-                    withContext(Dispatchers.IO) { validateCandidateConfig(deps, candidate, identity.first) }
+                    withContext(ioDispatcher) { validateCandidateConfig(deps, candidate, identity.first) }
                 if (!validation.valid) {
                     saveError(validation.message ?: "Config validation failed", redact = false)
                 }
@@ -137,10 +139,10 @@ class SetupSaveController(
     private suspend fun resolveSaveIdentity(current: SetupWizardState): Triple<ByteArray, String, String> {
         val resolved =
             if (current.importIdentityPath.isNotBlank()) {
-                withContext(Dispatchers.IO) { importPrivateIdentity(deps, current.importIdentityPath) }
+                withContext(ioDispatcher) { importPrivateIdentity(deps, current.importIdentityPath) }
                     .getOrElse { saveError(it.message ?: "Failed importing private identity", redact = false) }
             } else {
-                resolveStoredIdentity(deps)
+                resolveStoredIdentity(deps, ioDispatcher)
             }
         if (resolved == null || resolved.first.isEmpty()) {
             saveError("Missing encrypted identity", redact = true)
@@ -153,7 +155,7 @@ class SetupSaveController(
         input: SetupConfigInput,
     ) {
         runCatching {
-            withContext(Dispatchers.IO) {
+            withContext(ioDispatcher) {
                 deps.configRepository.writeConfigAtomically(candidate)
                 deps.configRepository.saveSetupInput(input)
                 val existing = loadPreferences()
@@ -173,8 +175,11 @@ private fun saveError(
     redact: Boolean,
 ): Nothing = throw SaveError(message, redact)
 
-private suspend fun resolveStoredIdentity(deps: AppDependencies): Triple<ByteArray, String, String>? =
-    withContext(Dispatchers.IO) {
+private suspend fun resolveStoredIdentity(
+    deps: AppDependencies,
+    dispatcher: CoroutineDispatcher = Dispatchers.IO,
+): Triple<ByteArray, String, String>? =
+    withContext(dispatcher) {
         runCatching {
             val bytes = deps.identityRepository.readPrivateIdentityPlaintext()
             val validated = deps.identityValidation.validatePrivateIdentity(bytes.decodeToString())

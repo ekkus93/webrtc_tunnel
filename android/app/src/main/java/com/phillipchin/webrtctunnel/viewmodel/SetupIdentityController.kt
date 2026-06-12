@@ -28,7 +28,7 @@ class SetupIdentityController(
                 val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
                 require(validated.valid) { validated.message ?: "Invalid private identity" }
                 val peerId = validated.peerId ?: throw IllegalArgumentException("Missing identity peer id")
-                val canonicalPublic = validated.canonicalPublicIdentity ?: ""
+                val canonicalPublic = validated.canonicalPublicIdentity.orEmpty()
                 peerId to canonicalPublic
             }
         resolved.onSuccess { (peerId, canonicalPublic) ->
@@ -64,7 +64,7 @@ class SetupIdentityController(
                 val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
                 require(validated.valid) { validated.message ?: "Invalid private identity" }
                 val canonicalPrivate = validated.canonicalPrivateIdentity ?: privateIdentity
-                val canonicalPublic = validated.canonicalPublicIdentity ?: ""
+                val canonicalPublic = validated.canonicalPublicIdentity.orEmpty()
                 val peerId = validated.peerId ?: throw IllegalArgumentException("Missing identity peer id")
                 deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
                 Triple(peerId, canonicalPublic, canonicalPrivate)

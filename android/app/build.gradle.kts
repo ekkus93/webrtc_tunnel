@@ -138,18 +138,13 @@ tasks.named("preBuild") {
 detekt {
     buildUponDefaultConfig = true
     config.setFrom(files("detekt.yml"))
-    // Analyze the same source sets ktlint does, not just main.
-    source.setFrom(
-        "src/main/java",
-        "src/test/java",
-        "src/androidTest/java",
-    )
 }
 
-// Make detekt an explicit part of the `check` lifecycle rather than relying on
-// the plugin's implicit attachment. Scoped to the plain `detekt` task; the
-// type-resolution variant tasks (detektDebug/detektRelease) are not wired in yet
-// (they enable extra rules that currently report findings — see CLAUDE.md).
+// Run detekt *with type resolution* as part of `check`. The umbrella tasks cover
+// production (detektMain), unit tests (detektTest) and instrumentation tests
+// (detektDebugAndroidTest) across all variants, enabling the rules that need type
+// resolution (InjectDispatcher, UseOrEmpty, ...) that the plain `detekt` task
+// cannot evaluate.
 tasks.named("check") {
-    dependsOn(tasks.named("detekt"))
+    dependsOn("detektMain", "detektTest", "detektDebugAndroidTest")
 }

@@ -15,6 +15,7 @@ import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -278,7 +279,10 @@ private fun loadStoredSetupInput(
     }
 }
 
-class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
+class ForwardsViewModel(
+    private val deps: AppDependencies,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+) : ViewModel() {
     val status: StateFlow<TunnelStatus> = deps.tunnelRepository.status
     private val _forwards = MutableStateFlow(deps.forwardsStore.loadForwards())
     val forwards: StateFlow<List<ForwardConfig>> = _forwards.asStateFlow()
@@ -333,7 +337,7 @@ class ForwardsViewModel(private val deps: AppDependencies) : ViewModel() {
     }
 
     fun testLocalPort(forward: ForwardConfig) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        viewModelScope.launch(ioDispatcher) {
             // Connect to the configured local host (blank falls back to loopback),
             // and report the host actually tested rather than a hardcoded address.
             val host = forward.localHost.trim().ifBlank { "127.0.0.1" }

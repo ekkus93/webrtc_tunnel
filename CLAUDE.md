@@ -40,12 +40,12 @@ Current wiring status:
 - Android lint: available (AGP built-in).
 - ktlint: wired via the `org.jlleitschuh.gradle.ktlint` Gradle plugin
   (`gradle/libs.versions.toml`).
-- detekt: wired. The plain `detekt` task (main + test + androidTest sources) runs
-  as part of `check` via an explicit `dependsOn` in `app/build.gradle.kts`.
-  The type-resolution variant tasks (`detektDebug`/`detektRelease`) are **not**
-  wired into `check` yet: they enable extra rules requiring type resolution
-  (e.g. `InjectDispatcher`, `UseOrEmpty`) that currently report findings. Wiring
-  them in is a follow-up that must fix those findings (no suppression).
+- detekt: wired **with type resolution**. `check` depends on the umbrella tasks
+  `detektMain` (production), `detektTest` (unit tests) and `detektDebugAndroidTest`
+  (instrumentation tests) in `app/build.gradle.kts`, so the rules that require type
+  resolution (e.g. `InjectDispatcher`, `UseOrEmpty`) are enforced across all
+  source sets. Coroutine dispatchers are injected (constructor params defaulting to
+  `Dispatchers.IO`/`Default`) rather than referenced directly, per `InjectDispatcher`.
 
 ## Rust linting
 
