@@ -8,11 +8,11 @@ import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -21,48 +21,68 @@ private const val LOCAL_PORT_TEST_TIMEOUT_MS = 1200
 
 class ForwardsViewModel(
     private val deps: AppDependencies,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val ioDispatcher: CoroutineDispatcher = deps.dispatchers.io,
 ) : ViewModel() {
     val status: StateFlow<TunnelStatus> = deps.tunnelRepository.status
     private val _forwards = MutableStateFlow(deps.forwardsStore.loadForwards())
     val forwards: StateFlow<List<ForwardConfig>> = _forwards.asStateFlow()
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+    private val _isBusy = MutableStateFlow(false)
+    val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
 
     fun reload() {
-        _forwards.value = deps.forwardsStore.loadForwards()
+        viewModelScope.launch {
+            _forwards.value = withContext(ioDispatcher) { deps.forwardsStore.loadForwards() }
+        }
     }
 
     fun saveForward(forward: ForwardConfig) {
-        val before = deps.forwardsStore.loadForwards()
-        val result = deps.forwardsStore.upsertForward(forward)
-        if (!result.valid) {
-            _message.value = result.message ?: "Forward update failed"
-            return
+        if (_isBusy.value) return
+        viewModelScope.launch {
+            _isBusy.value = true
+            val message =
+                withContext(ioDispatcher) {
+                    val before = deps.forwardsStore.loadForwards()
+                    val result = deps.forwardsStore.upsertForward(forward)
+                    if (!result.valid) {
+                        result.message ?: "Forward update failed"
+                    } else {
+                        val sync = regenerateActiveConfig()
+                        if (!sync.valid) {
+                            deps.forwardsStore.saveForwards(before)
+                            sync.message ?: "Forward update failed"
+                        } else {
+                            "Forward saved"
+                        }
+                    }
+                }
+            _forwards.value = withContext(ioDispatcher) { deps.forwardsStore.loadForwards() }
+            _message.value = message
+            _isBusy.value = false
         }
-        val sync = regenerateActiveConfig()
-        if (!sync.valid) {
-            deps.forwardsStore.saveForwards(before)
-            reload()
-            _message.value = sync.message ?: "Forward update failed"
-            return
-        }
-        reload()
-        _message.value = "Forward saved"
     }
 
     fun deleteForward(forwardId: String) {
-        val before = deps.forwardsStore.loadForwards()
-        deps.forwardsStore.deleteForward(forwardId)
-        val sync = regenerateActiveConfig()
-        if (!sync.valid) {
-            deps.forwardsStore.saveForwards(before)
-            reload()
-            _message.value = sync.message ?: "Forward delete failed"
-            return
+        if (_isBusy.value) return
+        viewModelScope.launch {
+            _isBusy.value = true
+            val message =
+                withContext(ioDispatcher) {
+                    val before = deps.forwardsStore.loadForwards()
+                    deps.forwardsStore.deleteForward(forwardId)
+                    val sync = regenerateActiveConfig()
+                    if (!sync.valid) {
+                        deps.forwardsStore.saveForwards(before)
+                        sync.message ?: "Forward delete failed"
+                    } else {
+                        "Forward deleted"
+                    }
+                }
+            _forwards.value = withContext(ioDispatcher) { deps.forwardsStore.loadForwards() }
+            _message.value = message
+            _isBusy.value = false
         }
-        reload()
-        _message.value = "Forward deleted"
     }
 
     fun validateForwardDraft(

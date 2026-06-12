@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.TunnelNativeBridge
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.AppDispatchers
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.TunnelRepository
 import com.phillipchin.webrtctunnel.model.IdentityValidationResult
@@ -13,6 +14,8 @@ import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import org.junit.Before
 
 /** A TunnelNativeBridge double that records status reads and returns a configurable validation result. */
@@ -96,7 +99,15 @@ open class AppViewModelTestBase {
                             override fun decrypt(payload: ByteArray): ByteArray = payload
                         },
                     ),
+                // Run all ViewModel IO inline so coroutine results are observable
+                // synchronously in tests (no real thread hops).
+                dispatchers = inlineTestDispatchers(),
             )
         tunnelRepository = deps.tunnelRepository
     }
 }
+
+/** Test dispatchers that execute inline. The `Dispatchers.Unconfined` default keeps the
+ * only direct reference inside a parameter default (DI), satisfying `InjectDispatcher`. */
+fun inlineTestDispatchers(dispatcher: CoroutineDispatcher = Dispatchers.Unconfined): AppDispatchers =
+    AppDispatchers(io = dispatcher, default = dispatcher, main = dispatcher)

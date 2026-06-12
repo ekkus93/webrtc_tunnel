@@ -8,7 +8,6 @@ import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.ValidationResult
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,7 +25,7 @@ data class SettingsUiState(
 class SettingsViewModel(
     private val deps: AppDependencies,
     private val loadPublicIdentity: suspend () -> String = {
-        withContext(Dispatchers.IO) { deps.identityRepository.readPublicIdentity() }
+        withContext(deps.dispatchers.io) { deps.identityRepository.readPublicIdentity() }
     },
 ) : ViewModel() {
     val preferences = deps.configRepository.preferences
@@ -79,10 +78,14 @@ class SettingsViewModel(
         }.getOrDefault("")
 
     fun resetConfiguration() {
-        runCatching {
-            deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
-            deps.configRepository.saveSetupInput(SetupConfigInput())
-            deps.forwardsStore.saveForwards(emptyList())
+        viewModelScope.launch {
+            withContext(deps.dispatchers.io) {
+                runCatching {
+                    deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
+                    deps.configRepository.saveSetupInput(SetupConfigInput())
+                    deps.forwardsStore.saveForwards(emptyList())
+                }
+            }
         }
     }
 

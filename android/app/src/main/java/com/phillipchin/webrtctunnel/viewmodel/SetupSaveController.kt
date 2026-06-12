@@ -11,7 +11,6 @@ import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -43,7 +42,7 @@ class SetupSaveController(
     private val loadPreferences: suspend () -> AndroidAppPreferences,
     private val persistPreferences: suspend (AndroidAppPreferences) -> Unit,
     private val access: WizardStateAccess,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val ioDispatcher: CoroutineDispatcher = deps.dispatchers.io,
 ) {
     fun testBrokerConnection() {
         val current = access.state()
@@ -177,7 +176,7 @@ private fun saveError(
 
 private suspend fun resolveStoredIdentity(
     deps: AppDependencies,
-    dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    dispatcher: CoroutineDispatcher = deps.dispatchers.io,
 ): Triple<ByteArray, String, String>? =
     withContext(dispatcher) {
         runCatching {

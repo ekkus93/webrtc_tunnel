@@ -105,6 +105,7 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
                         NetworkType.UnmeteredWifi to false
                     },
                 identityRepository = deps.identityRepository,
+                dispatchers = deps.dispatchers,
             )
         val vm = ImportExportViewModel(throwingDeps)
         val tempFile = File(app.cacheDir, "config-import-candidate.toml")

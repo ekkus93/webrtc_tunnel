@@ -1,13 +1,5 @@
 package com.phillipchin.webrtctunnel.ui
 
-import android.Manifest
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
-import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -15,21 +7,17 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -42,7 +30,6 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.ui.theme.WebRtcTunnelTheme
-import com.phillipchin.webrtctunnel.viewmodel.AppViewModelFactory
 import com.phillipchin.webrtctunnel.viewmodel.ForwardsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.HomeViewModel
 import com.phillipchin.webrtctunnel.viewmodel.ImportExportViewModel
@@ -50,6 +37,7 @@ import com.phillipchin.webrtctunnel.viewmodel.LogsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.NetworkPolicyViewModel
 import com.phillipchin.webrtctunnel.viewmodel.SettingsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.SetupViewModel
+import com.phillipchin.webrtctunnel.viewmodel.appViewModelFactory
 
 private sealed class Route(val value: String, val title: String) {
     data object Home : Route("home", "WebRTC Tunnel")
@@ -93,8 +81,8 @@ private val secondaryRoutes =
 
 @Composable
 fun WebRtcTunnelApp(deps: AppDependencies) {
-    val factory = remember(deps) { AppViewModelFactory(deps) }
-    val models = remember(factory) { AppScreenModels(factory) }
+    val factory = remember(deps) { appViewModelFactory(deps) }
+    val models = rememberSharedScreenModels(factory)
     val navController = rememberNavController()
 
     WebRtcTunnelTheme {
@@ -129,20 +117,36 @@ fun WebRtcTunnelApp(deps: AppDependencies) {
                 }
             },
         ) { padding ->
-            AppNavHost(navController = navController, padding = padding, models = models)
+            AppNavHost(navController = navController, padding = padding, models = models, factory = factory)
         }
     }
 }
 
-private class AppScreenModels(factory: AppViewModelFactory) {
-    val home: HomeViewModel = factory.home()
-    val setup: SetupViewModel = factory.setup()
-    val forwards: ForwardsViewModel = factory.forwards()
-    val logs: LogsViewModel = factory.logs()
-    val settings: SettingsViewModel = factory.settings()
-    val networkPolicy: NetworkPolicyViewModel = factory.networkPolicy()
-    val importExport: ImportExportViewModel = factory.importExport()
-}
+// Shared, Activity-scoped ViewModels. Created through Android's ViewModelProvider via
+// viewModel(), so viewModelScope is lifecycle-bound and Home/Forwards observe the same
+// instances. ImportExportViewModel is intentionally route-scoped (created in its
+// destination) since its state need not outlive that screen.
+private class AppScreenModels(
+    val home: HomeViewModel,
+    val setup: SetupViewModel,
+    val forwards: ForwardsViewModel,
+    val logs: LogsViewModel,
+    val settings: SettingsViewModel,
+    val networkPolicy: NetworkPolicyViewModel,
+)
+
+@Composable
+private fun rememberSharedScreenModels(factory: ViewModelProvider.Factory): AppScreenModels =
+    AppScreenModels(
+        home = viewModel(factory = factory),
+        // SetupViewModel is Activity-scoped so the wizard draft survives navigation
+        // away and back (e.g. opening Network Policy mid-wizard does not reset input).
+        setup = viewModel(factory = factory),
+        forwards = viewModel(factory = factory),
+        logs = viewModel(factory = factory),
+        settings = viewModel(factory = factory),
+        networkPolicy = viewModel(factory = factory),
+    )
 
 private fun homeNavActions(navController: NavHostController) =
     HomeNavActions(
@@ -165,6 +169,7 @@ private fun AppNavHost(
     navController: NavHostController,
     padding: PaddingValues,
     models: AppScreenModels,
+    factory: ViewModelProvider.Factory,
 ) {
     NavHost(navController = navController, startDestination = Route.Home.value) {
         composable(Route.Home.value) {
@@ -201,7 +206,10 @@ private fun AppNavHost(
             )
         }
         composable(Route.NetworkPolicy.value) { NetworkPolicyScreen(padding, models.networkPolicy) }
-        composable(Route.ImportExport.value) { ImportExportScreen(padding, models.importExport) }
+        composable(Route.ImportExport.value) {
+            val importExport: ImportExportViewModel = viewModel(factory = factory)
+            ImportExportScreen(padding, importExport)
+        }
         composable(
             route = Route.ForwardDetails.value,
             arguments = listOf(navArgument("forwardId") { type = NavType.StringType }),
@@ -214,84 +222,6 @@ private fun AppNavHost(
             )
         }
     }
-}
-
-@Composable
-private fun NotificationPermissionGate() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-    val context = LocalContext.current
-    val hasPermission =
-        ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.POST_NOTIFICATIONS,
-        ) == PackageManager.PERMISSION_GRANTED
-    if (hasPermission) return
-
-    var openDialog by remember { mutableStateOf(true) }
-    var denied by remember { mutableStateOf(false) }
-    val launcher =
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            denied = !granted
-            openDialog = !granted
-        }
-    if (openDialog) {
-        NotificationRequestDialog(
-            onAllow = { launcher.launch(Manifest.permission.POST_NOTIFICATIONS) },
-            onNotNow = {
-                denied = true
-                openDialog = false
-            },
-            onDismiss = { openDialog = false },
-        )
-    }
-    if (denied) {
-        NotificationsDisabledDialog(
-            onOpenAppSettings = {
-                val intent =
-                    Intent(
-                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.fromParts("package", context.packageName, null),
-                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
-                denied = false
-            },
-            onClose = { denied = false },
-        )
-    }
-}
-
-@Composable
-private fun NotificationRequestDialog(
-    onAllow: () -> Unit,
-    onNotNow: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Notification permission") },
-        text = {
-            Text(
-                "Rust WebRTC Tunnel needs notifications so Android can keep the tunnel " +
-                    "service visible while it is running in the background.",
-            )
-        },
-        confirmButton = { TextButton(onClick = onAllow) { Text("Allow") } },
-        dismissButton = { TextButton(onClick = onNotNow) { Text("Not now") } },
-    )
-}
-
-@Composable
-private fun NotificationsDisabledDialog(
-    onOpenAppSettings: () -> Unit,
-    onClose: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("Notifications are disabled") },
-        text = { Text("Background tunnel notifications are required for full foreground-service visibility.") },
-        confirmButton = { TextButton(onClick = onOpenAppSettings) { Text("Open Settings") } },
-        dismissButton = { TextButton(onClick = onClose) { Text("Close") } },
-    )
 }
 
 @Composable

@@ -1,10 +1,13 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import com.phillipchin.webrtctunnel.model.ForwardConfig
+import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -13,6 +16,34 @@ import java.net.ServerSocket
 
 @RunWith(RobolectricTestRunner::class)
 class ForwardsViewModelTest : AppViewModelTestBase() {
+    @Test
+    fun forwardsViewModelSaveAddsForwardAndReportsResult() {
+        val vm = ForwardsViewModel(deps)
+        recordingBridge.validationResult = ValidationResult(true, null)
+        val forward =
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+
+        vm.saveForward(forward)
+
+        assertEquals("Forward saved", vm.message.value)
+        assertTrue(vm.forwards.value.any { it.id == "web" })
+        assertFalse(vm.isBusy.value)
+    }
+
+    @Test
+    fun forwardsViewModelSaveRollsBackOnInvalidConfig() {
+        val vm = ForwardsViewModel(deps)
+        recordingBridge.validationResult = ValidationResult(false, "bad config")
+        val forward =
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+
+        vm.saveForward(forward)
+
+        assertTrue(vm.message.value?.contains("bad config") == true)
+        assertTrue(vm.forwards.value.none { it.id == "web" })
+        assertFalse(vm.isBusy.value)
+    }
+
     @Test
     fun forwardsViewModelTestLocalPortReportsSuccessAndFailure() {
         runBlocking {

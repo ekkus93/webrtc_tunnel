@@ -12,13 +12,12 @@ class AppDependencies(
     val configRepository: ConfigRepository = ConfigRepository(context.applicationContext),
     val networkPolicyManager: NetworkPolicyManager = NetworkPolicyManager(context.applicationContext),
     val identityRepository: IdentityRepository = IdentityRepository(context.applicationContext),
-    val diagnosticsRepository: DiagnosticsRepository =
-        DiagnosticsRepository(
-            context.applicationContext,
-            configRepository = configRepository,
-        ),
+    val dispatchers: AppDispatchers = AppDispatchers(),
 ) {
     val context: Context = context.applicationContext
+
+    val diagnosticsRepository: DiagnosticsRepository =
+        DiagnosticsRepository(this.context, configRepository = configRepository)
 
     val forwardsStore: ForwardsConfigStore = ForwardsConfigStore(this.context)
 
