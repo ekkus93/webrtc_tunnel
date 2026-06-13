@@ -1,0 +1,305 @@
+use std::fs;
+
+use super::*;
+use p2p_crypto::generate_identity;
+
+#[test]
+fn android_state_mapping_covers_connection_phases() {
+    assert_eq!(android_state_from_daemon(DaemonState::TunnelOpen), AndroidRuntimeState::Running);
+    assert_eq!(
+        android_state_from_daemon(DaemonState::WaitingForLocalClient),
+        AndroidRuntimeState::Running,
+    );
+    assert_eq!(android_state_from_daemon(DaemonState::Negotiating), AndroidRuntimeState::Starting,);
+    assert_eq!(android_state_from_daemon(DaemonState::Backoff), AndroidRuntimeState::Starting);
+    assert_eq!(android_state_from_daemon(DaemonState::Closed), AndroidRuntimeState::Stopped);
+}
+
+#[test]
+fn snapshot_status_overlays_daemon_status_when_active() {
+    let mut inner = RuntimeInner::default();
+    inner.state.active = true;
+    let connected = DaemonStatus::with_sessions(
+        "offer-home".parse().expect("peer id"),
+        NodeRole::Offer,
+        true,
+        DaemonState::TunnelOpen,
+        vec!["ssh".to_owned()],
+        16,
+        Vec::new(),
+    );
+    let (tx, rx) = tokio::sync::watch::channel(connected);
+    inner.status_rx = Some(rx);
+
+    let snapshot = inner.snapshot_status();
+    assert!(snapshot.mqtt_connected);
+    assert_eq!(snapshot.session_capacity, Some(16));
+    assert_eq!(snapshot.state, AndroidRuntimeState::Running);
+    drop(tx);
+}
+
+#[test]
+fn snapshot_status_is_quiescent_when_inactive() {
+    let mut inner = RuntimeInner::default();
+    inner.state.active = false;
+    let connected = DaemonStatus::new(
+        "offer-home".parse().expect("peer id"),
+        NodeRole::Offer,
+        true,
+        None,
+        DaemonState::TunnelOpen,
+        Vec::new(),
+    );
+    let (tx, rx) = tokio::sync::watch::channel(connected);
+    inner.status_rx = Some(rx);
+
+    let snapshot = inner.snapshot_status();
+    assert!(!snapshot.mqtt_connected);
+    assert_eq!(snapshot.active_session_count, 0);
+    drop(tx);
+}
+
+#[test]
+fn validate_config_reports_missing_file() {
+    let result = AndroidTunnelController::validate_config("/definitely/missing/config.toml");
+    assert!(!result.valid);
+    assert!(result.message.is_some());
+}
+
+#[test]
+fn status_before_start_is_stopped() {
+    let controller = AndroidTunnelController::new();
+    let status = controller.status();
+    assert_eq!(status.state, AndroidRuntimeState::Stopped);
+    assert!(!status.active);
+}
+
+#[test]
+fn stop_before_start_is_safe() {
+    let controller = AndroidTunnelController::new();
+    controller.stop();
+    assert_eq!(controller.status().state, AndroidRuntimeState::Stopped);
+}
+
+#[test]
+fn double_stop_is_safe() {
+    let controller = AndroidTunnelController::new();
+    controller.stop();
+    controller.stop();
+    assert_eq!(controller.status().state, AndroidRuntimeState::Stopped);
+}
+
+#[test]
+fn recent_logs_json_shape_is_stable() {
+    let controller = AndroidTunnelController::new();
+    let logs = controller.recent_logs(10);
+    assert!(logs.is_empty());
+    let _ = generate_identity("android-test").expect("identity");
+}
+
+#[test]
+fn reset_runtime_metadata_clears_measured_fields() {
+    let mut state = AndroidRuntimeStatus {
+        started_at_unix_ms: Some(123),
+        mqtt_connected: true,
+        active_session_count: 3,
+        session_capacity: Some(16),
+        forwards: vec![AndroidForwardRuntimeStatus::default()],
+        ..AndroidRuntimeStatus::default()
+    };
+    reset_runtime_metadata(&mut state);
+    assert_eq!(state.started_at_unix_ms, None);
+    assert!(!state.mqtt_connected);
+    assert_eq!(state.active_session_count, 0);
+    assert_eq!(state.session_capacity, None);
+    assert!(state.forwards.is_empty());
+}
+
+#[test]
+fn clean_stop_clears_uptime_session_and_error() {
+    let controller = AndroidTunnelController::new();
+    {
+        let mut inner = controller.inner.lock().expect("lock");
+        inner.state.state = AndroidRuntimeState::Running;
+        inner.state.active = true;
+        inner.state.mode = Some(AndroidTunnelMode::Offer);
+        inner.state.config_path = Some("/tmp/config.toml".to_owned());
+        inner.state.started_at_unix_ms = Some(123);
+        inner.state.last_error = Some("transient".to_owned());
+        inner.state.active_session_count = 2;
+        inner.state.session_capacity = Some(16);
+    }
+    controller.stop();
+    let status = controller.status();
+    assert_eq!(status.state, AndroidRuntimeState::Stopped);
+    assert!(!status.active);
+    assert_eq!(status.started_at_unix_ms, None);
+    assert_eq!(status.last_error, None);
+    assert_eq!(status.config_path, None);
+    assert_eq!(status.active_session_count, 0);
+    assert_eq!(status.session_capacity, None);
+}
+
+#[test]
+fn duplicate_start_preserves_running_state() {
+    let controller = AndroidTunnelController::new();
+    {
+        let mut inner = controller.inner.lock().expect("lock");
+        inner.state.state = AndroidRuntimeState::Running;
+        inner.state.active = true;
+        inner.state.mode = Some(AndroidTunnelMode::Offer);
+        inner.state.started_at_unix_ms = Some(123);
+        inner.state.active_session_count = 1;
+    }
+
+    let result = controller.start_offer("/tmp/whatever.toml");
+
+    assert_eq!(result, Err("runtime already running".to_owned()));
+    let inner = controller.inner.lock().expect("lock");
+    assert_eq!(inner.state.state, AndroidRuntimeState::Running);
+    assert!(inner.state.active);
+    assert_eq!(inner.state.started_at_unix_ms, Some(123));
+    assert_eq!(inner.state.active_session_count, 1);
+}
+
+#[test]
+fn error_state_preserves_last_error_through_status() {
+    let controller = AndroidTunnelController::new();
+    {
+        let mut inner = controller.inner.lock().expect("lock");
+        inner.state.state = AndroidRuntimeState::Error;
+        inner.state.active = false;
+        inner.state.last_error = Some("native start failed".to_owned());
+    }
+    let status = controller.status();
+    assert_eq!(status.state, AndroidRuntimeState::Error);
+    assert_eq!(status.last_error, Some("native start failed".to_owned()));
+}
+
+#[test]
+fn validate_config_with_identity_accepts_missing_identity_path() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let config_dir = temp_dir.path().join("config");
+    let state_dir = temp_dir.path().join("state");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::create_dir_all(state_dir.join("log")).expect("create state dir");
+    fs::write(config_dir.join("authorized_keys"), "").expect("auth keys");
+    fs::write(
+        config_dir.join("ca.crt"),
+        "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+    )
+    .expect("ca");
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+format = "p2ptunnel-config-v3"
+
+[node]
+peer_id = "android-test"
+role = "offer"
+
+[peer]
+remote_peer_id = "answer-office"
+
+[paths]
+identity = "{identity}"
+authorized_keys = "{authorized_keys}"
+state_dir = "{state_dir}"
+log_dir = "{log_dir}"
+
+[broker]
+url = "mqtts://mqtt.example.com:8883"
+client_id = "android-test"
+topic_prefix = "p2ptunnel"
+username = ""
+password_file = ""
+qos = 1
+keepalive_secs = 30
+clean_session = false
+connect_timeout_secs = 5
+session_expiry_secs = 0
+
+[broker.tls]
+ca_file = "{ca_file}"
+client_cert_file = ""
+client_key_file = ""
+insecure_skip_verify = false
+
+[webrtc]
+stun_urls = ["stun:stun.l.google.com:19302"]
+enable_trickle_ice = true
+enable_ice_restart = true
+
+[tunnel]
+read_chunk_size = 16384
+local_eof_grace_ms = 250
+remote_eof_grace_ms = 250
+
+[[forwards]]
+id = "llama"
+
+[forwards.offer]
+listen_host = "127.0.0.1"
+listen_port = 8080
+
+[reconnect]
+enable_auto_reconnect = true
+strategy = "ice_then_renegotiate"
+ice_restart_timeout_secs = 8
+renegotiate_timeout_secs = 20
+backoff_initial_ms = 1000
+backoff_max_ms = 30000
+backoff_multiplier = 2.0
+jitter_ratio = 0.20
+max_attempts = 0
+hold_local_client_during_reconnect = false
+local_client_hold_secs = 0
+
+[security]
+require_mqtt_tls = true
+require_message_encryption = true
+require_message_signatures = true
+require_authorized_keys = true
+max_clock_skew_secs = 120
+max_message_age_secs = 300
+replay_cache_size = 10000
+reject_unknown_config_keys = true
+refuse_world_readable_identity = true
+refuse_world_writable_paths = true
+
+[logging]
+level = "info"
+format = "text"
+file_logging = true
+stdout_logging = true
+log_file = "{log_file}"
+redact_secrets = true
+redact_sdp = true
+redact_candidates = true
+log_rotation = "none"
+
+[health]
+status_socket = ""
+write_status_file = true
+status_file = "{status_file}"
+"#,
+            identity = config_dir.join("missing_identity.toml").display(),
+            authorized_keys = config_dir.join("authorized_keys").display(),
+            state_dir = state_dir.display(),
+            log_dir = state_dir.join("log").display(),
+            ca_file = config_dir.join("ca.crt").display(),
+            log_file = state_dir.join("log/p2ptunnel.log").display(),
+            status_file = state_dir.join("status.json").display(),
+        ),
+    )
+    .expect("config");
+
+    let generated = generate_identity("android-test").expect("generate");
+    let result = AndroidTunnelController::validate_config_with_identity(
+        &config_path,
+        &generated.identity.render_toml(),
+    );
+    assert!(result.valid, "{:?}", result.message);
+}
