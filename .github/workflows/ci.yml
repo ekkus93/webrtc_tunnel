@@ -38,6 +38,13 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # Release profile has debug_assertions off, so it catches warnings that the
+      # debug --all-targets run misses (e.g. imports used only under
+      # cfg(debug_assertions)). No --all-targets here: the integration tests
+      # depend on debug-only test hooks and intentionally do not build in release.
+      - name: Run clippy (release profile)
+        run: cargo clippy --workspace --release --all-features -- -D warnings
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
