@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ekkus93/webrtc_tunnel/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ekkus93/webrtc_tunnel/actions/workflows/ci.yml)
 
-`rust_webrtc` is a CLI-only secure TCP tunnel that carries multiple logical TCP streams over one reliable ordered WebRTC data channel per peer session while using MQTT only as an untrusted signaling transport.
+`webrtc_tunnel` is a CLI-only secure TCP tunnel that carries multiple logical TCP streams over one reliable ordered WebRTC data channel per peer session while using MQTT only as an untrusted signaling transport.
 
 GitHub Actions runs linting and tests for normal branch and pull request CI. Tagged pushes build release tarballs and publish them as GitHub release assets.
 
