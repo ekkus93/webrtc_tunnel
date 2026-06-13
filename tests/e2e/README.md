@@ -103,4 +103,4 @@ Until then, the data path is covered by Phase A (desktop↔desktop over a real b
 and the headless `bind_offer_listeners_soft_fails_individual_forward` /
 `snapshot_status_overlays_daemon_status_when_active` tests, while this smoke test
 covers the Android-on-device connect/listen/stop lifecycle. See
-`docs/DOCKER_TESTS1_TODO.md` (Phase B, B2) for details.
+`docs/archive/DOCKER_TESTS1_TODO.md` (Phase B, B2) for details.

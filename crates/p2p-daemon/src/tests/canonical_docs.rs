@@ -65,7 +65,7 @@ fn canonical_readme_documents_current_multi_peer_answer_behavior() {
 
 #[test]
 fn canonical_v03_spec_documents_current_answer_routing_and_status_policy() {
-    let spec = include_str!("../../../../docs/V03_SPEC.md");
+    let spec = include_str!("../../../../docs/archive/V03_SPEC.md");
     assert!(
         spec.contains(
             "one `p2p-answer` process to host multiple simultaneous active peer sessions"

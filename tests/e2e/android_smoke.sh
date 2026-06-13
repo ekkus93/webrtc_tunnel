@@ -12,7 +12,7 @@
 # stack connects to a real broker over TLS and binds its local forward listener.
 # It does NOT push application data through to a remote answer peer — the full
 # data-path E2E is blocked by the lack of TURN support in p2p-webrtc (the emulator
-# is behind qemu NAT). See docs/DOCKER_TESTS1_TODO.md (B2) for the deferral.
+# is behind qemu NAT). See docs/archive/DOCKER_TESTS1_TODO.md (B2) for the deferral.
 #
 # Requirements: a running emulator/device (`adb`), the Android SDK, a built p2pctl
 # (`cargo build -p p2pctl`), and internet access to the broker. Uses a PUBLIC broker

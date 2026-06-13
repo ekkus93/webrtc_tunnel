@@ -138,7 +138,7 @@ Core crates used by the implementation include:
 ## 6. Workspace layout and crate responsibilities
 
 ```text
-p2p-tunnel/
+webrtc_tunnel/
   Cargo.toml
   crates/
     p2p-core/
@@ -147,10 +147,12 @@ p2p-tunnel/
     p2p-webrtc/
     p2p-tunnel/
     p2p-daemon/
+    p2p-mobile/
   bins/
     p2p-offer/
     p2p-answer/
     p2pctl/
+  android/
 ```
 
 ### `p2p-core`
@@ -207,6 +209,12 @@ p2p-tunnel/
 - Local status output
 - Logging setup/redaction
 
+### `p2p-mobile`
+
+- JNI bridge for the Android app
+- Mobile-facing runtime control over the shared offer/answer daemon code
+- C-ABI / `jniLibs` surface consumed by the Kotlin foreground service
+
 ### `p2p-offer`, `p2p-answer`, `p2pctl`
 
 - `p2p-offer`: offer daemon entry point
@@ -224,7 +232,7 @@ p2p-tunnel/
 - After the data channel opens, each accepted local TCP client opens a new logical stream over the active data channel.
 - Sends encrypted/signaled offer and ICE candidates over MQTT.
 - Sends only `forward_id` in tunnel `OPEN` frames.
-- Owns reconnect and renegotiation in v0.2.
+- Owns reconnect and renegotiation in v0.3.
 
 ### Answer node
 
@@ -893,7 +901,7 @@ Subcommands:
 p2p-offer run [--config <path>] [--broker-url <url>]
 ```
 
-Offer listen ports are configured per forward in `[[forwards]]`; v0.2 does not accept first-forward-only listen override flags.
+Offer listen ports are configured per forward in `[[forwards]]`; v0.3 does not accept first-forward-only listen override flags.
 
 ### `p2p-answer`
 
@@ -901,7 +909,7 @@ Offer listen ports are configured per forward in `[[forwards]]`; v0.2 does not a
 p2p-answer run [--config <path>] [--broker-url <url>]
 ```
 
-Answer targets are configured per forward in `[[forwards]]`; v0.2 does not accept first-forward-only target override flags.
+Answer targets are configured per forward in `[[forwards]]`; v0.3 does not accept first-forward-only target override flags.
 
 ## 20. Operator workflow
 
