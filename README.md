@@ -1,6 +1,6 @@
-# rust_webrtc_tunnel
+# webrtc_tunnel
 
-[![CI](https://github.com/ekkus93/rust_webrtc_tunnel/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ekkus93/rust_webrtc_tunnel/actions/workflows/ci.yml)
+[![CI](https://github.com/ekkus93/webrtc_tunnel/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ekkus93/webrtc_tunnel/actions/workflows/ci.yml)
 
 `rust_webrtc` is a CLI-only secure TCP tunnel that carries multiple logical TCP streams over one reliable ordered WebRTC data channel per peer session while using MQTT only as an untrusted signaling transport.
 
