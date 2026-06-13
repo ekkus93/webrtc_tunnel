@@ -3,7 +3,7 @@
 //! ICE-restart reconnects before returning to the waiting-for-local-client steady
 //! state. Startup/security failures are fatal; transport turbulence is recoverable.
 
-use p2p_core::{AppConfig, ConfigError, ForwardOfferConfig, ForwardTable, SessionId};
+use p2p_core::{AppConfig, ConfigError, ForwardOfferConfig, ForwardTable};
 use p2p_crypto::{AuthorizedKeys, IdentityFile};
 use p2p_signaling::{MessageBody, MqttSignalingTransport, SignalCodec};
 use p2p_tunnel::{OfferClient, OfferListener};
@@ -32,7 +32,7 @@ pub(crate) use session::{
 #[cfg(any(test, debug_assertions))]
 #[derive(Clone)]
 pub struct OfferSessionTestHandle {
-    pub session_id: SessionId,
+    pub session_id: p2p_core::SessionId,
     pub ice_state_injector: p2p_webrtc::IceStateInjectorForTests,
 }
 
