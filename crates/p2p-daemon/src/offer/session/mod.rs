@@ -14,7 +14,7 @@ use p2p_signaling::{CloseBody, InnerMessageBuilder, MessageBody, OfferBody, Sign
 use p2p_tunnel::OfferClient;
 use p2p_webrtc::{IceConnectionState, WebRtcPeer};
 use tokio::sync::mpsc;
-use tokio::time::interval;
+use tokio::time::{Instant, interval, sleep_until};
 
 use crate::DaemonError;
 use crate::messages::*;
@@ -26,6 +26,19 @@ mod inbound;
 mod reconnect;
 
 use reconnect::attempt_offer_reconnect;
+
+/// Bound on how long an offer session may wait for the WebRTC data channel to open
+/// for the *first* time (after the local client is accepted and the offer/answer +
+/// ICE handshake run). If the channel never opens — observed on Android where the
+/// SCTP data plane stalls after DCEP — the session would otherwise wait forever,
+/// holding the single local-client slot and leaving the daemon "tunnel-ish" but
+/// serving nothing. On timeout the session tears down and the daemon returns to its
+/// listening/serving steady state. Healthy negotiation completes in a few seconds, so
+/// this generous bound never trips a working flow; it only rescues a wedged one.
+#[cfg(not(test))]
+const FIRST_DATA_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const FIRST_DATA_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_millis(250);
 
 // Used by `run_offer_session` below and re-exported for the daemon unit tests.
 pub(crate) use inbound::process_offer_session_payload;
@@ -152,6 +165,10 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
     let mut pending_client = Some(io.client);
     let mut accepted_clients = Some(io.accepted_clients);
     let mut offer_bridge: Option<OfferBridgeFuture<'a>> = None;
+    // Absolute deadline for the first data-channel open. Only enforced until the bridge
+    // first goes active; a working tunnel disables it so a live stream is never killed.
+    let first_data_channel_deadline = Instant::now() + FIRST_DATA_CHANNEL_OPEN_TIMEOUT;
+    let mut bridge_ever_active = false;
     let result = async {
         loop {
             if pending_client.is_some()
@@ -166,6 +183,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                     },
                 )
                 .await;
+                bridge_ever_active = true;
                 session.bridge_state = BridgeSessionState::Active;
                 let channel =
                     session.data_channel.clone().ok_or(DaemonError::MissingDataChannel)?;
@@ -184,6 +202,17 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                 }));
             }
             tokio::select! {
+                _ = sleep_until(first_data_channel_deadline),
+                    if !bridge_ever_active && offer_bridge.is_none() =>
+                {
+                    tracing::warn!(
+                        session_id = %session.session_id,
+                        remote_peer_id = %session.remote_peer_id,
+                        timeout = ?FIRST_DATA_CHANNEL_OPEN_TIMEOUT,
+                        "data channel did not open before deadline; tearing down wedged offer session",
+                    );
+                    return Err(DaemonError::DataChannelOpenTimeout(FIRST_DATA_CHANNEL_OPEN_TIMEOUT));
+                }
                 _ = tick.tick() => {
                     retry_pending_acks(
                         ctx,

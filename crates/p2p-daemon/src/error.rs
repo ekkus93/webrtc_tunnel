@@ -26,6 +26,8 @@ pub enum DaemonError {
     RemoteError(String, String),
     #[error("expected data channel was not available")]
     MissingDataChannel,
+    #[error("data channel did not open within {0:?} after session start")]
+    DataChannelOpenTimeout(std::time::Duration),
     #[error("logging setup error: {0}")]
     Logging(String),
 }
