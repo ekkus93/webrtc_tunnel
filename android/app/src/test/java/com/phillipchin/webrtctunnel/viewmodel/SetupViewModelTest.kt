@@ -160,6 +160,194 @@ class SetupViewModelTest : AppViewModelTestBase() {
         assertEquals(null, Shadows.shadowOf(app).nextStartedService)
     }
 
+    // --- Step navigation ---
+
+    @Test
+    fun goNextFromModeAdvancesToIdentity() {
+        val viewModel = SetupViewModel(deps)
+        assertEquals(SetupStep.Mode, viewModel.state.value.currentStep)
+        viewModel.goNext()
+        assertEquals(SetupStep.Identity, viewModel.state.value.currentStep)
+        assertEquals(null, viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun goBackAtFirstStepIsNoOp() {
+        val viewModel = SetupViewModel(deps)
+        assertEquals(SetupStep.Mode, viewModel.state.value.currentStep)
+        viewModel.goBack()
+        assertEquals(SetupStep.Mode, viewModel.state.value.currentStep)
+    }
+
+    @Test
+    fun goBackReturnsToPreviousStepAndClearsError() {
+        val viewModel = SetupViewModel(deps)
+        viewModel.goNext() // Mode -> Identity
+        viewModel.goNext() // blocked at Identity (no identity), error set
+        assertEquals(SetupStep.Identity, viewModel.state.value.currentStep)
+        assertTrue(viewModel.state.value.errorMessage != null)
+
+        viewModel.goBack()
+        assertEquals(SetupStep.Mode, viewModel.state.value.currentStep)
+        assertEquals(null, viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun identityStepBlocksAdvanceWithoutIdentity() {
+        val viewModel = SetupViewModel(deps)
+        viewModel.goNext() // Mode -> Identity
+        viewModel.goNext() // attempt Identity -> Broker
+        assertEquals(SetupStep.Identity, viewModel.state.value.currentStep)
+        assertTrue(
+            viewModel.state.value.errorMessage?.contains("Import or generate a private identity") == true,
+        )
+    }
+
+    @Test
+    fun peerStepBlocksAdvanceWhenRemotePeerIdBlank() {
+        val viewModel = SetupViewModel(deps)
+        viewModel.setImportIdentityPath(navIdentityFile("peer_block").absolutePath)
+        viewModel.setInput(viewModel.state.value.input.copy(brokerHost = "broker.local", remotePeerId = ""))
+        advanceTo(viewModel, SetupStep.Peer)
+        assertEquals(SetupStep.Peer, viewModel.state.value.currentStep)
+
+        viewModel.goNext() // attempt Peer -> Forwards
+        assertEquals(SetupStep.Peer, viewModel.state.value.currentStep)
+        assertTrue(viewModel.state.value.errorMessage?.contains("Remote peer id is required") == true)
+    }
+
+    @Test
+    fun forwardsStepBlocksAdvanceWhenNoEnabledForward() {
+        val viewModel = newValidViewModel("forwards_block")
+        deps.forwardsStore.saveForwards(emptyList()) // clear the seeded default forward
+        advanceTo(viewModel, SetupStep.Forwards)
+        assertEquals(SetupStep.Forwards, viewModel.state.value.currentStep)
+
+        viewModel.goNext() // attempt Forwards -> NetworkPolicy with no forwards saved
+        assertEquals(SetupStep.Forwards, viewModel.state.value.currentStep)
+        assertTrue(viewModel.state.value.errorMessage?.contains("Enable at least one forward") == true)
+    }
+
+    @Test
+    fun goNextClearsPreviousErrorOnSuccessfulAdvance() {
+        val viewModel = newValidViewModel("clear_error")
+        deps.forwardsStore.saveForwards(emptyList()) // clear the seeded default forward
+        advanceTo(viewModel, SetupStep.Forwards)
+        viewModel.goNext() // blocked: no enabled forward
+        assertEquals(SetupStep.Forwards, viewModel.state.value.currentStep)
+        assertTrue(viewModel.state.value.errorMessage != null)
+
+        // Fixing the underlying condition outside the wizard setters must not clear the error on its own.
+        saveEnabledForward()
+        assertTrue(viewModel.state.value.errorMessage != null)
+
+        viewModel.goNext() // now passes
+        assertEquals(SetupStep.NetworkPolicy, viewModel.state.value.currentStep)
+        assertEquals(null, viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun goNextOnReviewStepIsNoOp() {
+        val viewModel = newValidViewModel("review_noop")
+        saveEnabledForward()
+        advanceTo(viewModel, SetupStep.Review)
+        assertEquals(SetupStep.Review, viewModel.state.value.currentStep)
+
+        viewModel.goNext()
+        assertEquals(SetupStep.Review, viewModel.state.value.currentStep)
+        assertEquals(null, viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun sequentialGoNextVisitsEveryStepInOrder() {
+        val viewModel = newValidViewModel("sequence")
+        saveEnabledForward()
+
+        val visited = mutableListOf(viewModel.state.value.currentStep)
+        repeat(SetupStep.entries.size - 1) {
+            viewModel.goNext()
+            visited.add(viewModel.state.value.currentStep)
+        }
+
+        assertEquals(
+            listOf(
+                SetupStep.Mode,
+                SetupStep.Identity,
+                SetupStep.Broker,
+                SetupStep.Peer,
+                SetupStep.Forwards,
+                SetupStep.NetworkPolicy,
+                SetupStep.Review,
+            ),
+            visited,
+        )
+        assertEquals(null, viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun goBackFromReviewWalksBackToMode() {
+        val viewModel = newValidViewModel("back_sequence")
+        saveEnabledForward()
+        advanceTo(viewModel, SetupStep.Review)
+        assertEquals(SetupStep.Review, viewModel.state.value.currentStep)
+
+        val visited = mutableListOf(viewModel.state.value.currentStep)
+        repeat(SetupStep.entries.size - 1) {
+            viewModel.goBack()
+            visited.add(viewModel.state.value.currentStep)
+        }
+
+        assertEquals(
+            listOf(
+                SetupStep.Review,
+                SetupStep.NetworkPolicy,
+                SetupStep.Forwards,
+                SetupStep.Peer,
+                SetupStep.Broker,
+                SetupStep.Identity,
+                SetupStep.Mode,
+            ),
+            visited,
+        )
+    }
+
+    private fun navIdentityFile(tag: String): File =
+        File(app.filesDir, "nav_identity_$tag.toml").apply {
+            writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
+        }
+
+    private fun newValidViewModel(tag: String): SetupViewModel {
+        val viewModel = SetupViewModel(deps)
+        viewModel.setImportIdentityPath(navIdentityFile(tag).absolutePath)
+        viewModel.setImportPublicIdentity("kid peer")
+        viewModel.setInput(
+            viewModel.state.value.input.copy(
+                brokerHost = "broker.local",
+                remotePeerId = "remote-peer",
+            ),
+        )
+        return viewModel
+    }
+
+    private fun saveEnabledForward() {
+        deps.forwardsStore.saveForwards(
+            listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
+        )
+    }
+
+    private fun advanceTo(
+        viewModel: SetupViewModel,
+        target: SetupStep,
+    ) {
+        var guard = 0
+        while (viewModel.state.value.currentStep != target && guard < SetupStep.entries.size) {
+            val before = viewModel.state.value.currentStep
+            viewModel.goNext()
+            if (viewModel.state.value.currentStep == before) break // blocked by validation
+            guard += 1
+        }
+    }
+
     private fun prepareValidReviewState(viewModel: SetupViewModel) {
         val identityFile =
             File(app.filesDir, "incoming_identity.toml").apply {
