@@ -27,13 +27,19 @@ use crate::types::{
     PublishRequest, PublishedSignal, RuntimeContext, SessionStatusSnapshot, StatusSnapshot,
 };
 pub(crate) async fn write_daemon_status(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot) {
+    // Pair the active session id with the real remote peer (the offer's configured
+    // `[peer].remote_peer_id`). If the remote is somehow unknown (no `[peer]`), report
+    // no session rather than fabricating a self-targeted one.
+    let active_session = snapshot
+        .active_session_id
+        .and_then(|id| ctx.config.peer.as_ref().map(|peer| (id, peer.remote_peer_id.clone())));
     write_status_or_log(
         ctx.status,
         DaemonStatus::new(
             ctx.config.node.peer_id.clone(),
             ctx.config.node.role.clone(),
             ctx.runtime.mqtt_connected,
-            snapshot.active_session_id,
+            active_session,
             snapshot.current_state,
             ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
         )

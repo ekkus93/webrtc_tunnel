@@ -90,15 +90,18 @@ impl DaemonStatus {
         peer_id: PeerId,
         role: NodeRole,
         mqtt_connected: bool,
-        active_session_id: Option<SessionId>,
+        active_session: Option<(SessionId, PeerId)>,
         current_state: DaemonState,
         configured_forwards: Vec<String>,
     ) -> Self {
-        let sessions = active_session_id
-            .map(|id| {
+        // The session's `remote_peer_id` must be the actual remote peer, never the
+        // local `peer_id`. Bundling the id with its remote here makes the historical
+        // "stamp the local peer as the session remote" bug structurally impossible.
+        let sessions = active_session
+            .map(|(id, remote_peer_id)| {
                 vec![SessionStatus::new(
                     id,
-                    peer_id.clone(),
+                    remote_peer_id,
                     current_state,
                     matches!(current_state, DaemonState::TunnelOpen),
                     configured_forwards.clone(),
@@ -272,7 +275,10 @@ mod tests {
                 "offer-home".parse().expect("peer id"),
                 NodeRole::Offer,
                 true,
-                Some(p2p_core::SessionId::new([7_u8; 16])),
+                Some((
+                    p2p_core::SessionId::new([7_u8; 16]),
+                    "answer-office".parse().expect("remote peer id"),
+                )),
                 DaemonState::Idle,
                 vec!["ssh".to_owned(), "web-ui".to_owned()],
             ))
@@ -284,6 +290,11 @@ mod tests {
         assert!(content.contains("\"active_session_count\""));
         assert!(content.contains("\"sessions\""));
         assert!(content.contains("\"ssh\""));
+        // Regression guard: the session's remote_peer_id must be the actual remote,
+        // never the local peer_id (the old self-targeting display bug).
+        let json: serde_json::Value = serde_json::from_str(&content).expect("status json");
+        assert_eq!(json["sessions"][0]["remote_peer_id"], "answer-office");
+        assert_ne!(json["sessions"][0]["remote_peer_id"], "offer-home");
         assert!(!content.contains("\"active_stream_count\""));
         assert!(!content.contains("\"open_forward_ids\""));
         assert!(!content.contains("private"));
