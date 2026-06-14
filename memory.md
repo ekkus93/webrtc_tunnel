@@ -766,3 +766,49 @@ Why does **offer→answer SCTP DATA** fail on Android while **STUN connectivity 
 - Repo tree CLEAN (all diagnostic edits reverted). Laptop offer restored & serving (detached `setsid` process; original was a foreground terminal process the user had running).
 - Phone still has the **diagnostic-logging APK** installed (harmless; extra logging + writes `files/state/debug_trace.log`) because USB kept dropping before a clean reinstall. Reinstall clean with `cd android && ./gradlew installDebug` on the reverted tree when the phone reconnects. Phone's forward id is currently `web-ui` (changed during testing).
 - adb/USB on this Samsung is flaky — it repeatedly drops mid-session (`adb reconnect`/re-seat cable needed). UI driving via `adb shell input tap` + `uiautomator dump`; long log messages need `adb exec-out screencap` (uiautomator drops them). Note: `Net::Ifs` bind etc. confirmed by reading `~/.cargo/registry/src/index.crates.io-*/webrtc-*`.
+
+---
+
+## 2026-06-13 (later still) — Spec/TODO review + agreed plan (with ChatGPT 5.5)
+
+Reviewed `docs/ANDROID_P2P_ANSWER_DATACHANNEL_DEBUG_SPEC.md` + `..._TODO.md`; my review is
+in `docs/responses1.md`, the agreed answers are in `docs/replies1.md`. Applied the doc
+corrections to SPEC/TODO. **No transport code changed yet.**
+
+### Confirmed facts (treat as established; do not re-derive)
+1. **Not browser-specific** — `toybox nc` reproduced 0 bytes.
+2. **Android local TCP accept fires** — `accepted local forward client` logged.
+3. **Android uses the fallback net** (`set_vnet`/`Net::Ifs`); the laptop does not.
+4. **Same public NAT path, opposite result** (same Wi-Fi/NAT, same moment):
+   - Phone:  `udp4 srflx 24.130.174.186:45766 <-> udp4 srflx 162.229.61.169:36114` → `T3-rtx`, 0 bytes.
+   - Laptop: `udp4 srflx 24.130.174.186:48473 <-> udp4 srflx 162.229.61.169:36415` → HTTP 200, 6917 bytes.
+5. **SCTP asymmetric** — answer→offer receive works (`peer_last_tsn` climbs); offer→answer
+   DATA/SACK not acked, answer retransmits same TSN.
+6. Forward-id mismatch tested & ruled out (phone changed to known-good `web-ui`, still 0 bytes).
+
+### Agreed lead hypothesis (use in diagnostics)
+> Android reaches ICE/DTLS/SCTP/DCEP-open but stalls on user data. The laptop succeeds at
+> the same time over the same NAT/public IP and same answer server. Android uses the
+> `webrtc-rs` fallback `Net::Ifs` path while the laptop does not. Leading hypothesis:
+> Android-specific UDP/WebRTC data-plane behavior after data-channel open, potentially
+> involving `set_vnet`/fallback interface handling or `webrtc-rs` SCTP/DataChannel on
+> Android. Docker/answer networking is possible but no longer the leading standalone cause.
+
+### The one remaining gap this pass must close
+> Is the phone actually putting the stalled SCTP DATA/SACK UDP packets onto the network,
+> and if so, where do they disappear? → needs **phone-side pcap** (root `tcpdump` or
+> PCAPdroid) and/or **answer-host pcap**, and/or a **minimal data-channel echo** test.
+
+### Agreed decisions / priority changes (from replies1.md)
+- Phone-side capture is a new **P0 task (T1.0)**; answer-host tasks (T1.1/T1.2/T5.1) are
+  **P0-if-access else blocked-by-access**, not failed.
+- Minimal data-channel echo (T8.3) promoted: **P0 if no answer-host access, else P1**.
+- Docker demoted to secondary/contributing.
+- Instrumentation must be **permanent, flag-gated, redacted** (no add-then-revert churn),
+  surfaced via the Android ring buffer/JNI (mobile file logging is unreliable).
+- Status self-targeting (status.rs `DaemonStatus::new`) is **display-only**; fix to stop
+  misleading debugging but it is NOT the data-plane cause.
+
+### Blocked-by-access (need user to provide)
+- answer-office host SSH/shell access (for `tcpdump` + instrumented `p2p-answer` deploy).
+- phone packet-capture capability (root, or PCAPdroid install).
