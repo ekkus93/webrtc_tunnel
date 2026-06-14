@@ -126,3 +126,37 @@ container address is not reliably reachable from the emulator. This is still a
 **local/manual** tier (UI-automation- and emulator-sensitive), not a CI gate. The
 on-device WebRTC behaviour (host-candidate gathering + loopback handshake) is also
 guarded headlessly by `WebRtcProbeInstrumentationTest`.
+
+The wizard automation (`lib/android_wizard.sh`) works on **physical devices**, not just
+emulators — UI elements are located via uiautomator (screen-size independent), the
+Next button is found by scrolling when long step content pushes it off-screen, the
+pre-filled broker-host field is cleared before typing, and the Remote Peer step does not
+wait for a non-existent validation banner. Target a specific phone with
+`ANDROID_SERIAL=<serial>` when more than one device is attached.
+
+## Phase B (debug) — persistent both-sides rig (`android_tunnel_debug.sh`)
+
+```
+tests/e2e/android_tunnel_debug.sh            # bring the rig up (host-net answer, debug logs)
+tests/e2e/android_tunnel_debug.sh --clean    # tear it down
+```
+
+Same wizard + dockerized-answer setup as the e2e test, but it **does not tear down** and
+runs the answer at **DEBUG** with `stdout_logging`, so you can root-cause a stalled data
+path with full both-sides visibility — answer-side frame logs via `docker logs`, plus a
+host packet capture (the answer is reachable on the host). It leaves the offer Listening,
+the answer container up, a host `http.server` target, and an `adb forward
+127.0.0.1:18080 -> device:8080`; then drive `curl -s http://127.0.0.1:18080/marker.txt`.
+
+Env knobs: `ANDROID_SERIAL=<serial>` (pick the phone), `ANSWER_NET=host|bridge`
+(`bridge` puts the answer behind Docker NAT — closer to a Dockerized answer-office),
+`ANSWER_LEVEL=debug|info`, `BROKER_HOST`/`BROKER_PORT`, `REBUILD=0`.
+
+**What it can and cannot reproduce:** an Android offer to a *local* answer (same-LAN, or
+even the phone on cellular -> a home answer) connects directly or via cone-NAT
+hole-punching and **succeeds in every mode** (host, bridge, cellular) — so this rig is
+great for proving the tunnel/mux/answer stack works and for fast iteration, but it does
+**not** reproduce the Android-vs-remote-answer data-plane stall (that needs the real
+remote answer behind its NAT/firewall). See the `memory.md` investigation notes for the
+full failure matrix and the leading hypothesis (vnet-fallback socket behaviour exposed by
+a symmetric/address-dependent NAT).

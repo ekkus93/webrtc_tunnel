@@ -812,3 +812,75 @@ corrections to SPEC/TODO. **No transport code changed yet.**
 ### Blocked-by-access (need user to provide)
 - answer-office host SSH/shell access (for `tcpdump` + instrumented `p2p-answer` deploy).
 - phone packet-capture capability (root, or PCAPdroid install).
+
+---
+
+## 2026-06-14 — Controlled rig (phone ↔ dockerized p2p-answer) + failure localized to vnet × remote-NAT
+
+Got a fully controlled rig working: a real Android phone (offer) ↔ a **dockerized
+`p2p-answer`** on this laptop, with both-sides visibility. Used it to test the data-plane
+failure across many network shapes. **The bug never reproduced locally.**
+
+### The rig / harness (now works on PHYSICAL devices — reuse this)
+- `tests/e2e/android_tunnel_e2e.sh` — pass/fail e2e (auto-teardown). PASSES on both phones.
+- `tests/e2e/android_tunnel_debug.sh` — **persistent** rig (no teardown), answer at DEBUG so
+  the frame logs show via `docker logs`. Env: `ANDROID_SERIAL=<serial>` (pick phone),
+  `ANSWER_NET=host|bridge`, `ANSWER_LEVEL=debug|info`, `REBUILD=0`. `--clean` to tear down.
+  Drive: `curl -s http://127.0.0.1:18080/marker.txt`. See `tests/e2e/README.md`.
+- Fixed 4 real wizard-automation bugs in `lib/android_wizard.sh` so it works on physical
+  devices (committed): Settings tab via uiautomator (not a hardcoded % that lands below
+  the nav bar on tall screens); `tap_next` scrolls to find Next when long content hides it;
+  Remote Peer step no longer waits for a non-existent "validated" banner; broker-host field
+  cleared before typing (it now defaults to `broker.emqx.io`, so typing doubled it).
+- Two phones attached at once → target with `ANDROID_SERIAL` (adb honors it; do NOT pass
+  `-s` via the `ADB` var — the lib's `[ -x "$ADB" ]` check breaks with a flag in it).
+- Rebuild the instrumented answer for the rig: `cargo build --release -p p2p-answer`.
+
+### Phones used
+- **LG G6** (`LGH87250967ab9`, Android **8**, arm64) — below 11, so **no NETLINK
+  restriction → no vnet fallback**. PASSES.
+- **Samsung A54** (`R5CW31AX4FL`, Android **16**) — uses the `Net::Ifs` vnet fallback.
+  PASSES on every local shape (below).
+
+### Failure matrix (this is the key result)
+| phone | answer location / mode | result |
+|---|---|---|
+| G6 (no vnet) | local docker, `--network host`, same LAN | ✅ works |
+| A54 (vnet)   | local docker, `--network host`, same LAN | ✅ works |
+| A54 (vnet)   | local docker, **bridge** (Docker NAT), same LAN | ✅ works |
+| A54 (vnet)   | **A54 on T-Mobile cellular** → home docker answer (2 networks) | ✅ works |
+| laptop (no vnet, `offer-arisu`) | **remote answer-office** (coworking) | ✅ works |
+| **A54 (vnet)** | **remote answer-office** (coworking) | ❌ **the bug** (0 bytes, SCTP `T3-rtx`) |
+
+### Conclusion (localized)
+The only failing combo is **A54 (vnet fallback) + the real answer-office at the coworking
+space**. Not the vnet alone (works local + cellular), not Docker/NAT generically (works),
+not the tunnel/mux/answer code (every local path delivers bytes), not the phone's data
+plane per se. It's a **specific interaction between the vnet-fallback UDP socket and the
+coworking network's NAT/firewall** — the laptop's native socket traverses that same path
+fine.
+
+### Leading hypothesis (to test next)
+webrtc-rs in `set_vnet`/`Net::Ifs` mode sends SCTP **data** from a different socket/source
+than the STUN connectivity checks that established the NAT mapping. A **cone NAT** (home
+router, T-Mobile cellular) reuses one mapping regardless → works. A **symmetric /
+address-dependent NAT** (plausibly the coworking firewall) drops data arriving on an
+unexpected mapping → fails. Laptop's single native socket never trips this.
+
+### Next steps (paused — answer-office is DOWN right now)
+1. **Option B (definitive):** deploy the instrumented `p2p-answer` (level=debug) on
+   answer-office; reconfigure the A54 for answer-office (wizard: remote=answer-office, its
+   pub) and add the A54's pub to answer-office `authorized_keys`; drive from home Wi-Fi and
+   capture both ends (`docker logs` / answer stdout + `tcpdump host <phone-public-IP> and
+   udp` on answer-office + the phone's in-app debug logs).
+2. **Option A' (local):** simulate a symmetric NAT (Linux netns + iptables) in front of the
+   local answer to confirm the hypothesis without answer-office.
+
+### Useful facts
+- Home/laptop: LAN `192.168.88.109`, public `24.130.174.186`. A54 Wi-Fi `192.168.88.106`.
+  A54 on T-Mobile = IPv6-primary + 464XLAT (CLAT v4 `192.0.0.4`), reported `NOT_METERED`.
+- App metered policy blocks the tunnel on cellular by default; enable Settings → Network
+  Policy → Allow metered, then tap **"Allow This Session"** on the paused Home screen
+  (persistent toggle alone wasn't enough for the running session).
+- adb-over-USB is independent of the phone's radio, so `svc wifi disable; svc data enable`
+  flips the WebRTC path to cellular while keeping adb + `adb forward`.
