@@ -132,6 +132,8 @@ pub(crate) async fn register_offer_client(
         })?,
     })?;
     opening_streams.insert(stream_id, stream);
+    // Redacted (id/forward only, no payload): proves the offer issued the OPEN.
+    tracing::debug!(stream_id, forward_id = %forward_id, "offer sending OPEN frame");
     frame_tx
         .send(TunnelFrame::open(stream_id, OpenPayload { forward_id })?)
         .await
@@ -171,6 +173,7 @@ pub(crate) async fn handle_offer_frame(
                 return Ok(());
             }
             manager.get_mut(stream_id)?.lifecycle = StreamLifecycle::Open;
+            tracing::debug!(stream_id, "offer received OPEN ack; bridging local TCP stream");
             let runtime_stream =
                 spawn_tcp_bridge(stream_id, stream, tunnel_config, tcp_frame_tx, stream_event_tx);
             streams.insert(stream_id, runtime_stream);
@@ -206,10 +209,12 @@ pub(crate) async fn handle_offer_frame(
             }
         }
         TunnelFrameType::Close => {
+            tracing::debug!(stream_id = frame.stream_id, "offer received CLOSE; closing stream");
             opening_streams.remove(&frame.stream_id);
             close_stream(frame.stream_id, manager, streams).await?;
         }
         TunnelFrameType::Error => {
+            tracing::debug!(stream_id = frame.stream_id, "offer received ERROR; closing stream");
             opening_streams.remove(&frame.stream_id);
             close_stream(frame.stream_id, manager, streams).await?;
         }

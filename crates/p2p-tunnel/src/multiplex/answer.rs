@@ -129,6 +129,11 @@ pub(crate) async fn handle_answer_frame(
                     return Ok(());
                 }
             };
+            tracing::debug!(
+                stream_id = frame.stream_id,
+                forward_id = %open.forward_id,
+                "answer received OPEN frame",
+            );
             let target = match forward_table.target_for(&open.forward_id, remote_peer_id) {
                 Ok(target) => target,
                 Err(ForwardLookupError::UnknownForward) => {
@@ -253,6 +258,10 @@ async fn handle_target_connect_result(
         Ok(stream) => {
             stream_state.lifecycle = StreamLifecycle::Open;
             stream_state.forward_id = target_result.forward_id;
+            tracing::debug!(
+                stream_id = target_result.stream_id,
+                "answer target TCP connected; sending OPEN ack",
+            );
             let runtime_stream = spawn_tcp_bridge(
                 target_result.stream_id,
                 stream,

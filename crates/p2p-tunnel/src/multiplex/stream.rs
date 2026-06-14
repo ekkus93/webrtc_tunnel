@@ -178,14 +178,32 @@ pub(crate) fn spawn_writer_only(
 ) -> JoinHandle<Result<(), TunnelError>> {
     tokio::spawn(async move {
         while let Some(frame) = outbound_rx.recv().await {
+            let frame_type = frame.frame_type;
+            let stream_id = frame.stream_id;
             let encoded = match TunnelFrameCodec::encode(&frame) {
                 Ok(encoded) => encoded,
                 Err(error) => {
+                    // Redacted: frame type/stream id/error only, never payload bytes.
+                    tracing::warn!(
+                        frame_type = ?frame_type,
+                        stream_id,
+                        reason = %error,
+                        "failed to encode tunnel frame; closing writer",
+                    );
                     let _ = failure_tx.send(error).await;
                     return Err(TunnelError::WriterClosed);
                 }
             };
             if let Err(error) = data_channel.send(&encoded).await {
+                // The data-channel send path failing is a prime diagnostic signal
+                // (e.g. the Android SCTP data-plane stall): surface it, redacted.
+                tracing::warn!(
+                    frame_type = ?frame_type,
+                    stream_id,
+                    encoded_len = encoded.len(),
+                    reason = %error,
+                    "data channel send failed; closing writer",
+                );
                 let tunnel_error = TunnelError::WebRtc(error);
                 let _ = failure_tx.send(tunnel_error).await;
                 return Err(TunnelError::WriterClosed);
