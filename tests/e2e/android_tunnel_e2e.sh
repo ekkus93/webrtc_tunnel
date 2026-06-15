@@ -68,10 +68,11 @@ command -v python3 >/dev/null || fail "python3 not found"
 [ -f "$CA" ] || fail "system CA bundle not found at $CA"
 
 ANSWER_BIN="$ROOT/target/release/p2p-answer"
-if [ ! -x "$ANSWER_BIN" ]; then
-  log "building release p2p-answer"
-  ( cd "$ROOT" && cargo build --release -q -p p2p-answer )
-fi
+# Always build (cargo is a near-no-op when current). Reusing a stale binary silently breaks
+# the run when the config schema changes: an older answer rejects unknown config keys.
+log "building release p2p-answer (incremental)"
+( cd "$ROOT" && cargo build --release -q -p p2p-answer )
+[ -x "$ANSWER_BIN" ] || fail "p2p-answer build did not produce $ANSWER_BIN"
 
 # ---- drive the app to a Listening offer over the broker ----
 android_install_app

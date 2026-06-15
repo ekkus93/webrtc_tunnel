@@ -26,18 +26,27 @@ E2E="$HERE/android_tunnel_e2e.sh"
 
 EXPECT_NATIVE_ICE_PASS="${EXPECT_NATIVE_ICE_PASS:-0}"
 
-# row: <label> <expectation: pass|expected_fail> <env-assignments...>
+# row: <label> <expectation: pass|expected_fail|tolerant> <env-assignments...>
+#   pass          - must deliver; failure is a hard error.
+#   expected_fail - must NOT deliver; a pass is flagged UNEXPECTED_PASS (hard error).
+#   tolerant      - either outcome is acceptable (diagnostic rows whose result depends on
+#                   the device/network, e.g. `native` passes on a physical phone with a
+#                   reachable answer + STUN srflx, but fails on an emulator).
 run_row() {
   local label="$1" expect="$2"; shift 2
   printf '\n\033[1;36m===== matrix row: %s (expect %s) =====\033[0m\n' "$label" "$expect"
   if env "$@" "$E2E"; then
-    [ "$expect" = "pass" ] && { echo "PASS  $label"; RESULTS+=("PASS  $label"); return 0; }
-    echo "UNEXPECTED_PASS  $label"; RESULTS+=("UNEXPECTED_PASS  $label"); return 1
+    case "$expect" in
+      pass)     echo "PASS  $label"; RESULTS+=("PASS  $label"); return 0 ;;
+      tolerant) echo "PASS  $label (tolerated)"; RESULTS+=("PASS  $label (tolerated)"); return 0 ;;
+      *)        echo "UNEXPECTED_PASS  $label"; RESULTS+=("UNEXPECTED_PASS  $label"); return 1 ;;
+    esac
   fi
-  if [ "$expect" = "expected_fail" ]; then
-    echo "EXPECTED_FAIL  $label"; RESULTS+=("EXPECTED_FAIL  $label"); return 0
-  fi
-  echo "FAIL  $label"; RESULTS+=("FAIL  $label"); return 1
+  case "$expect" in
+    expected_fail) echo "EXPECTED_FAIL  $label"; RESULTS+=("EXPECTED_FAIL  $label"); return 0 ;;
+    tolerant)      echo "EXPECTED_FAIL  $label (tolerated)"; RESULTS+=("EXPECTED_FAIL  $label (tolerated)"); return 0 ;;
+    *)             echo "FAIL  $label"; RESULTS+=("FAIL  $label"); return 1 ;;
+  esac
 }
 
 RESULTS=()
@@ -49,10 +58,13 @@ run_row "auto x bridge" pass REBUILD=0               ANDROID_ICE_MODE=auto ANSWE
 run_row "vnet x host"   pass REBUILD=0               ANDROID_ICE_MODE=vnet ANSWER_NET=host   || STATUS=1
 run_row "vnet x bridge" pass REBUILD=0               ANDROID_ICE_MODE=vnet ANSWER_NET=bridge || STATUS=1
 
+# native is a diagnostic row: it passes on a physical device with a reachable answer +
+# STUN srflx, but fails on an emulator (no candidates gathered). Tolerate either unless
+# EXPECT_NATIVE_ICE_PASS=1 demands a pass.
 if [ "$EXPECT_NATIVE_ICE_PASS" = "1" ]; then
-  run_row "native x host" pass          REBUILD=0 ANDROID_ICE_MODE=native ANSWER_NET=host || STATUS=1
+  run_row "native x host" pass     REBUILD=0 ANDROID_ICE_MODE=native ANSWER_NET=host || STATUS=1
 else
-  run_row "native x host" expected_fail REBUILD=0 ANDROID_ICE_MODE=native ANSWER_NET=host || STATUS=1
+  run_row "native x host" tolerant REBUILD=0 ANDROID_ICE_MODE=native ANSWER_NET=host || STATUS=1
 fi
 
 run_row "black-hole (auto x host)" pass REBUILD=0 BLACK_HOLE=1 ANDROID_ICE_MODE=auto ANSWER_NET=host || STATUS=1

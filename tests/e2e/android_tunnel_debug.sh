@@ -70,7 +70,9 @@ fi
 command -v docker >/dev/null || fail "docker not found"
 [ -f "$CA" ] || fail "system CA bundle not found at $CA"
 ANSWER_BIN="$ROOT/target/release/p2p-answer"
-[ -x "$ANSWER_BIN" ] || { log "building release p2p-answer"; ( cd "$ROOT" && cargo build --release -q -p p2p-answer ); }
+# Always build (cargo no-ops when current); a stale answer silently rejects new config keys.
+log "building release p2p-answer (incremental)"; ( cd "$ROOT" && cargo build --release -q -p p2p-answer )
+[ -x "$ANSWER_BIN" ] || fail "p2p-answer build did not produce $ANSWER_BIN"
 
 rm -rf "$RIGDIR"; mkdir -p "$RIGDIR"; chmod 700 "$RIGDIR"
 

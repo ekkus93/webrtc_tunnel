@@ -119,8 +119,10 @@ Env knobs:
   time). Device-agnostic: works on emulators *and* physical devices, and (unlike patching
   app-private config) survives the SELinux restriction on `run-as` **writes**. The script
   sets the prop **before** the wizard, then verifies the generated config picked it up.
-  `native` on an emulator/Android 11+ is expected to fail (no candidates gathered → fails
-  via the ~30s first-open timeout, not the probe). Empty leaves the app default (`auto`).
+  `native` on an **emulator**/Android 11+ is expected to fail (no candidates gathered → fails
+  via the ~30s first-open timeout, not the probe), but on a **physical device** with a
+  reachable (host-networked) answer it typically **passes** via a STUN srflx candidate — so
+  the matrix tolerates either outcome for that row. Empty leaves the app default (`auto`).
 - `BLACK_HOLE=1` — run the answer with `P2P_TUNNEL_DEBUG_DROP_PING=1` so it opens the data
   channel but never replies to the tunnel `Ping`. The offer's data-plane probe then times
   out; the test asserts **fast failure with no byte delivery** (and that the answer logged a
@@ -138,9 +140,14 @@ tests/e2e/android_tunnel_matrix.sh
 ```
 
 Runs `android_tunnel_e2e.sh` across `auto|vnet` × `host|bridge`, the `native × host`
-diagnostic row (reported `EXPECTED_FAIL` on emulator/Android 11+ unless
-`EXPECT_NATIVE_ICE_PASS=1`), and the `BLACK_HOLE` probe-failure row, then prints a summary.
-The APK/answer are built once (first row) and reused (`REBUILD=0`) thereafter.
+diagnostic row (**tolerant** — either outcome is accepted, since `native` passes on a
+physical device but fails on an emulator; set `EXPECT_NATIVE_ICE_PASS=1` to require a pass),
+and the `BLACK_HOLE` probe-failure row, then prints a summary. The APK is built once (first
+row) and reused (`REBUILD=0`) thereafter; the release answer is always rebuilt incrementally
+so a schema change can't leave a stale binary rejecting the config.
+
+Validated on a physical Samsung A54 (2026-06-15): all delivery rows pass with the data-plane
+probe round-trip verified, and the black-hole row confirms fail-fast teardown end-to-end.
 
 ### Why this works now (it used to be blocked)
 
