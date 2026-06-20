@@ -12,7 +12,8 @@ use p2p_crypto::{IdentityFile, PublicIdentity, generate_identity};
 use tracing::error;
 
 use super::{
-    AndroidTunnelController, IdentityValidationResult, catch_api, catch_api_string, with_controller,
+    AndroidTunnelController, IdentityValidationResult, catch_api_recording, catch_api_string,
+    with_controller,
 };
 #[unsafe(no_mangle)]
 pub extern "C" fn p2ptunnel_create_runtime() -> *mut AndroidTunnelController {
@@ -50,7 +51,7 @@ pub unsafe extern "C" fn p2ptunnel_start_offer(
     handle: *mut AndroidTunnelController,
     config_path: *const c_char,
 ) -> i32 {
-    catch_api(|| {
+    catch_api_recording(handle, || {
         if config_path.is_null() {
             return Err("config path was null".to_owned());
         }
@@ -74,7 +75,7 @@ pub unsafe extern "C" fn p2ptunnel_start_offer_with_identity(
     identity_ptr: *const u8,
     identity_len: usize,
 ) -> i32 {
-    catch_api(|| {
+    catch_api_recording(handle, || {
         if config_path.is_null() {
             return Err("config path was null".to_owned());
         }
@@ -104,7 +105,7 @@ pub unsafe extern "C" fn p2ptunnel_start_answer(
     handle: *mut AndroidTunnelController,
     config_path: *const c_char,
 ) -> i32 {
-    catch_api(|| {
+    catch_api_recording(handle, || {
         if config_path.is_null() {
             return Err("config path was null".to_owned());
         }
@@ -121,7 +122,7 @@ pub unsafe extern "C" fn p2ptunnel_start_answer(
 ///
 /// `handle` must be a valid runtime pointer from `p2ptunnel_create_runtime`.
 pub unsafe extern "C" fn p2ptunnel_stop(handle: *mut AndroidTunnelController) -> i32 {
-    catch_api(|| {
+    catch_api_recording(handle, || {
         with_controller(handle, |controller| controller.stop())?;
         Ok(())
     })

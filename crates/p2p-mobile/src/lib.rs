@@ -50,14 +50,28 @@ pub(crate) fn with_controller<R>(
     Ok(f(controller))
 }
 
-pub(crate) fn catch_api<F>(f: F) -> i32
+/// Run a control entry point under a panic boundary and record the failure message (and
+/// panic) on the controller's `last_error` before returning the error code, so every
+/// nonzero control return has correlated, Kotlin-visible error text — including
+/// pre-controller failures (null/invalid path) that never reach the runtime's own error
+/// recording. Returns `0` on success, `-1` on a handled error, `-2` on a panic.
+pub(crate) fn catch_api_recording<F>(handle: *mut AndroidTunnelController, f: F) -> i32
 where
     F: FnOnce() -> Result<(), String>,
 {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(())) => 0,
-        Ok(Err(_)) => -1,
-        Err(_) => -2,
+        Ok(Err(message)) => {
+            let _ = with_controller(handle, |controller| controller.record_bridge_error(message));
+            -1
+        }
+        Err(_) => {
+            let _ = with_controller(handle, |controller| {
+                controller
+                    .record_bridge_error("panic while handling Android bridge call".to_owned())
+            });
+            -2
+        }
     }
 }
 

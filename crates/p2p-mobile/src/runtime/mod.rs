@@ -248,6 +248,16 @@ impl AndroidTunnelController {
     pub fn last_error(&self) -> Option<String> {
         self.inner.lock().ok().and_then(|inner| inner.state.last_error.clone())
     }
+
+    /// Record a failure that happened at the JNI/C-ABI boundary, before the controller could
+    /// run (e.g. a null/invalid config path or non-UTF-8 identity). Stores only `last_error`
+    /// so `last_error()` surfaces the real cause to Kotlin instead of "unknown error"; the
+    /// runtime state is left untouched because nothing actually started.
+    pub fn record_bridge_error(&self, message: String) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.state.last_error = Some(message);
+        }
+    }
 }
 
 #[cfg(test)]

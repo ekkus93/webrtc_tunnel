@@ -130,3 +130,37 @@ fn null_runtime_handle_returns_error_message_for_status_json() {
     let message = read_and_free(unsafe { p2ptunnel_status_json(std::ptr::null_mut()) });
     assert!(message.contains("runtime handle was null"));
 }
+
+#[test]
+fn start_offer_with_null_config_path_records_specific_error() {
+    // A pre-controller failure (null path) must still leave a specific, Kotlin-visible error,
+    // not the generic "unknown error".
+    let handle = p2ptunnel_create_runtime();
+    assert_eq!(unsafe { p2ptunnel_start_offer(handle, std::ptr::null()) }, -1);
+    let last_error = super::last_error_for_handle(handle);
+    assert!(last_error.contains("config path was null"), "got: {last_error}");
+    unsafe { p2ptunnel_destroy_runtime(handle) };
+}
+
+#[test]
+fn start_offer_with_invalid_utf8_config_path_records_error() {
+    let handle = p2ptunnel_create_runtime();
+    let bytes = [0xFF_u8, 0_u8];
+    let ptr = bytes.as_ptr() as *const c_char;
+    assert_eq!(unsafe { p2ptunnel_start_offer(handle, ptr) }, -1);
+    let last_error = super::last_error_for_handle(handle);
+    assert!(last_error.contains("invalid config path"), "got: {last_error}");
+    unsafe { p2ptunnel_destroy_runtime(handle) };
+}
+
+#[test]
+fn record_bridge_error_surfaces_via_last_error() {
+    // The recorder the JNI marshalling paths use must make the message retrievable.
+    let handle = p2ptunnel_create_runtime();
+    super::with_controller(handle, |controller| {
+        controller.record_bridge_error("marshalling boom".to_owned());
+    })
+    .expect("controller present");
+    assert_eq!(super::last_error_for_handle(handle), "marshalling boom");
+    unsafe { p2ptunnel_destroy_runtime(handle) };
+}

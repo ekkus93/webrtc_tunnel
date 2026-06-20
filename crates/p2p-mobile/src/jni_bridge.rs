@@ -12,7 +12,16 @@ use jni::sys::{jint, jlong, jstring};
 
 use crate::c_abi::*;
 
-use super::{AndroidTunnelController, last_error_for_handle, to_jstring};
+use super::{AndroidTunnelController, last_error_for_handle, to_jstring, with_controller};
+
+/// Record a JNI-marshalling failure (which happens before the controller can run) on the
+/// handle's `last_error`, so Kotlin's `nativeLastError()` surfaces the real cause instead of
+/// the generic "unknown error".
+fn record_marshalling_error(handle: jlong, message: String) {
+    let _ = with_controller(handle as *mut AndroidTunnelController, |controller| {
+        controller.record_bridge_error(message)
+    });
+}
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_phillipchin_webrtctunnel_NativeControlLib_nativeCreateRuntime(
     _env: JNIEnv<'_>,
@@ -39,11 +48,20 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_NativeControlLib_native
 ) -> jint {
     let config_path = match env.get_string(&config_path) {
         Ok(value) => value.to_string_lossy().into_owned(),
-        Err(_) => return -1,
+        Err(error) => {
+            record_marshalling_error(handle, format!("failed to read config path string: {error}"));
+            return -1;
+        }
     };
     let c_path = match CString::new(config_path) {
         Ok(value) => value,
-        Err(_) => return -1,
+        Err(error) => {
+            record_marshalling_error(
+                handle,
+                format!("config path contained interior NUL: {error}"),
+            );
+            return -1;
+        }
     };
     match unsafe { p2ptunnel_start_offer(handle as *mut AndroidTunnelController, c_path.as_ptr()) }
     {
@@ -62,15 +80,30 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_NativeControlLib_native
 ) -> jint {
     let config_path = match env.get_string(&config_path) {
         Ok(value) => value.to_string_lossy().into_owned(),
-        Err(_) => return -1,
+        Err(error) => {
+            record_marshalling_error(handle, format!("failed to read config path string: {error}"));
+            return -1;
+        }
     };
     let c_path = match CString::new(config_path) {
         Ok(value) => value,
-        Err(_) => return -1,
+        Err(error) => {
+            record_marshalling_error(
+                handle,
+                format!("config path contained interior NUL: {error}"),
+            );
+            return -1;
+        }
     };
     let identity = match env.convert_byte_array(&identity_bytes) {
         Ok(bytes) => bytes,
-        Err(_) => return -1,
+        Err(error) => {
+            record_marshalling_error(
+                handle,
+                format!("failed to read identity byte array: {error}"),
+            );
+            return -1;
+        }
     };
     match unsafe {
         p2ptunnel_start_offer_with_identity(
@@ -94,11 +127,20 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_NativeControlLib_native
 ) -> jint {
     let config_path = match env.get_string(&config_path) {
         Ok(value) => value.to_string_lossy().into_owned(),
-        Err(_) => return -1,
+        Err(error) => {
+            record_marshalling_error(handle, format!("failed to read config path string: {error}"));
+            return -1;
+        }
     };
     let c_path = match CString::new(config_path) {
         Ok(value) => value,
-        Err(_) => return -1,
+        Err(error) => {
+            record_marshalling_error(
+                handle,
+                format!("config path contained interior NUL: {error}"),
+            );
+            return -1;
+        }
     };
     match unsafe { p2ptunnel_start_answer(handle as *mut AndroidTunnelController, c_path.as_ptr()) }
     {
@@ -127,7 +169,11 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_NativeControlLib_native
         return std::ptr::null_mut();
     }
     // SAFETY: the pointer was allocated by `p2ptunnel_status_json`.
-    let value = unsafe { CString::from_raw(ptr) }.into_string().unwrap_or_else(|_| "{}".to_owned());
+    // Invalid native UTF-8 must surface as a visible error status, not a silent empty object.
+    let value = unsafe { CString::from_raw(ptr) }.into_string().unwrap_or_else(|_| {
+        r#"{"state":"error","last_error":"native returned invalid UTF-8 for status JSON"}"#
+            .to_owned()
+    });
     to_jstring(&mut env, value)
 }
 
@@ -145,7 +191,12 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_NativeControlLib_native
         return std::ptr::null_mut();
     }
     // SAFETY: the pointer was allocated by `p2ptunnel_recent_logs_json`.
-    let value = unsafe { CString::from_raw(ptr) }.into_string().unwrap_or_else(|_| "[]".to_owned());
+    // Invalid native UTF-8 must surface as a visible error log entry, not an empty list that
+    // looks like "no logs".
+    let value = unsafe { CString::from_raw(ptr) }.into_string().unwrap_or_else(|_| {
+        r#"[{"unix_ms":0,"level":"error","message":"native returned invalid UTF-8 for log JSON"}]"#
+            .to_owned()
+    });
     to_jstring(&mut env, value)
 }
 
@@ -347,7 +398,10 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_RustWebRtcProbe_nativeW
         return std::ptr::null_mut();
     }
     // SAFETY: the pointer was allocated by `p2ptunnel_webrtc_probe_json`.
-    let value = unsafe { CString::from_raw(ptr) }.into_string().unwrap_or_else(|_| "{}".to_owned());
+    // Invalid native UTF-8 must surface as an explicit probe error, not a silent empty object.
+    let value = unsafe { CString::from_raw(ptr) }.into_string().unwrap_or_else(|_| {
+        r#"{"error":"native returned invalid UTF-8 for probe JSON"}"#.to_owned()
+    });
     to_jstring(&mut env, value)
 }
 
