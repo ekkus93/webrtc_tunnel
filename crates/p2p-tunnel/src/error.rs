@@ -28,6 +28,8 @@ pub enum TunnelError {
     DataPlaneProbeTimeout(std::time::Duration),
     #[error("data-plane probe failed: {0}")]
     DataPlaneProbeFailed(String),
+    #[error("data-plane heartbeat lost: {missed} consecutive heartbeats unacknowledged")]
+    DataPlaneHeartbeatLost { missed: u32 },
     #[error("data channel writer closed")]
     WriterClosed,
     #[error("stream id space exhausted")]
