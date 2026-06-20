@@ -63,9 +63,9 @@ class ConfigRepositoryTest {
     @Test
     fun defaultTemplateInjectsDataPlaneFields() {
         val template = repository.defaultConfigTemplate()
-        // Release/default builds emit the "auto" ICE mode, the probe timeout, and the
-        // mid-session heartbeat knobs.
-        assertTrue(template.contains("android_ice_mode = \"auto\""))
+        // Release/default builds emit the strict "vnet_mux" ICE mode, the probe timeout, and
+        // the mid-session heartbeat knobs.
+        assertTrue(template.contains("android_ice_mode = \"vnet_mux\""))
         assertTrue(template.contains("data_plane_probe_timeout_ms = 5000"))
         assertTrue(template.contains("data_plane_heartbeat_interval_ms = 5000"))
         assertTrue(template.contains("data_plane_heartbeat_max_misses = 3"))
@@ -83,11 +83,74 @@ class ConfigRepositoryTest {
     }
 
     @Test
-    fun normalizeAndroidIceModeFallsBackToAutoOnInvalidInput() {
-        assertEquals("auto", normalizeAndroidIceMode(null))
-        assertEquals("auto", normalizeAndroidIceMode(""))
-        assertEquals("auto", normalizeAndroidIceMode("turn"))
-        assertEquals("auto", normalizeAndroidIceMode("vnet; rm -rf"))
+    fun normalizeAndroidIceModeFallsBackToStrictDefaultOnInvalidInput() {
+        // Invalid/absent input must resolve to the strict default (vnet_mux), never a
+        // best-effort path that could pick native ICE on Android.
+        assertEquals("vnet_mux", normalizeAndroidIceMode(null))
+        assertEquals("vnet_mux", normalizeAndroidIceMode(""))
+        assertEquals("vnet_mux", normalizeAndroidIceMode("turn"))
+        assertEquals("vnet_mux", normalizeAndroidIceMode("vnet; rm -rf"))
+    }
+
+    @Test
+    fun upsertAdvertisedLocalIpv4InsertsAfterIceMode() {
+        val config =
+            """
+            [webrtc]
+            stun_urls = ["stun:stun.l.google.com:19302"]
+            android_ice_mode = "vnet_mux"
+
+            [tunnel]
+            read_chunk_size = 16384
+            """.trimIndent()
+        val updated = upsertAdvertisedLocalIpv4(config, "10.1.3.11")
+        assertTrue(updated.contains("advertised_local_ipv4 = \"10.1.3.11\""))
+        // The injected line sits inside [webrtc], right after android_ice_mode.
+        val iceIdx = updated.indexOf("android_ice_mode")
+        val addrIdx = updated.indexOf("advertised_local_ipv4")
+        val tunnelIdx = updated.indexOf("[tunnel]")
+        assertTrue(addrIdx in (iceIdx + 1) until tunnelIdx)
+    }
+
+    @Test
+    fun upsertAdvertisedLocalIpv4ReplacesExistingLine() {
+        val config =
+            """
+            [webrtc]
+            android_ice_mode = "vnet_mux"
+            advertised_local_ipv4 = "10.0.0.1"
+            """.trimIndent()
+        val updated = upsertAdvertisedLocalIpv4(config, "192.168.5.20")
+        assertTrue(updated.contains("advertised_local_ipv4 = \"192.168.5.20\""))
+        assertFalse(updated.contains("10.0.0.1"))
+        // Exactly one advertised line remains.
+        assertEquals(1, updated.lines().count { it.contains("advertised_local_ipv4") })
+    }
+
+    @Test
+    fun upsertAdvertisedLocalIpv4NullRemovesLine() {
+        val config =
+            """
+            [webrtc]
+            android_ice_mode = "vnet_mux"
+            advertised_local_ipv4 = "10.0.0.1"
+            """.trimIndent()
+        val updated = upsertAdvertisedLocalIpv4(config, null)
+        assertFalse(updated.contains("advertised_local_ipv4"))
+    }
+
+    @Test
+    fun refreshAdvertisedAddressRewritesActiveConfig() {
+        repository.writeConfig(
+            """
+            [webrtc]
+            android_ice_mode = "vnet_mux"
+            """.trimIndent(),
+        )
+        repository.refreshAdvertisedAddress("10.1.3.11")
+        assertTrue(repository.readConfig().contains("advertised_local_ipv4 = \"10.1.3.11\""))
+        repository.refreshAdvertisedAddress(null)
+        assertFalse(repository.readConfig().contains("advertised_local_ipv4"))
     }
 
     @Test

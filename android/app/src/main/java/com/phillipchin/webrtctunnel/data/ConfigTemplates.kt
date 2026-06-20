@@ -7,8 +7,13 @@ import java.io.File
 /** Valid `android_ice_mode` values; anything else falls back to [DEFAULT_ANDROID_ICE_MODE]. */
 internal val VALID_ANDROID_ICE_MODES = setOf("auto", "native", "vnet", "vnet_mux")
 
-/** Default ICE mode used unless a debug override selects another valid value. */
-internal const val DEFAULT_ANDROID_ICE_MODE = "auto"
+/**
+ * Default ICE mode for Android-generated configs: the strict, proven `vnet_mux` path (UDP
+ * mux + advertise the injected local IPv4). `auto` is best-effort/diagnostic only and may
+ * select the black-holing native path on Android, so it is never the default — set it
+ * explicitly via the `debug.p2p.android_ice_mode` override if needed.
+ */
+internal const val DEFAULT_ANDROID_ICE_MODE = "vnet_mux"
 
 /** Render-time options for the config templates. */
 internal data class ConfigRenderOptions(
@@ -77,6 +82,33 @@ private val STATIC_RECONNECT_SECURITY_SECTIONS =
     refuse_world_readable_identity = true
     refuse_world_writable_paths = true
     """.trimIndent()
+
+/**
+ * Insert or replace the `advertised_local_ipv4` line in the `[webrtc]` section of a config
+ * TOML. Passing `null` removes any existing line, so a strict `vnet_mux` start with no
+ * available address fails loudly in native rather than advertising a stale address. Pure and
+ * test-friendly: anchors on the `android_ice_mode` line (always emitted by the templates),
+ * falling back to the `[webrtc]` header, and preserves that anchor's indentation. Returns the
+ * config unchanged if no anchor is found.
+ */
+internal fun upsertAdvertisedLocalIpv4(
+    configToml: String,
+    address: String?,
+): String {
+    val lines = configToml.lines().toMutableList()
+    lines.removeAll { it.trimStart().startsWith("advertised_local_ipv4") }
+    if (address != null) {
+        val anchor =
+            lines.indexOfFirst { it.trimStart().startsWith("android_ice_mode") }
+                .takeIf { it >= 0 }
+                ?: lines.indexOfFirst { it.trimStart() == "[webrtc]" }
+        if (anchor >= 0) {
+            val indent = lines[anchor].takeWhile { it == ' ' || it == '\t' }
+            lines.add(anchor + 1, "${indent}advertised_local_ipv4 = ${tomlString(address)}")
+        }
+    }
+    return lines.joinToString("\n")
+}
 
 internal fun tomlString(value: String): String =
     buildString(value.length + 2) {

@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.data
 import android.content.Context
 import com.phillipchin.webrtctunnel.RustTunnelBridge
 import com.phillipchin.webrtctunnel.TunnelNativeBridge
+import com.phillipchin.webrtctunnel.network.LocalAddressResolver
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 
@@ -15,6 +16,10 @@ class AppDependencies(
     val dispatchers: AppDispatchers = AppDispatchers(),
 ) {
     val context: Context = context.applicationContext
+
+    // Resolves the active network's IPv4 (ConnectivityManager/LinkProperties) to advertise as
+    // the vnet_mux host candidate; replaces the desktop-only 8.8.8.8 route probe on Android.
+    val localAddressResolver: LocalAddressResolver = LocalAddressResolver(this.context)
 
     val diagnosticsRepository: DiagnosticsRepository =
         DiagnosticsRepository(this.context, configRepository = configRepository)

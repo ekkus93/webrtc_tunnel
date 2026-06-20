@@ -55,6 +55,19 @@ class ConfigRepository(private val context: Context) {
 
     fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()
 
+    /**
+     * Refresh the `advertised_local_ipv4` field in the active config with a freshly-resolved
+     * address (or remove it when [address] is null) so a strict `vnet_mux` start advertises
+     * the current network's host candidate. No-op when no config exists yet.
+     */
+    fun refreshAdvertisedAddress(address: String?) {
+        val current = readConfig()
+        if (current.isBlank()) {
+            return
+        }
+        writeConfigAtomically(upsertAdvertisedLocalIpv4(current, address))
+    }
+
     fun writeConfig(contents: String) {
         configFile.parentFile?.mkdirs()
         configFile.writeText(contents)
@@ -97,10 +110,6 @@ class ConfigRepository(private val context: Context) {
             resolveBrokerPasswordFile(input, context.filesDir),
             ConfigRenderOptions(debugLogs = debugLogs, androidIceMode = debugAndroidIceModeOverride()),
         )
-
-    fun redactConfig(config: String): String {
-        return SensitiveDataRedactor.redactText(config)
-    }
 }
 
 /**

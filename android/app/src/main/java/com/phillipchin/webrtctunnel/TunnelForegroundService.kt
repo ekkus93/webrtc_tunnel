@@ -15,6 +15,7 @@ import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.isTunnelRunning
+import com.phillipchin.webrtctunnel.network.LocalAddressResolver
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.notification.NotificationController
 import com.phillipchin.webrtctunnel.security.IdentityRepository
@@ -49,6 +50,7 @@ class TunnelForegroundService
         private lateinit var configRepository: ConfigRepository
         private lateinit var identityRepository: IdentityRepository
         private lateinit var networkPolicyManager: NetworkPolicyManager
+        private lateinit var localAddressResolver: LocalAddressResolver
         private val serviceScope = CoroutineScope(SupervisorJob() + defaultDispatcher)
         private var networkMonitorJob: Job? = null
         private var startupJob: Job? = null
@@ -76,6 +78,7 @@ class TunnelForegroundService
             identityValidation = deps.identityValidation
             identityRepository = deps.identityRepository
             networkPolicyManager = deps.networkPolicyManager
+            localAddressResolver = deps.localAddressResolver
             repository.updateSessionMeteredAllowance(false)
             networkMonitorJob =
                 serviceScope.launch {
@@ -317,6 +320,13 @@ class TunnelForegroundService
                         .getOrElse {
                             abortStartup("Unable to decrypt private identity: ${it.message}", "identity_decrypt_failed")
                         }
+                // Inject the active network's IPv4 (ConnectivityManager/LinkProperties) as the
+                // vnet_mux host candidate before validating/starting. With no address the field
+                // is cleared, so a strict vnet_mux start fails loudly in native rather than
+                // advertising a stale address or silently dropping to native ICE.
+                withContext(ioDispatcher) {
+                    configRepository.refreshAdvertisedAddress(localAddressResolver.currentIpv4())
+                }
                 val validation =
                     withContext(ioDispatcher) {
                         identityValidation.validateConfigWithIdentity(configRepository.configPath, identity)
