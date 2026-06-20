@@ -75,9 +75,13 @@ class TunnelRepositoryTest {
     }
 
     @Test
-    fun recentLogsReturnsEmptyOnInvalidJsonAndMarksError() {
+    fun recentLogsSurfacesErrorEventOnInvalidJsonAndMarksError() {
+        // Invalid native log output must not look like "no logs": it yields a visible error
+        // log entry and an Error status, not an empty list.
         bridge.logsJson = "{not-array"
-        assertTrue(repository.recentLogs(10).isEmpty())
+        val logs = repository.recentLogs(10)
+        assertEquals(1, logs.size)
+        assertEquals("error", logs.first().level)
         assertEquals(ServiceState.Error, repository.status.value.serviceState)
     }
 

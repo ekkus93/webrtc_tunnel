@@ -347,31 +347,37 @@ class TunnelForegroundService
                 identity: ByteArray,
                 startGeneration: Long,
             ) {
-                if (!isCurrentGeneration(startGeneration)) {
-                    return
-                }
-                val result =
-                    try {
-                        withContext(ioDispatcher) {
-                            repository.start(TunnelMode.Offer, configRepository.configPath, identity)
-                        }
-                    } catch (_: CancellationException) {
-                        withContext(ioDispatcher) { repository.stop() }
+                // The native start copies the identity across JNI, so the plaintext buffer is
+                // wiped once start returns (or any early exit), even on failure/cancellation.
+                try {
+                    if (!isCurrentGeneration(startGeneration)) {
                         return
                     }
-                if (!isCurrentGeneration(startGeneration)) {
-                    withContext(ioDispatcher) { repository.stop() }
-                } else {
-                    result.onSuccess {
-                        pausedByPolicy = false
-                        reporter.publishStatus()
-                        reporter.startStatusPolling()
-                    }.onFailure {
-                        reporter.publishError(
-                            message = it.message ?: "Unable to start tunnel",
-                            code = "native_start_failed",
-                        )
+                    val result =
+                        try {
+                            withContext(ioDispatcher) {
+                                repository.start(TunnelMode.Offer, configRepository.configPath, identity)
+                            }
+                        } catch (_: CancellationException) {
+                            withContext(ioDispatcher) { repository.stop() }
+                            return
+                        }
+                    if (!isCurrentGeneration(startGeneration)) {
+                        withContext(ioDispatcher) { repository.stop() }
+                    } else {
+                        result.onSuccess {
+                            pausedByPolicy = false
+                            reporter.publishStatus()
+                            reporter.startStatusPolling()
+                        }.onFailure {
+                            reporter.publishError(
+                                message = it.message ?: "Unable to start tunnel",
+                                code = "native_start_failed",
+                            )
+                        }
                     }
+                } finally {
+                    identity.fill(0)
                 }
             }
 

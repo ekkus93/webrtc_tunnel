@@ -208,7 +208,9 @@ private fun loadStoredSetupInput(
     deps: AppDependencies,
     access: WizardStateAccess,
 ) {
-    val saved = runCatching { deps.configRepository.loadSetupInput() }.getOrNull() ?: return
+    // A corrupt draft yields null here (not reset defaults), so the wizard simply does not
+    // prefill rather than silently overwriting the user's saved values with blanks.
+    val saved = deps.configRepository.loadSetupInputResult().getOrNull() ?: return
     if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
         access.applyState(access.state().copy(input = saved))
     }

@@ -74,6 +74,32 @@ class IdentityRepositoryTest {
     }
 
     @Test
+    fun usePrivateIdentityPlaintextWipesBufferAfterUse() {
+        repository.storeEncryptedIdentity("secret-bytes".toByteArray(), "pub")
+        var captured: ByteArray? = null
+        repository.usePrivateIdentityPlaintext { bytes ->
+            captured = bytes
+            assertTrue("plaintext should be present during use", bytes.any { it.toInt() != 0 })
+        }
+        val buffer = requireNotNull(captured)
+        assertTrue("buffer must be zeroed after use", buffer.all { it.toInt() == 0 })
+    }
+
+    @Test
+    fun usePrivateIdentityPlaintextWipesBufferEvenWhenBlockThrows() {
+        repository.storeEncryptedIdentity("secret-bytes".toByteArray(), "pub")
+        var captured: ByteArray? = null
+        runCatching {
+            repository.usePrivateIdentityPlaintext { bytes ->
+                captured = bytes
+                error("boom")
+            }
+        }
+        val buffer = requireNotNull(captured)
+        assertTrue("buffer must be zeroed even when the block throws", buffer.all { it.toInt() == 0 })
+    }
+
+    @Test
     fun appendAuthorizedPublicIdentityDeduplicates() {
         val line = "kid1 peer1"
         assertTrue(repository.appendAuthorizedPublicIdentity(line).isSuccess)

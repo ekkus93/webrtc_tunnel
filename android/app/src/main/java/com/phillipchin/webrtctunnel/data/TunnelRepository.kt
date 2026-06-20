@@ -110,7 +110,19 @@ class TunnelRepository(
                             details = SensitiveDataRedactor.redactText(error.message ?: "unknown log decode error"),
                         ),
                 )
-        }.getOrDefault(emptyList())
+        }.getOrElse {
+            // Never return an empty list on failure — that reads as "no logs". Surface a
+            // synthetic error log entry (in addition to the Error status set above) so the
+            // log screen shows that retrieval failed. An empty list means a successful fetch
+            // with no logs.
+            listOf(
+                LogEvent(
+                    unixMs = 0L,
+                    level = "error",
+                    message = "Native log retrieval failed; see status for details",
+                ),
+            )
+        }
 
     fun setPolicyBlocked(blockReason: String) {
         val redacted = SensitiveDataRedactor.redactText(blockReason)

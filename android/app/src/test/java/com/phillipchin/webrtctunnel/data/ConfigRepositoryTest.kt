@@ -354,6 +354,21 @@ class ConfigRepositoryTest {
                 allowMetered = true,
             )
         repository.saveSetupInput(input)
-        assertEquals(input, repository.loadSetupInput())
+        assertEquals(input, repository.loadSetupInputResult().getOrNull())
+    }
+
+    @Test
+    fun loadSetupInputResultSucceedsWithDefaultsWhenMissing() {
+        File(context.filesDir, "setup_input.json").delete()
+        val result = repository.loadSetupInputResult()
+        assertTrue(result.isSuccess)
+        assertEquals(SetupConfigInput(), result.getOrNull())
+    }
+
+    @Test
+    fun loadSetupInputResultFailsOnCorruptDraft() {
+        // A corrupt existing draft is a failure, never silently reset to defaults.
+        File(context.filesDir, "setup_input.json").writeText("{ not valid json")
+        assertTrue(repository.loadSetupInputResult().isFailure)
     }
 }

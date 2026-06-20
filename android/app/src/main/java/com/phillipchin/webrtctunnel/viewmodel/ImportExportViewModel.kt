@@ -97,10 +97,11 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         confirmRisk: Boolean,
     ) = io.run("Private identity exported", "Private identity export failed") {
         require(confirmRisk) { "Private export requires explicit confirmation" }
-        val payload = deps.identityRepository.readPrivateIdentityPlaintext()
-        deps.context.contentResolver.openOutputStream(uri, "wb")?.use { stream ->
-            stream.write(payload)
-        } ?: error("Unable to open destination URI")
+        deps.identityRepository.usePrivateIdentityPlaintext { payload ->
+            deps.context.contentResolver.openOutputStream(uri, "wb")?.use { stream ->
+                stream.write(payload)
+            } ?: error("Unable to open destination URI")
+        }
     }
 
     suspend fun publicIdentityForShare(): String =

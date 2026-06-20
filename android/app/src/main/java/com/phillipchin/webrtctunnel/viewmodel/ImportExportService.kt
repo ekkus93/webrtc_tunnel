@@ -30,9 +30,9 @@ class ImportExportService(private val deps: AppDependencies) {
     private fun importConfigContent(candidate: String) {
         val temp = File(deps.context.cacheDir, "config-import-candidate.toml")
         temp.parentFile?.mkdirs()
+        val identity = runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }.getOrNull()
         try {
             temp.writeText(candidate)
-            val identity = runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }.getOrNull()
             val validation =
                 if (identity != null && identity.isNotEmpty()) {
                     deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identity)
@@ -42,6 +42,7 @@ class ImportExportService(private val deps: AppDependencies) {
             require(validation.valid) { validation.message ?: "Config validation failed" }
             deps.configRepository.writeConfigAtomically(candidate)
         } finally {
+            identity?.fill(0)
             temp.delete()
         }
     }

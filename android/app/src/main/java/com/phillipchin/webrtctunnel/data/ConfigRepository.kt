@@ -90,12 +90,17 @@ class ConfigRepository(private val context: Context) {
         setupInputFile.writeText(Json.encodeToString(input))
     }
 
-    fun loadSetupInput(): SetupConfigInput {
+    /**
+     * Load the saved setup draft, distinguishing a corrupt file (failure) from a
+     * legitimately missing one (success with fresh defaults). A corrupt existing draft must
+     * NOT silently reset to defaults — callers surface the failure so the user can repair or
+     * re-run setup rather than losing their saved values invisibly.
+     */
+    fun loadSetupInputResult(): Result<SetupConfigInput> {
         if (!setupInputFile.exists()) {
-            return SetupConfigInput()
+            return Result.success(SetupConfigInput())
         }
         return runCatching { Json.decodeFromString<SetupConfigInput>(setupInputFile.readText()) }
-            .getOrElse { SetupConfigInput() }
     }
 
     fun renderOfferConfig(

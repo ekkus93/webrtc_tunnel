@@ -117,7 +117,12 @@ class ForwardsViewModel(
     }
 
     private suspend fun regenerateActiveConfig(): ValidationResult {
-        val input = deps.configRepository.loadSetupInput()
+        // A corrupt setup draft must block config regeneration rather than silently rendering
+        // a config from reset defaults.
+        val input =
+            deps.configRepository.loadSetupInputResult().getOrElse {
+                return ValidationResult(false, "Saved setup is corrupt; re-run setup before changing forwards")
+            }
         val forwards = deps.forwardsRepository.current().filter { it.enabled }
         val debugLogs = deps.configRepository.preferences.first().debugLogsEnabled
         val candidate = deps.configRepository.renderOfferConfig(input, forwards, debugLogs)
@@ -137,6 +142,8 @@ class ForwardsViewModel(
             }
             result
         }.getOrElse { ValidationResult(false, it.message) }.also {
+            // Wipe the plaintext identity buffer regardless of success/failure.
+            identity?.fill(0)
             temp.delete()
         }
     }

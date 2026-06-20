@@ -27,11 +27,26 @@ class IdentityRepository(
     }
 
     /**
-     * Returns plaintext private identity bytes.
-     * Never log, persist, or include in diagnostics.
+     * Returns plaintext private identity bytes. Never log, persist, or include in
+     * diagnostics, and wipe the buffer (`fill(0)`) after use — prefer
+     * [usePrivateIdentityPlaintext], which does that automatically.
      */
     fun readPrivateIdentityPlaintext(): ByteArray {
         return crypto.decrypt(identityFile.readBytes())
+    }
+
+    /**
+     * Read the plaintext private identity, pass it to [block], and always wipe the buffer
+     * (`fill(0)`) afterward — even if [block] throws — so plaintext key material does not
+     * linger in memory. Never log, persist, or include the bytes in diagnostics.
+     */
+    inline fun <R> usePrivateIdentityPlaintext(block: (ByteArray) -> R): R {
+        val bytes = readPrivateIdentityPlaintext()
+        return try {
+            block(bytes)
+        } finally {
+            bytes.fill(0)
+        }
     }
 
     fun readPublicIdentity(): String = if (publicFile.exists()) publicFile.readText() else ""
@@ -76,7 +91,7 @@ class IdentityRepository(
             require(hasEncryptedIdentity()) { "No private identity available" }
             val output = File(outputPath)
             output.parentFile?.mkdirs()
-            output.writeBytes(readPrivateIdentityPlaintext())
+            usePrivateIdentityPlaintext { output.writeBytes(it) }
         }
 
     fun exportPublicIdentity(outputPath: String): Result<Unit> =

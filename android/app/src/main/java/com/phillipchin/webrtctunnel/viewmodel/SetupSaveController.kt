@@ -95,25 +95,31 @@ class SetupSaveController(
             runCatching {
                 validateStep(deps, SetupStep.Review, current)?.let { saveError(it, redact = false) }
                 val identity = resolveSaveIdentity(current)
-                if (identity.third != input.localPeerId) {
-                    saveError(
-                        "Local peer ID must match private identity peer ID (${identity.third})",
-                        redact = true,
-                    )
+                try {
+                    if (identity.third != input.localPeerId) {
+                        saveError(
+                            "Local peer ID must match private identity peer ID (${identity.third})",
+                            redact = true,
+                        )
+                    }
+                    if (current.importPublicIdentity.isNotBlank()) {
+                        importPublicIdentity(deps, current.importPublicIdentity, input.remotePeerId)
+                            .getOrElse { saveError(it.message ?: "Failed importing public identity", redact = true) }
+                    }
+                    val debugLogs = deps.configRepository.preferences.first().debugLogsEnabled
+                    val candidate = deps.configRepository.renderOfferConfig(input, enabledForwards, debugLogs)
+                    val validation =
+                        withContext(ioDispatcher) { validateCandidateConfig(deps, candidate, identity.first) }
+                    if (!validation.valid) {
+                        saveError(validation.message ?: "Config validation failed", redact = false)
+                    }
+                    persistConfig(candidate, input)
+                    identity
+                } finally {
+                    // Wipe the plaintext identity buffer; only the public id/peer id (second/
+                    // third) are used after this point.
+                    identity.first.fill(0)
                 }
-                if (current.importPublicIdentity.isNotBlank()) {
-                    importPublicIdentity(deps, current.importPublicIdentity, input.remotePeerId)
-                        .getOrElse { saveError(it.message ?: "Failed importing public identity", redact = true) }
-                }
-                val debugLogs = deps.configRepository.preferences.first().debugLogsEnabled
-                val candidate = deps.configRepository.renderOfferConfig(input, enabledForwards, debugLogs)
-                val validation =
-                    withContext(ioDispatcher) { validateCandidateConfig(deps, candidate, identity.first) }
-                if (!validation.valid) {
-                    saveError(validation.message ?: "Config validation failed", redact = false)
-                }
-                persistConfig(candidate, input)
-                identity
             }
         return outcome.fold(
             onSuccess = { identity ->

@@ -65,6 +65,15 @@ class ForwardsConfigStoreTest {
     }
 
     @Test
+    fun deleteOnCorruptFileLeavesItUntouched() {
+        // A corrupt forwards file must never be overwritten by a delete that dropped the
+        // (unparseable) entries — the user's file is preserved for repair.
+        file.writeText("{ corrupt json")
+        store.deleteForward("anything")
+        assertTrue(file.readText().contains("corrupt"))
+    }
+
+    @Test
     fun saveReplacesExistingFileContents() {
         store.saveForwards(listOf(forward("a", 1111)))
         store.saveForwards(listOf(forward("b", 2222)))
