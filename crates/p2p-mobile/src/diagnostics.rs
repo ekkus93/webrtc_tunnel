@@ -25,8 +25,13 @@ const PROBE_PING: &[u8] = b"probe-ping";
 #[derive(Serialize, Default)]
 struct WebRtcProbeReport {
     /// Source IP the OS picks for internet-bound UDP (Wi-Fi LAN IP, or cellular if
-    /// that is the default route — a multi-homing tell).
+    /// that is the default route — a multi-homing tell). `None` on Android, where the
+    /// hard-coded route probe is not used (see `address_source`).
     os_local_ip: Option<String>,
+    /// Where `os_local_ip` came from: `desktop_udp_route_probe` on non-Android, or
+    /// `unavailable_android` on Android (which sources its advertised address from the
+    /// Kotlin `ConnectivityManager`/`LinkProperties` layer, not this probe).
+    address_source: &'static str,
     /// What webrtc-rs's own interface enumeration (`webrtc_util::ifaces`) sees. If this
     /// is empty while `os_local_ip` is set, the library cannot gather host candidates.
     interfaces: Vec<String>,
@@ -66,11 +71,18 @@ async fn probe(timeout_secs: u64) -> WebRtcProbeReport {
     let secs = timeout_secs.clamp(1, 30);
     WebRtcProbeReport {
         os_local_ip: os_local_ip(),
+        address_source: ADDRESS_SOURCE,
         interfaces: raw_interfaces(),
         gather: gather_candidates(secs).await,
         loopback: loopback_handshake(secs).await,
     }
 }
+
+/// The source label for `os_local_ip` on this build target.
+#[cfg(not(target_os = "android"))]
+const ADDRESS_SOURCE: &str = "desktop_udp_route_probe";
+#[cfg(target_os = "android")]
+const ADDRESS_SOURCE: &str = "unavailable_android";
 
 /// What webrtc-rs's own interface enumeration returns — the exact source used to
 /// build host candidates (`webrtc_util::ifaces::ifaces()` → `getifaddrs`).
@@ -85,11 +97,20 @@ fn raw_interfaces() -> Vec<String> {
 }
 
 /// The OS's chosen local source IP, found by "connecting" a UDP socket to a public
-/// address (no packets are sent) and reading the bound local address.
+/// address (no packets are sent) and reading the bound local address. Desktop-only: the
+/// hard-coded `8.8.8.8` route trick is compiled out on Android, where the advertised
+/// address comes from the Kotlin `ConnectivityManager`/`LinkProperties` layer instead.
+#[cfg(not(target_os = "android"))]
 fn os_local_ip() -> Option<String> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     socket.local_addr().ok().map(|addr| addr.ip().to_string())
+}
+
+/// Android does not use the route probe; the advertised address is injected from Kotlin.
+#[cfg(target_os = "android")]
+fn os_local_ip() -> Option<String> {
+    None
 }
 
 async fn gather_candidates(secs: u64) -> GatherReport {
@@ -99,6 +120,7 @@ async fn gather_candidates(secs: u64) -> GatherReport {
         enable_trickle_ice: true,
         enable_ice_restart: false,
         android_ice_mode: Default::default(),
+        advertised_local_ipv4: None,
     };
     let peer = match WebRtcPeer::new(&config).await {
         Ok(peer) => peer,
@@ -191,6 +213,7 @@ async fn loopback_inner(secs: u64) -> Result<(), String> {
         enable_trickle_ice: false,
         enable_ice_restart: false,
         android_ice_mode: Default::default(),
+        advertised_local_ipv4: None,
     };
 
     let offer = WebRtcPeer::new(&config).await.map_err(|error| format!("offer build: {error}"))?;

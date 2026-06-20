@@ -144,6 +144,14 @@ pub struct WebRtcConfig {
     pub enable_ice_restart: bool,
     #[serde(default = "default_android_ice_mode")]
     pub android_ice_mode: AndroidIceMode,
+    /// Explicit local IPv4 to advertise as the host candidate for the `vnet`/`vnet_mux`
+    /// paths. On Android this is supplied by the Kotlin layer from
+    /// `ConnectivityManager`/`LinkProperties`, because the desktop UDP-route probe
+    /// (`8.8.8.8`) is not used in Android production. When unset, non-Android builds fall
+    /// back to that route probe; Android builds requesting `vnet`/`vnet_mux` with no
+    /// injected address fail loudly rather than silently dropping to native ICE.
+    #[serde(default)]
+    pub advertised_local_ipv4: Option<String>,
 }
 
 /// Lower bound for the post-DCEP data-plane probe timeout (ms). A zero or tiny value

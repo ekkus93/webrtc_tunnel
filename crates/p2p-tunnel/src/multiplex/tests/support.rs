@@ -52,6 +52,7 @@ pub(super) fn sample_webrtc_config() -> WebRtcConfig {
         enable_trickle_ice: false,
         enable_ice_restart: true,
         android_ice_mode: Default::default(),
+        advertised_local_ipv4: None,
     }
 }
 

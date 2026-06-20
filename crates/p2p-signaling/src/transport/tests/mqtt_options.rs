@@ -37,6 +37,7 @@ fn sample_config(base: &std::path::Path) -> AppConfig {
             enable_trickle_ice: true,
             enable_ice_restart: true,
             android_ice_mode: Default::default(),
+            advertised_local_ipv4: None,
         },
         tunnel: TunnelConfig {
             read_chunk_size: 1024,

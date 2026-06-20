@@ -473,7 +473,7 @@ fn build_setting_engine(config: &WebRtcConfig) -> Result<SettingEngine, WebRtcEr
                 "ICE setting engine decision",
             );
         }
-        IcePath::Vnet { required, mux } => match fallback_net() {
+        IcePath::Vnet { required, mux } => match fallback_net(config) {
             Some(net) => {
                 engine.set_vnet(Some(Arc::new(net)));
                 if mux {
@@ -528,14 +528,51 @@ fn os_interface_enumeration_works() -> bool {
     }
 }
 
-/// A real-socket `Net` whose single interface carries the host's primary local IPv4.
-fn fallback_net() -> Option<Net> {
-    let ip = primary_local_ipv4()?;
+/// A real-socket `Net` whose single interface carries the advertised local IPv4.
+fn fallback_net(config: &WebRtcConfig) -> Option<Net> {
+    let ip = advertised_local_ipv4(config)?;
     // The prefix length is irrelevant to candidate gathering (which only reads the
     // address); /24 is a reasonable placeholder for a LAN.
     let ipnet = IpNet::new(IpAddr::V4(ip), 24).ok()?;
     let interface = Interface::new("p2p-fallback".to_owned(), vec![ipnet]);
     Some(Net::Ifs(vec![interface]))
+}
+
+/// The local IPv4 to advertise as the `vnet`/`vnet_mux` host candidate.
+///
+/// Prefers an explicit address injected via config (`advertised_local_ipv4`) — the Android
+/// production path, where the address comes from `ConnectivityManager`/`LinkProperties`.
+/// Only when none is injected does it fall back to the desktop UDP-route probe, which is
+/// compiled out on Android (`desktop_route_probe_ipv4`) so production Android never relies on
+/// the hard-coded `8.8.8.8` route trick. On Android with no injected address this returns
+/// `None`, and `vnet`/`vnet_mux` then fail loudly rather than dropping to native ICE.
+fn advertised_local_ipv4(config: &WebRtcConfig) -> Option<Ipv4Addr> {
+    if let Some(raw) = config.advertised_local_ipv4.as_deref() {
+        return parse_advertised_ipv4(raw);
+    }
+    desktop_route_probe_ipv4()
+}
+
+/// Parse and sanity-check a config-injected host-candidate address. Rejects
+/// loopback/unspecified so a misconfigured value fails loud instead of advertising junk.
+fn parse_advertised_ipv4(raw: &str) -> Option<Ipv4Addr> {
+    match raw.parse::<Ipv4Addr>() {
+        Ok(addr) if !addr.is_loopback() && !addr.is_unspecified() => Some(addr),
+        _ => None,
+    }
+}
+
+/// Desktop-only UDP-route probe for the source IPv4. Compiled out on Android so the
+/// hard-coded `8.8.8.8` route trick is never used in Android production.
+#[cfg(not(target_os = "android"))]
+fn desktop_route_probe_ipv4() -> Option<Ipv4Addr> {
+    primary_local_ipv4()
+}
+
+/// On Android the advertised address must be injected via config; there is no route probe.
+#[cfg(target_os = "android")]
+fn desktop_route_probe_ipv4() -> Option<Ipv4Addr> {
+    None
 }
 
 /// A webrtc UDP-mux network backed by a single real socket bound to `0.0.0.0:0`.
@@ -566,7 +603,8 @@ fn zero_bound_udp_mux() -> Result<UDPNetwork, WebRtcError> {
 
 /// The OS-chosen source IPv4 for outbound traffic, discovered without interface
 /// enumeration by "connecting" a UDP socket to a public address (no packets are sent)
-/// and reading the bound local address.
+/// and reading the bound local address. Desktop-only — see `desktop_route_probe_ipv4`.
+#[cfg(not(target_os = "android"))]
 fn primary_local_ipv4() -> Option<Ipv4Addr> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
@@ -578,7 +616,9 @@ fn primary_local_ipv4() -> Option<Ipv4Addr> {
 
 pub fn build_rtc_configuration(config: &WebRtcConfig) -> Result<RTCConfiguration, WebRtcError> {
     if config.stun_urls.iter().any(|url| url.starts_with("turn:") || url.starts_with("turns:")) {
-        return Err(WebRtcError::InvalidConfig("TURN URLs are not supported in v1".to_owned()));
+        return Err(WebRtcError::InvalidConfig(
+            "TURN servers are not supported in STUN-only mode".to_owned(),
+        ));
     }
 
     Ok(RTCConfiguration {
@@ -608,11 +648,13 @@ fn expected_data_channel_label() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
     use std::time::Duration;
 
     use super::{
-        IceConnectionState, IcePath, WebRtcError, WebRtcPeer, build_rtc_configuration,
-        build_setting_engine, decide_ice_path, expected_data_channel_label, zero_bound_udp_mux,
+        IceConnectionState, IcePath, WebRtcError, WebRtcPeer, advertised_local_ipv4,
+        build_rtc_configuration, build_setting_engine, decide_ice_path,
+        expected_data_channel_label, fallback_net, parse_advertised_ipv4, zero_bound_udp_mux,
     };
     use p2p_core::AndroidIceMode;
     use p2p_core::DATA_CHANNEL_LABEL;
@@ -625,6 +667,7 @@ mod tests {
             enable_trickle_ice: true,
             enable_ice_restart: true,
             android_ice_mode: Default::default(),
+            advertised_local_ipv4: None,
         }
     }
 
@@ -732,6 +775,57 @@ mod tests {
             Err(WebRtcError::InvalidConfig(message)) => {
                 assert!(message.contains("no fallback local"), "unexpected error: {message}");
             }
+            Err(other) => panic!("unexpected error variant: {other}"),
+        }
+    }
+
+    #[test]
+    fn parse_advertised_ipv4_accepts_routable_and_rejects_junk() {
+        assert_eq!(parse_advertised_ipv4("10.1.3.11"), Some(Ipv4Addr::new(10, 1, 3, 11)));
+        assert_eq!(parse_advertised_ipv4("192.168.0.5"), Some(Ipv4Addr::new(192, 168, 0, 5)));
+        // Loopback / unspecified / non-IPv4 / garbage all reject so we never advertise junk.
+        assert_eq!(parse_advertised_ipv4("127.0.0.1"), None);
+        assert_eq!(parse_advertised_ipv4("0.0.0.0"), None);
+        assert_eq!(parse_advertised_ipv4("not-an-ip"), None);
+        assert_eq!(parse_advertised_ipv4("::1"), None);
+    }
+
+    #[test]
+    fn injected_address_is_preferred_over_the_route_probe() {
+        // An injected address is used verbatim (this is the Android production path) without
+        // ever consulting the desktop route probe.
+        let mut config = sample_config();
+        config.advertised_local_ipv4 = Some("10.1.3.11".to_owned());
+        assert_eq!(advertised_local_ipv4(&config), Some(Ipv4Addr::new(10, 1, 3, 11)));
+        // A garbage injected value resolves to None (→ vnet_mux fails loud) rather than
+        // silently falling through to the route probe.
+        config.advertised_local_ipv4 = Some("garbage".to_owned());
+        assert_eq!(advertised_local_ipv4(&config), None);
+    }
+
+    #[tokio::test]
+    async fn vnet_mux_builds_engine_with_injected_address() {
+        // With an explicit injected address, vnet_mux builds deterministically — no reliance
+        // on host interfaces or the route probe. This is the strict Android path.
+        let mut config = sample_config();
+        config.android_ice_mode = AndroidIceMode::VnetMux;
+        config.advertised_local_ipv4 = Some("10.1.3.11".to_owned());
+        assert!(build_setting_engine(&config).is_ok());
+        assert!(fallback_net(&config).is_some());
+    }
+
+    #[tokio::test]
+    async fn vnet_mux_with_garbage_injected_address_fails_loud() {
+        // A garbage injected address must not silently drop to native ICE; vnet_mux is a hard
+        // error when no usable advertised address can be resolved.
+        let mut config = sample_config();
+        config.android_ice_mode = AndroidIceMode::VnetMux;
+        config.advertised_local_ipv4 = Some("999.999.0.1".to_owned());
+        match build_setting_engine(&config) {
+            Err(WebRtcError::InvalidConfig(message)) => {
+                assert!(message.contains("no fallback local"), "unexpected error: {message}");
+            }
+            Ok(_) => panic!("vnet_mux must not build with an unusable injected address"),
             Err(other) => panic!("unexpected error variant: {other}"),
         }
     }

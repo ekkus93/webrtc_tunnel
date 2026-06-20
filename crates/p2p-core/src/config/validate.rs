@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::Path;
 
 use crate::error::ConfigError;
@@ -257,7 +258,40 @@ impl AppConfig {
             )));
         }
 
+        self.validate_webrtc()?;
         self.validate_forwards()?;
+
+        Ok(())
+    }
+
+    /// WebRTC-section invariants: STUN-only enforcement (TURN is rejected here, before
+    /// tunnel startup, in addition to the construction-time guard in `p2p-webrtc`) and
+    /// the optional injected `advertised_local_ipv4` host-candidate address.
+    fn validate_webrtc(&self) -> Result<(), ConfigError> {
+        if let Some(url) = self
+            .webrtc
+            .stun_urls
+            .iter()
+            .find(|url| url.starts_with("turn:") || url.starts_with("turns:"))
+        {
+            return Err(ConfigError::InvalidConfig(format!(
+                "TURN servers are not supported in STUN-only mode (offending URL: {url})"
+            )));
+        }
+
+        if let Some(raw) = self.webrtc.advertised_local_ipv4.as_deref() {
+            let addr = raw.parse::<Ipv4Addr>().map_err(|_| {
+                ConfigError::InvalidConfig(format!(
+                    "webrtc.advertised_local_ipv4 '{raw}' is not a valid IPv4 address"
+                ))
+            })?;
+            if addr.is_loopback() || addr.is_unspecified() || addr.is_multicast() {
+                return Err(ConfigError::InvalidConfig(format!(
+                    "webrtc.advertised_local_ipv4 '{raw}' must be a routable host address \
+                     (not loopback/unspecified/multicast)"
+                )));
+            }
+        }
 
         Ok(())
     }
