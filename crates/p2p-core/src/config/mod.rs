@@ -118,6 +118,16 @@ pub enum AndroidIceMode {
     /// Always force the `Net::Ifs` vnet fallback; fail loudly if a fallback local IPv4
     /// cannot be constructed. Never silently falls back to native.
     Vnet,
+    /// Like `vnet` (inject the local IPv4 as the host-candidate address) but route all ICE
+    /// traffic through a single UDP socket bound to `0.0.0.0` (webrtc UDP mux) instead of a
+    /// socket bound to the specific interface IP. This advertises the real interface IP as
+    /// the host candidate while sending/receiving on an unbound socket, so Android's per-
+    /// network routing (`netd`/fwmark) applies normally. Experiment for the Android→remote
+    /// data-plane black-hole where a specific-IP-bound socket's egress is dropped. Fails
+    /// loudly if a fallback local IPv4 cannot be constructed. (No server-reflexive candidate
+    /// is gathered in muxed mode.)
+    #[serde(rename = "vnet_mux")]
+    VnetMux,
 }
 
 pub const fn default_android_ice_mode() -> AndroidIceMode {

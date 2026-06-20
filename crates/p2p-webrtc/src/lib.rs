@@ -12,6 +12,8 @@ use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
+use webrtc::ice::udp_network::UDPNetwork;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -395,8 +397,10 @@ enum IcePath {
     /// Use the native/default `SettingEngine`; never call `set_vnet`.
     Native,
     /// Force the `Net::Ifs` vnet fallback. `required` means a missing fallback IPv4 is a
-    /// hard error (explicit `vnet` mode) rather than a best-effort warning (`auto`).
-    Vnet { required: bool },
+    /// hard error (explicit `vnet`/`vnet_mux` mode) rather than a best-effort warning
+    /// (`auto`). `mux` additionally routes all ICE traffic through a single `0.0.0.0`-bound
+    /// UDP socket (webrtc UDP mux) instead of a socket pinned to the interface IP.
+    Vnet { required: bool, mux: bool },
 }
 
 /// Pure decision: which ICE path to use given the mode and enumeration result.
@@ -409,12 +413,13 @@ enum IcePath {
 const fn decide_ice_path(mode: AndroidIceMode, enumeration_works: bool) -> IcePath {
     match mode {
         AndroidIceMode::Native => IcePath::Native,
-        AndroidIceMode::Vnet => IcePath::Vnet { required: true },
+        AndroidIceMode::Vnet => IcePath::Vnet { required: true, mux: false },
+        AndroidIceMode::VnetMux => IcePath::Vnet { required: true, mux: true },
         AndroidIceMode::Auto => {
             if enumeration_works {
                 IcePath::Native
             } else {
-                IcePath::Vnet { required: false }
+                IcePath::Vnet { required: false, mux: false }
             }
         }
     }
@@ -425,6 +430,7 @@ const fn ice_decision_reason(mode: AndroidIceMode, enumeration_works: bool) -> &
     match mode {
         AndroidIceMode::Native => "mode_native",
         AndroidIceMode::Vnet => "mode_vnet",
+        AndroidIceMode::VnetMux => "mode_vnet_mux",
         AndroidIceMode::Auto if enumeration_works => "interface_enumeration_ok",
         AndroidIceMode::Auto => "interface_enumeration_failed",
     }
@@ -458,14 +464,20 @@ fn build_setting_engine(config: &WebRtcConfig) -> Result<SettingEngine, WebRtcEr
                 "ICE setting engine decision",
             );
         }
-        IcePath::Vnet { required } => match fallback_net() {
+        IcePath::Vnet { required, mux } => match fallback_net() {
             Some(net) => {
                 engine.set_vnet(Some(Arc::new(net)));
+                if mux {
+                    // Route ICE I/O through a single 0.0.0.0-bound socket while still
+                    // advertising the injected interface IP as the host candidate.
+                    engine.set_udp_network(zero_bound_udp_mux()?);
+                }
                 tracing::info!(
                     target: "ice",
                     ?mode,
-                    selected_path = "vnet",
+                    selected_path = if mux { "vnet_mux" } else { "vnet" },
                     set_vnet = true,
+                    udp_mux = mux,
                     enumeration_works,
                     reason,
                     "ICE setting engine decision",
@@ -473,8 +485,8 @@ fn build_setting_engine(config: &WebRtcConfig) -> Result<SettingEngine, WebRtcEr
             }
             None if required => {
                 return Err(WebRtcError::InvalidConfig(
-                    "android_ice_mode = \"vnet\" was requested but no fallback local IPv4 \
-                     could be determined; refusing to silently fall back to the native engine"
+                    "android_ice_mode = \"vnet\"/\"vnet_mux\" was requested but no fallback local \
+                     IPv4 could be determined; refusing to silently fall back to the native engine"
                         .to_owned(),
                 ));
             }
@@ -515,6 +527,32 @@ fn fallback_net() -> Option<Net> {
     let ipnet = IpNet::new(IpAddr::V4(ip), 24).ok()?;
     let interface = Interface::new("p2p-fallback".to_owned(), vec![ipnet]);
     Some(Net::Ifs(vec![interface]))
+}
+
+/// A webrtc UDP-mux network backed by a single real socket bound to `0.0.0.0:0`.
+///
+/// Used by `vnet_mux`: ICE still advertises the injected interface IP as the host candidate
+/// (via `set_vnet`), but all traffic flows over this unbound socket. Binding `0.0.0.0`
+/// (rather than the specific interface IP, as the plain `vnet` path does) lets the OS apply
+/// its normal per-destination routing — on Android the `netd` fwmark for the default
+/// network — instead of pinning egress to one source address, which is the suspected cause
+/// of the offer→answer data-plane black-hole.
+///
+/// Must be called from within a Tokio runtime (it is, via `WebRtcPeer::new`): the socket is
+/// bound with `std` then adopted with `from_std`, which registers it with the current
+/// reactor. Muxed mode gathers no server-reflexive candidate (webrtc skips srflx for mux).
+fn zero_bound_udp_mux() -> Result<UDPNetwork, WebRtcError> {
+    let std_socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).map_err(|error| {
+        WebRtcError::InvalidConfig(format!("failed to bind 0.0.0.0 UDP mux socket: {error}"))
+    })?;
+    std_socket.set_nonblocking(true).map_err(|error| {
+        WebRtcError::InvalidConfig(format!("failed to set UDP mux socket non-blocking: {error}"))
+    })?;
+    let tokio_socket = tokio::net::UdpSocket::from_std(std_socket).map_err(|error| {
+        WebRtcError::InvalidConfig(format!("failed to adopt UDP mux socket into tokio: {error}"))
+    })?;
+    let mux = UDPMuxDefault::new(UDPMuxParams::new(tokio_socket));
+    Ok(UDPNetwork::Muxed(mux))
 }
 
 /// The OS-chosen source IPv4 for outbound traffic, discovered without interface
@@ -564,8 +602,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        IceConnectionState, IcePath, WebRtcPeer, build_rtc_configuration, build_setting_engine,
-        decide_ice_path, expected_data_channel_label,
+        IceConnectionState, IcePath, WebRtcError, WebRtcPeer, build_rtc_configuration,
+        build_setting_engine, decide_ice_path, expected_data_channel_label, zero_bound_udp_mux,
     };
     use p2p_core::AndroidIceMode;
     use p2p_core::DATA_CHANNEL_LABEL;
@@ -612,13 +650,31 @@ mod tests {
     fn ice_path_decision_covers_all_modes() {
         // auto follows enumeration; vnet fallback when auto can't enumerate is best-effort.
         assert_eq!(decide_ice_path(AndroidIceMode::Auto, true), IcePath::Native);
-        assert_eq!(decide_ice_path(AndroidIceMode::Auto, false), IcePath::Vnet { required: false });
+        assert_eq!(
+            decide_ice_path(AndroidIceMode::Auto, false),
+            IcePath::Vnet { required: false, mux: false }
+        );
         // native is always native, regardless of enumeration; never engages vnet.
         assert_eq!(decide_ice_path(AndroidIceMode::Native, true), IcePath::Native);
         assert_eq!(decide_ice_path(AndroidIceMode::Native, false), IcePath::Native);
         // vnet always forces the fallback and treats a missing IPv4 as a hard error.
-        assert_eq!(decide_ice_path(AndroidIceMode::Vnet, true), IcePath::Vnet { required: true });
-        assert_eq!(decide_ice_path(AndroidIceMode::Vnet, false), IcePath::Vnet { required: true });
+        assert_eq!(
+            decide_ice_path(AndroidIceMode::Vnet, true),
+            IcePath::Vnet { required: true, mux: false }
+        );
+        assert_eq!(
+            decide_ice_path(AndroidIceMode::Vnet, false),
+            IcePath::Vnet { required: true, mux: false }
+        );
+        // vnet_mux is vnet with the UDP mux engaged; also a hard error on missing IPv4.
+        assert_eq!(
+            decide_ice_path(AndroidIceMode::VnetMux, true),
+            IcePath::Vnet { required: true, mux: true }
+        );
+        assert_eq!(
+            decide_ice_path(AndroidIceMode::VnetMux, false),
+            IcePath::Vnet { required: true, mux: true }
+        );
     }
 
     #[test]
@@ -635,6 +691,28 @@ mod tests {
         let mut config = sample_config();
         config.android_ice_mode = AndroidIceMode::Auto;
         assert!(build_setting_engine(&config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn zero_bound_udp_mux_binds_real_socket() {
+        // Must run inside a Tokio runtime (from_std registers with the reactor).
+        assert!(zero_bound_udp_mux().is_ok(), "0.0.0.0 UDP mux should bind");
+    }
+
+    #[tokio::test]
+    async fn vnet_mux_mode_builds_engine_when_fallback_ipv4_exists() {
+        // vnet_mux forces the fallback path and engages the UDP mux. It builds when a
+        // non-loopback IPv4 is available (CI host); otherwise it fails loudly with the
+        // missing-fallback error — never silently, and never a panic.
+        let mut config = sample_config();
+        config.android_ice_mode = AndroidIceMode::VnetMux;
+        match build_setting_engine(&config) {
+            Ok(_) => {}
+            Err(WebRtcError::InvalidConfig(message)) => {
+                assert!(message.contains("no fallback local"), "unexpected error: {message}");
+            }
+            Err(other) => panic!("unexpected error variant: {other}"),
+        }
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import java.io.File
 
 /** Valid `android_ice_mode` values; anything else falls back to [DEFAULT_ANDROID_ICE_MODE]. */
-internal val VALID_ANDROID_ICE_MODES = setOf("auto", "native", "vnet")
+internal val VALID_ANDROID_ICE_MODES = setOf("auto", "native", "vnet", "vnet_mux")
 
 /** Default ICE mode used unless a debug override selects another valid value. */
 internal const val DEFAULT_ANDROID_ICE_MODE = "auto"

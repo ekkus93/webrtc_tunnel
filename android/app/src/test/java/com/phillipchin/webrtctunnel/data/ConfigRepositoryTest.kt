@@ -73,8 +73,10 @@ class ConfigRepositoryTest {
         assertEquals("auto", normalizeAndroidIceMode("auto"))
         assertEquals("native", normalizeAndroidIceMode("native"))
         assertEquals("vnet", normalizeAndroidIceMode("vnet"))
+        assertEquals("vnet_mux", normalizeAndroidIceMode("vnet_mux"))
         // Case-insensitive and whitespace-tolerant.
         assertEquals("vnet", normalizeAndroidIceMode("  VNET \n"))
+        assertEquals("vnet_mux", normalizeAndroidIceMode("  VNET_MUX \n"))
     }
 
     @Test

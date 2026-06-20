@@ -595,6 +595,7 @@ fn android_ice_mode_parses_all_variants() {
         ("auto", AndroidIceMode::Auto),
         ("native", AndroidIceMode::Native),
         ("vnet", AndroidIceMode::Vnet),
+        ("vnet_mux", AndroidIceMode::VnetMux),
     ] {
         let config_dir = temp_dir.path().join(format!("config-{toml_value}"));
         let state_dir = temp_dir.path().join(format!("state-{toml_value}"));
