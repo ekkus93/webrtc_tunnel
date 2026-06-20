@@ -41,6 +41,10 @@ struct WebRtcProbeReport {
 
 #[derive(Serialize, Default)]
 struct GatherReport {
+    /// The gather API ran to completion without throwing.
+    api_ok: bool,
+    /// Gathering actually produced at least one *useful* candidate (host/srflx/relay).
+    /// `api_ok && !ok` means the API "worked" but no usable candidate was gathered.
     ok: bool,
     error: Option<String>,
     host: usize,
@@ -49,6 +53,20 @@ struct GatherReport {
     other: usize,
     /// One `typ=… transport=… addr=…` summary per gathered candidate.
     candidates: Vec<String>,
+}
+
+/// Resolve the gather report's success flags from the gathered counts: `api_ok` is whether
+/// the API ran error-free; `ok` additionally requires at least one useful candidate
+/// (host/srflx/relay — `other`/unknown does not count). When the API worked but produced no
+/// usable candidate, record an explicit error so the UI can say so instead of reporting a
+/// bare success.
+fn finalize_gather(report: &mut GatherReport) {
+    report.api_ok = report.error.is_none();
+    let useful = report.host + report.srflx + report.relay;
+    report.ok = report.api_ok && useful > 0;
+    if report.api_ok && !report.ok {
+        report.error = Some("ICE API succeeded but gathered no usable candidates".to_owned());
+    }
 }
 
 #[derive(Serialize, Default)]
@@ -166,7 +184,7 @@ async fn gather_candidates(secs: u64) -> GatherReport {
             Err(_) => break, // gathering timed out
         }
     }
-    report.ok = report.error.is_none();
+    finalize_gather(&mut report);
     let _ = peer.close().await;
     report
 }
@@ -298,6 +316,44 @@ mod tests {
         let (typ, _, addr) = parse_candidate("nonsense");
         assert_eq!(typ, "unknown");
         assert_eq!(addr, "unknown");
+    }
+
+    #[test]
+    fn finalize_gather_zero_candidates_is_not_success() {
+        // API ran fine but gathered nothing usable: not a gather success, and an explicit
+        // error is recorded so the UI does not report a bare success.
+        let mut report = GatherReport::default();
+        finalize_gather(&mut report);
+        assert!(report.api_ok, "no error means the API ran");
+        assert!(!report.ok, "zero usable candidates must not be a success");
+        assert!(report.error.is_some(), "a no-candidate gather must record an explicit error");
+    }
+
+    #[test]
+    fn finalize_gather_with_useful_candidate_is_success() {
+        let mut report = GatherReport { host: 1, ..GatherReport::default() };
+        finalize_gather(&mut report);
+        assert!(report.api_ok);
+        assert!(report.ok, "a host candidate makes gathering successful");
+        assert!(report.error.is_none());
+    }
+
+    #[test]
+    fn finalize_gather_other_only_is_not_useful() {
+        // `other`/unknown candidates do not count as usable.
+        let mut report = GatherReport { other: 3, ..GatherReport::default() };
+        finalize_gather(&mut report);
+        assert!(!report.ok, "only unknown candidates must not count as success");
+    }
+
+    #[test]
+    fn finalize_gather_preserves_api_failure() {
+        let mut report =
+            GatherReport { error: Some("peer build failed".to_owned()), ..GatherReport::default() };
+        finalize_gather(&mut report);
+        assert!(!report.api_ok, "a pre-existing error means the API did not run cleanly");
+        assert!(!report.ok);
+        assert_eq!(report.error.as_deref(), Some("peer build failed"));
     }
 
     // Proves the loopback probe logic works on the host (glibc). The same code runs
