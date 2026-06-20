@@ -124,6 +124,47 @@ fn backoff_grows_with_attempts() {
 }
 
 #[test]
+fn backoff_without_jitter_is_deterministic_and_caps_at_max() {
+    let mut config = sample_config();
+    config.reconnect.backoff_initial_ms = 1000;
+    config.reconnect.backoff_max_ms = 5000;
+    config.reconnect.backoff_multiplier = 2.0;
+    config.reconnect.jitter_ratio = 0.0; // disable jitter for exact assertions
+    assert_eq!(compute_backoff_delay(&config, 0).as_millis(), 1000);
+    assert_eq!(compute_backoff_delay(&config, 1).as_millis(), 2000);
+    assert_eq!(compute_backoff_delay(&config, 2).as_millis(), 4000);
+    // 1000 * 2^3 = 8000, clamped to backoff_max_ms.
+    assert_eq!(compute_backoff_delay(&config, 3).as_millis(), 5000);
+    assert_eq!(compute_backoff_delay(&config, 20).as_millis(), 5000);
+}
+
+#[test]
+fn backoff_attempt_zero_stays_within_the_jitter_window() {
+    let mut config = sample_config();
+    config.reconnect.backoff_initial_ms = 1000;
+    config.reconnect.backoff_max_ms = 30_000;
+    config.reconnect.backoff_multiplier = 2.0;
+    config.reconnect.jitter_ratio = 0.2; // ±200ms around the 1000ms base
+    for _ in 0..256 {
+        let delay = compute_backoff_delay(&config, 0).as_millis() as i64;
+        assert!((800..=1200).contains(&delay), "attempt-0 delay {delay}ms outside jitter window");
+    }
+}
+
+#[test]
+fn backoff_jitter_stays_within_ratio_of_the_capped_base() {
+    let mut config = sample_config();
+    config.reconnect.backoff_initial_ms = 1000;
+    config.reconnect.backoff_max_ms = 4000;
+    config.reconnect.backoff_multiplier = 2.0;
+    config.reconnect.jitter_ratio = 0.25; // base capped at 4000 -> ±1000ms
+    for _ in 0..256 {
+        let delay = compute_backoff_delay(&config, 6).as_millis() as i64;
+        assert!((3000..=5000).contains(&delay), "capped+jitter delay {delay}ms out of bounds");
+    }
+}
+
+#[test]
 fn idle_replay_cache_rejects_replayed_offer_across_iterations() {
     let offer = generate_identity("offer-home").expect("offer identity");
     let answer = generate_identity("answer-office").expect("answer identity");

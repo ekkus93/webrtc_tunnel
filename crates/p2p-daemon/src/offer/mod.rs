@@ -28,8 +28,8 @@ use session::{OfferSessionIo, run_offer_session};
 // cfg(test) re-export glob).
 #[cfg(test)]
 pub(crate) use session::{
-    handle_offer_session_message, maybe_ack_duplicate_active_session_message,
-    process_offer_session_payload,
+    attempt_offer_reconnect, handle_offer_session_message,
+    maybe_ack_duplicate_active_session_message, process_offer_session_payload,
 };
 
 #[cfg(any(test, debug_assertions))]

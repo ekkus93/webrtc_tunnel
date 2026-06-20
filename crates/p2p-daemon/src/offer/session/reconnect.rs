@@ -18,7 +18,7 @@ use crate::predicates::*;
 use crate::signaling::*;
 use crate::types::*;
 
-pub(super) async fn attempt_offer_reconnect<T: DaemonSignalingTransport>(
+pub(crate) async fn attempt_offer_reconnect<T: DaemonSignalingTransport>(
     ctx: &mut RuntimeContext<'_>,
     codec: &SignalCodec<'_>,
     transport: &mut T,

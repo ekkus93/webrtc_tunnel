@@ -25,7 +25,12 @@ use crate::types::*;
 mod inbound;
 mod reconnect;
 
+#[cfg(not(test))]
 use reconnect::attempt_offer_reconnect;
+// Under test, re-export (and still use internally) so the reconnect orchestration can be
+// unit-tested for its disabled / attempt-exhaustion branches via the crate-root glob.
+#[cfg(test)]
+pub(crate) use reconnect::attempt_offer_reconnect;
 
 /// Bound on how long an offer session may wait for the WebRTC data channel to open
 /// for the *first* time (after the local client is accepted and the offer/answer +

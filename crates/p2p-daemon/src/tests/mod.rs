@@ -19,5 +19,6 @@ mod busy_offer;
 mod canonical_docs;
 mod config_and_idle;
 mod duplicate_reack;
+mod reconnect;
 mod session_lifecycle;
 mod status_and_recovery;
