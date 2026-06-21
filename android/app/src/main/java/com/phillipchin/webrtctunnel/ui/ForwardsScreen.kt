@@ -136,7 +136,7 @@ fun ForwardDetailsScreen(
 
     if (showDeleteDialog && forward != null) {
         DeleteForwardDialog(
-            forwardName = forward.name,
+            forward = forward,
             onConfirm = {
                 vm.deleteForward(forward.id)
                 showDeleteDialog = false
@@ -258,15 +258,27 @@ private fun ForwardDetailActions(
 
 @Composable
 private fun DeleteForwardDialog(
-    forwardName: String,
+    forward: ForwardConfig,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Delete forward?") },
-        text = { Text("This removes $forwardName from configuration.") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("This removes \"${forward.name}\" from configuration. This cannot be undone.")
+                Text(
+                    "${forward.localHost}:${forward.localPort} -> ${forward.remoteForwardId}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Delete") } },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Delete", color = MaterialTheme.colorScheme.error)
+            }
+        },
     )
 }

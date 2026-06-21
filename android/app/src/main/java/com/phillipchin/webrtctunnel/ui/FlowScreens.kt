@@ -9,10 +9,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +44,7 @@ fun SetupWizardScreen(
         initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
     )
     var editingForward by remember { mutableStateOf<ForwardEditorState?>(null) }
+    var showCancelConfirm by remember { mutableStateOf(false) }
 
     ScrollableScreenSurface(padding) {
         SectionHeader("Setup Wizard", "Configure tunnel in 7 guided steps")
@@ -60,7 +63,24 @@ fun SetupWizardScreen(
         )
         WizardMessages(state)
         Spacer(Modifier.height(12.dp))
-        WizardNavigationButtons(state = state, vm = vm, canAdvance = state.canAdvance, onStartSuccess = onStartSuccess)
+        WizardNavigationButtons(
+            state = state,
+            vm = vm,
+            canAdvance = state.canAdvance,
+            onStartSuccess = onStartSuccess,
+            // Cancel wipes all wizard input, so confirm once the user has entered anything worth losing.
+            onCancelRequest = { if (hasWizardProgress(state)) showCancelConfirm = true else vm.cancel() },
+        )
+    }
+
+    if (showCancelConfirm) {
+        CancelSetupDialog(
+            onConfirm = {
+                vm.cancel()
+                showCancelConfirm = false
+            },
+            onDismiss = { showCancelConfirm = false },
+        )
     }
 
     editingForward?.let { editor ->
@@ -147,17 +167,36 @@ private fun WizardMessages(state: SetupWizardState) {
 }
 
 @Composable
+private fun CancelSetupDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Discard setup?") },
+        text = { Text("This clears everything you've entered in the wizard. This cannot be undone.") },
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Keep editing") } },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Discard", color = MaterialTheme.colorScheme.error)
+            }
+        },
+    )
+}
+
+@Composable
 private fun WizardNavigationButtons(
     state: SetupWizardState,
     vm: SetupViewModel,
     canAdvance: Boolean,
     onStartSuccess: () -> Unit,
+    onCancelRequest: () -> Unit,
 ) {
     val busy = state.isBusy
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = vm::cancel, enabled = !busy) { Text("Cancel") }
+                OutlinedButton(onClick = onCancelRequest, enabled = !busy) { Text("Cancel") }
                 OutlinedButton(
                     onClick = vm::goBack,
                     enabled = state.currentStep != SetupStep.Mode && !busy,
@@ -178,6 +217,13 @@ private fun WizardNavigationButtons(
         }
     }
 }
+
+private fun hasWizardProgress(state: SetupWizardState): Boolean =
+    state.currentStep != SetupStep.Mode ||
+        state.input.brokerHost.isNotBlank() ||
+        state.importPublicIdentity.isNotBlank() ||
+        state.localPublicIdentity.isNotBlank() ||
+        state.importIdentityPath.isNotBlank()
 
 private fun stepLabel(step: SetupStep): String =
     when (step) {

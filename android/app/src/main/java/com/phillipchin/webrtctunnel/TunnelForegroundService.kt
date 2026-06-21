@@ -200,11 +200,11 @@ class TunnelForegroundService
                 val text =
                     body ?: when (state) {
                         ServiceState.Connected -> "Tunnel connected"
-                        ServiceState.Serving -> "Serving; waiting for a peer"
-                        ServiceState.Listening -> "Listening; waiting for a local client"
+                        ServiceState.Serving -> "Running — waiting for a peer to connect"
+                        ServiceState.Listening -> "Running — waiting for an app to use the tunnel"
                         ServiceState.Starting, ServiceState.Connecting, ServiceState.Reconnecting -> "Connecting…"
-                        ServiceState.PausedMeteredBlocked -> "Cellular/metered network blocked"
-                        ServiceState.NoNetwork -> "No network available"
+                        ServiceState.PausedMeteredBlocked -> "Paused — on cellular/metered data"
+                        ServiceState.NoNetwork -> "Paused — no network available"
                         ServiceState.Stopping -> "Stopping…"
                         ServiceState.Stopped -> "Tunnel stopped"
                         ServiceState.Error, ServiceState.ConfigInvalid ->

@@ -87,8 +87,8 @@ class NotificationController(
                 ServiceState.Connecting,
                 ServiceState.Reconnecting,
                 -> "WebRTC Tunnel starting"
-                ServiceState.Listening -> "WebRTC Tunnel listening"
-                ServiceState.Serving -> "WebRTC Tunnel serving"
+                ServiceState.Listening -> "WebRTC Tunnel running"
+                ServiceState.Serving -> "WebRTC Tunnel running"
                 ServiceState.Connected -> "WebRTC Tunnel connected"
                 ServiceState.PausedMeteredBlocked, ServiceState.NoNetwork -> "WebRTC Tunnel paused"
                 ServiceState.Stopping -> "WebRTC Tunnel stopping"

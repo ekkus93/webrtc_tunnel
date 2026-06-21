@@ -189,7 +189,9 @@ fun ErrorResolutionCard(
 
 fun stateColorToken(state: String): Color =
     when {
-        state.contains("connected", ignoreCase = true) || state.contains("listening", ignoreCase = true) -> Success
+        state.contains("connected", ignoreCase = true) ||
+            state.contains("listening", ignoreCase = true) ||
+            state.contains("running", ignoreCase = true) -> Success
         state.contains("paused", ignoreCase = true) || state.contains("starting", ignoreCase = true) -> Warning
         state.contains("error", ignoreCase = true) || state.contains("invalid", ignoreCase = true) -> Error
         else -> Color(color = 0xFF6B7280)

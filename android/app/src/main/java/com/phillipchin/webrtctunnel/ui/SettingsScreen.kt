@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel.ui
 
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.phillipchin.webrtctunnel.BuildConfig
@@ -285,11 +287,16 @@ private fun ResetConfigDialog(
         onDismissRequest = onDismiss,
         title = { Text("Reset configuration?") },
         text = {
-            Text(
-                "This clears all saved configuration including broker, peer, and forwards. This cannot be undone.",
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("This clears all saved configuration: broker, remote peer, and forwards.")
+                Text(
+                    "This cannot be undone. Your device identity key is kept.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Keep configuration") } },
         confirmButton = {
             TextButton(onClick = onConfirm) { Text("Reset", color = MaterialTheme.colorScheme.error) }
         },

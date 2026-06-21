@@ -63,11 +63,13 @@ private fun mapStatusUi(status: TunnelStatus): HomeStatusUi =
         ServiceState.Connected -> HomeStatusUi("Connected", "Tunnel is active and ready to use.")
         ServiceState.Listening, ServiceState.Serving ->
             HomeStatusUi(
-                "Listening",
-                "Tunnel is active and waiting for local use.",
+                "Running",
+                "Tunnel is up — waiting for an app to use it.",
             )
-        ServiceState.PausedMeteredBlocked -> HomeStatusUi("Paused", "Cellular/metered network blocked.")
-        ServiceState.NoNetwork -> HomeStatusUi("No network", "Connect to Wi-Fi to start the tunnel.")
+        ServiceState.PausedMeteredBlocked ->
+            HomeStatusUi("Paused", "Paused on cellular/metered data. Tap \"Allow This Session\" to use it now.")
+        ServiceState.NoNetwork ->
+            HomeStatusUi("No network", "No network connection. Connect to Wi-Fi or mobile data, then retry.")
         ServiceState.ConfigInvalid -> HomeStatusUi("Configuration needs attention", "Open setup to fix configuration.")
         ServiceState.Stopping -> HomeStatusUi("Stopping", "Stopping tunnel service.")
         ServiceState.Error -> HomeStatusUi("Error", "Tunnel encountered an error.")
@@ -94,7 +96,7 @@ private fun ForwardStatus.toConfig(): ForwardConfig =
 internal fun HomeStatusIcon(title: String) {
     val (icon, tint) =
         when {
-            title.equals("Connected", ignoreCase = true) || title.equals("Listening", ignoreCase = true) ->
+            title.equals("Connected", ignoreCase = true) || title.equals("Running", ignoreCase = true) ->
                 Icons.Filled.CheckCircle to stateColorToken(title)
             title.equals("Error", ignoreCase = true) || title.contains("attention", ignoreCase = true) ->
                 Icons.Filled.Warning to stateColorToken(title)

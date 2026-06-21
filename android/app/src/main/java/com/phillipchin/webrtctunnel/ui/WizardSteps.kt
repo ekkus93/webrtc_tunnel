@@ -5,10 +5,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,7 +30,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.NetworkStatus
@@ -73,6 +78,10 @@ internal fun IdentityStepContent(
                 modifier = Modifier.weight(1f),
             ) { Text("Generate identity") }
         }
+        Text(
+            "Import opens the device file picker, or generate a fresh identity for this phone.",
+            style = MaterialTheme.typography.bodySmall,
+        )
         OutlinedButton(onClick = { showRawPathImport = !showRawPathImport }, modifier = Modifier.fillMaxWidth()) {
             Text(if (showRawPathImport) "Hide advanced import options" else "Show advanced import options")
         }
@@ -130,19 +139,41 @@ private fun LocalPublicIdentitySection(identity: String) {
     }
 }
 
+private const val MAX_PORT = 65535
+
 @Composable
 internal fun BrokerStepContent(
     vm: SetupViewModel,
     state: SetupWizardState,
 ) {
+    // Track the port as raw text so invalid input shows an error instead of silently
+    // coercing to 0 (which read as a valid-looking value).
+    var brokerPortText by remember { mutableStateOf(state.input.brokerPort.toString()) }
+    val parsedPort = brokerPortText.toIntOrNull()
+    val portError =
+        when {
+            brokerPortText.isBlank() -> "Broker port is required"
+            parsedPort == null || parsedPort !in 1..MAX_PORT -> "Port must be between 1 and 65535"
+            else -> null
+        }
     StatusCard {
         OutlinedTextField(value = state.input.brokerHost, onValueChange = {
             vm.setInput(state.input.copy(brokerHost = it))
         }, label = { Text("Broker host") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = state.input.brokerPort.toString(), onValueChange = {
-                value ->
-            vm.setInput(state.input.copy(brokerPort = value.toIntOrNull() ?: 0))
-        }, label = { Text("Broker port") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            value = brokerPortText,
+            onValueChange = { input ->
+                if (input.length <= 5 && input.all(Char::isDigit)) {
+                    brokerPortText = input
+                    vm.setInput(state.input.copy(brokerPort = input.toIntOrNull() ?: 0))
+                }
+            },
+            label = { Text("Broker port") },
+            isError = portError != null,
+            supportingText = portError?.let { message -> { Text(message) } },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth(),
+        )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Use TLS")
             Spacer(Modifier.weight(1f))
@@ -154,12 +185,9 @@ internal fun BrokerStepContent(
         OutlinedTextField(value = state.input.brokerUsername, onValueChange = {
             vm.setInput(state.input.copy(brokerUsername = it))
         }, label = { Text("Broker username") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(
+        BrokerPasswordField(
             value = state.input.brokerPassword,
-            onValueChange = { vm.setInput(state.input.copy(brokerPassword = it)) },
-            label = { Text("Broker password") },
-            modifier = Modifier.fillMaxWidth(),
-            visualTransformation = PasswordVisualTransformation(),
+            onChange = { vm.setInput(state.input.copy(brokerPassword = it)) },
         )
         OutlinedButton(
             onClick = { vm.setAdvancedExpanded(!state.advancedExpanded) },
@@ -168,20 +196,7 @@ internal fun BrokerStepContent(
             Text(if (state.advancedExpanded) "Hide advanced" else "Show advanced")
         }
         if (state.advancedExpanded) {
-            OutlinedTextField(value = state.input.topicPrefix, onValueChange = {
-                vm.setInput(state.input.copy(topicPrefix = it))
-            }, label = { Text("Topic prefix") }, modifier = Modifier.fillMaxWidth())
-            Text(
-                "Change topic prefix only if your broker requires isolation from other users.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            OutlinedTextField(value = state.input.brokerPasswordFile, onValueChange = {
-                vm.setInput(state.input.copy(brokerPasswordFile = it))
-            }, label = { Text("Broker password file (advanced)") }, modifier = Modifier.fillMaxWidth())
-            Text(
-                "Use this instead of the password field if your credentials are stored in a file on device.",
-                style = MaterialTheme.typography.bodySmall,
-            )
+            BrokerAdvancedFields(vm = vm, state = state)
         }
         OutlinedButton(
             onClick = vm.save::testBrokerConnection,
@@ -189,6 +204,50 @@ internal fun BrokerStepContent(
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Test TCP reachability") }
     }
+}
+
+@Composable
+private fun BrokerPasswordField(
+    value: String,
+    onChange: (String) -> Unit,
+) {
+    var showPassword by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text("Broker password") },
+        modifier = Modifier.fillMaxWidth(),
+        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton(onClick = { showPassword = !showPassword }) {
+                Icon(
+                    imageVector = if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                    contentDescription = if (showPassword) "Hide password" else "Show password",
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun BrokerAdvancedFields(
+    vm: SetupViewModel,
+    state: SetupWizardState,
+) {
+    OutlinedTextField(value = state.input.topicPrefix, onValueChange = {
+        vm.setInput(state.input.copy(topicPrefix = it))
+    }, label = { Text("Topic prefix") }, modifier = Modifier.fillMaxWidth())
+    Text(
+        "Change topic prefix only if your broker requires isolation from other users.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    OutlinedTextField(value = state.input.brokerPasswordFile, onValueChange = {
+        vm.setInput(state.input.copy(brokerPasswordFile = it))
+    }, label = { Text("Broker password file (advanced)") }, modifier = Modifier.fillMaxWidth())
+    Text(
+        "Use this instead of the password field if your credentials are stored in a file on device.",
+        style = MaterialTheme.typography.bodySmall,
+    )
 }
 
 @Composable
@@ -202,9 +261,13 @@ internal fun PeerStepContent(
         OutlinedTextField(value = state.input.remotePeerId, onValueChange = {
             vm.setInput(state.input.copy(remotePeerId = it))
         }, label = { Text("Remote peer id") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = state.importPublicIdentity, onValueChange = vm::setImportPublicIdentity, label = {
-            Text("Remote public identity")
-        }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            value = state.importPublicIdentity,
+            onValueChange = vm::setImportPublicIdentity,
+            label = { Text("Remote public identity") },
+            supportingText = { Text("Paste the remote peer's public identity (plaintext or TOML), then validate.") },
+            modifier = Modifier.fillMaxWidth(),
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = vm.identity::validateRemotePublicIdentity,
@@ -329,7 +392,10 @@ internal fun ReviewStepContent(
             if (state.remoteIdentityPeerId != null) {
                 Text("Remote identity: validated (${state.remoteIdentityPeerId})")
             } else {
-                Text("Remote identity: will be validated at save")
+                Text(
+                    "Remote identity: not validated yet — go back and validate to catch typos before saving.",
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
         }
         StatusCard {
