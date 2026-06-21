@@ -25,11 +25,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
 internal val Success = Color(color = 0xFF2E7D32)
 internal val Warning = Color(color = 0xFFF59E0B)
 internal val Error = Color(color = 0xFFD32F2F)
+internal val Neutral = Color(color = 0xFF6B7280)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,7 +57,10 @@ fun SectionHeader(
     title: String,
     subtitle: String? = null,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(
+        modifier = Modifier.semantics { heading() },
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         Text(title, style = MaterialTheme.typography.titleLarge)
         subtitle?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -115,9 +121,9 @@ fun ForwardSummaryRow(
 ) {
     val rowModifier =
         if (onClick != null) {
-            Modifier.fillMaxWidth().clickable(onClick = onClick)
+            Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}.clickable(onClick = onClick)
         } else {
-            Modifier.fillMaxWidth()
+            Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}
         }
     Row(
         modifier = rowModifier,
@@ -208,5 +214,5 @@ fun stateColorToken(state: String): Color =
             state.contains("running", ignoreCase = true) -> Success
         state.contains("paused", ignoreCase = true) || state.contains("starting", ignoreCase = true) -> Warning
         state.contains("error", ignoreCase = true) || state.contains("invalid", ignoreCase = true) -> Error
-        else -> Color(color = 0xFF6B7280)
+        else -> Neutral
     }

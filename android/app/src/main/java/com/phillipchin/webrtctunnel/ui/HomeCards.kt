@@ -44,11 +44,11 @@ internal fun TunnelStatusCard(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            HomeStatusIcon(statusUi.title)
+            HomeStatusIcon(statusUi)
             Column {
                 Text(
                     statusUi.title,
-                    color = stateColorToken(statusUi.title),
+                    color = statusUi.titleColor,
                     style = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
                 )
                 Text(statusUi.description)

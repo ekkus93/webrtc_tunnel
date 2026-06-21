@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.SignalCellularAlt
@@ -32,6 +31,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -51,28 +52,55 @@ private const val SECONDS_PER_HOUR = 3600
 private const val SECONDS_PER_MINUTE = 60
 private const val UPTIME_TICK_MS = 1_000L
 
-internal data class HomeStatusUi(val title: String, val description: String)
+// title + description for every ServiceState; map avoids a branch-heavy when that trips
+// the cyclomatic-complexity threshold when combined with the appearance when below.
+private val statusCopy =
+    mapOf(
+        ServiceState.Stopped to ("Stopped" to "Tunnel service is not running."),
+        ServiceState.Starting to ("Starting" to "Starting tunnel and waiting for peer connectivity."),
+        ServiceState.Connecting to ("Starting" to "Starting tunnel and waiting for peer connectivity."),
+        ServiceState.Reconnecting to ("Starting" to "Starting tunnel and waiting for peer connectivity."),
+        ServiceState.Connected to ("Connected" to "Tunnel is active and ready to use."),
+        ServiceState.Listening to ("Running" to "Tunnel is up — waiting for an app to use it."),
+        ServiceState.Serving to ("Running" to "Tunnel is up — waiting for an app to use it."),
+        ServiceState.PausedMeteredBlocked to (
+            "Paused" to "Paused on cellular/metered data. Tap \"Allow This Session\" to use it now."
+        ),
+        ServiceState.NoNetwork to (
+            "No network" to "No network connection. Connect to Wi-Fi or mobile data, then retry."
+        ),
+        ServiceState.ConfigInvalid to ("Configuration needs attention" to "Open setup to fix configuration."),
+        ServiceState.Stopping to ("Stopping" to "Stopping tunnel service."),
+        ServiceState.Error to ("Error" to "Tunnel encountered an error."),
+    )
 
-private fun mapStatusUi(status: TunnelStatus): HomeStatusUi =
-    when (status.serviceState) {
-        ServiceState.Stopped -> HomeStatusUi("Stopped", "Tunnel service is not running.")
-        ServiceState.Starting, ServiceState.Connecting, ServiceState.Reconnecting -> {
-            HomeStatusUi("Starting", "Starting tunnel and waiting for peer connectivity.")
+internal data class HomeStatusUi(
+    val title: String,
+    val description: String,
+    val titleColor: Color,
+    val icon: ImageVector,
+) {
+    val iconTint: Color get() = titleColor
+}
+
+private fun mapStatusUi(status: TunnelStatus): HomeStatusUi {
+    data class Appearance(val color: Color, val icon: ImageVector)
+
+    val (color, icon) =
+        when (status.serviceState) {
+            ServiceState.Stopped, ServiceState.Stopping -> Appearance(Neutral, Icons.Filled.Info)
+            ServiceState.Starting, ServiceState.Connecting, ServiceState.Reconnecting ->
+                Appearance(Warning, Icons.Filled.Info)
+            ServiceState.Connected, ServiceState.Listening, ServiceState.Serving ->
+                Appearance(Success, Icons.Filled.CheckCircle)
+            ServiceState.PausedMeteredBlocked -> Appearance(Warning, Icons.Filled.Warning)
+            ServiceState.NoNetwork -> Appearance(Warning, Icons.Filled.WifiOff)
+            ServiceState.ConfigInvalid, ServiceState.Error -> Appearance(Error, Icons.Filled.Warning)
         }
-        ServiceState.Connected -> HomeStatusUi("Connected", "Tunnel is active and ready to use.")
-        ServiceState.Listening, ServiceState.Serving ->
-            HomeStatusUi(
-                "Running",
-                "Tunnel is up — waiting for an app to use it.",
-            )
-        ServiceState.PausedMeteredBlocked ->
-            HomeStatusUi("Paused", "Paused on cellular/metered data. Tap \"Allow This Session\" to use it now.")
-        ServiceState.NoNetwork ->
-            HomeStatusUi("No network", "No network connection. Connect to Wi-Fi or mobile data, then retry.")
-        ServiceState.ConfigInvalid -> HomeStatusUi("Configuration needs attention", "Open setup to fix configuration.")
-        ServiceState.Stopping -> HomeStatusUi("Stopping", "Stopping tunnel service.")
-        ServiceState.Error -> HomeStatusUi("Error", "Tunnel encountered an error.")
-    }
+    val (title, description) =
+        requireNotNull(statusCopy[status.serviceState]) { "No copy for ${status.serviceState}" }
+    return HomeStatusUi(title, description, color, icon)
+}
 
 internal fun formatUptime(seconds: Long): String {
     val hours = seconds / SECONDS_PER_HOUR
@@ -92,16 +120,13 @@ private fun ForwardStatus.toConfig(): ForwardConfig =
     )
 
 @Composable
-internal fun HomeStatusIcon(title: String) {
-    val (icon, tint) =
-        when {
-            title.equals("Connected", ignoreCase = true) || title.equals("Running", ignoreCase = true) ->
-                Icons.Filled.CheckCircle to stateColorToken(title)
-            title.equals("Error", ignoreCase = true) || title.contains("attention", ignoreCase = true) ->
-                Icons.Filled.Warning to stateColorToken(title)
-            else -> Icons.Filled.Info to stateColorToken(title)
-        }
-    Icon(icon, contentDescription = "Tunnel status: $title", tint = tint, modifier = Modifier.size(40.dp))
+internal fun HomeStatusIcon(statusUi: HomeStatusUi) {
+    Icon(
+        imageVector = statusUi.icon,
+        contentDescription = "Tunnel status: ${statusUi.title}",
+        tint = statusUi.iconTint,
+        modifier = Modifier.size(40.dp),
+    )
 }
 
 @Composable
