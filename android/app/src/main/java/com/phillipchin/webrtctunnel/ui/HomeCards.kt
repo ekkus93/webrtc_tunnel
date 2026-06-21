@@ -15,6 +15,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -101,18 +102,20 @@ internal fun HomeForwardsCard(
             EmptyStateCard("No forwards configured.")
         } else {
             configuredForwards.forEach { forward ->
-                val runtime = status.forwards.firstOrNull { it.id == forward.id }
-                val stateLabel =
-                    mapForwardListenLabel(
-                        runtime?.listenState?.name ?: if (forward.enabled) "configured" else "disabled",
+                key(forward.id) {
+                    val runtime = status.forwards.firstOrNull { it.id == forward.id }
+                    val stateLabel =
+                        mapForwardListenLabel(
+                            runtime?.listenState?.name ?: if (forward.enabled) "configured" else "disabled",
+                        )
+                    ForwardSummaryRow(
+                        title = forward.name,
+                        subtitle = "${forward.localHost}:${forward.localPort} -> ${forward.remoteForwardId}",
+                        status = stateLabel,
+                        statusColors = forwardStatusChipColors(stateLabel),
+                        onClick = { onOpenDetails(forward.id) },
                     )
-                ForwardSummaryRow(
-                    title = forward.name,
-                    subtitle = "${forward.localHost}:${forward.localPort} -> ${forward.remoteForwardId}",
-                    status = stateLabel,
-                    statusColors = forwardStatusChipColors(stateLabel),
-                    onClick = { onOpenDetails(forward.id) },
-                )
+                }
             }
         }
     }

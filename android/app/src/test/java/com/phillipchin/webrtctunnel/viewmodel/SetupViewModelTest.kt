@@ -229,6 +229,25 @@ class SetupViewModelTest : AppViewModelTestBase() {
     }
 
     @Test
+    fun forwardsStepCannotAdvanceUntilAForwardIsEnabled() {
+        val viewModel = newValidViewModel("forwards_canadvance")
+        deps.forwardsStore.saveForwards(
+            listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = false)),
+        )
+        viewModel.forwardsEditor.refreshForwards()
+        advanceTo(viewModel, SetupStep.Forwards)
+        assertEquals(SetupStep.Forwards, viewModel.state.value.currentStep)
+        // canAdvance must mirror save-time validation: disabled-only forwards block the step.
+        assertTrue(!viewModel.canAdvanceFromCurrentStep())
+
+        deps.forwardsStore.saveForwards(
+            listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
+        )
+        viewModel.forwardsEditor.refreshForwards()
+        assertTrue(viewModel.canAdvanceFromCurrentStep())
+    }
+
+    @Test
     fun goNextClearsPreviousErrorOnSuccessfulAdvance() {
         val viewModel = newValidViewModel("clear_error")
         deps.forwardsStore.saveForwards(emptyList()) // clear the seeded default forward

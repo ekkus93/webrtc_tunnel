@@ -1,6 +1,7 @@
 package com.phillipchin.webrtctunnel.ui
 
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -47,15 +48,9 @@ fun ImportExportScreen(
     var showPrivateExportWarning by remember { mutableStateOf(false) }
     var showRawConfigExportWarning by remember { mutableStateOf(false) }
     var showAdvanced by remember { mutableStateOf(false) }
-    var rawConfigExportViaPicker by remember { mutableStateOf(false) }
-    val exportConfigLauncher =
-        rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-            if (uri != null) vm.exportConfigToUri(uri, confirmSensitive = true)
-        }
-    val exportPrivateIdentityLauncher =
-        rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-            if (uri != null) vm.exportPrivateIdentityToUri(uri, confirmRisk = true)
-        }
+    // Importing replaces on-device config/identity, so a picked file is held here and only
+    // applied after the user confirms the overwrite.
+    var pendingImport by remember { mutableStateOf<Pair<Uri, ImportKind>?>(null) }
 
     ScrollableScreenSurface(padding) {
         SectionHeader("Import / Export", "Use Android document picker and share actions")
@@ -63,10 +58,8 @@ fun ImportExportScreen(
         ImportExportPrimaryActions(
             vm = vm,
             busy = state.isBusy,
-            onExportConfigRequest = {
-                rawConfigExportViaPicker = true
-                showRawConfigExportWarning = true
-            },
+            onImportRequest = { uri, kind -> pendingImport = uri to kind },
+            onExportConfigRequest = { showRawConfigExportWarning = true },
             onExportPrivateRequest = { showPrivateExportWarning = true },
         )
         Spacer(Modifier.height(12.dp))
@@ -80,26 +73,68 @@ fun ImportExportScreen(
         state.resultMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
     }
 
-    if (showRawConfigExportWarning) {
-        RawConfigExportDialog(
-            onExport = {
-                if (rawConfigExportViaPicker) {
-                    exportConfigLauncher.launch("p2ptunnel-config.toml")
-                } else {
-                    vm.exportConfig(confirmSensitive = true)
-                }
-                showRawConfigExportWarning = false
+    ImportExportDialogs(
+        vm = vm,
+        pendingImport = pendingImport,
+        onImportHandled = { pendingImport = null },
+        exportState =
+            ExportDialogState(
+                showRawConfig = showRawConfigExportWarning,
+                showPrivateIdentity = showPrivateExportWarning,
+                onDismissRawConfig = { showRawConfigExportWarning = false },
+                onDismissPrivateIdentity = { showPrivateExportWarning = false },
+            ),
+    )
+}
+
+private class ExportDialogState(
+    val showRawConfig: Boolean,
+    val showPrivateIdentity: Boolean,
+    val onDismissRawConfig: () -> Unit,
+    val onDismissPrivateIdentity: () -> Unit,
+)
+
+@Composable
+private fun ImportExportDialogs(
+    vm: ImportExportViewModel,
+    pendingImport: Pair<Uri, ImportKind>?,
+    onImportHandled: () -> Unit,
+    exportState: ExportDialogState,
+) {
+    val exportConfigLauncher =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri != null) vm.exportConfigToUri(uri, confirmSensitive = true)
+        }
+    val exportPrivateIdentityLauncher =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri != null) vm.exportPrivateIdentityToUri(uri, confirmRisk = true)
+        }
+    pendingImport?.let { (uri, kind) ->
+        ImportConfirmDialog(
+            kind = kind,
+            onConfirm = {
+                vm.importFromUri(uri, kind)
+                onImportHandled()
             },
-            onDismiss = { showRawConfigExportWarning = false },
+            onDismiss = onImportHandled,
         )
     }
-    if (showPrivateExportWarning) {
+    if (exportState.showRawConfig) {
+        RawConfigExportDialog(
+            onExport = {
+                exportConfigLauncher.launch("p2ptunnel-config.toml")
+                exportState.onDismissRawConfig()
+            },
+            onDismiss = exportState.onDismissRawConfig,
+        )
+    }
+    if (exportState.showPrivateIdentity) {
         PrivateExportDialog(
             onExport = {
                 exportPrivateIdentityLauncher.launch("identity-private.toml")
-                showPrivateExportWarning = false
+                exportState.onDismissPrivateIdentity()
             },
-            onDismiss = { showPrivateExportWarning = false },
+            onDismiss = exportState.onDismissPrivateIdentity,
         )
     }
 }
@@ -124,20 +159,21 @@ private fun ImportExportAdvancedToggle(
 private fun ImportExportPrimaryActions(
     vm: ImportExportViewModel,
     busy: Boolean,
+    onImportRequest: (Uri, ImportKind) -> Unit,
     onExportConfigRequest: () -> Unit,
     onExportPrivateRequest: () -> Unit,
 ) {
     val openTextDocumentLauncher =
         rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) vm.importFromUri(uri, ImportKind.Config)
+            if (uri != null) onImportRequest(uri, ImportKind.Config)
         }
     val openPrivateIdentityLauncher =
         rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) vm.importFromUri(uri, ImportKind.PrivateIdentity)
+            if (uri != null) onImportRequest(uri, ImportKind.PrivateIdentity)
         }
     val openPublicIdentityLauncher =
         rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) vm.importFromUri(uri, ImportKind.PublicIdentity)
+            if (uri != null) onImportRequest(uri, ImportKind.PublicIdentity)
         }
     val exportPublicIdentityLauncher =
         rememberLauncherForActivityResult(contract = ActivityResultContracts.CreateDocument("text/plain")) { uri ->
@@ -224,6 +260,23 @@ private fun ImportExportAdvancedSection(
     state: ImportExportState,
     vm: ImportExportViewModel,
 ) {
+    // Path-based imports overwrite the same on-device config/identity as the picker flow, so
+    // they go through the same overwrite confirmation.
+    var pendingImport by remember { mutableStateOf<ImportKind?>(null) }
+    pendingImport?.let { kind ->
+        ImportConfirmDialog(
+            kind = kind,
+            onConfirm = {
+                when (kind) {
+                    ImportKind.Config -> vm.importConfig()
+                    ImportKind.PrivateIdentity -> vm.importPrivateIdentity()
+                    ImportKind.PublicIdentity -> vm.importPublicIdentity()
+                }
+                pendingImport = null
+            },
+            onDismiss = { pendingImport = null },
+        )
+    }
     SettingsSection("Advanced (file paths)") {
         OutlinedTextField(
             value = state.configImportPath,
@@ -232,7 +285,7 @@ private fun ImportExportAdvancedSection(
             modifier = Modifier.fillMaxWidth(),
         )
         Button(
-            onClick = vm::importConfig,
+            onClick = { pendingImport = ImportKind.Config },
             enabled = !state.isBusy,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Import config path") }
@@ -241,7 +294,7 @@ private fun ImportExportAdvancedSection(
             vm.updateState { it.copy(privateIdentityImportPath = value) }
         }, label = { Text("Private identity import path") }, modifier = Modifier.fillMaxWidth())
         Button(
-            onClick = vm::importPrivateIdentity,
+            onClick = { pendingImport = ImportKind.PrivateIdentity },
             enabled = !state.isBusy,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Import identity path") }
@@ -250,11 +303,42 @@ private fun ImportExportAdvancedSection(
             vm.updateState { it.copy(publicIdentityLine = value) }
         }, label = { Text("Remote public identity line") }, modifier = Modifier.fillMaxWidth())
         Button(
-            onClick = vm::importPublicIdentity,
+            onClick = { pendingImport = ImportKind.PublicIdentity },
             enabled = !state.isBusy,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Import public identity line") }
     }
+}
+
+private fun importConfirmText(kind: ImportKind): Pair<String, String> =
+    when (kind) {
+        ImportKind.Config ->
+            "Replace configuration?" to
+                "Importing replaces your current tunnel configuration (broker, peer, and forwards). " +
+                "This cannot be undone."
+        ImportKind.PrivateIdentity ->
+            "Replace private identity?" to
+                "Importing replaces this device's private identity key. The current key is overwritten " +
+                "and cannot be recovered."
+        ImportKind.PublicIdentity ->
+            "Import public identity?" to
+                "This imports a remote public identity into your configuration."
+    }
+
+@Composable
+private fun ImportConfirmDialog(
+    kind: ImportKind,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val (title, message) = importConfirmText(kind)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(message) },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Import") } },
+    )
 }
 
 @Composable

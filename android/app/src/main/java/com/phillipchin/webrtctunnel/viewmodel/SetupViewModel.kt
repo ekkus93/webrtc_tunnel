@@ -202,7 +202,13 @@ private fun peerInputReady(state: SetupWizardState): Boolean =
 private fun forwardsReady(
     deps: AppDependencies,
     forwards: List<ForwardConfig>,
-): Boolean = forwards.isNotEmpty() && deps.forwardsStore.validateForwards(forwards) == null
+): Boolean =
+    // Mirror validateForwardsStep: the step is only advanceable with at least one *enabled*
+    // forward, so the Next button reflects the same rule that save-time validation enforces
+    // (otherwise the button enables but advancing is rejected).
+    forwards.isNotEmpty() &&
+        forwards.any { it.enabled } &&
+        deps.forwardsStore.validateForwards(forwards) == null
 
 private fun loadStoredSetupInput(
     deps: AppDependencies,

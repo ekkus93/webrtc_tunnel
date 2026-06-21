@@ -78,7 +78,7 @@ fun ForwardsScreen(
         if (forwards.isEmpty()) {
             item { EmptyStateCard("No forwards configured. Tap + to add one.") }
         } else {
-            items(forwards) { forward ->
+            items(forwards, key = { it.id }) { forward ->
                 ForwardListRow(forward = forward, status = status, onClick = { onOpenDetails(forward.id) })
             }
         }

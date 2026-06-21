@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.phillipchin.webrtctunnel.MainActivity
+import com.phillipchin.webrtctunnel.R
 import com.phillipchin.webrtctunnel.model.ServiceState
 
 class NotificationController(
@@ -98,7 +99,7 @@ class NotificationController(
             .setContentTitle(title)
             .setContentText(body)
             .setContentIntent(openIntent)
-            .addAction(android.R.drawable.ic_media_pause, "Stop", action)
+            .addAction(R.drawable.ic_notification_stop, "Stop", action)
             .setOngoing(true)
             .build()
     }

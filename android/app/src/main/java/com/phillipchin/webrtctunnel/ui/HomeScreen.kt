@@ -17,12 +17,14 @@ import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -40,6 +42,7 @@ import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.TunnelStatus
+import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
 import com.phillipchin.webrtctunnel.viewmodel.ForwardsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.HomeViewModel
 import kotlinx.coroutines.delay
@@ -225,6 +228,21 @@ private fun HomeBottomActions(
     onAllowMetered: () -> Unit,
 ) {
     val context = LocalContext.current
+    var showStopConfirmDialog by remember { mutableStateOf(false) }
+    if (showStopConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showStopConfirmDialog = false },
+            title = { Text("Stop tunnel?") },
+            text = { Text("This disconnects the tunnel. Any active sessions will be dropped.") },
+            dismissButton = { TextButton(onClick = { showStopConfirmDialog = false }) { Text("Keep running") } },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.stopTunnel()
+                    showStopConfirmDialog = false
+                }) { Text("Stop", color = MaterialTheme.colorScheme.error) }
+            },
+        )
+    }
     val browserForward =
         (configuredForwards + status.forwards.map { it.toConfig() }).firstOrNull { isBrowserOpenable(it) }
     HomeActionRow(
@@ -232,7 +250,15 @@ private fun HomeBottomActions(
         actions =
             HomeRowActions(
                 onStart = { vm.startTunnel(TunnelMode.Offer) },
-                onStop = vm::stopTunnel,
+                // A long-running or in-progress tunnel is destructive to drop on a stray tap, so
+                // confirm first. A paused tunnel stops directly (the user is already leaving it).
+                onStop = {
+                    if (status.serviceState.isTunnelActiveOrStarting()) {
+                        showStopConfirmDialog = true
+                    } else {
+                        vm.stopTunnel()
+                    }
+                },
                 onOpenSetup = nav.onOpenSetup,
                 onOpenLogs = nav.onOpenLogs,
                 onOpenSettings = nav.onOpenSettings,
