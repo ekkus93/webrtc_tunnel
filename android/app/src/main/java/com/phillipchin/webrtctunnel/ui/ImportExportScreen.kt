@@ -17,6 +17,8 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -53,6 +55,16 @@ fun ImportExportScreen(
 
     ScrollableScreenSurface(padding) {
         SectionHeader("Import / Export", "Use Android document picker and share actions")
+        if (state.isBusy) {
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Config = tunnel settings (TOML). Private identity = this device's key (importing replaces it). " +
+                "Public identity = the shareable key your peer authorizes.",
+            style = MaterialTheme.typography.bodySmall,
+        )
         Spacer(Modifier.height(8.dp))
         ImportExportPrimaryActions(
             vm = vm,

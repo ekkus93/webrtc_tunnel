@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,9 +35,15 @@ fun NetworkPolicyScreen(
         Spacer(Modifier.height(8.dp))
         NetworkStatusCard {
             Text("Current network: ${mapNetworkTypeLabel(status.networkType)}")
-            Text(if (status.isMetered) "Metered" else "Unmetered")
-            Text(if (status.tunnelAllowed) "Tunnel allowed" else "Tunnel blocked")
-            Text("Reason: ${status.blockReason ?: "None"}")
+            Text(if (status.isMetered) "High data usage (metered network)" else "Unmetered (Wi-Fi)")
+            Text(
+                if (status.tunnelAllowed) "Tunnel allowed on this network" else "Tunnel paused on this network",
+                color =
+                    if (status.tunnelAllowed) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+            )
+            if (!status.tunnelAllowed) {
+                status.blockReason?.let { Text("Reason: $it") }
+            }
         }
         Spacer(Modifier.height(12.dp))
         PreferenceSwitch(

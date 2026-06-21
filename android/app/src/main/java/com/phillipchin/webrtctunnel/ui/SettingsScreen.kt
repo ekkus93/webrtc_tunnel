@@ -73,7 +73,11 @@ fun SettingsScreen(
         Spacer(Modifier.height(12.dp))
         SettingsConfigurationSection(vm = vm, uiState = uiState, onReset = { showResetConfirmDialog = true })
         Spacer(Modifier.height(12.dp))
-        SettingsIdentitySection(uiState = uiState, onOpenImportExport = nav.onOpenImportExport)
+        SettingsIdentitySection(
+            uiState = uiState,
+            onRetryIdentity = vm::refreshPublicIdentity,
+            onOpenImportExport = nav.onOpenImportExport,
+        )
         Spacer(Modifier.height(12.dp))
         SettingsDiagnosticsSection(vm = vm, onOpenLogs = nav.onOpenLogs)
         Spacer(Modifier.height(12.dp))
@@ -135,14 +139,17 @@ private fun SettingsConfigurationSection(
             enabled = !uiState.isValidatingConfig,
             modifier = Modifier.fillMaxWidth(),
         ) { Text(if (uiState.isValidatingConfig) "Validating…" else "Validate configuration") }
-        uiState.configValidationMessage?.let { message ->
-            val messageColor =
-                if (uiState.configValid == true) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.error
-                }
-            Text(message, style = MaterialTheme.typography.bodySmall, color = messageColor)
+        // Hide a previous result while a fresh validation is running so it can't be misread as current.
+        if (!uiState.isValidatingConfig) {
+            uiState.configValidationMessage?.let { message ->
+                val messageColor =
+                    if (uiState.configValid == true) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    }
+                Text(message, style = MaterialTheme.typography.bodySmall, color = messageColor)
+            }
         }
         DestructiveActionButton("Reset configuration") { onReset() }
     }
@@ -151,6 +158,7 @@ private fun SettingsConfigurationSection(
 @Composable
 private fun SettingsIdentitySection(
     uiState: SettingsUiState,
+    onRetryIdentity: () -> Unit,
     onOpenImportExport: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -164,6 +172,7 @@ private fun SettingsIdentitySection(
         )
         uiState.publicIdentityLoadError?.let { error ->
             Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = onRetryIdentity, modifier = Modifier.fillMaxWidth()) { Text("Retry") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
@@ -244,13 +253,14 @@ private fun SettingsAdvancedSection(
             OutlinedButton(
                 onClick = onOpenSetup,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Edit custom topic prefix") }
+            ) { Text("Change topic prefix (re-runs setup)") }
             OutlinedButton(
                 onClick = onOpenSetup,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Configure non-localhost bind (advanced)") }
+            ) { Text("Change local bind address (re-runs setup)") }
             Text(
-                "Answer mode: not available on Android",
+                "Answer mode (accepting connections from peers) needs a broker on this device and " +
+                    "isn't supported on Android. This app runs in Offer (client) mode only.",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(color = 0xFF6B7280),
             )

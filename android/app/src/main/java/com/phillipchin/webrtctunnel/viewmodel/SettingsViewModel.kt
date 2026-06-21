@@ -107,13 +107,15 @@ class SettingsViewModel(
 
     fun resetConfiguration() {
         viewModelScope.launch {
-            withContext(deps.dispatchers.io) {
-                runCatching {
-                    deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
-                    deps.configRepository.saveSetupInput(SetupConfigInput())
-                    deps.forwardsStore.saveForwards(emptyList())
+            val result =
+                withContext(deps.dispatchers.io) {
+                    runCatching {
+                        deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
+                        deps.configRepository.saveSetupInput(SetupConfigInput())
+                        deps.forwardsStore.saveForwards(emptyList())
+                    }
                 }
-            }
+            deps.snackbar.show(if (result.isSuccess) "Configuration reset" else "Reset failed")
         }
     }
 

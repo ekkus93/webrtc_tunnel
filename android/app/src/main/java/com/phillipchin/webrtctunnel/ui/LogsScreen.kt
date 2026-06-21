@@ -67,7 +67,6 @@ fun LogsScreen(
 ) {
     val context = LocalContext.current
     val filter by vm.filter.collectAsStateWithLifecycle()
-    val message by vm.message.collectAsStateWithLifecycle()
     val prefs by networkVm.preferences.collectAsStateWithLifecycle(initialValue = AndroidAppPreferences())
     val networkStatus by networkVm.networkStatus.collectAsStateWithLifecycle(
         initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
@@ -86,7 +85,10 @@ fun LogsScreen(
         }
     }
     val logs by vm.filteredLogs.collectAsStateWithLifecycle()
-    val copyLogs = { clipboard.setText(AnnotatedString(redactedLogsText(logs))) }
+    val copyLogs = {
+        clipboard.setText(AnnotatedString(redactedLogsText(logs)))
+        vm.onLogsCopied()
+    }
     val exportDiagnostics = { diagnosticsCreateDocumentLauncher.launch("webrtc_diagnostics_redacted.txt") }
     val shareDiagnostics: () -> Unit = {
         scope.launch {
@@ -118,9 +120,8 @@ fun LogsScreen(
             onClear = vm::clearLogs,
             menu = LogMenuActions(onCopy = copyLogs, onExport = exportDiagnostics, onShare = shareDiagnostics),
         )
-        message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
         Spacer(Modifier.height(8.dp))
-        LogList(visibleLogs = visibleLogs, debugHidden = debugHidden, modifier = Modifier.weight(1f))
+        LogList(visibleLogs = visibleLogs, debugHidden = debugHidden, filter = filter, modifier = Modifier.weight(1f))
     }
 }
 
@@ -195,6 +196,7 @@ private fun LogActionsRow(
 private fun LogList(
     visibleLogs: List<LogEvent>,
     debugHidden: Boolean,
+    filter: String,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -206,7 +208,9 @@ private fun LogList(
             item { EmptyStateCard("Debug logs are hidden. Enable Debug logs in Advanced to see them.") }
         }
         if (visibleLogs.isEmpty() && !debugHidden) {
-            item { EmptyStateCard("No logs available.") }
+            val emptyMessage =
+                if (filter == "all") "No logs yet." else "No ${filter.uppercase()} logs match this filter."
+            item { EmptyStateCard(emptyMessage) }
         }
         // LogEvent has no unique id and timestamps can collide, so combine the timestamp with
         // the list index for a crash-safe unique key (duplicate keys throw in LazyColumn).

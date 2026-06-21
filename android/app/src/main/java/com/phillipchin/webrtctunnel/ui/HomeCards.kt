@@ -13,9 +13,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -127,11 +130,20 @@ internal fun HomeErrorCard(
     onOpenLogs: () -> Unit,
 ) {
     error ?: return
+    // Allow dismissing the current error from view; a new/different error re-shows because the
+    // remember is keyed on the error identity.
+    var dismissed by remember(error) { mutableStateOf(false) }
+    if (dismissed) return
     Spacer(Modifier.height(12.dp))
     ErrorResolutionCard(
         summary = error.message,
         fix = "Open logs for details, then fix setup or broker/network settings and retry.",
         details = error.details,
-        action = { OutlinedButton(onClick = onOpenLogs) { Text("View Logs") } },
+        action = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onOpenLogs) { Text("View Logs") }
+                TextButton(onClick = { dismissed = true }) { Text("Dismiss") }
+            }
+        },
     )
 }

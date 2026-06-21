@@ -38,14 +38,19 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
     }
 
     fun importConfig() =
-        io.run("Config imported", "Config import failed") {
+        io.run("Config imported", "Config import failed", onSuccess = {
+            _state.value = _state.value.copy(configImportPath = "")
+        }) {
             val source = java.io.File(_state.value.configImportPath.trim())
             require(source.exists()) { "Config file not found" }
             importService.importContent(ImportKind.Config, source.readText())
         }
 
     fun importPrivateIdentity() =
-        io.run("Private identity imported", "Private identity import failed") {
+        io.run("Private identity imported", "Private identity import failed", onSuccess = {
+            cachedPublicIdentity = null
+            _state.value = _state.value.copy(privateIdentityImportPath = "")
+        }) {
             val privateIdentity =
                 deps.identityRepository
                     .readPrivateIdentityFile(_state.value.privateIdentityImportPath.trim())
@@ -54,14 +59,18 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         }
 
     fun importPublicIdentity() =
-        io.run("Public identity imported", "Public identity import failed") {
+        io.run("Public identity imported", "Public identity import failed", onSuccess = {
+            _state.value = _state.value.copy(publicIdentityLine = "")
+        }) {
             importService.importContent(ImportKind.PublicIdentity, _state.value.publicIdentityLine)
         }
 
     fun importFromUri(
         uri: Uri,
         kind: ImportKind,
-    ) = io.run("${kind.label} imported", "${kind.label} import failed") {
+    ) = io.run("${kind.label} imported", "${kind.label} import failed", onSuccess = {
+        if (kind == ImportKind.PrivateIdentity) cachedPublicIdentity = null
+    }) {
         val content =
             deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                 ?: error("Unable to read ${kind.label.lowercase()} from selected URI")
@@ -105,12 +114,19 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         }
     }
 
-    suspend fun publicIdentityForShare(): String =
-        withContext(deps.dispatchers.io) {
+    // The public identity is public and stable within a session, so cache it to avoid a disk
+    // read on every share/copy. Invalidated when a private identity is imported (which can
+    // change the derived public identity).
+    @Volatile private var cachedPublicIdentity: String? = null
+
+    suspend fun publicIdentityForShare(): String {
+        cachedPublicIdentity?.let { return it }
+        return withContext(deps.dispatchers.io) {
             val value = deps.identityRepository.readPublicIdentity()
             require(value.isNotBlank()) { "No public identity available" }
             value
-        }
+        }.also { cachedPublicIdentity = it }
+    }
 }
 
 /**
@@ -126,12 +142,14 @@ private class ImportExportOps(
     fun run(
         successMessage: String,
         failureFallback: String,
+        onSuccess: () -> Unit = {},
         block: suspend () -> Unit,
     ) {
         if (state.value.isBusy) return
         scope.launch {
             state.value = state.value.copy(isBusy = true, resultMessage = null)
             val result = withContext(io) { runCatching { block() } }
+            if (result.isSuccess) onSuccess()
             val message = result.fold({ successMessage }, { it.message ?: failureFallback })
             state.value = state.value.copy(isBusy = false, resultMessage = message)
             snackbar.show(message)

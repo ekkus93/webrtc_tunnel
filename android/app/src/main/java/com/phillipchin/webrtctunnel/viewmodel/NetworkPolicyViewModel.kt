@@ -14,6 +14,9 @@ class NetworkPolicyViewModel(private val deps: AppDependencies) : ViewModel() {
     val preferences = deps.configRepository.preferences
 
     fun savePreferences(updated: com.phillipchin.webrtctunnel.model.AndroidAppPreferences) {
-        viewModelScope.launch { deps.configRepository.savePreferences(updated) }
+        viewModelScope.launch {
+            deps.configRepository.savePreferences(updated)
+            deps.snackbar.show("Network policy updated")
+        }
     }
 }

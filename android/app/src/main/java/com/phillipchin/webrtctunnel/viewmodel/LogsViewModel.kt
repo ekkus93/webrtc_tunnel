@@ -43,6 +43,12 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
 
     fun clearLogs() {
         _logs.value = emptyList()
+        deps.snackbar.show("Logs cleared")
+    }
+
+    /** Surface a confirmation for the screen-side clipboard copy. */
+    fun onLogsCopied() {
+        deps.snackbar.show("Logs copied to clipboard")
     }
 
     fun exportDiagnostics(
@@ -64,7 +70,9 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
                             networkStatus = networkStatus,
                         )
                     }
-                _message.value = result.fold({ "Diagnostics exported" }, { it.message ?: "Diagnostics export failed" })
+                val message = result.fold({ "Diagnostics exported" }, { it.message ?: "Diagnostics export failed" })
+                _message.value = message
+                deps.snackbar.show(message)
             } finally {
                 _isBusy.value = false
             }
@@ -95,7 +103,9 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
                             } ?: error("Unable to open destination URI")
                         }
                     }
-                _message.value = result.fold({ "Diagnostics exported" }, { it.message ?: "Diagnostics export failed" })
+                val message = result.fold({ "Diagnostics exported" }, { it.message ?: "Diagnostics export failed" })
+                _message.value = message
+                deps.snackbar.show(message)
             } finally {
                 _isBusy.value = false
             }
