@@ -32,7 +32,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -102,7 +101,7 @@ internal fun HomeStatusIcon(title: String) {
                 Icons.Filled.Warning to stateColorToken(title)
             else -> Icons.Filled.Info to stateColorToken(title)
         }
-    Icon(icon, contentDescription = "Tunnel status", tint = tint, modifier = Modifier.size(40.dp))
+    Icon(icon, contentDescription = "Tunnel status: $title", tint = tint, modifier = Modifier.size(40.dp))
 }
 
 @Composable
@@ -114,7 +113,7 @@ internal fun NetworkTypeIcon(networkType: NetworkType) {
             NetworkType.NoNetwork -> Icons.Filled.WifiOff to "No network"
             NetworkType.Unknown -> Icons.Filled.Info to "Unknown network"
         }
-    Icon(icon, contentDescription = description, tint = Color(color = 0xFF6B7280))
+    Icon(icon, contentDescription = description, tint = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 data class HomeNavActions(

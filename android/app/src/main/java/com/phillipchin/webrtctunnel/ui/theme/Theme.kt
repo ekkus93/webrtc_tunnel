@@ -1,7 +1,9 @@
 package com.phillipchin.webrtctunnel.ui.theme
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -9,7 +11,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-private val Colors =
+private val LightColors =
     lightColorScheme(
         primary = Color(color = 0xFF08245C),
         onPrimary = Color(color = 0xFFFFFFFF),
@@ -19,8 +21,24 @@ private val Colors =
         onBackground = Color(color = 0xFF111827),
         surface = Color(color = 0xFFFFFFFF),
         onSurface = Color(color = 0xFF111827),
+        onSurfaceVariant = Color(color = 0xFF6B7280),
         error = Color(color = 0xFFD32F2F),
         outline = Color(color = 0xFFE5E7EB),
+    )
+
+private val DarkColors =
+    darkColorScheme(
+        primary = Color(color = 0xFF93B4FF),
+        onPrimary = Color(color = 0xFF06122B),
+        secondary = Color(color = 0xFF93B4FF),
+        tertiary = Color(color = 0xFF81C784),
+        background = Color(color = 0xFF0E1116),
+        onBackground = Color(color = 0xFFE5E7EB),
+        surface = Color(color = 0xFF161A20),
+        onSurface = Color(color = 0xFFE5E7EB),
+        onSurfaceVariant = Color(color = 0xFF9CA3AF),
+        error = Color(color = 0xFFEF5350),
+        outline = Color(color = 0xFF374151),
     )
 
 private val AppTypography =
@@ -35,6 +53,13 @@ private val AppTypography =
     )
 
 @Composable
-fun WebRtcTunnelTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = Colors, typography = AppTypography, content = content)
+fun WebRtcTunnelTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit,
+) {
+    MaterialTheme(
+        colorScheme = if (darkTheme) DarkColors else LightColors,
+        typography = AppTypography,
+        content = content,
+    )
 }

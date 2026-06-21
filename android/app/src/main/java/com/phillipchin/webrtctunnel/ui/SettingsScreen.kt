@@ -20,7 +20,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -114,12 +113,12 @@ private fun SettingsNetworkPolicySection(
         Text(
             "Cellular / metered: ${if (allowMetered) "Allowed" else "Blocked"}",
             style = MaterialTheme.typography.bodySmall,
-            color = Color(color = 0xFF6B7280),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
             "Wi-Fi resume: ${if (resumeOnUnmetered) "On" else "Off"}",
             style = MaterialTheme.typography.bodySmall,
-            color = Color(color = 0xFF6B7280),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedButton(onClick = onOpenNetworkPolicy, modifier = Modifier.fillMaxWidth()) {
             Text("Open network policy details")
@@ -262,7 +261,7 @@ private fun SettingsAdvancedSection(
                 "Answer mode (accepting connections from peers) needs a broker on this device and " +
                     "isn't supported on Android. This app runs in Offer (client) mode only.",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(color = 0xFF6B7280),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedButton(
                 onClick = { clipboard.setText(AnnotatedString(vm.statusJson())) },
@@ -283,7 +282,7 @@ private fun SettingsAboutSection() {
         Text(
             "Version ${BuildConfig.VERSION_NAME}",
             style = MaterialTheme.typography.bodySmall,
-            color = Color(color = 0xFF6B7280),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

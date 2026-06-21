@@ -226,14 +226,14 @@ private fun LogRow(event: LogEvent) {
         when (event.level.lowercase()) {
             "warn" -> Color(color = 0xFFF59E0B)
             "error" -> Color(color = 0xFFD32F2F)
-            "debug" -> Color(color = 0xFF6B7280)
+            "debug" -> MaterialTheme.colorScheme.onSurfaceVariant
             else -> MaterialTheme.colorScheme.onSurface
         }
     StatusCard {
         Text(
             formatLogTimestamp(event.unixMs),
             style = MaterialTheme.typography.bodySmall,
-            color = Color(color = 0xFF6B7280),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(event.level.uppercase(), color = levelColor, style = MaterialTheme.typography.labelLarge)
         Text(SensitiveDataRedactor.redactText(event.message))

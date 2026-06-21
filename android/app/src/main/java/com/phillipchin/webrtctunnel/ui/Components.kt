@@ -56,7 +56,9 @@ fun SectionHeader(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, style = MaterialTheme.typography.titleLarge)
-        subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Color(color = 0xFF6B7280)) }
+        subtitle?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -124,7 +126,11 @@ fun ForwardSummaryRow(
     ) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(color = 0xFF6B7280))
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Surface(
@@ -140,7 +146,11 @@ fun ForwardSummaryRow(
                 )
             }
             if (onClick != null) {
-                Text("›", style = MaterialTheme.typography.titleLarge, color = Color(color = 0xFF6B7280))
+                Text(
+                    "›",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -179,7 +189,11 @@ fun ErrorResolutionCard(
                 }
                 if (showDetails) {
                     HorizontalDivider()
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = Color(color = 0xFF6B7280))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
             action?.invoke()
