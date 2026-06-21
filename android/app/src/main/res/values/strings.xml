@@ -37,6 +37,9 @@
     <string name="service_msg_already_running">Tunnel already running</string>
     <string name="service_msg_paused">Tunnel paused</string>
 
+    <!-- Connecting progress detail shown in TunnelStatusCard -->
+    <string name="status_connecting_elapsed">Connecting for %1$ds…</string>
+
     <!-- Home screen — tunnel status titles -->
     <string name="status_title_stopped">Stopped</string>
     <string name="status_title_starting">Starting</string>

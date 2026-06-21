@@ -39,6 +39,7 @@ internal fun TunnelStatusCard(
     status: TunnelStatus,
     statusUi: HomeStatusUi,
     uptimeSeconds: Long?,
+    connectingElapsedSeconds: Long? = null,
 ) {
     StatusCard {
         Row(
@@ -61,6 +62,7 @@ internal fun TunnelStatusCard(
         if (status.mode != TunnelMode.Offer) {
             Text("Active sessions: ${status.activeSessionCount}")
         }
+        connectingElapsedSeconds?.let { Text(stringResource(R.string.status_connecting_elapsed, it)) }
         uptimeSeconds?.let { Text("Uptime: ${formatUptime(it)}") }
     }
 }

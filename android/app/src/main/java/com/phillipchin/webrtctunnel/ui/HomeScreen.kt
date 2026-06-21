@@ -163,12 +163,19 @@ fun HomeScreen(
     var showMeteredWarningDialog by remember { mutableStateOf(false) }
     var showAddForwardDialog by remember { mutableStateOf(false) }
     val isRunning = status.serviceState in setOf(ServiceState.Connected, ServiceState.Listening, ServiceState.Serving)
+    val isConnecting =
+        status.serviceState in setOf(ServiceState.Starting, ServiceState.Connecting, ServiceState.Reconnecting)
     LaunchedEffect(Unit) { vm.refreshForwards() }
-    val displayedUptimeSeconds = rememberDisplayedUptime(status, isRunning)
+    val (displayedUptimeSeconds, connectingElapsedSeconds) = rememberTunnelTimers(status, isRunning, isConnecting)
     ScrollableScreenSurface(padding) {
         SectionHeader("WebRTC Tunnel", "Current runtime state and quick actions")
         Spacer(Modifier.height(12.dp))
-        TunnelStatusCard(status = status, statusUi = statusUi, uptimeSeconds = displayedUptimeSeconds)
+        TunnelStatusCard(
+            status = status,
+            statusUi = statusUi,
+            uptimeSeconds = displayedUptimeSeconds,
+            connectingElapsedSeconds = connectingElapsedSeconds,
+        )
         Spacer(Modifier.height(12.dp))
         HomeNetworkCard(
             networkStatus = status.networkStatus,
@@ -210,19 +217,34 @@ fun HomeScreen(
 }
 
 @Composable
-private fun rememberDisplayedUptime(
+private fun rememberTunnelTimers(
     status: TunnelStatus,
     isRunning: Boolean,
-): Long? {
-    var displayed by remember { mutableStateOf(status.uptimeSeconds) }
+    isConnecting: Boolean,
+): Pair<Long?, Long?> {
+    var displayedUptime by remember { mutableStateOf(status.uptimeSeconds) }
     LaunchedEffect(isRunning, status.uptimeSeconds) {
-        displayed = status.uptimeSeconds
+        displayedUptime = status.uptimeSeconds
         while (isRunning) {
             delay(UPTIME_TICK_MS)
-            displayed = displayed?.let { it + 1L }
+            displayedUptime = displayedUptime?.let { it + 1L }
         }
     }
-    return displayed
+    var connectingElapsed by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(isConnecting) {
+        if (isConnecting) {
+            var count = 0L
+            connectingElapsed = 0L
+            while (true) {
+                delay(UPTIME_TICK_MS)
+                count++
+                connectingElapsed = count
+            }
+        } else {
+            connectingElapsed = null
+        }
+    }
+    return displayedUptime to connectingElapsed
 }
 
 @Composable
