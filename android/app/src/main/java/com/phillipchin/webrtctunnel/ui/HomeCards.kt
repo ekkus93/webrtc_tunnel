@@ -22,10 +22,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.phillipchin.webrtctunnel.R
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.NetworkStatus
 import com.phillipchin.webrtctunnel.model.TunnelError
@@ -47,11 +49,11 @@ internal fun TunnelStatusCard(
             HomeStatusIcon(statusUi)
             Column {
                 Text(
-                    statusUi.title,
+                    stringResource(statusUi.titleRes),
                     color = statusUi.titleColor,
                     style = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
                 )
-                Text(statusUi.description)
+                Text(stringResource(statusUi.descriptionRes))
             }
         }
         Text("Mode: ${if (status.mode == TunnelMode.Offer) "Offer (client)" else "Answer (server)"}")
@@ -98,7 +100,7 @@ internal fun HomeForwardsCard(
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Forwards (${configuredForwards.size})", style = MaterialTheme.typography.titleMedium)
             IconButton(onClick = onAdd) {
-                Icon(Icons.Filled.Add, contentDescription = "Add forward")
+                Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.cd_add_forward))
             }
         }
         if (configuredForwards.isEmpty()) {

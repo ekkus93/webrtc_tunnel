@@ -36,9 +36,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.phillipchin.webrtctunnel.R
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.LogEvent
@@ -164,7 +166,7 @@ private fun LogActionsRow(
         }
         OutlinedButton(onClick = onClear, modifier = Modifier.weight(1f)) { Text("Clear Logs") }
         IconButton(onClick = { showActionsMenu = true }) {
-            Icon(Icons.Default.MoreVert, contentDescription = "Open log actions")
+            Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.cd_log_actions_menu))
         }
         DropdownMenu(expanded = showActionsMenu, onDismissRequest = { showActionsMenu = false }) {
             DropdownMenuItem(

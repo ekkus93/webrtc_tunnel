@@ -35,9 +35,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.phillipchin.webrtctunnel.R
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.viewmodel.ForwardsViewModel
@@ -68,7 +70,7 @@ fun ForwardsScreen(
             ) {
                 SectionHeader("Forwards", "Manage local forwards")
                 IconButton(onClick = { showAddDialog = true }, enabled = !isBusy) {
-                    Icon(Icons.Filled.Add, contentDescription = "Add forward")
+                    Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.cd_add_forward))
                 }
             }
         }
@@ -240,7 +242,10 @@ private fun ForwardDetailActions(
                 },
                 modifier = Modifier.weight(1f),
             ) {
-                Icon(Icons.Default.OpenInBrowser, contentDescription = "Open ${forward.name} in browser")
+                Icon(
+                    Icons.Default.OpenInBrowser,
+                    contentDescription = stringResource(R.string.cd_open_in_browser, forward.name),
+                )
                 Text("Open Browser")
             }
         }

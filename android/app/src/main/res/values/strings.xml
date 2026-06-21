@@ -1,3 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">WebRTC Tunnel</string>
+
+    <!-- Notification channels -->
+    <string name="notification_channel_status_name">Tunnel Status</string>
+    <string name="notification_channel_errors_name">Tunnel Errors</string>
+
+    <!-- Notification action buttons -->
+    <string name="notification_action_stop">Stop</string>
+
+    <!-- Notification content titles (per service state) -->
+    <string name="notification_title_stopped">WebRTC Tunnel stopped</string>
+    <string name="notification_title_starting">WebRTC Tunnel starting</string>
+    <string name="notification_title_running">WebRTC Tunnel running</string>
+    <string name="notification_title_connected">WebRTC Tunnel connected</string>
+    <string name="notification_title_paused">WebRTC Tunnel paused</string>
+    <string name="notification_title_stopping">WebRTC Tunnel stopping</string>
+    <string name="notification_title_error">WebRTC Tunnel error</string>
+
+    <!-- Service / foreground notification body text (per service state) -->
+    <string name="service_body_connected">Tunnel connected</string>
+    <string name="service_body_serving">Running — waiting for a peer to connect</string>
+    <string name="service_body_listening">Running — waiting for an app to use the tunnel</string>
+    <string name="service_body_connecting">Connecting…</string>
+    <string name="service_body_paused_metered">Paused — on cellular/metered data</string>
+    <string name="service_body_no_network">Paused — no network available</string>
+    <string name="service_body_stopping">Stopping…</string>
+    <string name="service_body_stopped">Tunnel stopped</string>
+
+    <!-- Service status messages shown only transiently during lifecycle events -->
+    <string name="service_msg_preparing">Preparing tunnel service</string>
+    <string name="service_msg_starting_tunnel">Starting tunnel</string>
+    <string name="service_msg_already_starting">Tunnel startup already in progress</string>
+    <string name="service_msg_already_running">Tunnel already running</string>
+    <string name="service_msg_paused">Tunnel paused</string>
+
+    <!-- Home screen — tunnel status titles -->
+    <string name="status_title_stopped">Stopped</string>
+    <string name="status_title_starting">Starting</string>
+    <string name="status_title_connected">Connected</string>
+    <string name="status_title_running">Running</string>
+    <string name="status_title_paused">Paused</string>
+    <string name="status_title_no_network">No network</string>
+    <string name="status_title_config_invalid">Configuration needs attention</string>
+    <string name="status_title_stopping">Stopping</string>
+    <string name="status_title_error">Error</string>
+
+    <!-- Home screen — tunnel status descriptions -->
+    <string name="status_desc_stopped">Tunnel service is not running.</string>
+    <string name="status_desc_starting">Starting tunnel and waiting for peer connectivity.</string>
+    <string name="status_desc_connected">Tunnel is active and ready to use.</string>
+    <string name="status_desc_running">Tunnel is up — waiting for an app to use it.</string>
+    <string name="status_desc_paused">Paused on cellular/metered data. Tap “Allow This Session” to use it now.</string>
+    <string name="status_desc_no_network">No network connection. Connect to Wi-Fi or mobile data, then retry.</string>
+    <string name="status_desc_config_invalid">Open setup to fix configuration.</string>
+    <string name="status_desc_stopping">Stopping tunnel service.</string>
+    <string name="status_desc_error">Tunnel encountered an error.</string>
+
+    <!-- Accessibility — content descriptions -->
+    <string name="cd_tunnel_status">Tunnel status: %1$s</string>
+    <string name="cd_add_forward">Add forward</string>
+    <string name="cd_wifi_network">Wi-Fi network</string>
+    <string name="cd_cellular_network">Cellular network</string>
+    <string name="cd_no_network">No network</string>
+    <string name="cd_unknown_network">Unknown network type</string>
+    <string name="cd_log_actions_menu">Open log actions</string>
+    <string name="cd_open_in_browser">Open %1$s in browser</string>
 </resources>

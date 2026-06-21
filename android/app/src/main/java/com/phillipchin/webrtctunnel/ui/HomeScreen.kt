@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -34,8 +35,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.phillipchin.webrtctunnel.R
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.ForwardStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
@@ -52,31 +55,29 @@ private const val SECONDS_PER_HOUR = 3600
 private const val SECONDS_PER_MINUTE = 60
 private const val UPTIME_TICK_MS = 1_000L
 
-// title + description for every ServiceState; map avoids a branch-heavy when that trips
-// the cyclomatic-complexity threshold when combined with the appearance when below.
+// R.string ID pairs (titleRes, descRes) for every ServiceState; map avoids a branch-heavy
+// when that trips the cyclomatic-complexity threshold when combined with the appearance when.
 private val statusCopy =
     mapOf(
-        ServiceState.Stopped to ("Stopped" to "Tunnel service is not running."),
-        ServiceState.Starting to ("Starting" to "Starting tunnel and waiting for peer connectivity."),
-        ServiceState.Connecting to ("Starting" to "Starting tunnel and waiting for peer connectivity."),
-        ServiceState.Reconnecting to ("Starting" to "Starting tunnel and waiting for peer connectivity."),
-        ServiceState.Connected to ("Connected" to "Tunnel is active and ready to use."),
-        ServiceState.Listening to ("Running" to "Tunnel is up — waiting for an app to use it."),
-        ServiceState.Serving to ("Running" to "Tunnel is up — waiting for an app to use it."),
-        ServiceState.PausedMeteredBlocked to (
-            "Paused" to "Paused on cellular/metered data. Tap \"Allow This Session\" to use it now."
+        ServiceState.Stopped to (R.string.status_title_stopped to R.string.status_desc_stopped),
+        ServiceState.Starting to (R.string.status_title_starting to R.string.status_desc_starting),
+        ServiceState.Connecting to (R.string.status_title_starting to R.string.status_desc_starting),
+        ServiceState.Reconnecting to (R.string.status_title_starting to R.string.status_desc_starting),
+        ServiceState.Connected to (R.string.status_title_connected to R.string.status_desc_connected),
+        ServiceState.Listening to (R.string.status_title_running to R.string.status_desc_running),
+        ServiceState.Serving to (R.string.status_title_running to R.string.status_desc_running),
+        ServiceState.PausedMeteredBlocked to (R.string.status_title_paused to R.string.status_desc_paused),
+        ServiceState.NoNetwork to (R.string.status_title_no_network to R.string.status_desc_no_network),
+        ServiceState.ConfigInvalid to (
+            R.string.status_title_config_invalid to R.string.status_desc_config_invalid
         ),
-        ServiceState.NoNetwork to (
-            "No network" to "No network connection. Connect to Wi-Fi or mobile data, then retry."
-        ),
-        ServiceState.ConfigInvalid to ("Configuration needs attention" to "Open setup to fix configuration."),
-        ServiceState.Stopping to ("Stopping" to "Stopping tunnel service."),
-        ServiceState.Error to ("Error" to "Tunnel encountered an error."),
+        ServiceState.Stopping to (R.string.status_title_stopping to R.string.status_desc_stopping),
+        ServiceState.Error to (R.string.status_title_error to R.string.status_desc_error),
     )
 
 internal data class HomeStatusUi(
-    val title: String,
-    val description: String,
+    @StringRes val titleRes: Int,
+    @StringRes val descriptionRes: Int,
     val titleColor: Color,
     val icon: ImageVector,
 ) {
@@ -97,9 +98,9 @@ private fun mapStatusUi(status: TunnelStatus): HomeStatusUi {
             ServiceState.NoNetwork -> Appearance(Warning, Icons.Filled.WifiOff)
             ServiceState.ConfigInvalid, ServiceState.Error -> Appearance(Error, Icons.Filled.Warning)
         }
-    val (title, description) =
+    val (titleRes, descRes) =
         requireNotNull(statusCopy[status.serviceState]) { "No copy for ${status.serviceState}" }
-    return HomeStatusUi(title, description, color, icon)
+    return HomeStatusUi(titleRes, descRes, color, icon)
 }
 
 internal fun formatUptime(seconds: Long): String {
@@ -123,7 +124,7 @@ private fun ForwardStatus.toConfig(): ForwardConfig =
 internal fun HomeStatusIcon(statusUi: HomeStatusUi) {
     Icon(
         imageVector = statusUi.icon,
-        contentDescription = "Tunnel status: ${statusUi.title}",
+        contentDescription = stringResource(R.string.cd_tunnel_status, stringResource(statusUi.titleRes)),
         tint = statusUi.iconTint,
         modifier = Modifier.size(40.dp),
     )
@@ -131,14 +132,15 @@ internal fun HomeStatusIcon(statusUi: HomeStatusUi) {
 
 @Composable
 internal fun NetworkTypeIcon(networkType: NetworkType) {
-    val (icon, description) =
+    val (icon, descRes) =
         when (networkType) {
-            NetworkType.UnmeteredWifi, NetworkType.MeteredWifi -> Icons.Filled.Wifi to "Wi-Fi network"
-            NetworkType.Cellular -> Icons.Filled.SignalCellularAlt to "Cellular network"
-            NetworkType.NoNetwork -> Icons.Filled.WifiOff to "No network"
-            NetworkType.Unknown -> Icons.Filled.Info to "Unknown network"
+            NetworkType.UnmeteredWifi, NetworkType.MeteredWifi ->
+                Icons.Filled.Wifi to R.string.cd_wifi_network
+            NetworkType.Cellular -> Icons.Filled.SignalCellularAlt to R.string.cd_cellular_network
+            NetworkType.NoNetwork -> Icons.Filled.WifiOff to R.string.cd_no_network
+            NetworkType.Unknown -> Icons.Filled.Info to R.string.cd_unknown_network
         }
-    Icon(icon, contentDescription = description, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    Icon(icon, contentDescription = stringResource(descRes), tint = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 data class HomeNavActions(

@@ -71,7 +71,7 @@ class TunnelForegroundService
             super.onCreate()
             notifications = NotificationController(this)
             notifications.ensureChannels()
-            startForeground(NOTIFICATION_ID, reporter.loadingNotification("Preparing tunnel service"))
+            startForeground(NOTIFICATION_ID, reporter.loadingNotification(getString(R.string.service_msg_preparing)))
             val deps = (application as HasAppDependencies).deps
             configRepository = deps.configRepository
             repository = deps.tunnelRepository
@@ -199,16 +199,19 @@ class TunnelForegroundService
                 val state = repository.status.value.serviceState
                 val text =
                     body ?: when (state) {
-                        ServiceState.Connected -> "Tunnel connected"
-                        ServiceState.Serving -> "Running — waiting for a peer to connect"
-                        ServiceState.Listening -> "Running — waiting for an app to use the tunnel"
-                        ServiceState.Starting, ServiceState.Connecting, ServiceState.Reconnecting -> "Connecting…"
-                        ServiceState.PausedMeteredBlocked -> "Paused — on cellular/metered data"
-                        ServiceState.NoNetwork -> "Paused — no network available"
-                        ServiceState.Stopping -> "Stopping…"
-                        ServiceState.Stopped -> "Tunnel stopped"
+                        ServiceState.Connected -> getString(R.string.service_body_connected)
+                        ServiceState.Serving -> getString(R.string.service_body_serving)
+                        ServiceState.Listening -> getString(R.string.service_body_listening)
+                        ServiceState.Starting,
+                        ServiceState.Connecting,
+                        ServiceState.Reconnecting,
+                        -> getString(R.string.service_body_connecting)
+                        ServiceState.PausedMeteredBlocked -> getString(R.string.service_body_paused_metered)
+                        ServiceState.NoNetwork -> getString(R.string.service_body_no_network)
+                        ServiceState.Stopping -> getString(R.string.service_body_stopping)
+                        ServiceState.Stopped -> getString(R.string.service_body_stopped)
                         ServiceState.Error, ServiceState.ConfigInvalid ->
-                            repository.status.value.lastError?.message ?: "Error"
+                            repository.status.value.lastError?.message ?: getString(R.string.notification_title_error)
                     }
                 notifications.show(notifications.buildStatusNotification(state, SensitiveDataRedactor.redactText(text)))
             }
@@ -227,7 +230,7 @@ class TunnelForegroundService
             fun loadingNotification(body: String): Notification =
                 NotificationCompat.Builder(this@TunnelForegroundService, NotificationController.CHANNEL_STATUS)
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
-                    .setContentTitle("WebRTC Tunnel starting")
+                    .setContentTitle(getString(R.string.notification_title_starting))
                     .setContentText(body)
                     .setOngoing(true)
                     .build()
@@ -272,13 +275,13 @@ class TunnelForegroundService
                 var generation = 0L
                 lifecycleMutex.withLock {
                     if (startupJob?.isActive == true) {
-                        reporter.publishStatus("Tunnel startup already in progress")
+                        reporter.publishStatus(getString(R.string.service_msg_already_starting))
                         return
                     }
                     val current = repository.status.value.serviceState
                     // Listening/Serving/Connected all mean a run is already up — don't start again.
                     if (current.isTunnelRunning()) {
-                        reporter.publishStatus("Tunnel already running")
+                        reporter.publishStatus(getString(R.string.service_msg_already_running))
                         return
                     }
                     lifecycleGeneration += 1
@@ -292,7 +295,10 @@ class TunnelForegroundService
 
             private suspend fun doStartOffer(startGeneration: Long) {
                 lastMode = TunnelMode.Offer
-                startForeground(NOTIFICATION_ID, reporter.loadingNotification("Starting tunnel"))
+                startForeground(
+                    NOTIFICATION_ID,
+                    reporter.loadingNotification(getString(R.string.service_msg_starting_tunnel)),
+                )
                 val identity =
                     try {
                         prepareOfferIdentity()
@@ -417,7 +423,7 @@ class TunnelForegroundService
                             code = "stop_failed",
                         )
                     }
-                    reporter.publishStatus("Tunnel paused")
+                    reporter.publishStatus(getString(R.string.service_msg_paused))
                 }
             }
 

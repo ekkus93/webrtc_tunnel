@@ -55,8 +55,18 @@ class NotificationController(
 
     fun ensureChannels() {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val status = NotificationChannel(CHANNEL_STATUS, "Tunnel Status", NotificationManager.IMPORTANCE_LOW)
-        val errors = NotificationChannel(CHANNEL_ERRORS, "Tunnel Errors", NotificationManager.IMPORTANCE_HIGH)
+        val status =
+            NotificationChannel(
+                CHANNEL_STATUS,
+                context.getString(R.string.notification_channel_status_name),
+                NotificationManager.IMPORTANCE_LOW,
+            )
+        val errors =
+            NotificationChannel(
+                CHANNEL_ERRORS,
+                context.getString(R.string.notification_channel_errors_name),
+                NotificationManager.IMPORTANCE_HIGH,
+            )
         manager.createNotificationChannels(listOf(status, errors))
     }
 
@@ -80,26 +90,25 @@ class NotificationController(
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-        val title =
+        val titleRes =
             when (state) {
-                ServiceState.Stopped -> "WebRTC Tunnel stopped"
+                ServiceState.Stopped -> R.string.notification_title_stopped
                 ServiceState.Starting,
                 ServiceState.Connecting,
                 ServiceState.Reconnecting,
-                -> "WebRTC Tunnel starting"
-                ServiceState.Listening -> "WebRTC Tunnel running"
-                ServiceState.Serving -> "WebRTC Tunnel running"
-                ServiceState.Connected -> "WebRTC Tunnel connected"
-                ServiceState.PausedMeteredBlocked, ServiceState.NoNetwork -> "WebRTC Tunnel paused"
-                ServiceState.Stopping -> "WebRTC Tunnel stopping"
-                ServiceState.Error, ServiceState.ConfigInvalid -> "WebRTC Tunnel error"
+                -> R.string.notification_title_starting
+                ServiceState.Listening, ServiceState.Serving -> R.string.notification_title_running
+                ServiceState.Connected -> R.string.notification_title_connected
+                ServiceState.PausedMeteredBlocked, ServiceState.NoNetwork -> R.string.notification_title_paused
+                ServiceState.Stopping -> R.string.notification_title_stopping
+                ServiceState.Error, ServiceState.ConfigInvalid -> R.string.notification_title_error
             }
         return NotificationCompat.Builder(context, CHANNEL_STATUS)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
+            .setContentTitle(context.getString(titleRes))
             .setContentText(body)
             .setContentIntent(openIntent)
-            .addAction(R.drawable.ic_notification_stop, "Stop", action)
+            .addAction(R.drawable.ic_notification_stop, context.getString(R.string.notification_action_stop), action)
             .setOngoing(true)
             .build()
     }
