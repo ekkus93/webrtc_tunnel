@@ -78,7 +78,7 @@ class LocalAddressResolver internal constructor(
                 ?.mapNotNull { it.address as? Inet4Address }
                 ?.mapNotNull { it.hostAddress }
                 ?.filter { it.isNotBlank() }
-                ?: emptyList()
+                .orEmpty()
         }
     }
 }
