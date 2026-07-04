@@ -1,4 +1,4 @@
-# WebRTC Tunnel Service Lifecycle and `systemd` Support TODO
+# WebRTC Tunnel Cross-Platform Service Lifecycle, `systemd`, and `launchd` Support TODO
 
 ## 0. Instructions for Claude Code
 
@@ -32,13 +32,13 @@ crates/p2p-mobile/src/runtime/mod.rs
 - Do not add `--daemon`.
 - Do not fork.
 - Do not add PID files.
-- Do not require `systemd` to run the binaries.
-- Do not put `systemd` inside Docker.
-- Preserve current manual commands.
+- Do not require `systemd` or `launchd` integration libraries to run the binaries.
+- Do not put `systemd` or `launchd` inside Docker.
+- Preserve current manual commands on Linux and macOS.
 - Preserve existing public daemon APIs as compatibility wrappers.
 - Add shutdown-aware APIs; do not force every existing caller to pass a token immediately.
 - Use cooperative shutdown as the primary path.
-- Do not make `JoinHandle::abort()` the normal service-stop path.
+- Do not make `JoinHandle::abort()` the normal service-stop path on either Linux or macOS.
 - Do not silently swallow signal setup failure.
 - Do not silently swallow task join failure.
 - Do not stop the answer event loop before active answer sessions have drained.
@@ -47,12 +47,12 @@ crates/p2p-mobile/src/runtime/mod.rs
 - Do not leave offer forwards reported as `listening` after listener tasks are gone.
 - Do not add a hidden hard-coded abort timeout in the daemon core.
 - Do not change signaling wire format, crypto, identity format, forward semantics, or WebRTC architecture.
-- Run formatting, linting, and tests before marking tasks complete.
+- Run formatting, linting, tests, and service-definition validation before marking tasks complete.
 
 ### Priority definitions
 
 ```text
-P0 = required for correct service/manual/container lifecycle support
+P0 = required for correct Linux + macOS service/manual/container lifecycle support
 P1 = important integration/polish after P0 is correct
 P2 = packaging or advanced supervisor integration
 ```
@@ -86,7 +86,7 @@ Create one cloneable cancellation primitive that can be triggered by:
 - Android stop in a later task; or
 - any future supervisor adapter.
 
-The token must not know about `systemd`, Docker, Unix PIDs, or Android.
+The token must not know about `systemd`, `launchd`, Docker, Unix PIDs, or Android.
 
 ### Recommended implementation
 
@@ -378,7 +378,7 @@ Translate process termination signals into one observable event for the CLI bina
 
 The daemon state machines must never parse Unix signal numbers themselves.
 
-### Recommended Unix implementation
+### Recommended Unix implementation (Linux and macOS)
 
 ```rust
 #[cfg(unix)]
@@ -443,7 +443,7 @@ A signal listener setup/stream failure must remain a real error.
 - [ ] SIGTERM is supported on Unix.
 - [ ] Ctrl-C works on non-Unix targets supported by Tokio.
 - [ ] Closed signal stream is an error.
-- [ ] No `systemd` dependency exists.
+- [ ] No `systemd` or `launchd` integration dependency exists.
 
 ---
 
@@ -1698,7 +1698,8 @@ At least:
 
 - `p2p-answer` + SIGTERM;
 - `p2p-offer` + SIGTERM;
-- one role + SIGINT.
+- one role + SIGINT;
+- run the real-process signal suite on Linux and macOS where CI runners are available.
 
 ### Suggested shell pattern
 
@@ -1855,7 +1856,299 @@ WebRTC, STUN, MQTT, DNS, and interface enumeration must keep working.
 
 ---
 
-## P0-022 — Add system-service deployment documentation
+## P0-022 — Add production macOS `launchd` plist files
+
+### Files
+
+Create:
+
+```text
+packaging/launchd/com.p2ptunnel.offer.plist
+packaging/launchd/com.p2ptunnel.answer.plist
+```
+
+### Goal
+
+Provide native macOS system-wide `LaunchDaemon` definitions that supervise the same unchanged foreground binaries used by manual execution, Linux `systemd`, and Docker.
+
+Do not add a macOS-only daemon mode.
+
+### Offer plist
+
+Use this baseline unless the repository adopts a documented package-managed executable prefix:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.p2ptunnel.offer</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/p2p-offer</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>/Library/Application Support/P2PTunnel/offer/config.toml</string>
+    </array>
+
+    <key>UserName</key>
+    <string>_p2ptunnel</string>
+    <key>GroupName</key>
+    <string>_p2ptunnel</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>Umask</key>
+    <integer>63</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/P2PTunnel/offer.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/P2PTunnel/offer.stderr.log</string>
+</dict>
+</plist>
+```
+
+### Answer plist
+
+Copy lifecycle policy, not offer-specific values.
+
+Required differences:
+
+```text
+Label:      com.p2ptunnel.answer
+Executable: /usr/local/bin/p2p-answer
+Config:     /Library/Application Support/P2PTunnel/answer/config.toml
+stdout:     /Library/Logs/P2PTunnel/answer.stdout.log
+stderr:     /Library/Logs/P2PTunnel/answer.stderr.log
+```
+
+### Required semantics
+
+- `ProgramArguments` invokes the executable directly; do not insert `/bin/sh -c`.
+- `RunAtLoad = true`.
+- `KeepAlive.SuccessfulExit = false` to approximate restart-on-failure semantics.
+- `UserName` and `GroupName` name a dedicated unprivileged service account.
+- `Umask = 63` (decimal `0077`).
+- Config paths are absolute.
+- Offer and answer labels, config paths, and log paths are distinct.
+- No passwords, private keys, or broker credentials are embedded in the plist.
+
+### Add platform-independent plist assertions
+
+Create focused tests or a small validation utility that parses both plist files as XML and asserts at minimum:
+
+```text
+Label is unique and correct
+ProgramArguments[0] is the direct executable
+ProgramArguments contains separate "run", "--config", and absolute config path entries
+RunAtLoad is true
+KeepAlive.SuccessfulExit is false
+UserName is _p2ptunnel
+Offer/answer paths are not accidentally crossed
+```
+
+Do not use regex-only tests for XML structure.
+
+### Acceptance criteria
+
+- [ ] Both plist files exist.
+- [ ] Both are valid XML property lists.
+- [ ] Neither uses a shell wrapper.
+- [ ] Both run the normal foreground binaries.
+- [ ] Both have failure-only relaunch semantics.
+- [ ] Both specify an unprivileged account.
+- [ ] Paths are absolute and role-specific.
+- [ ] Platform-independent structural tests pass.
+
+---
+
+## P0-023 — Add macOS `launchd` deployment documentation
+
+### Files
+
+Create:
+
+```text
+docs/LAUNCHD.md
+```
+
+Update:
+
+```text
+README.md
+```
+
+with a short link to the detailed guide.
+
+### Goal
+
+A macOS administrator must be able to install, validate, start, inspect, restart, stop, and troubleshoot both jobs without guessing about service domains, paths, or signal behavior.
+
+### Required documentation sections
+
+#### Explain system daemon versus user agent
+
+State explicitly:
+
+```text
+P0 ships system-wide LaunchDaemon definitions under /Library/LaunchDaemons.
+They can run without an interactive user login.
+Per-user LaunchAgent variants are optional later work and are not the baseline always-on service.
+```
+
+#### Build and install binaries
+
+Example:
+
+```bash
+cargo build --release -p p2p-offer -p p2p-answer -p p2pctl
+sudo install -m 0755 target/release/p2p-offer /usr/local/bin/p2p-offer
+sudo install -m 0755 target/release/p2p-answer /usr/local/bin/p2p-answer
+sudo install -m 0755 target/release/p2pctl /usr/local/bin/p2pctl
+```
+
+If Apple Silicon or package-manager conventions lead to a different prefix, document one coherent alternative and update plist paths consistently. Do not rely on `PATH` lookup from `launchd`.
+
+#### Service account prerequisite
+
+Document the dedicated `_p2ptunnel` account expected by the baseline plists.
+
+Do not provide an untested copy-paste account-creation sequence that guesses UID/GID values. Either:
+
+1. provide a tested repository helper/installer that safely allocates the account; or
+2. clearly document account creation as an administrator prerequisite until the helper exists.
+
+Do not remove `UserName` from the plist to make the example work as root.
+
+#### Create directories and permissions
+
+Document:
+
+```text
+/Library/Application Support/P2PTunnel/offer
+/Library/Application Support/P2PTunnel/answer
+/Library/Logs/P2PTunnel
+```
+
+Required ownership model:
+
+```text
+config/identity: controlled by root/admin, readable by _p2ptunnel as required
+state/logs: writable by _p2ptunnel
+plist: root:wheel and not group/world writable
+```
+
+#### Validate configuration before service load
+
+Because the baseline plist has no `ExecStartPre`, require:
+
+```bash
+/usr/local/bin/p2pctl check-config \
+  --config "/Library/Application Support/P2PTunnel/offer/config.toml"
+
+/usr/local/bin/p2pctl check-config \
+  --config "/Library/Application Support/P2PTunnel/answer/config.toml"
+```
+
+before `bootstrap` or `kickstart` after config changes.
+
+Do not add `/bin/sh -c` wrappers solely to emulate `ExecStartPre`.
+
+#### Install and validate plist files
+
+```bash
+sudo install -o root -g wheel -m 0644 \
+  packaging/launchd/com.p2ptunnel.offer.plist \
+  /Library/LaunchDaemons/com.p2ptunnel.offer.plist
+
+sudo install -o root -g wheel -m 0644 \
+  packaging/launchd/com.p2ptunnel.answer.plist \
+  /Library/LaunchDaemons/com.p2ptunnel.answer.plist
+
+plutil -lint /Library/LaunchDaemons/com.p2ptunnel.offer.plist
+plutil -lint /Library/LaunchDaemons/com.p2ptunnel.answer.plist
+```
+
+#### Load/bootstrap
+
+```bash
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.p2ptunnel.offer.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.p2ptunnel.answer.plist
+```
+
+#### Inspect
+
+```bash
+sudo launchctl print system/com.p2ptunnel.offer
+sudo launchctl print system/com.p2ptunnel.answer
+```
+
+#### Restart
+
+```bash
+sudo launchctl kickstart -k system/com.p2ptunnel.offer
+sudo launchctl kickstart -k system/com.p2ptunnel.answer
+```
+
+#### Stop and unload
+
+```bash
+sudo launchctl bootout system/com.p2ptunnel.offer
+sudo launchctl bootout system/com.p2ptunnel.answer
+```
+
+Explain why `bootout` is the baseline intentional-stop operation for a keepalive job.
+
+#### Logging and troubleshooting
+
+Recommended application logging:
+
+```toml
+file_logging = false
+stdout_logging = true
+```
+
+Inspect:
+
+```bash
+tail -F /Library/Logs/P2PTunnel/offer.stdout.log
+tail -F /Library/Logs/P2PTunnel/offer.stderr.log
+sudo launchctl print system/com.p2ptunnel.offer
+```
+
+Answer equivalent.
+
+### Acceptance criteria
+
+- [ ] macOS guide exists and is linked from README.
+- [ ] LaunchDaemon versus LaunchAgent behavior is clear.
+- [ ] Direct executable paths are documented.
+- [ ] Config validation happens before load/restart.
+- [ ] Modern `launchctl` domain commands are shown.
+- [ ] `bootout` is documented for intentional stop/unload.
+- [ ] Manual mode remains explicitly supported.
+- [ ] Docker mode remains explicitly supported.
+- [ ] Docs do not imply `launchd` is required to run the binaries.
+
+---
+
+## P0-024 — Add Linux `systemd` service deployment documentation
 
 ### Files
 
@@ -1981,7 +2274,7 @@ journalctl -u p2p-offer.service -b
 
 ---
 
-## P0-023 — Document manual and Docker lifecycle behavior
+## P0-025 — Document cross-platform manual and Docker lifecycle behavior
 
 ### Files
 
@@ -1995,7 +2288,7 @@ and/or existing deployment docs.
 
 ### Manual section
 
-Must preserve:
+Must state that the same commands are supported on Linux and macOS. Preserve:
 
 ```bash
 p2p-offer run --config ./config.toml
@@ -2023,7 +2316,7 @@ Answer equivalent.
 State explicitly:
 
 ```text
-Do not run systemd inside the container. The container runtime supervises the foreground p2p process.
+Do not run systemd or launchd inside the container. The container runtime supervises the foreground p2p process.
 ```
 
 ### Existing Docker E2E
@@ -2040,12 +2333,12 @@ pattern.
 
 - [ ] Manual mode documented.
 - [ ] Docker mode documented.
-- [ ] `systemd` clearly optional.
+- [ ] `systemd` and `launchd` are clearly optional.
 - [ ] Same binary invocation shown in every environment.
 
 ---
 
-## P0-024 — Add status tests for stopped forwards
+## P0-026 — Add status tests for stopped forwards
 
 ### Files
 
@@ -2088,7 +2381,7 @@ Assert:
 
 ---
 
-## P0-025 — Run full Rust quality gates and fix all regressions
+## P0-027 — Run full Rust quality gates and fix all regressions
 
 ### Commands
 
@@ -2132,6 +2425,24 @@ Run Docker E2E when Docker is available:
 tests/e2e/docker/run.sh
 ```
 
+### Platform-specific service-definition validation
+
+On Linux, when available:
+
+```bash
+systemd-analyze verify packaging/systemd/p2p-offer.service
+systemd-analyze verify packaging/systemd/p2p-answer.service
+```
+
+On macOS:
+
+```bash
+plutil -lint packaging/launchd/com.p2ptunnel.offer.plist
+plutil -lint packaging/launchd/com.p2ptunnel.answer.plist
+```
+
+The platform-independent test suite must still parse and structurally inspect both plist files so Linux CI does not leave macOS service definitions completely unchecked.
+
 ### Rules
 
 - Do not suppress Clippy warnings globally.
@@ -2148,6 +2459,9 @@ tests/e2e/docker/run.sh
 - [ ] Workspace tests pass.
 - [ ] Daemon tests pass.
 - [ ] Mobile crate tests pass.
+- [ ] Platform-independent plist structure tests pass.
+- [ ] `systemd-analyze verify` runs on suitable Linux environments or an explicit skip is reported.
+- [ ] `plutil -lint` runs on macOS or an explicit non-macOS skip is reported.
 - [ ] External tests run or are explicitly reported unavailable.
 
 ---
@@ -2338,7 +2652,47 @@ Verification may complain about missing install-path binaries or users in CI. Ha
 
 ---
 
-## P1-004 — Add a manual service-install helper
+## P1-004 — Add `launchd` plist validation helper
+
+### Files
+
+Create, for example:
+
+```text
+scripts/check-launchd-plists.sh
+```
+
+### Goal
+
+Validate macOS service definitions with the native tool when available and retain a platform-independent structural test everywhere.
+
+### Behavior
+
+On macOS, require:
+
+```bash
+plutil -lint packaging/launchd/com.p2ptunnel.offer.plist
+plutil -lint packaging/launchd/com.p2ptunnel.answer.plist
+```
+
+On non-macOS hosts:
+
+- print an explicit message that native `plutil` validation was not run;
+- rely on the platform-independent XML/plist structural tests;
+- do not claim native macOS validation succeeded.
+
+The helper must fail on malformed plist files or unexpected validation errors.
+
+### Acceptance criteria
+
+- [ ] Native lint runs on macOS.
+- [ ] Non-macOS skip is explicit.
+- [ ] Structural plist tests run on all hosts.
+- [ ] Invalid plist syntax fails validation.
+
+---
+
+## P1-005 — Add Linux and macOS service-install helpers
 
 ### Files
 
@@ -2346,11 +2700,12 @@ Optional create:
 
 ```text
 scripts/install-systemd-services.sh
+scripts/install-launchd-services.sh
 ```
 
 ### Goal
 
-Automate the documented manual installation without hiding failures.
+Automate the documented Linux and macOS service installation paths without hiding failures.
 
 ### Required safety
 
@@ -2374,8 +2729,8 @@ for required setup.
 - verify binaries exist;
 - create service user if absent;
 - create config directories;
-- install unit files;
-- run `systemctl daemon-reload`;
+- install `systemd` unit files on Linux and run `systemctl daemon-reload`;
+- install `launchd` plists on macOS, validate them with `plutil`, and use explicit `launchctl` service domains;
 - print next steps.
 
 Do not automatically enable/start a service unless the user explicitly requested that behavior or the script has a clear flag.
@@ -2385,10 +2740,14 @@ Do not automatically enable/start a service unless the user explicitly requested
 - [ ] Failures are visible.
 - [ ] Existing config is not overwritten silently.
 - [ ] Identity files are not generated or replaced unexpectedly.
+- [ ] Linux helper does not run on macOS by accident.
+- [ ] macOS helper does not run on Linux by accident.
+- [ ] macOS helper validates plists before loading them.
+- [ ] Neither helper silently enables/starts services unless explicitly requested.
 
 ---
 
-## P1-005 — Add a second-signal emergency exit policy, if desired
+## P1-006 — Add a second-signal emergency exit policy, if desired
 
 ### Goal
 
@@ -2445,7 +2804,25 @@ p2ptunnel system user/group
 
 ---
 
-## P2-002 — Consider templated multi-instance units
+## P2-002 — Add macOS packaging
+
+### Scope
+
+Possible future work:
+
+- signed/notarized macOS `.pkg` installer and/or Homebrew formula;
+- safe creation/removal of the `_p2ptunnel` service account;
+- package-managed `/Library/Application Support/P2PTunnel` directories;
+- installation and removal of `LaunchDaemon` plists;
+- config preservation across upgrades;
+- explicit uninstall behavior that does not silently delete identities or state;
+- Apple Silicon and Intel executable-prefix policy.
+
+Do not make package installation a prerequisite for manual execution.
+
+---
+
+## P2-003 — Consider templated multi-instance units
 
 Possible future units:
 
@@ -2465,7 +2842,7 @@ Do not add this complexity to P0.
 
 ---
 
-## P2-003 — Consider `sd_notify` readiness and watchdog support
+## P2-004 — Consider `sd_notify` readiness and watchdog support
 
 Possible future work:
 
@@ -2514,13 +2891,21 @@ Do not make `sd_notify` a dependency of the generic daemon lifecycle.
 
 - [ ] `p2p-offer.service` exists.
 - [ ] `p2p-answer.service` exists.
+- [ ] `com.p2ptunnel.offer.plist` exists.
+- [ ] `com.p2ptunnel.answer.plist` exists.
 - [ ] Units use unprivileged user.
 - [ ] Units use `Restart=on-failure`.
 - [ ] Units use SIGTERM.
 - [ ] Units have `TimeoutStopSec`.
-- [ ] Manual use remains documented.
+- [ ] LaunchDaemons invoke binaries directly with no shell wrapper.
+- [ ] LaunchDaemons use distinct labels and absolute role-specific paths.
+- [ ] LaunchDaemons use `KeepAlive.SuccessfulExit = false`.
+- [ ] LaunchDaemons specify an unprivileged service account.
+- [ ] Linux service documentation exists.
+- [ ] macOS service documentation exists.
+- [ ] Manual use remains documented for Linux and macOS.
 - [ ] Docker use remains documented.
-- [ ] No `systemd` requirement exists for manual/container use.
+- [ ] No `systemd` or `launchd` requirement exists for manual/container use.
 
 ## Validation
 
@@ -2532,6 +2917,9 @@ Do not make `sd_notify` a dependency of the generic daemon lifecycle.
 - [ ] Reconnect shutdown test passes.
 - [ ] Real SIGTERM test passes.
 - [ ] Real SIGINT test passes.
+- [ ] Real process-signal coverage runs on Linux and macOS where CI is available.
+- [ ] `plutil -lint` passes on macOS.
+- [ ] Platform-independent plist structure tests pass.
 - [ ] Listener port release is verified.
 - [ ] Final status assertions pass.
 - [ ] `cargo fmt --check` passes.
@@ -2545,9 +2933,10 @@ Do not make `sd_notify` a dependency of the generic daemon lifecycle.
 This work is done when a single unchanged foreground command can be supervised correctly by all of these environments:
 
 ```text
-manual terminal -> Ctrl-C -> graceful cleanup -> exit 0
-systemd         -> SIGTERM -> graceful cleanup -> exit 0
-Docker          -> SIGTERM -> graceful cleanup -> exit 0
+Linux/macOS manual -> Ctrl-C -> graceful cleanup -> exit 0
+Linux systemd       -> SIGTERM -> graceful cleanup -> exit 0
+macOS launchd       -> SIGTERM -> graceful cleanup -> exit 0
+Docker              -> SIGTERM -> graceful cleanup -> exit 0
 unit/integration test -> ShutdownToken -> graceful cleanup -> Ok(())
 ```
 

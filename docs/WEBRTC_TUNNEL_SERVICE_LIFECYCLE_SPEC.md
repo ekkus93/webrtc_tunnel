@@ -1,15 +1,16 @@
-# WebRTC Tunnel Service Lifecycle and `systemd` Support Spec
+# WebRTC Tunnel Cross-Platform Service Lifecycle, `systemd`, and `launchd` Support Spec
 
 ## 1. Purpose
 
-This spec defines a production-quality lifecycle model for the current WebRTC tunnel codebase so that `p2p-offer` and `p2p-answer` can:
+This spec defines a production-quality, cross-platform lifecycle model for the current WebRTC tunnel codebase so that `p2p-offer` and `p2p-answer` can:
 
-1. run manually in a terminal;
+1. run manually in a terminal on Linux and macOS;
 2. run as normal foreground processes in Docker or another container runtime;
-3. run as Linux `systemd` services;
-4. shut down cleanly on `SIGINT` and `SIGTERM`;
-5. preserve truthful status during and after shutdown; and
-6. keep the shared Rust daemon code usable by the Android runtime and tests.
+3. run as native Linux `systemd` services;
+4. run as native macOS `launchd` jobs;
+5. shut down cleanly on `SIGINT` and `SIGTERM`;
+6. preserve truthful status during and after shutdown; and
+7. keep the shared Rust daemon code usable by the Android runtime and tests.
 
 The implementation target is the repository snapshot:
 
@@ -19,7 +20,7 @@ webrtc_tunnel-master_2607040500.zip
 
 The main architectural rule is:
 
-> `p2p-offer` and `p2p-answer` must remain ordinary foreground applications. `systemd`, Docker, a shell, Android, or a test harness may supervise them, but the daemon core must not have a special `systemd` mode.
+> `p2p-offer` and `p2p-answer` must remain ordinary foreground applications. `systemd`, `launchd`, Docker, a shell, Android, or a test harness may supervise them, but the daemon core must not have a special supervisor-specific mode.
 
 No daemonization fork, PID file, background mode, or `--daemon` flag should be added.
 
@@ -45,34 +46,37 @@ The process remains in the foreground until:
 Deployment wrappers are external:
 
 ```text
-                         same foreground binary
-                                  │
-               ┌──────────────────┼──────────────────┐
-               │                  │                  │
-               ▼                  ▼                  ▼
-          manual shell         systemd            Docker
-          Ctrl-C/SIGINT        SIGTERM            SIGTERM
-               │                  │                  │
-               └──────────────────┼──────────────────┘
-                                  ▼
-                         generic ShutdownToken
-                                  │
-                                  ▼
-                     graceful daemon cleanup path
+                            same foreground binary
+                                     │
+          ┌──────────────────────────┼──────────────────────────┐
+          │                          │                          │
+          ▼                          ▼                          ▼
+     manual shell              native service               container
+     Ctrl-C/SIGINT          Linux: systemd/SIGTERM       Docker/SIGTERM
+                           macOS: launchd/SIGTERM
+          │                          │                          │
+          └──────────────────────────┼──────────────────────────┘
+                                     ▼
+                            generic ShutdownToken
+                                     │
+                                     ▼
+                        graceful daemon cleanup path
 ```
 
-### 2.2 `systemd` is optional supervision, not application logic
+### 2.2 `systemd` and `launchd` are optional supervision, not application logic
 
 The daemon crate must not:
 
 - call `sd_notify` for this feature;
 - require `systemd` libraries;
 - query `systemd` state;
+- require macOS `launchd` APIs or frameworks;
+- query `launchd` state;
 - fork into the background;
 - create a PID file;
 - behave differently because it detects a service manager.
 
-The only process-specific integration required by the Linux binaries is standard signal handling.
+The only process-specific integration required by the Unix binaries is standard signal handling. The same `#[cfg(unix)]` signal adapter must support Linux and macOS.
 
 ### 2.3 Process signals are translated into a generic shutdown request
 
@@ -85,8 +89,9 @@ SIGTERM  -> request graceful shutdown
 
 This covers:
 
-- Ctrl-C in an interactive shell;
-- `systemctl stop`;
+- Ctrl-C in an interactive shell on Linux or macOS;
+- `systemctl stop` on Linux;
+- `launchd` shutdown/unload on macOS;
 - `docker stop`;
 - Podman/Kubernetes-style process termination;
 - ordinary `kill -TERM <pid>`.
@@ -121,7 +126,7 @@ The core must not silently:
 - pretend MQTT is connected after shutdown;
 - leave offer forwards reported as `listening` after their listeners have been dropped.
 
-The first implementation should not add a hidden internal “abort after N seconds” fallback. `systemd` already provides the external hard-stop boundary through `TimeoutStopSec`. Manual and container users retain normal process-control mechanisms.
+The first implementation should not add a hidden internal “abort after N seconds” fallback. `systemd` provides an external hard-stop boundary through `TimeoutStopSec`; macOS administrators and container/manual users retain explicit supervisor/process-control mechanisms for forced termination. The daemon core must not silently invent a different timeout policy per platform.
 
 ---
 
@@ -307,9 +312,10 @@ The implementation must:
 - report zero active sessions after shutdown;
 - report offer listeners as `Stopped` after shutdown;
 - return exit status 0 for normal graceful shutdown;
-- add `systemd` unit files;
-- document system-service, manual, and container operation; and
-- add automated lifecycle tests.
+- add Linux `systemd` unit files;
+- add macOS `launchd` property-list files;
+- document Linux service, macOS service, manual, and container operation; and
+- add automated lifecycle tests, including platform-specific service-file validation where the host tools are available.
 
 ### 4.2 P1 goals
 
@@ -317,8 +323,9 @@ Recommended follow-up work:
 
 - migrate Android stop from unconditional task abort to the shared shutdown token;
 - add Docker stop/restart lifecycle assertions;
-- add a service-install helper;
-- validate unit files automatically when `systemd-analyze` is available; and
+- add Linux and macOS service-install helpers;
+- validate `systemd` units automatically when `systemd-analyze` is available;
+- validate `launchd` plists automatically with `plutil` on macOS; and
 - add a second-signal emergency-exit policy if desired.
 
 ### 4.3 P2 goals
@@ -326,10 +333,12 @@ Recommended follow-up work:
 Possible later packaging work:
 
 - Debian packaging;
-- dedicated package-created system user;
+- macOS `.pkg` and/or Homebrew packaging;
+- dedicated package-created service accounts;
 - package-managed config directories;
 - upgrade/uninstall handling;
-- templated multi-instance units; and
+- templated multi-instance `systemd` units;
+- optional per-user macOS `LaunchAgent` variants; and
 - optional `sd_notify` readiness/watchdog integration.
 
 ---
@@ -342,8 +351,8 @@ This pass must not:
 - fork or double-fork;
 - detach from the terminal;
 - create PID files;
-- require `systemd` at build time or runtime;
-- put `systemd` inside Docker containers;
+- require `systemd` or `launchd` integration libraries at build time or runtime;
+- put `systemd` or `launchd` inside Docker containers;
 - replace MQTT signaling;
 - change the signaling wire format;
 - change identity or `authorized_keys` formats;
@@ -535,7 +544,7 @@ Add a small process-signal adapter, preferably:
 crates/p2p-daemon/src/process_signal.rs
 ```
 
-This module is allowed to know about OS signals. The daemon state machines must not.
+This module is allowed to know about OS signals. The daemon state machines must not. The Unix implementation must be treated as shared Linux/macOS code, not Linux-only code.
 
 Suggested API:
 
@@ -543,7 +552,7 @@ Suggested API:
 pub async fn wait_for_process_shutdown_signal() -> Result<&'static str, std::io::Error>
 ```
 
-Unix behavior:
+Unix behavior (Linux and macOS):
 
 ```rust
 #[cfg(unix)]
@@ -568,7 +577,7 @@ pub async fn wait_for_process_shutdown_signal() -> Result<&'static str, std::io:
 }
 ```
 
-Non-Unix behavior:
+Non-Unix behavior (Linux and macOS):
 
 ```rust
 #[cfg(not(unix))]
@@ -618,6 +627,8 @@ result?;
 ```
 
 The offer binary should use the same pattern.
+
+This code path must be compiled and exercised on both Linux and macOS. Do not add a Linux-only `cfg` around SIGTERM handling: macOS `launchd` also uses SIGTERM for managed-job shutdown.
 
 ### 7.3 Exit semantics
 
@@ -1211,9 +1222,298 @@ Do not use `Restart=always` in the baseline unit because it would restart after 
 
 ---
 
-## 12. Manual execution requirements
+## 12. macOS `launchd` deployment design
 
-Manual operation must remain unchanged:
+### 12.1 Design goal
+
+macOS support must use the same foreground `p2p-offer` and `p2p-answer` binaries and the same SIGTERM-driven graceful shutdown path used by Linux and containers.
+
+Do not add a macOS-only daemonization path. A `launchd`-managed process must remain in the foreground and must not fork, detach, call `setsid`, or redirect its own standard streams to `/dev/null`.
+
+Required relationship:
+
+```text
+launchd
+   │
+   ├── ProgramArguments -> p2p-offer run --config ...
+   │                     or p2p-answer run --config ...
+   │
+   └── SIGTERM on unload/system shutdown
+                           │
+                           ▼
+                    ShutdownToken
+                           │
+                           ▼
+                  graceful daemon cleanup
+```
+
+### 12.2 Repository layout
+
+Create native macOS service definitions under:
+
+```text
+packaging/launchd/com.p2ptunnel.offer.plist
+packaging/launchd/com.p2ptunnel.answer.plist
+```
+
+These P0 files are system-wide `LaunchDaemon` definitions intended for installation under:
+
+```text
+/Library/LaunchDaemons/com.p2ptunnel.offer.plist
+/Library/LaunchDaemons/com.p2ptunnel.answer.plist
+```
+
+Per-user `LaunchAgent` variants are optional later work. They are not equivalent to always-on services because they run in a user login context and stop at logout.
+
+### 12.3 Recommended installed filesystem layout
+
+Use absolute paths. Do not depend on `HOME`, shell expansion, or `~/` in a `LaunchDaemon` configuration.
+
+Recommended layout:
+
+```text
+/usr/local/bin/p2p-offer
+/usr/local/bin/p2p-answer
+/usr/local/bin/p2pctl
+
+/Library/Application Support/P2PTunnel/offer/
+    config.toml
+    identity
+    authorized_keys
+    state/
+
+/Library/Application Support/P2PTunnel/answer/
+    config.toml
+    identity
+    authorized_keys
+    state/
+
+/Library/Logs/P2PTunnel/
+    offer.stdout.log
+    offer.stderr.log
+    answer.stdout.log
+    answer.stderr.log
+```
+
+A package manager may choose a different absolute executable prefix, but the plist and documentation must agree. Do not rely on `PATH` lookup from `launchd`.
+
+### 12.4 Service account and permissions
+
+The baseline system-wide jobs should run as a dedicated unprivileged service account, for example:
+
+```text
+_p2ptunnel
+```
+
+The installer/documentation must create or require that account before loading the jobs.
+
+Required rules:
+
+- plist files are owned by `root` and are not group- or world-writable;
+- private identities are readable by the service account but not world-readable;
+- config directories are not writable by arbitrary users;
+- state and log directories are writable by the service account;
+- the plist must not omit `UserName` merely to make installation easier, because that would run the tunnel as root by default.
+
+Do not embed password credentials directly in the plist.
+
+### 12.5 macOS logging
+
+For the baseline `LaunchDaemon` configuration, application logging should remain:
+
+```toml
+[logging]
+file_logging = false
+stdout_logging = true
+```
+
+`launchd` should route stdout and stderr using:
+
+```xml
+<key>StandardOutPath</key>
+<string>/Library/Logs/P2PTunnel/offer.stdout.log</string>
+<key>StandardErrorPath</key>
+<string>/Library/Logs/P2PTunnel/offer.stderr.log</string>
+```
+
+Use separate answer paths in the answer plist.
+
+Do not enable both application-managed file logging and `launchd` file redirection by default, because that duplicates logs and preserves the current unbounded `log_rotation = "none"` risk.
+
+### 12.6 Offer `LaunchDaemon` plist
+
+Recommended baseline:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.p2ptunnel.offer</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/p2p-offer</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>/Library/Application Support/P2PTunnel/offer/config.toml</string>
+    </array>
+
+    <key>UserName</key>
+    <string>_p2ptunnel</string>
+    <key>GroupName</key>
+    <string>_p2ptunnel</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>Umask</key>
+    <integer>63</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/P2PTunnel/offer.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/P2PTunnel/offer.stderr.log</string>
+</dict>
+</plist>
+```
+
+`Umask = 63` is decimal `0077`.
+
+The `KeepAlive.SuccessfulExit = false` policy is intended to mirror the Linux baseline `Restart=on-failure`: a nonzero crash may be relaunched, while a normal clean exit is not treated as a failure. The service documentation must use unload/bootout semantics for an intentional administrator stop.
+
+### 12.7 Answer `LaunchDaemon` plist
+
+The answer plist is identical in lifecycle policy but uses:
+
+```text
+Label:          com.p2ptunnel.answer
+Executable:     /usr/local/bin/p2p-answer
+Config:         /Library/Application Support/P2PTunnel/answer/config.toml
+stdout:         /Library/Logs/P2PTunnel/answer.stdout.log
+stderr:         /Library/Logs/P2PTunnel/answer.stderr.log
+```
+
+Do not copy the offer label or config path into the answer plist.
+
+### 12.8 `launchctl` lifecycle commands
+
+Document modern domain-targeted commands.
+
+Install plist files:
+
+```bash
+sudo install -o root -g wheel -m 0644 \
+  packaging/launchd/com.p2ptunnel.offer.plist \
+  /Library/LaunchDaemons/com.p2ptunnel.offer.plist
+
+sudo install -o root -g wheel -m 0644 \
+  packaging/launchd/com.p2ptunnel.answer.plist \
+  /Library/LaunchDaemons/com.p2ptunnel.answer.plist
+```
+
+Validate before loading:
+
+```bash
+plutil -lint /Library/LaunchDaemons/com.p2ptunnel.offer.plist
+plutil -lint /Library/LaunchDaemons/com.p2ptunnel.answer.plist
+```
+
+Load/bootstrap:
+
+```bash
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.p2ptunnel.offer.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.p2ptunnel.answer.plist
+```
+
+Inspect:
+
+```bash
+sudo launchctl print system/com.p2ptunnel.offer
+sudo launchctl print system/com.p2ptunnel.answer
+```
+
+Restart an already-loaded job:
+
+```bash
+sudo launchctl kickstart -k system/com.p2ptunnel.offer
+sudo launchctl kickstart -k system/com.p2ptunnel.answer
+```
+
+Stop and unload intentionally:
+
+```bash
+sudo launchctl bootout system/com.p2ptunnel.offer
+sudo launchctl bootout system/com.p2ptunnel.answer
+```
+
+Do not use a vague `launchctl stop` recipe as the baseline for a keepalive job; an intentionally stopped but still-loaded keepalive job can be eligible for relaunch. `bootout` makes the operator intent explicit by removing the job from the service domain.
+
+### 12.9 Config validation before service load
+
+`launchd` does not provide a direct equivalent to `systemd` `ExecStartPre` in the plist model used here.
+
+Therefore macOS installation and upgrade instructions must explicitly run:
+
+```bash
+/usr/local/bin/p2pctl check-config \
+  --config "/Library/Application Support/P2PTunnel/offer/config.toml"
+
+/usr/local/bin/p2pctl check-config \
+  --config "/Library/Application Support/P2PTunnel/answer/config.toml"
+```
+
+before `bootstrap` or `kickstart`.
+
+Do not wrap `p2p-offer` or `p2p-answer` in a shell script solely to emulate `ExecStartPre`; that introduces another PID/signal-forwarding layer and weakens the direct foreground-process model.
+
+### 12.10 macOS validation requirements
+
+At minimum:
+
+- parse both plist files as XML in platform-independent tests;
+- assert each plist has the correct unique `Label`;
+- assert `ProgramArguments[0]` is the direct executable path;
+- assert `run --config <absolute-path>` arguments are tokenized separately;
+- assert `RunAtLoad = true`;
+- assert `KeepAlive.SuccessfulExit = false`;
+- assert the job specifies the unprivileged service user;
+- assert distinct offer/answer log and config paths;
+- run `plutil -lint` when tests or CI execute on macOS.
+
+### 12.11 Cross-platform supervisor matrix
+
+The final supported P0 deployment matrix is:
+
+| Environment | Supervisor | Stop request | Binary behavior |
+|---|---|---|---|
+| Linux manual | shell | SIGINT | graceful shutdown |
+| macOS manual | shell | SIGINT | graceful shutdown |
+| Linux native service | `systemd` | SIGTERM | graceful shutdown |
+| macOS native service | `launchd` | SIGTERM | graceful shutdown |
+| Docker/container | container runtime | SIGTERM | graceful shutdown |
+| tests/Android | caller | `ShutdownToken` | graceful shutdown |
+
+The daemon core must not branch on this matrix.
+
+---
+
+## 13. Manual execution requirements
+
+Manual operation must remain unchanged on both Linux and macOS:
 
 ```bash
 p2p-answer run --config ./answer.toml
@@ -1239,20 +1539,21 @@ start
 Do not require:
 
 - `systemctl`;
+- `launchctl`;
 - root;
 - `/etc` paths;
 - a service account;
 - journald.
 
-User-local `~/.config/p2ptunnel` and `~/.local/state/p2ptunnel` paths remain valid for manual execution.
+User-local `~/.config/p2ptunnel` and `~/.local/state/p2ptunnel` paths remain valid for manual execution when the current config/path-expansion behavior supports them. Native service definitions must use absolute paths.
 
 ---
 
-## 13. Docker/container requirements
+## 14. Docker/container requirements
 
-### 13.1 Do not run `systemd` in the container
+### 14.1 Do not run a host service manager in the container
 
-The container runtime is already the supervisor.
+The container runtime is already the supervisor. Do not run `systemd` or `launchd` inside the container.
 
 Use the normal foreground binary.
 
@@ -1272,7 +1573,7 @@ ENTRYPOINT ["/usr/local/bin/p2p-offer"]
 CMD ["run", "--config", "/config/config.toml"]
 ```
 
-### 13.2 Exec form is required
+### 14.2 Exec form is required
 
 Preferred:
 
@@ -1288,7 +1589,7 @@ CMD p2p-answer run --config /config/config.toml
 
 The existing E2E compose setup already uses `exec` after shell setup. Preserve that.
 
-### 13.3 Docker logging
+### 14.3 Docker logging
 
 Recommended:
 
@@ -1299,7 +1600,7 @@ stdout_logging = true
 
 Let the container runtime collect stdout/stderr.
 
-### 13.4 Docker state
+### 14.4 Docker state
 
 If `status.json` or other state must survive container replacement, mount the configured state directory.
 
@@ -1315,9 +1616,9 @@ as long as the config and permissions are valid.
 
 ---
 
-## 14. Android compatibility and follow-up
+## 15. Android compatibility and follow-up
 
-### 14.1 P0 compatibility requirement
+### 15.1 P0 compatibility requirement
 
 P0 must preserve current Android compilation by keeping the existing public daemon wrappers.
 
@@ -1330,7 +1631,7 @@ run_answer_daemon(...)
 
 until the P1 migration is implemented.
 
-### 14.2 Recommended P1 Android migration
+### 15.2 Recommended P1 Android migration
 
 The Android controller should eventually own a `ShutdownToken` in addition to the daemon task.
 
@@ -1364,9 +1665,9 @@ The Android controller should then allow the daemon task to finish normally. If 
 
 ---
 
-## 15. Error-handling and observability rules
+## 16. Error-handling and observability rules
 
-### 15.1 No quiet signal failure
+### 16.1 No quiet signal failure
 
 If signal listener setup fails:
 
@@ -1374,7 +1675,7 @@ If signal listener setup fails:
 - do not run indefinitely without the requested signal handling;
 - do not print only debug-level output.
 
-### 15.2 No quiet listener-task loss
+### 16.2 No quiet listener-task loss
 
 If an offer accept task panics or its `JoinHandle` fails:
 
@@ -1383,7 +1684,7 @@ If an offer accept task panics or its `JoinHandle` fails:
 
 Whether it should fail the whole daemon during ordinary runtime is a separate policy decision; during explicit shutdown, the failure must at least be visible.
 
-### 15.3 No fake clean shutdown after cleanup failure
+### 16.3 No fake clean shutdown after cleanup failure
 
 If `peer.close()` fails, the existing cleanup warning remains visible.
 
@@ -1397,7 +1698,7 @@ If a new shutdown-specific cleanup step fails, log enough context to identify:
 - listener/forward ID if applicable; and
 - the actual error.
 
-### 15.4 Do not send mandatory broker traffic during global shutdown
+### 16.4 Do not send mandatory broker traffic during global shutdown
 
 Global shutdown should not depend on successfully publishing and receiving an acknowledged signaling `Close` message.
 
@@ -1414,9 +1715,12 @@ A future best-effort remote close notification may be added only if it is bounde
 
 ---
 
-## 16. Detailed test plan
+## 17. Detailed test plan
 
-### 16.1 Shutdown token unit tests
+The core lifecycle tests must run on every supported Rust host. Real process-signal coverage should run on Linux and macOS where CI runners are available. Service-definition syntax checks are platform-specific: `systemd-analyze verify` on suitable Linux hosts and `plutil -lint` on macOS.
+
+
+### 17.1 Shutdown token unit tests
 
 Add tests for:
 
@@ -1426,7 +1730,7 @@ Add tests for:
 4. repeated requests are harmless;
 5. uncancelled token does not complete within a short test timeout.
 
-### 16.2 Answer idle shutdown test
+### 17.2 Answer idle shutdown test
 
 Using injected signaling transport:
 
@@ -1440,7 +1744,7 @@ Using injected signaling transport:
 8. assert MQTT false;
 9. assert zero sessions.
 
-### 16.3 Answer active-session shutdown test
+### 17.3 Answer active-session shutdown test
 
 Using the existing two-node harness where practical:
 
@@ -1456,7 +1760,7 @@ Using the existing two-node harness where practical:
 
 This test should catch the deadlock caused by stopping the answer event loop too early.
 
-### 16.4 Offer idle shutdown test
+### 17.4 Offer idle shutdown test
 
 1. configure at least one offer listener on an ephemeral port;
 2. start offer daemon with token;
@@ -1469,7 +1773,7 @@ This test should catch the deadlock caused by stopping the answer event loop too
 
 Immediate port rebind is an important proof that listener ownership was actually released.
 
-### 16.5 Offer active-session shutdown test
+### 17.5 Offer active-session shutdown test
 
 1. establish offer/answer pair;
 2. connect a local offer client;
@@ -1481,7 +1785,7 @@ Immediate port rebind is an important proof that listener ownership was actually
 8. assert daemon returns `Ok(())`;
 9. assert final status `Closed`.
 
-### 16.6 Offer reconnect/backoff shutdown test
+### 17.6 Offer reconnect/backoff shutdown test
 
 1. force the offer into reconnect or backoff;
 2. request shutdown;
@@ -1490,7 +1794,7 @@ Immediate port rebind is an important proof that listener ownership was actually
 5. assert session cleanup closes the peer;
 6. assert final status is `Closed`.
 
-### 16.7 Manual process signal integration tests
+### 17.7 Manual process signal integration tests
 
 Launch the real binaries as child processes.
 
@@ -1506,7 +1810,7 @@ At least one test should send SIGINT and assert the same behavior.
 
 Do not simulate process signals only by directly cancelling the token; both layers need coverage.
 
-### 16.8 Docker lifecycle test
+### 17.8 Docker lifecycle test
 
 Extend the existing Docker E2E workflow or add a focused lifecycle test:
 
@@ -1516,7 +1820,7 @@ Extend the existing Docker E2E workflow or add a focused lifecycle test:
 4. inspect logs for shutdown request and completion;
 5. if state is mounted, assert final status is closed.
 
-### 16.9 Regression suite
+### 17.9 Regression suite
 
 Required before completion:
 
@@ -1532,7 +1836,7 @@ Do not mark a test as passed merely because the environment lacked the dependenc
 
 ---
 
-## 17. Acceptance criteria
+## 18. Acceptance criteria
 
 The feature is complete only when all of the following are true.
 
@@ -1580,13 +1884,20 @@ The feature is complete only when all of the following are true.
 
 - [ ] `p2p-offer.service` exists.
 - [ ] `p2p-answer.service` exists.
-- [ ] Units run foreground binaries.
-- [ ] Units use SIGTERM.
-- [ ] Units use `Restart=on-failure`.
-- [ ] Units have a finite `TimeoutStopSec`.
-- [ ] Units run as an unprivileged service account by default.
-- [ ] Manual execution requires no `systemd`.
-- [ ] Docker execution requires no `systemd`.
+- [ ] Linux units run foreground binaries.
+- [ ] Linux units use SIGTERM.
+- [ ] Linux units use `Restart=on-failure`.
+- [ ] Linux units have a finite `TimeoutStopSec`.
+- [ ] Linux units run as an unprivileged service account by default.
+- [ ] `com.p2ptunnel.offer.plist` exists.
+- [ ] `com.p2ptunnel.answer.plist` exists.
+- [ ] macOS plists invoke the foreground binaries directly with `ProgramArguments`.
+- [ ] macOS plists use distinct labels and role-specific absolute paths.
+- [ ] macOS plists use `KeepAlive.SuccessfulExit = false`.
+- [ ] macOS plists specify an unprivileged service account.
+- [ ] macOS plist structure is checked on all hosts and `plutil -lint` runs on macOS.
+- [ ] Manual execution requires no `systemd` or `launchd`.
+- [ ] Docker execution requires no `systemd` or `launchd`.
 
 ### Compatibility
 
@@ -1597,7 +1908,7 @@ The feature is complete only when all of the following are true.
 
 ---
 
-## 18. Recommended implementation sequence
+## 19. Recommended implementation sequence
 
 Implement in this order:
 
@@ -1613,17 +1924,19 @@ Implement in this order:
 9. Process SIGINT/SIGTERM adapters
 10. Wire binaries
 11. Lifecycle unit/integration tests
-12. systemd units
-13. deployment documentation
-14. Android graceful-stop migration (P1)
-15. packaging/install polish (P1/P2)
+12. Linux `systemd` units
+13. macOS `launchd` plists and structural tests
+14. Linux and macOS deployment documentation
+15. Platform-specific service-definition validation
+16. Android graceful-stop migration (P1)
+17. packaging/install polish (P1/P2)
 ```
 
-This order keeps the core testable without sending real OS signals and avoids tying correctness to `systemd`.
+This order keeps the core testable without sending real OS signals and avoids tying correctness to either `systemd` or `launchd`.
 
 ---
 
-## 19. Future extensions explicitly deferred
+## 20. Future extensions explicitly deferred
 
 The following may be useful later, but should not be mixed into the first implementation:
 
@@ -1631,9 +1944,11 @@ The following may be useful later, but should not be mixed into the first implem
 - `WatchdogSec=` integration;
 - socket activation;
 - templated `p2p-offer@.service` instances;
+- per-user macOS `LaunchAgent` variants;
 - dynamic credentials;
 - Debian/RPM packaging;
-- automatic service user creation;
+- macOS `.pkg` and/or Homebrew packaging;
+- automatic Linux/macOS service-account creation;
 - live config reload on SIGHUP;
 - zero-downtime listener handoff;
 - remote close notification during global shutdown; and
