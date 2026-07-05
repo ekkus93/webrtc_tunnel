@@ -90,6 +90,18 @@ sudo systemctl enable --now p2p-offer.service
 sudo systemctl enable --now p2p-answer.service
 ```
 
+Steps 2–5 above (service account, config directories, unit install, and
+`daemon-reload`) can also be run via
+[`scripts/install-systemd-services.sh`](../scripts/install-systemd-services.sh):
+
+```bash
+sudo scripts/install-systemd-services.sh          # installs only; does not enable/start
+sudo scripts/install-systemd-services.sh --enable # also runs enable --now for both units
+```
+
+It never overwrites an existing config directory or its contents, and refuses
+to run as non-root or on a non-Linux/non-systemd host.
+
 Each unit runs `p2pctl check-config` as `ExecStartPre`, so a broken config
 fails the service start immediately rather than starting a daemon that will
 immediately error.

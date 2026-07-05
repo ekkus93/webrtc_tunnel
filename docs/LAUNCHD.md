@@ -85,6 +85,19 @@ plutil -lint /Library/LaunchDaemons/com.p2ptunnel.offer.plist
 plutil -lint /Library/LaunchDaemons/com.p2ptunnel.answer.plist
 ```
 
+Steps 3–5 above (directories, plist validation, and install) can also be run
+via [`scripts/install-launchd-services.sh`](../scripts/install-launchd-services.sh):
+
+```bash
+sudo scripts/install-launchd-services.sh          # installs only; does not bootstrap
+sudo scripts/install-launchd-services.sh --enable # also bootstraps both jobs
+```
+
+It validates each plist with `plutil -lint` before installing, never
+overwrites an existing config directory, refuses to run as non-root or on a
+non-macOS host, and stops with an explicit message rather than creating the
+`_p2ptunnel` account itself (see step 2 above).
+
 ## 6. Load, inspect, restart, and stop
 
 ```bash
