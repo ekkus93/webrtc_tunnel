@@ -93,3 +93,79 @@ pub(crate) fn validate_non_world_writable(
 ) -> Result<(), ConfigError> {
     Ok(())
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::validate_non_world_writable;
+
+    #[test]
+    fn accepts_a_non_world_writable_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"").expect("write file");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("set permissions");
+
+        validate_non_world_writable(&path, "paths.test").expect("0o644 file should be accepted");
+    }
+
+    #[test]
+    fn rejects_a_world_writable_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"").expect("write file");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o646)).expect("set permissions");
+
+        let error = validate_non_world_writable(&path, "paths.test")
+            .expect_err("world-writable file should be rejected");
+        let message = error.to_string();
+        assert!(message.contains("must not be world-writable"), "{message}");
+        assert!(message.contains("paths.test"), "{message}");
+    }
+
+    #[test]
+    fn group_writable_but_not_world_writable_is_accepted() {
+        // Proves the check targets the world/"other" bit (0o002) specifically, not
+        // the group-writable bit (0o020).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"").expect("write file");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o664)).expect("set permissions");
+
+        validate_non_world_writable(&path, "paths.test")
+            .expect("group-writable-only file should be accepted");
+    }
+
+    #[test]
+    fn rejects_when_the_first_existing_ancestor_directory_is_world_writable() {
+        // The target file itself doesn't exist yet, but its containing directory
+        // does and is world-writable — the check must walk up to find it.
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o777))
+            .expect("set permissions");
+        let missing_path = dir.path().join("not-yet-created.toml");
+
+        let error = validate_non_world_writable(&missing_path, "paths.test")
+            .expect_err("world-writable containing directory should be rejected");
+        assert!(error.to_string().contains("must not be world-writable"));
+    }
+
+    #[test]
+    fn accepts_when_the_first_existing_ancestor_directory_is_not_world_writable() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755))
+            .expect("set permissions");
+        let missing_path = dir.path().join("not-yet-created.toml");
+
+        validate_non_world_writable(&missing_path, "paths.test")
+            .expect("non-world-writable containing directory should be accepted");
+    }
+
+    #[test]
+    fn empty_path_is_always_accepted() {
+        validate_non_world_writable(std::path::Path::new(""), "paths.test")
+            .expect("empty (unset) path should skip the check entirely");
+    }
+}
