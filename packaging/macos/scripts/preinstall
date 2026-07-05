@@ -1,0 +1,26 @@
+#!/bin/sh
+# preinstall for the p2ptunnel macOS installer package.
+#
+# Run as root by Installer.app / `installer` before the payload is placed.
+# Mirrors scripts/install-launchd-services.sh's conservative stance: creating
+# the _p2ptunnel service account safely (correct, non-colliding UID/GID
+# allocation) is treated as an administrator prerequisite rather than
+# something this script does blindly, since getting that wrong is a real
+# security footgun and there is no way to verify this script's behavior
+# without a real macOS host. See docs/MACOS_PACKAGING.md.
+set -e
+
+SERVICE_USER="_p2ptunnel"
+
+if ! dscl . -read "/Users/$SERVICE_USER" >/dev/null 2>&1; then
+  cat >&2 <<EOF
+p2ptunnel installer: required service account '$SERVICE_USER' does not exist.
+
+Installation cannot continue safely without it. Create the account first
+(see docs/MACOS_PACKAGING.md and docs/LAUNCHD.md for the exact steps), then
+re-run this installer.
+EOF
+  exit 1
+fi
+
+exit 0

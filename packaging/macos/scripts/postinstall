@@ -1,0 +1,37 @@
+#!/bin/sh
+# postinstall for the p2ptunnel macOS installer package.
+#
+# Runs as root after the payload (binaries + LaunchDaemon plists) has been
+# placed. Idempotent: only creates directories that don't already exist, so
+# a reinstall/upgrade never touches an existing config directory's contents.
+# Does not create config.toml/identity/authorized_keys, and does not load
+# (bootstrap) the LaunchDaemons — see docs/MACOS_PACKAGING.md and
+# docs/LAUNCHD.md for those steps.
+set -e
+
+SERVICE_USER="_p2ptunnel"
+APP_SUPPORT_ROOT="/Library/Application Support/P2PTunnel"
+LOG_DIR="/Library/Logs/P2PTunnel"
+
+for role in offer answer; do
+  dir="$APP_SUPPORT_ROOT/$role"
+  if [ ! -d "$dir" ]; then
+    install -d -m 0750 -o root -g wheel "$dir"
+  fi
+done
+
+if [ ! -d "$LOG_DIR" ]; then
+  install -d -m 0755 -o "$SERVICE_USER" -g wheel "$LOG_DIR"
+fi
+
+cat <<EOF
+p2ptunnel installed. This package does not create a default config or load
+the services. Next steps:
+  1. Populate "$APP_SUPPORT_ROOT/offer/{config.toml,identity,authorized_keys}"
+     and the answer equivalent (see docs/LAUNCHD.md).
+  2. /usr/local/bin/p2pctl check-config --config "$APP_SUPPORT_ROOT/offer/config.toml"
+  3. sudo launchctl bootstrap system /Library/LaunchDaemons/com.p2ptunnel.offer.plist
+  4. sudo launchctl bootstrap system /Library/LaunchDaemons/com.p2ptunnel.answer.plist
+EOF
+
+exit 0
