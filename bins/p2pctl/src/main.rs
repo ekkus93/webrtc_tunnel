@@ -104,8 +104,21 @@ fn fingerprint(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 fn add_authorized_key(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let public_identity = load_public_identity(path)?;
     let authorized_keys_path = default_config_dir()?.join("authorized_keys");
+    append_authorized_key(&authorized_keys_path, &public_identity)?;
+    println!("updated {}", authorized_keys_path.display());
+    Ok(())
+}
+
+/// Core of [`add_authorized_key`], parameterized on the authorized_keys path so it's
+/// testable without touching the real `$HOME`. Rejects (without writing anything) if
+/// `public_identity`'s peer_id is already present in the file; otherwise appends one
+/// line, creating the file if it doesn't exist yet.
+fn append_authorized_key(
+    authorized_keys_path: &Path,
+    public_identity: &PublicIdentity,
+) -> Result<(), Box<dyn std::error::Error>> {
     if authorized_keys_path.exists() {
-        let existing = AuthorizedKeys::from_file(&authorized_keys_path)?;
+        let existing = AuthorizedKeys::from_file(authorized_keys_path)?;
         if existing.get_by_peer_id(&public_identity.peer_id).is_some() {
             return Err(format!(
                 "peer '{}' already exists in {}",
@@ -116,10 +129,9 @@ fn add_authorized_key(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut file = OpenOptions::new().create(true).append(true).open(&authorized_keys_path)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(authorized_keys_path)?;
     use std::io::Write;
     writeln!(file, "{}", public_identity.render())?;
-    println!("updated {}", authorized_keys_path.display());
     Ok(())
 }
 
@@ -212,7 +224,7 @@ mod tests {
     use p2p_crypto::generate_identity;
     use serde_json::json;
 
-    use super::{render_status, write_identity_files};
+    use super::{append_authorized_key, render_status, write_identity_files};
 
     #[test]
     fn keygen_refuses_to_overwrite_without_force() {
@@ -438,5 +450,75 @@ mod tests {
         assert!(output.contains("configured_forwards=ssh"));
         assert!(!output.contains("active_stream_count"));
         assert!(!output.contains("open_forward_ids"));
+    }
+
+    #[test]
+    fn add_authorized_key_creates_missing_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let authorized_keys_path = temp_dir.path().join("authorized_keys");
+        let identity = generate_identity("offer-home").expect("identity");
+
+        append_authorized_key(&authorized_keys_path, &identity.public_identity)
+            .expect("append to missing file");
+
+        let content = std::fs::read_to_string(&authorized_keys_path).expect("read file");
+        assert!(content.contains("offer-home"));
+        assert_eq!(content.lines().count(), 1);
+    }
+
+    #[test]
+    fn add_authorized_key_appends_to_existing_file_leaving_prior_entries_untouched() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let authorized_keys_path = temp_dir.path().join("authorized_keys");
+        let first = generate_identity("offer-home").expect("identity");
+        let second = generate_identity("offer-office").expect("identity");
+
+        append_authorized_key(&authorized_keys_path, &first.public_identity).expect("append first");
+        append_authorized_key(&authorized_keys_path, &second.public_identity)
+            .expect("append second");
+
+        let content = std::fs::read_to_string(&authorized_keys_path).expect("read file");
+        assert_eq!(content.lines().count(), 2);
+        assert!(content.contains("offer-home"));
+        assert!(content.contains("offer-office"));
+    }
+
+    #[test]
+    fn add_authorized_key_rejects_duplicate_peer_id_without_modifying_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let authorized_keys_path = temp_dir.path().join("authorized_keys");
+        let first = generate_identity("offer-home").expect("identity");
+        // A second identity for the *same* peer_id but with different keys, so we're
+        // exercising peer_id collision specifically, not an exact-duplicate-line case.
+        let second = generate_identity("offer-home").expect("identity");
+
+        append_authorized_key(&authorized_keys_path, &first.public_identity).expect("append first");
+        let before = std::fs::read_to_string(&authorized_keys_path).expect("read file");
+
+        let error = append_authorized_key(&authorized_keys_path, &second.public_identity)
+            .expect_err("duplicate peer_id should be rejected");
+        assert!(error.to_string().contains("already exists"));
+        assert!(error.to_string().contains("offer-home"));
+
+        let after = std::fs::read_to_string(&authorized_keys_path).expect("read file");
+        assert_eq!(before, after, "rejected append must not modify the file");
+        assert_eq!(after.lines().count(), 1);
+    }
+
+    #[test]
+    fn add_authorized_key_rejects_malformed_existing_file_without_modifying_it() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let authorized_keys_path = temp_dir.path().join("authorized_keys");
+        std::fs::write(&authorized_keys_path, "not a valid authorized_keys line\n")
+            .expect("write malformed file");
+        let identity = generate_identity("offer-home").expect("identity");
+
+        let before = std::fs::read_to_string(&authorized_keys_path).expect("read file");
+        let error = append_authorized_key(&authorized_keys_path, &identity.public_identity)
+            .expect_err("malformed existing file should be rejected");
+        assert!(!error.to_string().is_empty());
+
+        let after = std::fs::read_to_string(&authorized_keys_path).expect("read file");
+        assert_eq!(before, after, "rejected append must not modify the file");
     }
 }
