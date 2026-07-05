@@ -20,7 +20,7 @@ use tokio::time::sleep;
 use crate::DaemonError;
 use crate::config::steady_state_for_role;
 use crate::messages::current_time_ms;
-use crate::status::{DaemonStatus, StatusWriter};
+use crate::status::{DaemonStatus, ForwardRuntimeStatus, StatusWriter};
 use crate::types::{
     ANSWER_SESSION_CAPACITY, ActiveSession, AnswerSessionEvent, AnswerSessionHandle,
     AnswerStatusSnapshot, DAEMON_RUNTIME_RETRY_DELAY, DaemonSignalingTransport, OutgoingSignal,
@@ -96,6 +96,27 @@ pub(crate) async fn write_steady_state_status(ctx: &RuntimeContext<'_>) {
             active_session_id: None,
             current_state: steady_state_for_role(&ctx.config.node.role),
         },
+    )
+    .await;
+}
+
+/// Truthful terminal offer status: listener tasks have been stopped/joined and any
+/// active session has been cleaned up. Every configured offer forward is reported
+/// `Stopped`; a forward's pre-existing `last_error` (e.g. it never bound) is kept
+/// rather than erased, since `Stopped` answers "is this running now?" while
+/// `last_error` answers "what most recently went wrong?" — shutting down doesn't
+/// change the answer to the second question.
+pub(crate) async fn write_offer_closed_status(ctx: &mut RuntimeContext<'_>) {
+    ctx.runtime.mqtt_connected = false;
+    ctx.runtime.forward_statuses = ctx
+        .runtime
+        .forward_statuses
+        .iter()
+        .map(ForwardRuntimeStatus::stopped_preserving_error)
+        .collect();
+    write_daemon_status(
+        ctx,
+        StatusSnapshot { active_session_id: None, current_state: DaemonState::Closed },
     )
     .await;
 }

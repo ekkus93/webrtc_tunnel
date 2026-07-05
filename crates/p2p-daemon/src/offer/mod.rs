@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep};
 
 use crate::DaemonError;
+use crate::ShutdownToken;
 use crate::config::*;
 use crate::messages::*;
 use crate::signaling::*;
@@ -44,8 +45,25 @@ pub async fn run_offer_daemon(
     local_identity: IdentityFile,
     authorized_keys: AuthorizedKeys,
 ) -> Result<(), DaemonError> {
+    run_offer_daemon_with_shutdown(config, local_identity, authorized_keys, ShutdownToken::new())
+        .await
+}
+
+pub async fn run_offer_daemon_with_shutdown(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
     let transport = MqttSignalingTransport::connect(&config)?;
-    run_offer_daemon_with_transport(config, local_identity, authorized_keys, transport).await
+    run_offer_daemon_with_transport_and_shutdown(
+        config,
+        local_identity,
+        authorized_keys,
+        transport,
+        shutdown,
+    )
+    .await
 }
 
 pub async fn run_offer_daemon_with_transport<T: DaemonSignalingTransport>(
@@ -54,14 +72,32 @@ pub async fn run_offer_daemon_with_transport<T: DaemonSignalingTransport>(
     authorized_keys: AuthorizedKeys,
     transport: T,
 ) -> Result<(), DaemonError> {
+    run_offer_daemon_with_transport_and_shutdown(
+        config,
+        local_identity,
+        authorized_keys,
+        transport,
+        ShutdownToken::new(),
+    )
+    .await
+}
+
+pub async fn run_offer_daemon_with_transport_and_shutdown<T: DaemonSignalingTransport>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    transport: T,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
     #[cfg(any(test, debug_assertions))]
     {
-        run_offer_daemon_with_transport_and_test_hook(
+        run_offer_daemon_with_transport_and_test_hook_and_shutdown(
             config,
             local_identity,
             authorized_keys,
             transport,
             None,
+            shutdown,
         )
         .await
     }
@@ -69,8 +105,16 @@ pub async fn run_offer_daemon_with_transport<T: DaemonSignalingTransport>(
     #[cfg(not(any(test, debug_assertions)))]
     {
         let mut transport = transport;
-        run_offer_daemon_inner(config, local_identity, authorized_keys, &mut transport, None, None)
-            .await
+        run_offer_daemon_inner(
+            config,
+            local_identity,
+            authorized_keys,
+            &mut transport,
+            None,
+            None,
+            shutdown,
+        )
+        .await
     }
 }
 
@@ -84,6 +128,23 @@ pub async fn run_offer_daemon_with_status(
     authorized_keys: AuthorizedKeys,
     status_sink: tokio::sync::watch::Sender<DaemonStatus>,
 ) -> Result<(), DaemonError> {
+    run_offer_daemon_with_status_and_shutdown(
+        config,
+        local_identity,
+        authorized_keys,
+        status_sink,
+        ShutdownToken::new(),
+    )
+    .await
+}
+
+pub async fn run_offer_daemon_with_status_and_shutdown(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    status_sink: tokio::sync::watch::Sender<DaemonStatus>,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
     let mut transport = MqttSignalingTransport::connect(&config)?;
     run_offer_daemon_inner(
         config,
@@ -92,6 +153,7 @@ pub async fn run_offer_daemon_with_status(
         &mut transport,
         None,
         Some(status_sink),
+        shutdown,
     )
     .await
 }
@@ -101,8 +163,34 @@ pub async fn run_offer_daemon_with_transport_and_test_hook<T: DaemonSignalingTra
     config: AppConfig,
     local_identity: IdentityFile,
     authorized_keys: AuthorizedKeys,
+    transport: T,
+    session_hook: Option<mpsc::UnboundedSender<OfferSessionTestHandle>>,
+) -> Result<(), DaemonError> {
+    run_offer_daemon_with_transport_and_test_hook_and_shutdown(
+        config,
+        local_identity,
+        authorized_keys,
+        transport,
+        session_hook,
+        ShutdownToken::new(),
+    )
+    .await
+}
+
+/// Combines the session-hook test seam with shutdown cancellation, so lifecycle
+/// tests can deterministically observe in-progress session/reconnect state (via
+/// `session_hook`) and then trigger shutdown at that observed moment, rather than
+/// racing real-time sleeps against the two-node harness.
+#[cfg(any(test, debug_assertions))]
+pub async fn run_offer_daemon_with_transport_and_test_hook_and_shutdown<
+    T: DaemonSignalingTransport,
+>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
     mut transport: T,
     session_hook: Option<mpsc::UnboundedSender<OfferSessionTestHandle>>,
+    shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
     run_offer_daemon_inner(
         config,
@@ -111,6 +199,7 @@ pub async fn run_offer_daemon_with_transport_and_test_hook<T: DaemonSignalingTra
         &mut transport,
         session_hook,
         None,
+        shutdown,
     )
     .await
 }
@@ -125,6 +214,7 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     >,
     #[cfg(not(any(test, debug_assertions)))] _session_hook: Option<()>,
     status_sink: Option<tokio::sync::watch::Sender<DaemonStatus>>,
+    mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let codec = SignalCodec::new(
@@ -146,7 +236,7 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     let (listeners, forward_statuses) = bind_offer_listeners(&config).await?;
     ctx.runtime.forward_statuses = forward_statuses;
     write_steady_state_status(&ctx).await;
-    let mut accepted_clients = spawn_offer_accept_loops(listeners);
+    let mut accept_runtime = spawn_offer_accept_loops(listeners, shutdown.clone());
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
     let remote_peer_id = offer_remote_peer_id(&config)?;
     let remote = authorized_keys
@@ -158,7 +248,11 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     loop {
         write_steady_state_status(&ctx).await;
         tokio::select! {
-            client = accepted_clients.recv() => {
+            _ = shutdown.cancelled() => {
+                tracing::info!("offer daemon shutdown requested");
+                break;
+            }
+            client = accept_runtime.accepted_clients.recv() => {
                 let client = client
                     .ok_or_else(|| DaemonError::Logging("offer accept loop stopped".to_owned()))??;
                 // If the data plane recently failed its probe, refuse new clients during the
@@ -181,13 +275,23 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
                         &mut ctx,
                         OfferSessionIo {
                             client,
-                            accepted_clients: &mut accepted_clients,
+                            accepted_clients: &mut accept_runtime.accepted_clients,
                             remote: &remote,
                             #[cfg(any(test, debug_assertions))]
                             session_hook: session_hook.clone(),
                         },
+                        shutdown.clone(),
                     )
                     .await;
+                if shutdown.is_shutdown_requested() {
+                    if let Err(error) = &result {
+                        tracing::warn!(
+                            reason = %error,
+                            "offer session ended with error during shutdown"
+                        );
+                    }
+                    break;
+                }
                 if cooldown::session_outcome_enters_cooldown(&result) {
                     let wait = probe_cooldown.record_failure(Instant::now());
                     tracing::warn!(
@@ -242,13 +346,35 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
             }
         }
     }
+
+    join_offer_accept_tasks(accept_runtime.tasks).await;
+    write_offer_closed_status(&mut ctx).await;
+    Ok(())
+}
+
+/// Owns every offer accept-loop task handle alongside the receiver they feed, so
+/// shutdown can stop and join them deterministically instead of discarding the
+/// `JoinHandle`s (which made listener-port release non-deterministic).
+struct OfferAcceptRuntime {
+    accepted_clients: mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Await every offer accept-loop task and log (rather than silently discard) any
+/// task that failed to join, per the spec's "no quiet listener-task loss" rule.
+async fn join_offer_accept_tasks(tasks: Vec<tokio::task::JoinHandle<()>>) {
+    for task in tasks {
+        if let Err(error) = task.await {
+            tracing::warn!(reason = %error, "offer accept task failed while stopping");
+        }
+    }
 }
 
 #[cfg(test)]
 pub(crate) fn spawn_offer_accept_loop(
     listener: OfferListener,
 ) -> mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>> {
-    spawn_offer_accept_loops(vec![listener])
+    spawn_offer_accept_loops(vec![listener], ShutdownToken::new()).accepted_clients
 }
 
 /// Bind a local TCP listener for each configured offer forward. Individual forwards
@@ -300,32 +426,49 @@ pub(crate) async fn bind_offer_listeners(
 
 fn spawn_offer_accept_loops(
     listeners: Vec<OfferListener>,
-) -> mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>> {
+    shutdown: ShutdownToken,
+) -> OfferAcceptRuntime {
     let (tx, rx) = mpsc::channel(64);
+    let mut tasks = Vec::with_capacity(listeners.len());
     for listener in listeners {
         let tx = tx.clone();
-        tokio::spawn(async move {
+        let mut task_shutdown = shutdown.clone();
+        tasks.push(tokio::spawn(async move {
             loop {
-                match listener.accept_client().await {
-                    Ok(accepted) => match tx.try_send(Ok(accepted)) {
-                        Ok(()) => {}
-                        Err(mpsc::error::TrySendError::Full(Ok(dropped))) => {
-                            tracing::warn!(
-                                forward_id = dropped.forward_id(),
-                                "offer pending client queue is full; closing local client"
-                            );
+                tokio::select! {
+                    _ = task_shutdown.cancelled() => {
+                        tracing::debug!(
+                            forward_id = listener.forward_id(),
+                            "offer accept loop stopping"
+                        );
+                        return;
+                    }
+                    accepted = listener.accept_client() => {
+                        match accepted {
+                            Ok(accepted) => match tx.try_send(Ok(accepted)) {
+                                Ok(()) => {}
+                                Err(mpsc::error::TrySendError::Full(Ok(dropped))) => {
+                                    tracing::warn!(
+                                        forward_id = dropped.forward_id(),
+                                        "offer pending client queue is full; closing local client"
+                                    );
+                                }
+                                Err(mpsc::error::TrySendError::Closed(_)) => return,
+                                Err(mpsc::error::TrySendError::Full(Err(_))) => {}
+                            },
+                            Err(error) => {
+                                tracing::warn!(reason = %error, "offer accept loop hit recoverable listener error");
+                                tokio::select! {
+                                    _ = task_shutdown.cancelled() => return,
+                                    _ = sleep(DAEMON_RUNTIME_RETRY_DELAY) => {}
+                                }
+                            }
                         }
-                        Err(mpsc::error::TrySendError::Closed(_)) => return,
-                        Err(mpsc::error::TrySendError::Full(Err(_))) => {}
-                    },
-                    Err(error) => {
-                        tracing::warn!(reason = %error, "offer accept loop hit recoverable listener error");
-                        sleep(DAEMON_RUNTIME_RETRY_DELAY).await;
                     }
                 }
             }
-        });
+        }));
     }
     drop(tx);
-    rx
+    OfferAcceptRuntime { accepted_clients: rx, tasks }
 }

@@ -411,3 +411,66 @@ async fn answer_idle_shutdown_writes_closed_status() {
 
     let _ = tokio::fs::remove_file(&status_path).await;
 }
+
+#[tokio::test]
+async fn offer_idle_shutdown_releases_listener_port() {
+    // Reserve a specific free port up front so the daemon binds a known address we
+    // can immediately try to rebind after shutdown, proving listener ownership was
+    // actually released rather than merely dropped from a status label.
+    let reserved = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should reserve an ephemeral port");
+    let addr = reserved.local_addr().expect("reserved listener should have a local addr");
+    drop(reserved);
+
+    let mut config = sample_config();
+    let offer_forward = super::first_offer_forward_mut(&mut config).expect("offer forward");
+    offer_forward.listen_host = addr.ip().to_string();
+    offer_forward.listen_port = addr.port();
+
+    let status_path = std::env::temp_dir()
+        .join(format!("p2ptunnel-daemon-status-offer-shutdown-{}.json", SessionId::random()));
+    config.health.write_status_file = true;
+    config.health.status_file = status_path.clone();
+
+    let offer = generate_identity("offer-home").expect("offer identity");
+    let answer = generate_identity("answer-office").expect("answer identity");
+    let authorized_keys =
+        AuthorizedKeys::parse(&answer.public_identity.render()).expect("authorized keys");
+
+    let (_outcomes_tx, outcomes_rx) = mpsc::unbounded_channel();
+    let transport = ScriptedPollingTransport { outcomes: outcomes_rx };
+
+    let shutdown = ShutdownToken::new();
+    let daemon = tokio::spawn(run_offer_daemon_with_transport_and_shutdown(
+        config,
+        offer.identity,
+        authorized_keys,
+        transport,
+        shutdown.clone(),
+    ));
+
+    wait_for_status(&status_path, |status| {
+        status["role"] == "offer" && status["forwards"][0]["listen_state"] == "listening"
+    })
+    .await;
+
+    shutdown.request_shutdown();
+
+    let result = timeout(Duration::from_secs(2), daemon)
+        .await
+        .expect("offer daemon should stop before the test timeout")
+        .expect("offer daemon task should not panic");
+    assert!(result.is_ok(), "graceful shutdown should return Ok, got {result:?}");
+
+    let final_status = read_status_file(&status_path).await;
+    assert_eq!(final_status["current_state"], "closed");
+    assert_eq!(final_status["forwards"][0]["listen_state"], "stopped");
+
+    let rebound = tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("offer listener port should be released after shutdown");
+    drop(rebound);
+
+    let _ = tokio::fs::remove_file(&status_path).await;
+}

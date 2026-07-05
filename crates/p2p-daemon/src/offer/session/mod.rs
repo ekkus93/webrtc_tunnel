@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, interval, sleep_until};
 
 use crate::DaemonError;
+use crate::ShutdownToken;
 use crate::messages::*;
 use crate::predicates::*;
 use crate::signaling::*;
@@ -86,6 +87,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
     transport: &mut T,
     ctx: &mut RuntimeContext<'_>,
     io: OfferSessionIo<'a>,
+    mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
     let remote = io.remote;
     let peer = WebRtcPeer::new(&config.webrtc).await?;
@@ -248,6 +250,14 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                 }));
             }
             tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tracing::info!(
+                        session_id = %session.session_id,
+                        remote_peer_id = %session.remote_peer_id,
+                        "offer session shutdown requested"
+                    );
+                    return Ok(());
+                }
                 _ = sleep_until(first_data_channel_deadline),
                     if !bridge_ever_active
                         && offer_bridge.is_none()
@@ -348,16 +358,28 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                                 return Err(DaemonError::IceFailed(ice_state));
                             }
                             session.bridge_state = BridgeSessionState::Reconnecting;
-                            if should_attempt_offer_reconnect(config, pending_client.is_some(), session.bridge_state)
-                                && attempt_offer_reconnect(
-                                    ctx,
-                                    codec,
-                                    transport,
-                                    &mut session,
-                                    remote,
-                                )
-                                .await?
-                            {
+                            let reconnected = if should_attempt_offer_reconnect(config, pending_client.is_some(), session.bridge_state) {
+                                tokio::select! {
+                                    result = attempt_offer_reconnect(
+                                        ctx,
+                                        codec,
+                                        transport,
+                                        &mut session,
+                                        remote,
+                                    ) => result?,
+                                    _ = shutdown.cancelled() => {
+                                        tracing::info!(
+                                            session_id = %session.session_id,
+                                            remote_peer_id = %session.remote_peer_id,
+                                            "offer reconnect interrupted by shutdown"
+                                        );
+                                        return Ok(());
+                                    }
+                                }
+                            } else {
+                                false
+                            };
+                            if reconnected {
                                 session.bridge_state = BridgeSessionState::Pending;
                                 continue;
                             }

@@ -56,6 +56,26 @@ impl ForwardRuntimeStatus {
             last_error: Some(message.into()),
         }
     }
+
+    /// A forward with no prior runtime status, reported as stopped (e.g. before any
+    /// listener has been bound). Has no `last_error` since it never ran.
+    pub fn stopped(id: impl Into<String>) -> Self {
+        Self { id: id.into(), listen_state: ForwardListenState::Stopped, last_error: None }
+    }
+
+    /// Terminal shutdown status for a forward that already has a runtime status.
+    /// Always reports `Stopped` (shutdown is unconditional), but keeps the existing
+    /// `last_error` rather than nulling it: `listen_state` answers "is this running
+    /// now?" and `last_error` separately answers "what most recently went wrong?" —
+    /// a forward that never successfully bound should still show that diagnostic
+    /// after shutdown.
+    pub fn stopped_preserving_error(existing: &Self) -> Self {
+        Self {
+            id: existing.id.clone(),
+            listen_state: ForwardListenState::Stopped,
+            last_error: existing.last_error.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -220,6 +240,27 @@ mod tests {
         let json = serde_json::to_value(&errored).expect("serialize");
         assert_eq!(json["listen_state"], "error");
         assert_eq!(json["last_error"], "Address already in use");
+    }
+
+    #[test]
+    fn stopped_forward_status_has_no_error() {
+        let status = ForwardRuntimeStatus::stopped("ssh");
+        assert_eq!(status.listen_state, ForwardListenState::Stopped);
+        assert!(status.last_error.is_none());
+    }
+
+    #[test]
+    fn stopped_preserving_error_keeps_prior_error_but_reports_stopped() {
+        let errored = ForwardRuntimeStatus::error("ssh", "Address already in use");
+        let stopped = ForwardRuntimeStatus::stopped_preserving_error(&errored);
+        assert_eq!(stopped.id, "ssh");
+        assert_eq!(stopped.listen_state, ForwardListenState::Stopped);
+        assert_eq!(stopped.last_error.as_deref(), Some("Address already in use"));
+
+        let listening = ForwardRuntimeStatus::listening("web");
+        let stopped_clean = ForwardRuntimeStatus::stopped_preserving_error(&listening);
+        assert_eq!(stopped_clean.listen_state, ForwardListenState::Stopped);
+        assert!(stopped_clean.last_error.is_none());
     }
 
     #[test]
