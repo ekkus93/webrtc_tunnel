@@ -1,8 +1,10 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
+import android.net.Uri
 import android.os.Looper
 import com.phillipchin.webrtctunnel.TunnelForegroundService
 import com.phillipchin.webrtctunnel.model.ForwardConfig
+import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
@@ -328,6 +330,146 @@ class SetupViewModelTest : AppViewModelTestBase() {
             ),
             visited,
         )
+    }
+
+    // --- SetupIdentityController: generateIdentity / importIdentityFromUri /
+    // --- importPublicIdentityFromUri (P1-001) ---
+
+    @Test
+    fun generateIdentitySucceedsAndPersistsIdentity() {
+        val viewModel = SetupViewModel(deps)
+        viewModel.setInput(viewModel.state.value.input.copy(localPeerId = "generated-peer"))
+
+        viewModel.identity.generateIdentity()
+
+        val state = awaitSetupState(viewModel) { it.saveResult == "Identity generated" }
+        assertEquals("generated-peer", state.identityPeerId)
+        assertEquals("canon", state.localPublicIdentity)
+        assertEquals(null, state.errorMessage)
+        assertEquals(false, state.isBusy)
+        assertEquals("canon", deps.identityRepository.readPublicIdentity())
+    }
+
+    @Test
+    fun generateIdentityFailureSurfacesBridgeMessageAndClearsBusy() {
+        recordingBridge.generateIdentityResult =
+            IdentityValidationResult(valid = false, message = "boom")
+        val viewModel = SetupViewModel(deps)
+
+        viewModel.identity.generateIdentity()
+
+        val state = awaitSetupState(viewModel) { it.errorMessage != null }
+        assertEquals("boom", state.errorMessage)
+        assertEquals(false, state.isBusy)
+        assertEquals(null, state.saveResult)
+    }
+
+    @Test
+    fun generateIdentityWithIncompleteDataReportsError() {
+        // Bridge reports success but omits the actual key material — the controller must
+        // not treat this as a valid identity.
+        recordingBridge.generateIdentityResult =
+            IdentityValidationResult(
+                valid = true,
+                canonicalPublicIdentity = null,
+                canonicalPrivateIdentity = null,
+                peerId = "generated-peer",
+            )
+        val viewModel = SetupViewModel(deps)
+
+        viewModel.identity.generateIdentity()
+
+        val state = awaitSetupState(viewModel) { it.errorMessage != null }
+        assertEquals("Identity generation returned incomplete data", state.errorMessage)
+        assertEquals(false, state.isBusy)
+    }
+
+    @Test
+    fun importIdentityFromUriSucceedsAndStoresIdentity() {
+        val file =
+            File(app.filesDir, "uri_identity_success.toml").apply {
+                writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
+            }
+        val viewModel = SetupViewModel(deps)
+
+        viewModel.identity.importIdentityFromUri(Uri.fromFile(file))
+
+        val state = awaitSetupState(viewModel) { it.saveResult == "Identity imported" }
+        assertEquals("android-phone", state.identityPeerId)
+        assertEquals("canon", state.localPublicIdentity)
+        assertEquals(null, state.errorMessage)
+        assertEquals(false, state.isBusy)
+        assertEquals("canon", deps.identityRepository.readPublicIdentity())
+    }
+
+    @Test
+    fun importIdentityFromUriWithUnreadableUriReportsErrorWithoutCrashing() {
+        val missingFile = File(app.filesDir, "does_not_exist_identity.toml")
+        val viewModel = SetupViewModel(deps)
+
+        viewModel.identity.importIdentityFromUri(Uri.fromFile(missingFile))
+
+        val state = awaitSetupState(viewModel) { it.errorMessage != null }
+        assertEquals(false, state.isBusy)
+        assertEquals(null, state.saveResult)
+    }
+
+    @Test
+    fun importIdentityFromUriWithInvalidContentReportsBridgeMessage() {
+        recordingBridge.privateIdentityValidationResult =
+            IdentityValidationResult(valid = false, message = "not a real identity")
+        val file =
+            File(app.filesDir, "uri_identity_invalid.toml").apply {
+                writeText("garbage")
+            }
+        val viewModel = SetupViewModel(deps)
+
+        viewModel.identity.importIdentityFromUri(Uri.fromFile(file))
+
+        val state = awaitSetupState(viewModel) { it.errorMessage != null }
+        assertEquals("not a real identity", state.errorMessage)
+        assertEquals(false, state.isBusy)
+    }
+
+    @Test
+    fun importPublicIdentityFromUriSucceeds() {
+        val file =
+            File(app.filesDir, "uri_public_identity_success.toml").apply {
+                writeText("p2ptunnel-ed25519 peer_id=remote-peer sign_pub=AAAA kex_pub=BBBB")
+            }
+        val viewModel = SetupViewModel(deps)
+
+        viewModel.identity.importPublicIdentityFromUri(Uri.fromFile(file))
+
+        val state = awaitSetupState(viewModel) { it.saveResult == "Remote public identity validated" }
+        assertEquals("remote-peer", state.remoteIdentityPeerId)
+        assertEquals(null, state.errorMessage)
+        assertEquals(false, state.isBusy)
+    }
+
+    @Test
+    fun importPublicIdentityFromUriWithUnreadableUriReportsErrorWithoutCrashing() {
+        val missingFile = File(app.filesDir, "does_not_exist_public_identity.toml")
+        val viewModel = SetupViewModel(deps)
+
+        viewModel.identity.importPublicIdentityFromUri(Uri.fromFile(missingFile))
+
+        val state = awaitSetupState(viewModel) { it.errorMessage != null }
+        assertEquals(false, state.isBusy)
+        assertEquals(null, state.saveResult)
+    }
+
+    @Test
+    fun isBusyReturnsToFalseAfterEachIdentityOperation() {
+        // SetupIdentityController's launchBusy has no re-entrancy guard (unlike e.g.
+        // AndroidTunnelController.start()) — it only tracks the busy flag around a single
+        // operation's lifetime. This pins down the actual contract: isBusy is false again
+        // once each operation (success or failure) settles.
+        val viewModel = SetupViewModel(deps)
+        assertEquals(false, viewModel.state.value.isBusy)
+
+        viewModel.identity.generateIdentity()
+        assertEquals(false, awaitSetupState(viewModel) { it.saveResult != null || it.errorMessage != null }.isBusy)
     }
 
     private fun navIdentityFile(tag: String): File =

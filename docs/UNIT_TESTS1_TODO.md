@@ -803,7 +803,7 @@ asserted). Add a direct test of its contract.
 
 ## P1
 
-- [ ] P1-001: `SetupIdentityController` generate/import tests added.
+- [x] P1-001: `SetupIdentityController` generate/import tests added.
 - [ ] P1-002: `p2pctl add_authorized_key` duplicate-detection test added.
 - [ ] P1-003: `LogsViewModel` test suite added.
 - [ ] P1-004: `DataChannelHandle` state-machine tests added.

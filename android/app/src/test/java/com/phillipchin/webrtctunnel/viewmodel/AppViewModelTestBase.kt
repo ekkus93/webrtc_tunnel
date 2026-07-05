@@ -23,6 +23,13 @@ class RecordingBridge : TunnelNativeBridge {
     var statusReads = 0
     var validationResult: ValidationResult = ValidationResult(true, null)
 
+    // Override the canned identity-validation/generation results below when a test needs a
+    // failure path; null (the default) preserves the existing always-succeeds behavior so no
+    // other test is affected.
+    var privateIdentityValidationResult: IdentityValidationResult? = null
+    var publicIdentityValidationResult: IdentityValidationResult? = null
+    var generateIdentityResult: IdentityValidationResult? = null
+
     override fun startOffer(
         configPath: String,
         identityBytes: ByteArray?,
@@ -50,7 +57,7 @@ class RecordingBridge : TunnelNativeBridge {
     ): ValidationResult = validationResult
 
     override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
-        IdentityValidationResult(
+        privateIdentityValidationResult ?: IdentityValidationResult(
             valid = true,
             canonicalPublicIdentity = "canon",
             canonicalPrivateIdentity = identityToml,
@@ -58,10 +65,14 @@ class RecordingBridge : TunnelNativeBridge {
         )
 
     override fun validatePublicIdentity(line: String): IdentityValidationResult =
-        IdentityValidationResult(valid = true, canonicalPublicIdentity = line.trim(), peerId = "remote-peer")
+        publicIdentityValidationResult ?: IdentityValidationResult(
+            valid = true,
+            canonicalPublicIdentity = line.trim(),
+            peerId = "remote-peer",
+        )
 
     override fun generateIdentity(peerId: String): IdentityValidationResult =
-        IdentityValidationResult(
+        generateIdentityResult ?: IdentityValidationResult(
             valid = true,
             canonicalPublicIdentity = "canon",
             canonicalPrivateIdentity = "private",
