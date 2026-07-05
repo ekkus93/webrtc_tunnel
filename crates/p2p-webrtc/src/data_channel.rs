@@ -102,4 +102,134 @@ impl DataChannelHandle {
         .await
         .map_err(|_| WebRtcError::Timeout)?
     }
+
+    /// Test-only seam: builds a handle around a real (but unconnected) `RTCDataChannel`
+    /// without registering the `on_open`/`on_close`/`on_message` callbacks, and hands back
+    /// the raw event sender so a test can drive `next_event`/`wait_for_open` deterministically
+    /// instead of depending on an actual SCTP association forming.
+    #[cfg(test)]
+    pub(crate) fn observe_for_tests(
+        inner: Arc<RTCDataChannel>,
+    ) -> (Self, mpsc::Sender<DataChannelEvent>) {
+        let (events_tx, events_rx) = mpsc::channel(32);
+        (Self { inner, events: Arc::new(Mutex::new(events_rx)) }, events_tx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc::error::TrySendError;
+    use webrtc::api::APIBuilder;
+    use webrtc::peer_connection::configuration::RTCConfiguration;
+
+    use super::{DataChannelEvent, DataChannelHandle, Duration};
+    use crate::WebRtcError;
+
+    /// A real (but never negotiated) data channel: enough to back a `DataChannelHandle`
+    /// without a full peer-to-peer handshake, since `observe_for_tests` drives events
+    /// directly rather than through the channel's own open/close/message callbacks.
+    async fn unconnected_data_channel() -> std::sync::Arc<webrtc::data_channel::RTCDataChannel> {
+        let api = APIBuilder::new().build();
+        let peer_connection =
+            api.new_peer_connection(RTCConfiguration::default()).await.expect("peer connection");
+        peer_connection.create_data_channel("test", None).await.expect("data channel")
+    }
+
+    #[tokio::test]
+    async fn wait_for_open_returns_promptly_once_open_event_is_dispatched() {
+        let (handle, events_tx) =
+            DataChannelHandle::observe_for_tests(unconnected_data_channel().await);
+        events_tx.send(DataChannelEvent::Open).await.expect("send open event");
+
+        handle
+            .wait_for_open(Duration::from_secs(1))
+            .await
+            .expect("open event should resolve wait_for_open");
+    }
+
+    #[tokio::test]
+    async fn wait_for_open_ignores_close_events_and_keeps_waiting_for_open() {
+        // Matches the actual loop: a `Closed` event is not treated as terminal, only a
+        // dropped sender (channel closed with no `Open` ever seen) is.
+        let (handle, events_tx) =
+            DataChannelHandle::observe_for_tests(unconnected_data_channel().await);
+        events_tx.send(DataChannelEvent::Closed).await.expect("send close event");
+        events_tx.send(DataChannelEvent::Open).await.expect("send open event");
+
+        handle
+            .wait_for_open(Duration::from_secs(1))
+            .await
+            .expect("open event after a close event should still resolve wait_for_open");
+    }
+
+    #[tokio::test]
+    async fn wait_for_open_errors_when_the_channel_closes_before_ever_opening() {
+        let (handle, events_tx) =
+            DataChannelHandle::observe_for_tests(unconnected_data_channel().await);
+        events_tx.send(DataChannelEvent::Closed).await.expect("send close event");
+        drop(events_tx);
+
+        let error = handle
+            .wait_for_open(Duration::from_secs(1))
+            .await
+            .expect_err("dropped sender with no open event should error, not hang or succeed");
+        assert!(matches!(error, WebRtcError::InvalidConfig(_)), "got {error:?}");
+    }
+
+    #[tokio::test]
+    async fn wait_for_open_respects_its_timeout_when_no_event_ever_arrives() {
+        let (handle, events_tx) =
+            DataChannelHandle::observe_for_tests(unconnected_data_channel().await);
+
+        let error = handle
+            .wait_for_open(Duration::from_millis(50))
+            .await
+            .expect_err("no event within the timeout should time out");
+        assert!(matches!(error, WebRtcError::Timeout), "got {error:?}");
+        // Keep the sender alive for the whole wait so this is a real timeout, not an
+        // incidental "sender dropped" error.
+        drop(events_tx);
+    }
+
+    #[tokio::test]
+    async fn next_event_delivers_messages_in_order() {
+        let (handle, events_tx) =
+            DataChannelHandle::observe_for_tests(unconnected_data_channel().await);
+        events_tx.send(DataChannelEvent::Message(vec![1])).await.expect("send first");
+        events_tx.send(DataChannelEvent::Message(vec![2])).await.expect("send second");
+
+        assert_eq!(handle.next_event().await, Some(DataChannelEvent::Message(vec![1])));
+        assert_eq!(handle.next_event().await, Some(DataChannelEvent::Message(vec![2])));
+    }
+
+    #[tokio::test]
+    async fn sending_after_the_handle_is_dropped_fails_cleanly_instead_of_panicking() {
+        let (handle, events_tx) =
+            DataChannelHandle::observe_for_tests(unconnected_data_channel().await);
+        drop(handle);
+
+        let result = events_tx.send(DataChannelEvent::Open).await;
+        assert!(result.is_err(), "send after the only receiver is dropped should fail, not panic");
+    }
+
+    #[tokio::test]
+    async fn the_bounded_channel_applies_backpressure_instead_of_silently_dropping() {
+        let (handle, events_tx) =
+            DataChannelHandle::observe_for_tests(unconnected_data_channel().await);
+        for i in 0..32u8 {
+            events_tx
+                .try_send(DataChannelEvent::Message(vec![i]))
+                .expect("channel should accept up to its declared capacity of 32");
+        }
+
+        let overflow = events_tx.try_send(DataChannelEvent::Message(vec![255]));
+        assert!(matches!(overflow, Err(TrySendError::Full(_))), "got {overflow:?}");
+
+        // Draining one slot makes room again, proving this is real backpressure rather than
+        // a silent drop of the newest (or oldest) event.
+        assert_eq!(handle.next_event().await, Some(DataChannelEvent::Message(vec![0])));
+        events_tx
+            .try_send(DataChannelEvent::Message(vec![255]))
+            .expect("room should reopen after the receiver drains a slot");
+    }
 }
