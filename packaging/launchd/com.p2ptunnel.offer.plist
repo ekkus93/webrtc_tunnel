@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.p2ptunnel.offer</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/p2p-offer</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>/Library/Application Support/P2PTunnel/offer/config.toml</string>
+    </array>
+
+    <key>UserName</key>
+    <string>_p2ptunnel</string>
+    <key>GroupName</key>
+    <string>_p2ptunnel</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>Umask</key>
+    <integer>63</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/P2PTunnel/offer.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/P2PTunnel/offer.stderr.log</string>
+</dict>
+</plist>
