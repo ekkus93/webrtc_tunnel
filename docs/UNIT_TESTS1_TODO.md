@@ -808,7 +808,7 @@ asserted). Add a direct test of its contract.
 - [x] P1-003: `LogsViewModel` test suite added.
 - [x] P1-004: `DataChannelHandle` state-machine tests added.
 - [x] P1-005: `authorized_keys` duplicate signing-key test added.
-- [ ] P1-006: Identity file parsing error-path tests added.
+- [x] P1-006: Identity file parsing error-path tests added.
 
 ## P2
 
