@@ -250,6 +250,15 @@ mod tests {
     }
 
     #[test]
+    fn stopped_forward_status_serializes_truthfully() {
+        let status = ForwardRuntimeStatus::stopped("ssh");
+        let json = serde_json::to_value(&status).expect("serialize");
+        assert_eq!(json["id"], "ssh");
+        assert_eq!(json["listen_state"], "stopped");
+        assert!(json["last_error"].is_null());
+    }
+
+    #[test]
     fn stopped_preserving_error_keeps_prior_error_but_reports_stopped() {
         let errored = ForwardRuntimeStatus::error("ssh", "Address already in use");
         let stopped = ForwardRuntimeStatus::stopped_preserving_error(&errored);

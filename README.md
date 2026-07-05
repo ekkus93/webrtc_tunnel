@@ -450,6 +450,56 @@ Then point your local client at the offer listener, for example:
 ssh -p 2223 user@127.0.0.1
 ```
 
+### Shutdown behavior
+
+Both binaries run as ordinary foreground processes on Linux and macOS, in a
+terminal or under any supervisor. `Ctrl-C` (`SIGINT`) or `SIGTERM` (from
+`systemctl stop`, `launchctl`/`launchd` unload, `docker stop`, or a plain
+`kill`) requests a graceful shutdown: the daemon stops accepting new work,
+lets any active session and listeners close through their normal cleanup
+path, writes a final `closed` status (`mqtt_connected: false`, zero active
+sessions, offer forwards `stopped`), and exits `0`. No `--daemon` flag, PID
+file, or background/forking mode exists — the same command and shutdown
+behavior is what `systemd`, `launchd`, and Docker all supervise:
+
+- Linux native service: see [`docs/SYSTEMD.md`](docs/SYSTEMD.md).
+- macOS native service: see [`docs/LAUNCHD.md`](docs/LAUNCHD.md).
+- Docker/container: see [Docker/container lifecycle](#dockercontainer-lifecycle) below.
+
+### Docker/container lifecycle
+
+The container runtime is already the supervisor — do not run `systemd` or
+`launchd` inside a container. Use the normal foreground binary with the exec
+form so the tunnel process replaces the shell and receives `docker stop`'s
+`SIGTERM` directly:
+
+```dockerfile
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/p2p-offer"]
+CMD ["run", "--config", "/config/config.toml"]
+```
+
+(swap `p2p-offer` for `p2p-answer` in the answer image). If setup steps are
+needed first (creating directories, etc.), use a shell wrapper that ends in
+`exec`, as the existing E2E stack under `tests/e2e/docker/` does:
+
+```bash
+/bin/sh -c "mkdir -p /var/lib/p2p/state /var/lib/p2p/log && exec /p2pbin/p2p-offer run --config /e2e/offer.toml"
+```
+
+The `exec` is what matters: without it, the shell — not the tunnel process —
+would receive the container's `SIGTERM`, and the tunnel binary would either
+ignore it or need the shell to forward it. Recommended logging for containers:
+
+```toml
+[logging]
+file_logging = false
+stdout_logging = true
+```
+
+so the container runtime collects stdout/stderr; mount the configured state
+directory if `status.json` needs to survive container replacement.
+
 ## Operator setup examples
 
 ### Always-on home answer daemon
