@@ -9,6 +9,14 @@ use tokio::time::sleep;
 
 use super::transport::{TransportFaultControl, TransportTrace};
 
+/// Reads and parses a status file directly, with no polling/waiting. Intended for
+/// asserting terminal state right after a daemon task has already been joined (so
+/// the file is known to be in its final form), not for observing in-flight state.
+pub(crate) async fn read_status_file(path: &Path) -> serde_json::Value {
+    let content = tokio::fs::read_to_string(path).await.expect("status file should exist");
+    serde_json::from_str(&content).expect("valid status json")
+}
+
 pub(crate) async fn wait_for_status(path: &Path, expected_state: &str) -> serde_json::Value {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {

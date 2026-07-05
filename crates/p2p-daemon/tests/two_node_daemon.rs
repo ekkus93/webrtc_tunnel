@@ -15,5 +15,7 @@ mod basics_tests;
 mod isolation_tests;
 #[path = "two_node_daemon/recovery_tests.rs"]
 mod recovery_tests;
+#[path = "two_node_daemon/shutdown_tests.rs"]
+mod shutdown_tests;
 #[path = "two_node_daemon/stream_tests/mod.rs"]
 mod stream_tests;
