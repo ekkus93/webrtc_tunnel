@@ -71,6 +71,31 @@ fn duplicate_peer_id_in_authorized_keys_is_rejected() {
 }
 
 #[test]
+fn duplicate_signing_key_under_a_different_peer_id_is_rejected() {
+    // Same signing key reused under a second peer_id is a key-confusion/impersonation-
+    // adjacent bug class distinct from an exact duplicate peer_id line: `seen_signing_keys`
+    // must catch it even though `seen_peers` alone would not.
+    let identity = generate_identity("alice").expect("generate alice");
+    let line = identity.public_identity.render();
+    let impersonating_line = line.replacen("peer_id=alice", "peer_id=alice-impersonator", 1);
+    let combined = format!("{line}\n{impersonating_line}");
+    assert!(
+        AuthorizedKeys::parse(&combined).is_err(),
+        "reusing a signing key under a different peer_id must be rejected"
+    );
+}
+
+#[test]
+fn distinct_peer_ids_with_distinct_signing_keys_are_both_accepted() {
+    let alice = generate_identity("alice").expect("generate alice");
+    let bob = generate_identity("bob").expect("generate bob");
+    let combined = format!("{}\n{}", alice.public_identity.render(), bob.public_identity.render());
+    let keys = AuthorizedKeys::parse(&combined)
+        .expect("distinct peer_id/signing-key pairs must both be accepted");
+    assert_eq!(keys.iter().count(), 2);
+}
+
+#[test]
 fn comments_and_blank_lines_in_authorized_keys_are_ignored() {
     let identity = generate_identity("alice").expect("generate alice");
     let line = identity.public_identity.render();
