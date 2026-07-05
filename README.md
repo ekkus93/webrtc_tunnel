@@ -465,6 +465,7 @@ behavior is what `systemd`, `launchd`, and Docker all supervise:
 - Linux native service: see [`docs/SYSTEMD.md`](docs/SYSTEMD.md).
 - macOS native service: see [`docs/LAUNCHD.md`](docs/LAUNCHD.md).
 - Docker/container: see [Docker/container lifecycle](#dockercontainer-lifecycle) below.
+- Debian/Ubuntu `.deb` package: see [`docs/DEBIAN_PACKAGING.md`](docs/DEBIAN_PACKAGING.md).
 
 ### Docker/container lifecycle
 

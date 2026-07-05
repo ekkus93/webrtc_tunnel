@@ -1,0 +1,17 @@
+Package: p2ptunnel
+Version: __VERSION__
+Section: net
+Priority: optional
+Architecture: __ARCH__
+Maintainer: webrtc_tunnel maintainers <noreply@example.invalid>
+Depends: libc6 (>= 2.34), adduser
+Recommends: systemd
+Homepage: https://github.com/ekkus93/webrtc_tunnel
+Description: WebRTC-based peer-to-peer TCP tunnel (offer/answer daemons)
+ p2p-offer and p2p-answer are foreground daemons that tunnel TCP traffic
+ between two peers over an encrypted WebRTC data channel, using MQTT for
+ out-of-band signaling only. Includes p2pctl for identity/config management.
+ .
+ Installs the binaries and systemd unit files; does not create a default
+ configuration. See /usr/share/doc/p2ptunnel/ (README, SYSTEMD.md) after
+ install for setup steps.

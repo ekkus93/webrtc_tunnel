@@ -1,0 +1,6 @@
+p2ptunnel (__VERSION__) unstable; urgency=medium
+
+  * Packaging tracks the webrtc_tunnel workspace version; see the
+    project's git history for the actual per-release changes.
+
+ -- webrtc_tunnel maintainers <noreply@example.invalid>  Sun, 05 Jul 2026 00:00:00 +0000

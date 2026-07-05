@@ -1,0 +1,31 @@
+#!/bin/sh
+# postrm for p2ptunnel.
+#
+# On ordinary removal ("remove"), this script does nothing: config
+# (/etc/p2ptunnel), state (/var/lib/p2ptunnel-*), logs (/var/log/p2ptunnel-*),
+# and the service account are all left in place, so a later reinstall picks
+# up the existing config/identity untouched.
+#
+# Only "purge" removes the directories this package created (including any
+# private identity files under /etc/p2ptunnel/*), matching dpkg's own
+# distinction between remove and purge. The service account itself is
+# deliberately NOT removed even on purge — reusing a freed system UID/GID
+# later is a minor but real security footgun, and leaving an unused system
+# account behind is the safer default.
+set -e
+
+case "$1" in
+  purge)
+    for role in offer answer; do
+      rm -rf "/etc/p2ptunnel/$role"
+      rm -rf "/var/lib/p2ptunnel-$role"
+      rm -rf "/var/log/p2ptunnel-$role"
+    done
+    rmdir /etc/p2ptunnel 2>/dev/null || true
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload
+    fi
+    ;;
+esac
+
+exit 0
