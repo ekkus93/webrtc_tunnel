@@ -24,6 +24,7 @@ mod logging;
 mod messages;
 mod offer;
 mod predicates;
+mod shutdown;
 mod signaling;
 mod status;
 mod types;
@@ -38,6 +39,7 @@ pub use logging::{
     candidate_log_summary, redact_candidate, redact_sdp, redact_secret, setup_logging,
 };
 pub use offer::{run_offer_daemon, run_offer_daemon_with_status, run_offer_daemon_with_transport};
+pub use shutdown::ShutdownToken;
 pub use status::{
     DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
 };
