@@ -136,3 +136,44 @@ restrictions such as `PrivateNetwork=true`, a restrictive
 `RestrictAddressFamilies=`, or `IPAddressDeny=any` without testing that
 interface discovery, DNS, MQTT TLS, STUN, ICE host candidates, and the local
 offer listeners still work under them.
+
+## Running multiple instances (templated units)
+
+If one host needs more than one offer or answer daemon (e.g. tunnels to
+several different remote peers), use the templated units instead of the
+plain ones:
+[`packaging/systemd/p2p-offer@.service`](../packaging/systemd/p2p-offer@.service)
+and
+[`packaging/systemd/p2p-answer@.service`](../packaging/systemd/p2p-answer@.service).
+
+Each instance is named after the `%i` specifier and reads its own config from
+a per-instance subdirectory:
+
+```text
+/etc/p2ptunnel/offer/<instance>/config.toml
+/etc/p2ptunnel/answer/<instance>/config.toml
+```
+
+with per-instance state/log directories (`/var/lib/p2ptunnel-offer-<instance>`,
+`/var/log/p2ptunnel-offer-<instance>`) so instances never collide.
+
+```bash
+sudo install -m 0644 packaging/systemd/p2p-offer@.service /etc/systemd/system/
+sudo install -m 0644 packaging/systemd/p2p-answer@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+sudo install -d -m 0750 -o root -g p2ptunnel /etc/p2ptunnel/offer/home
+# ... populate /etc/p2ptunnel/offer/home/{config.toml,identity,authorized_keys} ...
+
+sudo systemctl enable --now p2p-offer@home.service
+sudo systemctl status p2p-offer@home.service
+journalctl -u p2p-offer@home.service -f
+```
+
+Each instance is an independent unit (`p2p-offer@home.service`,
+`p2p-offer@office.service`, ...) with its own `enable`/`start`/`stop`/`status`
+lifecycle; stopping one does not affect the others. The install helper script
+(`scripts/install-systemd-services.sh`) only installs the non-templated
+`p2p-offer.service`/`p2p-answer.service` pair today — for multiple instances,
+install the `@.service` templates and per-instance directories manually as
+shown above.

@@ -1,0 +1,38 @@
+[Unit]
+Description=WebRTC P2P Tunnel Offer Service (instance %i)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=p2ptunnel
+Group=p2ptunnel
+UMask=0077
+
+ExecStartPre=/usr/local/bin/p2pctl check-config --config /etc/p2ptunnel/offer/%i/config.toml
+ExecStart=/usr/local/bin/p2p-offer run --config /etc/p2ptunnel/offer/%i/config.toml
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+StateDirectory=p2ptunnel-offer-%i
+LogsDirectory=p2ptunnel-offer-%i
+
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target
