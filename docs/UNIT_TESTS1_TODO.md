@@ -812,7 +812,7 @@ asserted). Add a direct test of its contract.
 
 ## P2
 
-- [ ] P2-001: `SignalCodec` version/recipient-mismatch tests added.
+- [x] P2-001: `SignalCodec` version/recipient-mismatch tests added.
 - [ ] P2-002: MQTT transport option-building edge-case tests added.
 - [ ] P2-003: `SetupStepValidation` boundary tests added.
 - [ ] P2-004: `p2p-offer`/`p2p-answer` config-path resolution tests added.

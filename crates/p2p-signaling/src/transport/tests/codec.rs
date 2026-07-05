@@ -309,6 +309,68 @@ fn reject_wrong_sender_peer_id() {
 }
 
 #[test]
+fn reject_unsupported_inner_message_version() {
+    let (offer, answer, offer_keys, answer_keys) = codecs();
+    let codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+    let mut message = InnerMessageBuilder::new(
+        SessionId::random(),
+        offer.identity.peer_id.clone(),
+        answer.identity.peer_id.clone(),
+    )
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    message.version = 2;
+    let (_envelope, payload) = codec
+        .encode_for_peer(
+            &offer_keys
+                .get_by_peer_id(&answer.identity.peer_id)
+                .expect("answer peer exists")
+                .clone(),
+            &message,
+            false,
+        )
+        .expect("encode");
+
+    let mut replay_cache = ReplayCache::new(32);
+    let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+    assert!(matches!(
+        answer_codec.decode(&payload, &mut replay_cache, None),
+        Err(SignalingError::Protocol(message))
+            if message.contains("inner message version must be 1")
+    ));
+}
+
+#[test]
+fn reject_wrong_recipient_peer_id() {
+    let (offer, answer, offer_keys, answer_keys) = codecs();
+    let codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+    let mut message = InnerMessageBuilder::new(
+        SessionId::random(),
+        offer.identity.peer_id.clone(),
+        answer.identity.peer_id.clone(),
+    )
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    message.recipient_peer_id = "some-other-peer".parse().expect("peer id");
+    let (_envelope, payload) = codec
+        .encode_for_peer(
+            &offer_keys
+                .get_by_peer_id(&answer.identity.peer_id)
+                .expect("answer peer exists")
+                .clone(),
+            &message,
+            false,
+        )
+        .expect("encode");
+
+    let mut replay_cache = ReplayCache::new(32);
+    let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+    assert!(matches!(
+        answer_codec.decode(&payload, &mut replay_cache, None),
+        Err(SignalingError::Protocol(message))
+            if message.contains("inner recipient peer_id does not match")
+    ));
+}
+
+#[test]
 fn reject_unauthorized_sender() {
     let offer = generate_identity("offer-home").expect("offer identity");
     let answer = generate_identity("answer-office").expect("answer identity");
