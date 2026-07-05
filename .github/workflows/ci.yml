@@ -68,6 +68,14 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets
 
+      - name: Validate systemd units
+        if: runner.os == 'Linux'
+        run: scripts/check-systemd-units.sh
+
+      - name: Validate launchd plists
+        if: runner.os == 'macOS'
+        run: scripts/check-launchd-plists.sh
+
   android:
     name: Android
     runs-on: ubuntu-latest
