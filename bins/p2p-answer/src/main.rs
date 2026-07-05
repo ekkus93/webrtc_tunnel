@@ -73,13 +73,53 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn load_config(path: Option<&Path>) -> Result<AppConfig, Box<dyn std::error::Error>> {
-    let path = path
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| default_config_dir().expect("default config dir").join("config.toml"));
-    Ok(AppConfig::load_from_file(&path)?)
+    let resolved = resolve_config_path(path, std::env::var_os("HOME").map(PathBuf::from))?;
+    Ok(AppConfig::load_from_file(&resolved)?)
 }
 
-fn default_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".config/p2ptunnel"))
+/// Config-path resolution, parameterized on `home` so it's testable without touching
+/// the real `$HOME`: an explicit path is used as-is (ignoring `home` entirely), otherwise
+/// falls back to `$HOME/.config/p2ptunnel/config.toml`.
+fn resolve_config_path(
+    path: Option<&Path>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    match path {
+        Some(path) => Ok(path.to_path_buf()),
+        None => Ok(default_config_dir(home)?.join("config.toml")),
+    }
+}
+
+fn default_config_dir(home: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = home.ok_or("HOME is not set")?;
+    Ok(home.join(".config/p2ptunnel"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::resolve_config_path;
+
+    #[test]
+    fn explicit_config_path_is_used_as_is() {
+        let explicit = Path::new("/etc/p2ptunnel/config.toml");
+        let resolved = resolve_config_path(Some(explicit), None).expect("explicit path resolves");
+        assert_eq!(resolved, explicit);
+    }
+
+    #[test]
+    fn missing_config_flag_falls_back_to_home_config_dir() {
+        let home = PathBuf::from("/home/answer-user");
+        let resolved =
+            resolve_config_path(None, Some(home.clone())).expect("home fallback resolves");
+        assert_eq!(resolved, home.join(".config/p2ptunnel/config.toml"));
+    }
+
+    #[test]
+    fn missing_home_produces_a_clear_error_not_a_panic() {
+        let error =
+            resolve_config_path(None, None).expect_err("missing HOME must error, not panic");
+        assert!(error.to_string().contains("HOME is not set"));
+    }
 }
