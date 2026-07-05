@@ -814,7 +814,7 @@ asserted). Add a direct test of its contract.
 
 - [x] P2-001: `SignalCodec` version/recipient-mismatch tests added.
 - [x] P2-002: MQTT transport option-building edge-case tests added.
-- [ ] P2-003: `SetupStepValidation` boundary tests added.
+- [x] P2-003: `SetupStepValidation` boundary tests added.
 - [ ] P2-004: `p2p-offer`/`p2p-answer` config-path resolution tests added.
 - [ ] P2-005: `p2pctl` `fingerprint`/`check_config` smoke tests added.
 - [ ] P2-006: `can_attempt_same_session_ice_restart` direct test added.
