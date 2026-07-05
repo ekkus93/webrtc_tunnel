@@ -18,7 +18,7 @@ object SensitiveDataRedactor {
             .replace(Regex("""(?i)\bbearer\s+[A-Za-z0-9\-\._~\+/]+=*"""), "Bearer ***REDACTED***")
             .replace(Regex("""(?i)\bapi[_-]?key[^,\s]*\s*=\s*\S+"""), "api_key=***REDACTED***")
             .replace(Regex("""(?i)\bmqtts?://([^:@/\s]+):([^@/\s]+)@"""), "mqtts://***REDACTED***:***REDACTED***@")
-            .replace(Regex("""(?is)\bsdp\s*[:=]\s*.*?(?:\n\n|$)"""), "sdp=***REDACTED***\n")
+            .replace(Regex("""(?is)\bsdp\s*[:=]\s*.*?(?:\r?\n\r?\n|$)"""), "sdp=***REDACTED***\n")
             .replace(Regex("""(?im)\bcandidate\s*[:=]\s*.*$"""), "candidate=***REDACTED***")
             .replace(Regex("""(?im)\bdecrypted[_\s-]?payload\s*[:=]\s*.*$"""), "decrypted_payload=***REDACTED***")
             .replace(Regex("""(?im)\bforwarded[_\s-]?data\s*[:=]\s*.*$"""), "forwarded_data=***REDACTED***")
