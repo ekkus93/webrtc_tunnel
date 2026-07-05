@@ -30,7 +30,10 @@ mod status;
 mod types;
 
 // Public API.
-pub use answer::{run_answer_daemon, run_answer_daemon_with_transport};
+pub use answer::{
+    run_answer_daemon, run_answer_daemon_with_shutdown, run_answer_daemon_with_transport,
+    run_answer_daemon_with_transport_and_shutdown,
+};
 pub use config::{
     apply_answer_overrides, apply_env_overrides, apply_offer_overrides, compute_backoff_delay,
 };

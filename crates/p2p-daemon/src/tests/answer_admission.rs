@@ -58,12 +58,14 @@ async fn answer_daemon_admits_unknown_authenticated_offer() {
         )
         .expect("payload encodes");
 
+    let shutdown = ShutdownToken::new();
     handle_answer_daemon_payload(
         &AnswerDeps {
             config: &config,
             local_identity: &local_identity,
             authorized_keys: &authorized_keys,
             event_tx: &event_tx,
+            shutdown: &shutdown,
         },
         &codec,
         &mut transport,
@@ -150,12 +152,14 @@ async fn answer_daemon_rejects_sender_session_owner_mismatch() {
         )
         .expect("payload encodes");
 
+    let shutdown = ShutdownToken::new();
     handle_answer_daemon_payload(
         &AnswerDeps {
             config: &config,
             local_identity: &local_identity,
             authorized_keys: &authorized_keys,
             event_tx: &event_tx,
+            shutdown: &shutdown,
         },
         &codec,
         &mut transport,
@@ -245,12 +249,14 @@ async fn duplicate_signal_for_one_session_does_not_route_to_another_session() {
         .expect("payload encodes");
 
     for _ in 0..2 {
+        let shutdown = ShutdownToken::new();
         handle_answer_daemon_payload(
             &AnswerDeps {
                 config: &config,
                 local_identity: &local_identity,
                 authorized_keys: &authorized_keys,
                 event_tx: &event_tx,
+                shutdown: &shutdown,
             },
             &codec,
             &mut transport,

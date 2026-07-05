@@ -3,11 +3,10 @@
 //! same-peer pending-session replacement), and reports status/results back to the
 //! answer daemon through the session event channel.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use p2p_core::{AppConfig, DaemonState, FailureCode, ForwardTable, MsgId, SessionId};
-use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile, kid_from_signing_key};
+use p2p_crypto::{AuthorizedKey, kid_from_signing_key};
 use p2p_signaling::{
     AckBody, AnswerBody, CloseBody, DecodedSignal, EndOfCandidatesBody, IceCandidateBody,
     InnerMessage, InnerMessageBuilder, MessageBody, OfferBody, ReplayStatus, SignalCodec,
@@ -17,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 
 use crate::DaemonError;
+use crate::ShutdownToken;
 use crate::busy::*;
 use crate::messages::*;
 use crate::signaling::*;
@@ -49,24 +49,15 @@ pub(crate) async fn handle_answer_session_message(
 }
 
 pub(crate) async fn run_answer_session_task(
-    config: Arc<AppConfig>,
-    local_identity: Arc<IdentityFile>,
-    authorized_keys: Arc<AuthorizedKeys>,
-    event_tx: mpsc::Sender<AnswerSessionEvent>,
+    deps: AnswerSessionTaskDeps,
     mut inbound: mpsc::Receiver<DecodedSignal>,
     generation: SessionGeneration,
     mut session: ActiveSession,
+    shutdown: ShutdownToken,
 ) {
-    let result = run_answer_session_task_inner(
-        &config,
-        &local_identity,
-        &authorized_keys,
-        &event_tx,
-        &mut inbound,
-        generation,
-        &mut session,
-    )
-    .await;
+    let result =
+        run_answer_session_task_inner(&deps, &mut inbound, generation, &mut session, shutdown)
+            .await;
     if let Err(error) = &result {
         tracing::warn!(
             reason = %error,
@@ -76,7 +67,8 @@ pub(crate) async fn run_answer_session_task(
         );
     }
     cleanup_active_session(&mut session).await;
-    let _ = event_tx
+    let _ = deps
+        .event_tx
         .send(AnswerSessionEvent::Ended {
             session_id: session.session_id,
             generation,
@@ -87,14 +79,13 @@ pub(crate) async fn run_answer_session_task(
 }
 
 async fn run_answer_session_task_inner(
-    config: &AppConfig,
-    local_identity: &IdentityFile,
-    authorized_keys: &AuthorizedKeys,
-    event_tx: &mpsc::Sender<AnswerSessionEvent>,
+    deps: &AnswerSessionTaskDeps,
     inbound: &mut mpsc::Receiver<DecodedSignal>,
     generation: SessionGeneration,
     session: &mut ActiveSession,
+    mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
+    let AnswerSessionTaskDeps { config, local_identity, authorized_keys, event_tx } = deps;
     let codec = SignalCodec::new(
         local_identity,
         authorized_keys,
@@ -106,6 +97,14 @@ async fn run_answer_session_task_inner(
     let mut tick = interval(Duration::from_secs(1));
     loop {
         tokio::select! {
+            _ = shutdown.cancelled() => {
+                tracing::info!(
+                    session_id = %session.session_id,
+                    remote_peer_id = %session.remote_peer_id,
+                    "answer session shutdown requested"
+                );
+                return Ok(());
+            }
             _ = tick.tick() => {
                 retry_pending_answer_session_acks(config, event_tx, generation, session).await?;
                 if !session.signaling.ack_tracker.expired().is_empty() {

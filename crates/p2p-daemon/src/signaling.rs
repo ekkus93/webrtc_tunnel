@@ -77,6 +77,18 @@ pub(crate) async fn write_answer_registry_status(
         .await;
 }
 
+/// Truthful terminal answer status: the session registry has fully drained and the
+/// daemon is about to return. Unlike [`write_answer_registry_status`], this does not
+/// hardcode `Serving` — the daemon is no longer serving anything.
+pub(crate) async fn write_answer_closed_status(ctx: &mut RuntimeContext<'_>) {
+    ctx.runtime.mqtt_connected = false;
+    write_answer_status(
+        ctx,
+        AnswerStatusSnapshot { current_state: DaemonState::Closed, sessions: Vec::new() },
+    )
+    .await;
+}
+
 pub(crate) async fn write_steady_state_status(ctx: &RuntimeContext<'_>) {
     write_daemon_status(
         ctx,

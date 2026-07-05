@@ -32,18 +32,19 @@ pub(crate) use crate::{
     AnswerSessionEvent, AnswerSessionHandle, AnswerSessionRegistry, BridgeSessionState,
     DaemonError, DaemonRuntimeState, DaemonSignalingTransport, DaemonState, ForwardListenState,
     IceConnectionState, OfferListener, OfferSessionPayloadOutcome, RuntimeContext,
-    SessionGeneration, SessionStatusSnapshot, StatusSnapshot, StatusWriter, WebRtcPeer,
-    apply_answer_overrides, apply_offer_overrides, apply_override_pairs, bind_offer_listeners,
-    classify_active_busy_offer, compute_backoff_delay, decode_idle_signaling_message,
-    duplicate_active_session_ack_message, handle_answer_daemon_payload,
-    handle_answer_incoming_data_channel, handle_answer_session_event,
+    SessionGeneration, SessionStatusSnapshot, ShutdownToken, StatusSnapshot, StatusWriter,
+    WebRtcPeer, apply_answer_overrides, apply_offer_overrides, apply_override_pairs,
+    bind_offer_listeners, classify_active_busy_offer, compute_backoff_delay,
+    decode_idle_signaling_message, duplicate_active_session_ack_message,
+    handle_answer_daemon_payload, handle_answer_incoming_data_channel, handle_answer_session_event,
     handle_answer_session_message, handle_offer_session_message, mark_transport_unusable,
     mark_transport_usable, maybe_ack_duplicate_active_session_message,
     maybe_replace_pending_answer_session, process_answer_session_signal,
     process_offer_session_payload, recover_daemon_after_session, replayed_active_busy_offer_key,
-    run_offer_daemon_with_transport_and_test_hook, should_ack_idle_offer,
-    should_attempt_offer_reconnect, should_continue_reconnect_attempt, spawn_offer_accept_loop,
-    steady_state_for_role, write_answer_registry_status, write_steady_state_status,
+    run_answer_daemon_with_transport_and_shutdown, run_offer_daemon_with_transport_and_test_hook,
+    should_ack_idle_offer, should_attempt_offer_reconnect, should_continue_reconnect_attempt,
+    spawn_offer_accept_loop, steady_state_for_role, write_answer_registry_status,
+    write_steady_state_status,
 };
 
 pub(super) type PublishedSignals = std::sync::Arc<Mutex<Vec<(PeerId, Vec<u8>)>>>;
@@ -436,12 +437,14 @@ impl AnswerRoutingFixture {
         let mut ctx =
             RuntimeContext { config: &self.config, status: &status, runtime: &mut runtime };
         let (event_tx, _event_rx) = mpsc::channel(4);
+        let shutdown = ShutdownToken::new();
         handle_answer_daemon_payload(
             &AnswerDeps {
                 config: &self.config,
                 local_identity: &self.local_identity,
                 authorized_keys: &self.authorized_keys,
                 event_tx: &event_tx,
+                shutdown: &shutdown,
             },
             &codec,
             &mut self.transport,

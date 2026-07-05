@@ -4,10 +4,11 @@
 //! one place with crate-internal visibility.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use p2p_core::{AppConfig, DaemonState, MsgId, PeerId, SessionId};
-use p2p_crypto::AuthorizedKey;
+use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile};
 use p2p_signaling::{
     DecodedSignal, InnerMessage, MqttSignalingTransport, SignalingError, SignalingSession,
 };
@@ -197,6 +198,16 @@ pub(crate) struct AnswerSessionHandle {
     pub(crate) inbound: mpsc::Sender<DecodedSignal>,
     pub(crate) status: SessionStatusSnapshot,
     pub(crate) task: JoinHandle<()>,
+}
+
+/// Shared, cloneable dependencies an answer session task needs. Bundled into one
+/// struct (rather than passed as individual arguments) to keep the task functions
+/// under Clippy's argument-count lint as the shutdown token was added.
+pub(crate) struct AnswerSessionTaskDeps {
+    pub(crate) config: Arc<AppConfig>,
+    pub(crate) local_identity: Arc<IdentityFile>,
+    pub(crate) authorized_keys: Arc<AuthorizedKeys>,
+    pub(crate) event_tx: mpsc::Sender<AnswerSessionEvent>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

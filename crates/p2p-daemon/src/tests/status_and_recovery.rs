@@ -362,3 +362,52 @@ async fn offer_waiting_state_polls_idle_transport_and_recovers_status() {
     let _ = daemon.await;
     let _ = tokio::fs::remove_file(&status_path).await;
 }
+
+#[tokio::test]
+async fn answer_idle_shutdown_writes_closed_status() {
+    let mut config = sample_config();
+    config.node.role = NodeRole::Answer;
+    config.node.peer_id = "answer-office".parse().expect("peer id");
+    let status_path = std::env::temp_dir()
+        .join(format!("p2ptunnel-daemon-status-answer-idle-{}.json", SessionId::random()));
+    config.health.write_status_file = true;
+    config.health.status_file = status_path.clone();
+
+    let answer = generate_identity("answer-office").expect("answer identity");
+    let offer = generate_identity("offer-home").expect("offer identity");
+    let authorized_keys =
+        AuthorizedKeys::parse(&offer.public_identity.render()).expect("authorized keys");
+
+    let (_outcomes_tx, outcomes_rx) = mpsc::unbounded_channel();
+    let transport = ScriptedPollingTransport { outcomes: outcomes_rx };
+
+    let shutdown = ShutdownToken::new();
+    let daemon = tokio::spawn(run_answer_daemon_with_transport_and_shutdown(
+        config,
+        answer.identity,
+        authorized_keys,
+        transport,
+        shutdown.clone(),
+    ));
+
+    let _initial = wait_for_status(&status_path, |status| {
+        status["role"] == "answer" && status["current_state"] == "serving"
+    })
+    .await;
+
+    shutdown.request_shutdown();
+
+    let result = timeout(Duration::from_secs(2), daemon)
+        .await
+        .expect("answer daemon should stop before the test timeout")
+        .expect("answer daemon task should not panic");
+    assert!(result.is_ok(), "graceful shutdown should return Ok, got {result:?}");
+
+    let final_status = read_status_file(&status_path).await;
+    assert_eq!(final_status["current_state"], "closed");
+    assert_eq!(final_status["mqtt_connected"], false);
+    assert_eq!(final_status["active_session_count"], 0);
+    assert!(final_status["sessions"].as_array().expect("sessions array").is_empty());
+
+    let _ = tokio::fs::remove_file(&status_path).await;
+}

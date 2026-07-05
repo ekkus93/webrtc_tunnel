@@ -83,12 +83,14 @@ async fn answer_daemon_routes_only_authenticated_sender_and_session() {
         )
         .expect("payload encodes");
 
+    let shutdown = ShutdownToken::new();
     handle_answer_daemon_payload(
         &AnswerDeps {
             config: &config,
             local_identity: &local_identity,
             authorized_keys: &authorized_keys,
             event_tx: &event_tx,
+            shutdown: &shutdown,
         },
         &codec,
         &mut transport,
@@ -173,12 +175,14 @@ async fn forged_outer_sender_kid_is_not_routed_to_matching_peer_session() {
     envelope.sender_kid = p2p_crypto::kid_from_signing_key(&offer_a.public_identity.sign_public);
     let forged_payload = envelope.encode().expect("forged envelope encodes");
 
+    let shutdown = ShutdownToken::new();
     handle_answer_daemon_payload(
         &AnswerDeps {
             config: &config,
             local_identity: &local_identity,
             authorized_keys: &authorized_keys,
             event_tx: &event_tx,
+            shutdown: &shutdown,
         },
         &codec,
         &mut transport,
@@ -238,12 +242,14 @@ async fn answer_daemon_ignores_unknown_authenticated_non_offer() {
         )
         .expect("payload encodes");
 
+    let shutdown = ShutdownToken::new();
     handle_answer_daemon_payload(
         &AnswerDeps {
             config: &config,
             local_identity: &local_identity,
             authorized_keys: &authorized_keys,
             event_tx: &event_tx,
+            shutdown: &shutdown,
         },
         &codec,
         &mut transport,
@@ -315,12 +321,14 @@ async fn answer_daemon_does_not_peer_fallback_route_unknown_non_offer() {
         )
         .expect("payload encodes");
 
+    let shutdown = ShutdownToken::new();
     handle_answer_daemon_payload(
         &AnswerDeps {
             config: &config,
             local_identity: &local_identity,
             authorized_keys: &authorized_keys,
             event_tx: &event_tx,
+            shutdown: &shutdown,
         },
         &codec,
         &mut transport,
@@ -461,12 +469,14 @@ async fn answer_daemon_unknown_same_peer_offer_enters_session_policy() {
         )
         .expect("payload encodes");
 
+    let shutdown = ShutdownToken::new();
     handle_answer_daemon_payload(
         &AnswerDeps {
             config: &config,
             local_identity: &local_identity,
             authorized_keys: &authorized_keys,
             event_tx: &event_tx,
+            shutdown: &shutdown,
         },
         &codec,
         &mut transport,

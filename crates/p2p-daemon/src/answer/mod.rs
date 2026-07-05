@@ -15,6 +15,7 @@ use p2p_webrtc::WebRtcPeer;
 use tokio::sync::mpsc;
 
 use crate::DaemonError;
+use crate::ShutdownToken;
 use crate::busy::*;
 use crate::config::*;
 use crate::messages::*;
@@ -40,15 +41,49 @@ pub async fn run_answer_daemon(
     local_identity: IdentityFile,
     authorized_keys: AuthorizedKeys,
 ) -> Result<(), DaemonError> {
+    run_answer_daemon_with_shutdown(config, local_identity, authorized_keys, ShutdownToken::new())
+        .await
+}
+
+pub async fn run_answer_daemon_with_shutdown(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
     let transport = MqttSignalingTransport::connect(&config)?;
-    run_answer_daemon_with_transport(config, local_identity, authorized_keys, transport).await
+    run_answer_daemon_with_transport_and_shutdown(
+        config,
+        local_identity,
+        authorized_keys,
+        transport,
+        shutdown,
+    )
+    .await
 }
 
 pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
     config: AppConfig,
     local_identity: IdentityFile,
     authorized_keys: AuthorizedKeys,
+    transport: T,
+) -> Result<(), DaemonError> {
+    run_answer_daemon_with_transport_and_shutdown(
+        config,
+        local_identity,
+        authorized_keys,
+        transport,
+        ShutdownToken::new(),
+    )
+    .await
+}
+
+pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTransport>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
     mut transport: T,
+    mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let config = Arc::new(config);
@@ -71,10 +106,22 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
     write_answer_registry_status(&ctx, &sessions_by_id).await;
 
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
+    let mut shutting_down = false;
 
     loop {
+        if shutting_down && sessions_by_id.is_empty() {
+            break;
+        }
+
         tokio::select! {
-            payload = poll_idle_signal_payload(&mut ctx, &mut transport) => {
+            _ = shutdown.cancelled(), if !shutting_down => {
+                tracing::info!(
+                    active_session_count = sessions_by_id.len(),
+                    "answer daemon shutdown requested; draining active sessions"
+                );
+                shutting_down = true;
+            }
+            payload = poll_idle_signal_payload(&mut ctx, &mut transport), if !shutting_down => {
                 let Some(payload) = payload else {
                     continue;
                 };
@@ -84,6 +131,7 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
                         local_identity: &local_identity,
                         authorized_keys: &authorized_keys,
                         event_tx: &event_tx,
+                        shutdown: &shutdown,
                     },
                     &codec,
                     &mut transport,
@@ -114,6 +162,9 @@ pub async fn run_answer_daemon_with_transport<T: DaemonSignalingTransport>(
             }
         }
     }
+
+    write_answer_closed_status(&mut ctx).await;
+    Ok(())
 }
 
 pub(crate) struct AnswerDeps<'a> {
@@ -121,6 +172,7 @@ pub(crate) struct AnswerDeps<'a> {
     pub(crate) local_identity: &'a Arc<IdentityFile>,
     pub(crate) authorized_keys: &'a Arc<AuthorizedKeys>,
     pub(crate) event_tx: &'a mpsc::Sender<AnswerSessionEvent>,
+    pub(crate) shutdown: &'a ShutdownToken,
 }
 
 pub(crate) struct AnswerSessionRegistry<'a> {
@@ -289,7 +341,7 @@ async fn start_answer_session_from_offer<T: DaemonSignalingTransport>(
     generation: SessionGeneration,
     incoming: IncomingOffer<'_>,
 ) -> Result<(), DaemonError> {
-    let &AnswerDeps { config, local_identity, authorized_keys, event_tx } = deps;
+    let &AnswerDeps { config, local_identity, authorized_keys, event_tx, shutdown } = deps;
     let IncomingOffer { envelope, message, sender, offer } = incoming;
     if should_ack_idle_offer(true, message.message_type.requires_ack()) {
         publish_message(
@@ -351,13 +403,16 @@ async fn start_answer_session_from_offer<T: DaemonSignalingTransport>(
     let session_id = session.session_id;
     let remote_peer_id = session.remote_peer_id.clone();
     let task = tokio::spawn(run_answer_session_task(
-        Arc::clone(config),
-        Arc::clone(local_identity),
-        Arc::clone(authorized_keys),
-        event_tx.clone(),
+        AnswerSessionTaskDeps {
+            config: Arc::clone(config),
+            local_identity: Arc::clone(local_identity),
+            authorized_keys: Arc::clone(authorized_keys),
+            event_tx: event_tx.clone(),
+        },
         inbound_rx,
         generation,
         session,
+        shutdown.clone(),
     ));
     registry.sessions_by_id.insert(
         session_id,
