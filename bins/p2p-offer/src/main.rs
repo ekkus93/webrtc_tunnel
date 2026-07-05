@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use p2p_core::AppConfig;
 use p2p_crypto::{AuthorizedKeys, IdentityFile};
-use p2p_daemon::{apply_env_overrides, apply_offer_overrides, run_offer_daemon, setup_logging};
+use p2p_daemon::{
+    ShutdownToken, apply_env_overrides, apply_offer_overrides, run_offer_daemon_with_shutdown,
+    setup_logging, wait_for_process_shutdown_signal,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "p2p-offer")]
@@ -44,7 +47,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let local_identity = IdentityFile::from_file(&config.paths.identity)?;
     config.validate_identity_peer(&local_identity.peer_id)?;
     let authorized_keys = AuthorizedKeys::from_file(&config.paths.authorized_keys)?;
-    run_offer_daemon(config, local_identity, authorized_keys).await?;
+
+    let shutdown = ShutdownToken::new();
+    let daemon =
+        run_offer_daemon_with_shutdown(config, local_identity, authorized_keys, shutdown.clone());
+    tokio::pin!(daemon);
+
+    let result = tokio::select! {
+        result = &mut daemon => result,
+        signal = wait_for_process_shutdown_signal() => {
+            let signal = signal?;
+            tracing::info!(signal, "process shutdown requested");
+            shutdown.request_shutdown();
+            daemon.await
+        }
+    };
+
+    result?;
     Ok(())
 }
 

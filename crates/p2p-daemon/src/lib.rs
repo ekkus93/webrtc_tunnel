@@ -24,6 +24,7 @@ mod logging;
 mod messages;
 mod offer;
 mod predicates;
+mod process_signal;
 mod shutdown;
 mod signaling;
 mod status;
@@ -41,7 +42,12 @@ pub use error::DaemonError;
 pub use logging::{
     candidate_log_summary, redact_candidate, redact_sdp, redact_secret, setup_logging,
 };
-pub use offer::{run_offer_daemon, run_offer_daemon_with_status, run_offer_daemon_with_transport};
+pub use offer::{
+    run_offer_daemon, run_offer_daemon_with_shutdown, run_offer_daemon_with_status,
+    run_offer_daemon_with_status_and_shutdown, run_offer_daemon_with_transport,
+    run_offer_daemon_with_transport_and_shutdown,
+};
+pub use process_signal::wait_for_process_shutdown_signal;
 pub use shutdown::ShutdownToken;
 pub use status::{
     DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
@@ -50,7 +56,10 @@ pub use types::{ActiveSession, DaemonSignalingTransport};
 
 // Test-only entry points, available whenever debug assertions are on (tests + dev).
 #[cfg(any(test, debug_assertions))]
-pub use offer::{OfferSessionTestHandle, run_offer_daemon_with_transport_and_test_hook};
+pub use offer::{
+    OfferSessionTestHandle, run_offer_daemon_with_transport_and_test_hook,
+    run_offer_daemon_with_transport_and_test_hook_and_shutdown,
+};
 
 // Crate-internal symbols surfaced at the root so the unit-test module reaches them
 // via `super::` without depending on each submodule's path. Glob re-exports keep
