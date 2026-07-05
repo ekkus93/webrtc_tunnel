@@ -319,7 +319,7 @@ run_offer_daemon_with_transport_and_shutdown(..., shutdown)
 run_offer_daemon_with_status_and_shutdown(..., status_sink, shutdown)
 ```
 
-If the test-hook entry point needs cancellation coverage, add an additive shutdown-aware variant rather than breaking its current signature.
+The test-hook entry point needs cancellation coverage: add an additive shutdown-aware variant (e.g. `run_offer_daemon_with_transport_and_test_hook_and_shutdown`) rather than breaking its current signature. P0-018 and P0-019 rely on this variant to deterministically combine session-hook observation with shutdown triggering — do not implement those tests using only the two-node harness's real socket/timer synchronization.
 
 ### Important wrapper rule
 
@@ -1356,16 +1356,18 @@ impl ForwardRuntimeStatus {
 
 ### Build final forward list
 
-Use only configured offer-side forwards if that matches current status semantics:
+Use only configured offer-side forwards if that matches current status semantics. Preserve each forward's existing `last_error` rather than nulling it — `stopped(...)` sets `listen_state = Stopped` but must not clear a pre-existing meaningful error:
 
 ```rust
-ctx.runtime.forward_statuses = config
-    .forwards
+ctx.runtime.forward_statuses = ctx
+    .runtime
+    .forward_statuses
     .iter()
-    .filter(|forward| forward.offer.is_some())
-    .map(|forward| ForwardRuntimeStatus::stopped(forward.id.clone()))
+    .map(|status| ForwardRuntimeStatus::stopped_preserving_error(status))
     .collect();
 ```
+
+`ForwardRuntimeStatus::stopped(id)` (used when no prior status exists yet) still constructs `last_error = None`. Add a second constructor, `stopped_preserving_error(existing: &ForwardRuntimeStatus) -> Self`, that keeps `existing.last_error` while setting `listen_state = Stopped`.
 
 ### Set transport false
 
@@ -2644,11 +2646,16 @@ If tool is not installed:
 
 Verification may complain about missing install-path binaries or users in CI. Handle expected environment-specific warnings deliberately; do not blanket-ignore all stderr.
 
+### CI wiring
+
+Wire this helper into `.github/workflows/ci.yml` in the same change that adds it, as a Linux-gated step (e.g. `if: runner.os == 'Linux'`) in the existing matrix job. Do not leave it as local-only tooling.
+
 ### Acceptance criteria
 
 - [ ] Syntax verification runs on suitable Linux environments.
 - [ ] Skips are explicit.
 - [ ] Unexpected verify errors fail the helper.
+- [ ] The helper runs as a required CI step on Linux, added in the same change.
 
 ---
 
@@ -2683,12 +2690,17 @@ On non-macOS hosts:
 
 The helper must fail on malformed plist files or unexpected validation errors.
 
+### CI wiring
+
+Wire this helper into `.github/workflows/ci.yml` in the same change that adds it, as a macOS-gated step (e.g. `if: runner.os == 'macOS'`) in the existing matrix job. Do not leave it as local-only tooling.
+
 ### Acceptance criteria
 
 - [ ] Native lint runs on macOS.
 - [ ] Non-macOS skip is explicit.
 - [ ] Structural plist tests run on all hosts.
 - [ ] Invalid plist syntax fails validation.
+- [ ] The helper runs as a required CI step on macOS, added in the same change.
 
 ---
 

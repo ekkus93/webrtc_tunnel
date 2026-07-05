@@ -528,7 +528,7 @@ Suggested public API matrix:
 | `run_offer_daemon_with_transport` | `run_offer_daemon_with_transport_and_shutdown` |
 | `run_answer_daemon_with_transport` | `run_answer_daemon_with_transport_and_shutdown` |
 
-The debug/test hook entry point may also receive an additive shutdown-aware variant if external integration tests need both the session hook and cancellation.
+The debug/test hook entry point must also receive an additive shutdown-aware variant, because P0-018 and P0-019 need to combine the session hook (to deterministically observe active-session/reconnect state) with cancellation (to trigger shutdown at that observed moment) rather than relying on real-time sleeps or the two-node harness alone for synchronization. Implement one generalized internal offer-daemon entry point that accepts all runtime dependencies, including the `ShutdownToken` and optional `session_hook`, and keep every existing public/test API — including `run_offer_daemon_with_transport_and_test_hook` — as a thin, source-compatible wrapper over it with a fresh, never-cancelled token. Do not duplicate the daemon loop or maintain separate production/test lifecycle logic.
 
 Do not change all existing tests at once just to pass a token. Existing wrapper behavior should keep them compiling.
 
@@ -956,8 +956,15 @@ Every configured offer listener should be represented as:
 
 ```text
 listen_state = stopped
-last_error   = null
 ```
+
+`Stopped` answers "is this listener running now?" and must be set unconditionally on shutdown for every configured forward, regardless of its prior state.
+
+`last_error` is a separate concern: "what most recently went wrong?" Do not null it out merely because shutdown occurred.
+
+- A forward that was healthy and stopped normally keeps `last_error = null`.
+- A forward that already had a meaningful `last_error` (for example, it never successfully bound) retains that error through shutdown.
+- If shutdown/cleanup itself produces a newer meaningful error, record that newer error instead of the earlier one.
 
 Then return `Ok(())`.
 
