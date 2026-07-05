@@ -6,10 +6,11 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use p2p_core::{AppConfig, DaemonState, NodeRole};
 use p2p_crypto::{AuthorizedKeys, IdentityFile};
-use p2p_daemon::DaemonStatus;
+use p2p_daemon::{DaemonStatus, ShutdownToken};
 use tokio::runtime::Runtime;
 
 mod log_bridge;
@@ -28,6 +29,13 @@ pub use types::{
 // Used by the unit-test module's `super::*` (it asserts the daemon→UI mapping).
 #[cfg(test)]
 use types::android_state_from_daemon;
+
+/// Bound on how long `stop()` waits for the daemon to shut down cooperatively
+/// before falling back to an explicit forced abort. The daemon's own cleanup
+/// (WebRTC peer close, listener release, final status write) is normally
+/// sub-second; this only guards against a wedged shutdown blocking the FFI
+/// caller indefinitely.
+const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Default)]
 pub struct AndroidTunnelController {
@@ -130,19 +138,28 @@ impl AndroidTunnelController {
             config.forwards.iter().map(|forward| forward.id.clone()).collect(),
         );
         let (status_tx, status_rx) = tokio::sync::watch::channel(status_seed);
+        let shutdown = ShutdownToken::new();
+        let daemon_shutdown = shutdown.clone();
         let task = runtime.spawn(async move {
             let result = match mode {
                 AndroidTunnelMode::Offer => {
-                    p2p_daemon::run_offer_daemon_with_status(
+                    p2p_daemon::run_offer_daemon_with_status_and_shutdown(
                         config_clone,
                         identity,
                         authorized_keys,
                         status_tx,
+                        daemon_shutdown,
                     )
                     .await
                 }
                 AndroidTunnelMode::Answer => {
-                    p2p_daemon::run_answer_daemon(config_clone, identity, authorized_keys).await
+                    p2p_daemon::run_answer_daemon_with_shutdown(
+                        config_clone,
+                        identity,
+                        authorized_keys,
+                        daemon_shutdown,
+                    )
+                    .await
                 }
             };
             if let Ok(mut inner) = log_state.lock() {
@@ -185,6 +202,7 @@ impl AndroidTunnelController {
         inner.state.active = true;
         inner.task = Some(task);
         inner.runtime = Some(runtime);
+        inner.shutdown = Some(shutdown);
         inner.status_rx = Some(status_rx);
         inner.forward_config = config
             .forwards
@@ -205,11 +223,48 @@ impl AndroidTunnelController {
     }
 
     pub fn stop(&self) {
-        if let Ok(mut inner) = self.inner.lock() {
-            if let Some(task) = inner.task.take() {
-                task.abort();
+        self.stop_with_grace_period(STOP_GRACE_PERIOD);
+    }
+
+    /// Core of [`Self::stop`], parameterized on the grace period so tests can
+    /// exercise the forced-abort fallback without a real multi-second wait.
+    fn stop_with_grace_period(&self, grace_period: Duration) {
+        // Take ownership of the shutdown token/task/runtime out of the mutex first,
+        // so the bounded wait below never holds the lock — the daemon's own
+        // completion handler (which runs when the task finishes) needs to acquire
+        // this same mutex, and holding it here would deadlock that handler for the
+        // entire wait.
+        let (shutdown, task, runtime) = match self.inner.lock() {
+            Ok(mut inner) => (inner.shutdown.take(), inner.task.take(), inner.runtime.take()),
+            Err(_) => return,
+        };
+
+        if let Some(shutdown) = &shutdown {
+            shutdown.request_shutdown();
+        }
+
+        if let (Some(task), Some(runtime)) = (task, runtime.as_ref()) {
+            let abort_handle = task.abort_handle();
+            // `tokio::time::timeout` must be constructed inside the runtime's async
+            // context (it registers with the timer driver immediately) — wrap it in
+            // an async block rather than constructing it as a `block_on` argument,
+            // which would evaluate it before the runtime context is entered.
+            let outcome =
+                runtime.block_on(async move { tokio::time::timeout(grace_period, task).await });
+            if outcome.is_err() {
+                tracing::warn!(
+                    grace_period = ?grace_period,
+                    "runtime did not shut down cooperatively within the grace period; \
+                     forcing abort (this is not a clean stop)"
+                );
+                abort_handle.abort();
             }
-            inner.runtime = None;
+        }
+        // Dropping the runtime here (if present) is safe/fast: by this point the
+        // daemon task has either finished cooperatively or been force-aborted above.
+        drop(runtime);
+
+        if let Ok(mut inner) = self.inner.lock() {
             inner.status_rx = None;
             inner.forward_config = Vec::new();
             inner.state.state = AndroidRuntimeState::Stopped;

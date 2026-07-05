@@ -98,6 +98,64 @@ fn double_stop_is_safe() {
 }
 
 #[test]
+fn stop_requests_cooperative_shutdown_and_waits_for_task() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let controller = AndroidTunnelController::new();
+    let runtime = Runtime::new().expect("tokio runtime");
+    let shutdown = ShutdownToken::new();
+    let completed = Arc::new(AtomicBool::new(false));
+    let completed_for_task = Arc::clone(&completed);
+    let mut task_shutdown = shutdown.clone();
+    let task = runtime.spawn(async move {
+        // Only finishes once it observes the shutdown request — proves stop()
+        // drives the task to a cooperative finish rather than aborting it.
+        task_shutdown.cancelled().await;
+        completed_for_task.store(true, Ordering::SeqCst);
+    });
+    {
+        let mut inner = controller.inner.lock().expect("lock");
+        inner.task = Some(task);
+        inner.runtime = Some(runtime);
+        inner.shutdown = Some(shutdown);
+        inner.state.active = true;
+    }
+
+    controller.stop();
+
+    assert!(completed.load(Ordering::SeqCst), "task should complete cooperatively, not be aborted");
+    assert_eq!(controller.status().state, AndroidRuntimeState::Stopped);
+}
+
+#[test]
+fn stop_forces_abort_after_grace_period_when_task_ignores_shutdown() {
+    let controller = AndroidTunnelController::new();
+    let runtime = Runtime::new().expect("tokio runtime");
+    let shutdown = ShutdownToken::new();
+    // Deliberately never checks `shutdown` — simulates a wedged/misbehaving task,
+    // so stop() must fall back to a forced abort rather than hanging forever.
+    let task = runtime.spawn(async { std::future::pending::<()>().await });
+    {
+        let mut inner = controller.inner.lock().expect("lock");
+        inner.task = Some(task);
+        inner.runtime = Some(runtime);
+        inner.shutdown = Some(shutdown);
+        inner.state.active = true;
+    }
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let controller_for_thread = controller.clone();
+    std::thread::spawn(move || {
+        controller_for_thread.stop_with_grace_period(Duration::from_millis(50));
+        let _ = done_tx.send(());
+    });
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("stop should force-abort and return instead of hanging on a wedged task");
+    assert_eq!(controller.status().state, AndroidRuntimeState::Stopped);
+}
+
+#[test]
 fn recent_logs_json_shape_is_stable() {
     let controller = AndroidTunnelController::new();
     let logs = controller.recent_logs(10);

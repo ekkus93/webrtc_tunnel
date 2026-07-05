@@ -4,7 +4,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use p2p_daemon::DaemonStatus;
+use p2p_daemon::{DaemonStatus, ShutdownToken};
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 
@@ -20,6 +20,11 @@ pub(crate) struct RuntimeInner {
     pub(crate) logs: LogBuffer,
     pub(crate) task: Option<JoinHandle<()>>,
     pub(crate) runtime: Option<Runtime>,
+    /// Cooperative shutdown handle for the running daemon task. `stop()` requests
+    /// shutdown through this instead of aborting the task outright, so the daemon
+    /// reaches its normal cleanup path (WebRTC peer close, listener release) before
+    /// the FFI caller's stop() call returns.
+    pub(crate) shutdown: Option<ShutdownToken>,
     /// Latest daemon status from the running offer daemon, if any. Overlaid onto the
     /// controller-owned lifecycle state in [`RuntimeInner::snapshot_status`].
     pub(crate) status_rx: Option<tokio::sync::watch::Receiver<DaemonStatus>>,
