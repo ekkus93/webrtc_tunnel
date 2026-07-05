@@ -14,5 +14,9 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[features]
+# See crates/p2p-daemon/src/notify.rs and docs/SYSTEMD.md ("Type=notify").
+sd-notify = ["p2p-daemon/sd-notify"]
+
 [lints]
 workspace = true

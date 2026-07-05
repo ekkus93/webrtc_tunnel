@@ -177,3 +177,40 @@ lifecycle; stopping one does not affect the others. The install helper script
 `p2p-offer.service`/`p2p-answer.service` pair today — for multiple instances,
 install the `@.service` templates and per-instance directories manually as
 shown above.
+
+## Optional: `sd_notify` readiness (`Type=notify`)
+
+By default, `p2p-offer`/`p2p-answer` never touch `systemd` — no dependency,
+no linking, no calls at runtime — and the baseline units use `Type=simple`,
+which `systemd` considers "started" as soon as the process exists. If you
+want `systemd` to treat the service as started only once it has finished its
+fallible startup sequence (config/identity/authorized-keys load, runtime
+directories, logging), build with the optional `sd-notify` Cargo feature and
+use the `Type=notify` unit variant:
+
+```bash
+cargo build --release -p p2p-offer -p p2p-answer --features sd-notify
+```
+
+```
+packaging/systemd/p2p-offer-notify.service
+packaging/systemd/p2p-answer-notify.service
+```
+
+These are otherwise identical to the baseline units, just with `Type=notify`
+and `NotifyAccess=main`. **Only use them with a binary actually built with
+`--features sd-notify`** — a binary built without it never sends `READY=1`,
+so `systemd` would consider the start attempt timed out.
+
+Note precisely what "ready" means here: the binary calls `sd_notify`'s
+`READY=1` right before it hands control to the daemon's run loop, not after
+it has confirmed an MQTT connection or bound every listener — see
+`crates/p2p-daemon/src/notify.rs` for why a coarser signal was chosen
+(getting a finer one would require threading a readiness channel through the
+generic daemon core, which this optional integration deliberately avoids).
+`STOPPING=1` is sent as soon as a shutdown signal is received, before the
+graceful drain begins.
+
+Without the `sd-notify` feature (the default), the daemons never call
+`sd_notify` at all — the feature exists precisely so this integration never
+becomes a requirement of the generic lifecycle.

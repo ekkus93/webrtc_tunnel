@@ -1,0 +1,44 @@
+[Unit]
+Description=WebRTC P2P Tunnel Answer Service (with sd_notify readiness)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# Requires a p2p-answer binary built with --features sd-notify (see
+# docs/SYSTEMD.md, "Optional: sd_notify readiness (Type=notify)"). A binary
+# built without that feature never sends READY=1, so it would time out here
+# under the default TimeoutStartSec — use p2p-answer.service (Type=simple)
+# unless you specifically built the sd-notify-enabled binary.
+Type=notify
+NotifyAccess=main
+User=p2ptunnel
+Group=p2ptunnel
+UMask=0077
+
+ExecStartPre=/usr/local/bin/p2pctl check-config --config /etc/p2ptunnel/answer/config.toml
+ExecStart=/usr/local/bin/p2p-answer run --config /etc/p2ptunnel/answer/config.toml
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+StateDirectory=p2ptunnel-answer
+LogsDirectory=p2ptunnel-answer
+
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target
