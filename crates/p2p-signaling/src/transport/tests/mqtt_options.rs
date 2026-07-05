@@ -245,6 +245,87 @@ fn build_mqtt_options_rejects_unsupported_session_expiry() {
 }
 
 #[test]
+fn build_mqtt_options_rejects_invalid_qos() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(temp_dir.path().join("password"), "secret\n").expect("password");
+    std::fs::write(
+        temp_dir.path().join("ca.pem"),
+        "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+    )
+    .expect("ca");
+    let mut config = sample_config(temp_dir.path());
+    config.broker.qos = 3;
+
+    assert!(matches!(
+        build_mqtt_options(&config),
+        Err(SignalingError::Protocol(message))
+            if message.contains("unsupported MQTT QoS 3")
+    ));
+}
+
+#[test]
+fn build_mqtt_options_rejects_disabling_require_mqtt_tls() {
+    // Not a "falls back to a plain transport" case: v1 hard-requires TLS, so
+    // disabling it at the security-config level is rejected outright by this layer
+    // too (defense in depth alongside the config-level check).
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(temp_dir.path().join("password"), "secret\n").expect("password");
+    std::fs::write(
+        temp_dir.path().join("ca.pem"),
+        "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+    )
+    .expect("ca");
+    let mut config = sample_config(temp_dir.path());
+    config.security.require_mqtt_tls = false;
+
+    assert!(matches!(
+        build_mqtt_options(&config),
+        Err(SignalingError::Protocol(message))
+            if message.contains("require_mqtt_tls must remain enabled")
+    ));
+}
+
+#[test]
+fn build_mqtt_options_rejects_non_mqtts_scheme() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(temp_dir.path().join("password"), "secret\n").expect("password");
+    std::fs::write(
+        temp_dir.path().join("ca.pem"),
+        "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+    )
+    .expect("ca");
+    let mut config = sample_config(temp_dir.path());
+    config.broker.url = "mqtt://broker.example:1883".to_owned();
+
+    assert!(matches!(
+        build_mqtt_options(&config),
+        Err(SignalingError::Protocol(message))
+            if message.contains("must use mqtts://")
+    ));
+}
+
+#[test]
+fn build_mqtt_options_rejects_insecure_skip_verify() {
+    // Defense in depth: this layer independently rejects insecure_skip_verify even
+    // though config-level validation also enforces it.
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(temp_dir.path().join("password"), "secret\n").expect("password");
+    std::fs::write(
+        temp_dir.path().join("ca.pem"),
+        "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+    )
+    .expect("ca");
+    let mut config = sample_config(temp_dir.path());
+    config.broker.tls.insecure_skip_verify = true;
+
+    assert!(matches!(
+        build_mqtt_options(&config),
+        Err(SignalingError::Protocol(message))
+            if message.contains("insecure_skip_verify is unsupported in v1")
+    ));
+}
+
+#[test]
 fn build_mqtt_options_missing_password_file_names_path() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(
