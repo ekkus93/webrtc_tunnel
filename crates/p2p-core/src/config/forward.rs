@@ -94,3 +94,59 @@ pub(crate) fn validate_listen_host(host: &str, forward_id: &str) -> Result<(), C
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ForwardLookupError, ForwardRule, ForwardTable};
+    use crate::ForwardOfferConfig;
+
+    fn forward_with_offer(id: &str, listen_host: &str, listen_port: u16) -> ForwardRule {
+        ForwardRule {
+            id: id.to_owned(),
+            offer: Some(ForwardOfferConfig { listen_host: listen_host.to_owned(), listen_port }),
+            answer: None,
+        }
+    }
+
+    #[test]
+    fn offer_listeners_are_sorted_by_forward_id() {
+        let table = ForwardTable::new(&[
+            forward_with_offer("zzz", "127.0.0.1", 8080),
+            forward_with_offer("aaa", "127.0.0.1", 2222),
+            forward_with_offer("mmm", "127.0.0.1", 9090),
+        ]);
+
+        let listeners = table.offer_listeners().expect("all forwards have offer configs");
+        let ids: Vec<&str> = listeners.iter().map(|bind| bind.forward_id.as_str()).collect();
+        assert_eq!(ids, vec!["aaa", "mmm", "zzz"]);
+    }
+
+    #[test]
+    fn offer_listeners_errors_when_any_forward_lacks_an_offer_config() {
+        // Not "excluded from the result": a single forward without [forwards.offer]
+        // fails the whole lookup, since offer_listeners() propagates the first missing
+        // offer config via `?` rather than filtering it out.
+        let table = ForwardTable::new(&[
+            forward_with_offer("has-offer", "127.0.0.1", 8080),
+            ForwardRule { id: "no-offer".to_owned(), offer: None, answer: None },
+        ]);
+
+        assert_eq!(table.offer_listeners(), Err(ForwardLookupError::MissingOfferConfig));
+    }
+
+    #[test]
+    fn offer_listeners_passes_through_duplicate_listen_host_and_port() {
+        // Neither an error nor deduped: offer_listeners() doesn't check for
+        // host/port collisions across forwards, so both entries surface as-is.
+        let table = ForwardTable::new(&[
+            forward_with_offer("ssh", "0.0.0.0", 2222),
+            forward_with_offer("web", "0.0.0.0", 2222),
+        ]);
+
+        let listeners = table.offer_listeners().expect("duplicate host/port is not an error");
+        assert_eq!(listeners.len(), 2);
+        assert!(
+            listeners.iter().all(|bind| bind.listen_host == "0.0.0.0" && bind.listen_port == 2222)
+        );
+    }
+}
