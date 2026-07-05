@@ -60,6 +60,22 @@ Notes:
 - This is equivalent in coverage to the `cargo test` above; that test is the
   CI-friendly path, this is the multi-service local playground.
 
+### Docker stop lifecycle (local/manual)
+
+```
+tests/e2e/docker/stop_lifecycle.sh
+```
+
+Proves the container `exec` launch pattern actually receives `docker stop`'s
+`SIGTERM` and shuts down gracefully rather than hanging until the forced-kill
+timeout. Brings up its own broker/target/offer/answer containers (independent
+of `compose.yaml`/`run.sh`, on a throwaway Docker network, so it cannot affect
+the tunnel E2E above), waits for both daemons to reach steady state, then runs
+`docker stop -t 10` on both and asserts: the stop returns well under the 10s
+grace period (not via forced kill), both containers exit `0`, both logs show
+the shutdown-request/drain messages, and the mounted status file reports
+`closed` for each. Cleans up its containers/network on exit.
+
 ## Phase B (smoke) — Android emulator against a real broker (local/manual)
 
 ```
