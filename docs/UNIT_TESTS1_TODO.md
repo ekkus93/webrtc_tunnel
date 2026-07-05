@@ -795,8 +795,8 @@ asserted). Add a direct test of its contract.
 
 ## P0
 
-- [ ] P0-001: `SensitiveDataRedactor` test suite added and passing.
-- [ ] P0-002: `PublicIdentity::parse` malformed-input tests added and
+- [x] P0-001: `SensitiveDataRedactor` test suite added and passing.
+- [x] P0-002: `PublicIdentity::parse` malformed-input tests added and
       passing; any panics found are fixed, not just documented.
 - [ ] P0-003: `validate_non_world_writable` positive-enforcement test
       added and passing.
