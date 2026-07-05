@@ -817,7 +817,7 @@ asserted). Add a direct test of its contract.
 - [x] P2-003: `SetupStepValidation` boundary tests added.
 - [x] P2-004: `p2p-offer`/`p2p-answer` config-path resolution tests added.
 - [x] P2-005: `p2pctl` `fingerprint`/`check_config` smoke tests added.
-- [ ] P2-006: `can_attempt_same_session_ice_restart` direct test added.
+- [x] P2-006: `can_attempt_same_session_ice_restart` direct test added.
 - [ ] P2-007: `ForwardTable::offer_listeners()` direct test added.
 
 ## Regression gate (run once, at the end, in addition to per-task runs)
