@@ -46,6 +46,11 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // Robolectric's ContentResolver file-Uri output-stream shadow reflects into
+        // java.io.FileDescriptor#fd, which JDK17's module system blocks by default.
+        unitTests.all {
+            it.jvmArgs("--add-opens=java.base/java.io=ALL-UNNAMED")
+        }
     }
 }
 

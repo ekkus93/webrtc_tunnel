@@ -30,6 +30,10 @@ class RecordingBridge : TunnelNativeBridge {
     var publicIdentityValidationResult: IdentityValidationResult? = null
     var generateIdentityResult: IdentityValidationResult? = null
 
+    // Overrides the canned "[]" recent-logs response below when a test needs to feed
+    // LogsViewModel.refresh() specific log events.
+    var recentLogsJson: String = "[]"
+
     override fun startOffer(
         configPath: String,
         identityBytes: ByteArray?,
@@ -47,7 +51,7 @@ class RecordingBridge : TunnelNativeBridge {
         )
     }
 
-    override fun getRecentLogsJson(maxEvents: Int): String = "[]"
+    override fun getRecentLogsJson(maxEvents: Int): String = recentLogsJson
 
     override fun validateConfig(configPath: String): ValidationResult = validationResult
 
