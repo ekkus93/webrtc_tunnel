@@ -3,8 +3,10 @@ package com.phillipchin.webrtctunnel.viewmodel
 import android.os.Looper
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -110,6 +112,34 @@ class SettingsViewModelTest : AppViewModelTestBase() {
         assertTrue(fieldValue.contains("backslash \\"))
         assertTrue(fieldValue.contains("newline \n"))
     }
+
+    @Test
+    fun resetConfigurationFailurePreservesErrorDetailInSnackbar() =
+        runBlocking {
+            val viewModel = SettingsViewModel(deps)
+            val messages = mutableListOf<String>()
+            val collector = launch { deps.snackbar.messages.collect { messages.add(it) } }
+            yield() // let the collector actually subscribe before resetConfiguration() emits
+
+            // Force a real persistence failure rather than asserting against a mock.
+            app.filesDir.setWritable(false)
+            try {
+                viewModel.resetConfiguration()
+                withTimeout(5_000) {
+                    while (messages.isEmpty()) {
+                        Shadows.shadowOf(Looper.getMainLooper()).idle()
+                        yield()
+                    }
+                }
+            } finally {
+                app.filesDir.setWritable(true)
+            }
+            collector.cancel()
+
+            val message = messages.first()
+            assertTrue("expected a detailed failure message, got: $message", message.startsWith("Reset failed:"))
+            assertTrue("the underlying failure reason must not be discarded", message != "Reset failed")
+        }
 
     @Test
     fun redactedConfigReportsAnExplicitMarkerWhenNoConfigFileExistsYet() =

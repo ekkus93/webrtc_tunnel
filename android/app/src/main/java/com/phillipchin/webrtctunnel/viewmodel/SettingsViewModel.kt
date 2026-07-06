@@ -1,6 +1,7 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import android.content.Intent
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
@@ -142,7 +143,16 @@ class SettingsViewModel(
                         deps.forwardsStore.saveForwards(emptyList())
                     }
                 }
-            deps.snackbar.show(if (result.isSuccess) "Configuration reset" else "Reset failed")
+            result.fold(
+                onSuccess = {
+                    deps.snackbar.show("Configuration reset")
+                },
+                onFailure = { error ->
+                    val redacted = SensitiveDataRedactor.redactText(error.message ?: "unknown reset failure")
+                    Log.e("SettingsViewModel", "Configuration reset failed: $redacted")
+                    deps.snackbar.show("Reset failed: $redacted")
+                },
+            )
         }
     }
 
