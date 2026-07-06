@@ -8,7 +8,7 @@ use std::time::Duration;
 use p2p_core::NodeRole;
 use p2p_crypto::generate_identity;
 use p2p_daemon::{
-    OfferSessionTestHandle, ShutdownToken, run_answer_daemon_with_transport,
+    OfferSessionTestEvent, OfferSessionTestHandle, ShutdownToken, run_answer_daemon_with_transport,
     run_answer_daemon_with_transport_and_shutdown, run_offer_daemon_with_transport,
     run_offer_daemon_with_transport_and_shutdown,
     run_offer_daemon_with_transport_and_test_hook_and_shutdown,
@@ -246,7 +246,7 @@ async fn offer_shutdown_during_reconnect_interrupts_backoff() {
     ));
 
     let mut client = connect_with_retry(offer_port).await;
-    let OfferSessionTestHandle { ice_state_injector, .. } =
+    let OfferSessionTestHandle { ice_state_injector, mut test_events, .. } =
         timeout(Duration::from_secs(10), hook_rx.recv())
             .await
             .expect("offer session hook should arrive in time")
@@ -257,11 +257,19 @@ async fn offer_shutdown_during_reconnect_interrupts_backoff() {
         .await
         .expect("offer-side ice fault injection should succeed");
 
-    // Give the session loop time to observe the ICE failure and enter the reconnect
-    // attempt's backoff sleep, well short of the 5s backoff itself, before shutting
-    // down — otherwise the outer session-level shutdown branch could win first and
-    // this test would not exercise the reconnect-specific race at all.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Wait for the actual reconnect/backoff transition instead of guessing it with a
+    // sleep — otherwise the outer session-level shutdown branch could win the race
+    // first and this test would not exercise the reconnect-specific interruption
+    // at all (nor prove shutdown fired *during* the backoff wait, not before it).
+    let event = timeout(Duration::from_secs(5), test_events.recv())
+        .await
+        .expect("reconnect backoff event should arrive in time")
+        .expect("offer session test-event channel should stay open");
+    assert!(
+        matches!(event, OfferSessionTestEvent::ReconnectBackoffStarted { .. }),
+        "expected a ReconnectBackoffStarted event, got {event:?}"
+    );
+
     offer_shutdown.request_shutdown();
 
     let result = timeout(Duration::from_secs(3), offer_task)

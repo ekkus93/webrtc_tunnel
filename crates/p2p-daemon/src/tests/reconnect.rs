@@ -71,9 +71,15 @@ async fn attempt_offer_reconnect_short_circuits_when_auto_reconnect_disabled() {
     let mut runtime = connected_runtime();
     let mut ctx = RuntimeContext { config: &h.config, status: &status, runtime: &mut runtime };
 
-    let result =
-        attempt_offer_reconnect(&mut ctx, &codec, &mut h.transport, &mut h.session, &h.remote)
-            .await;
+    let result = attempt_offer_reconnect(
+        &mut ctx,
+        &codec,
+        &mut h.transport,
+        &mut h.session,
+        &h.remote,
+        None,
+    )
+    .await;
 
     assert!(
         matches!(result, Ok(false)),
@@ -107,9 +113,15 @@ async fn attempt_offer_reconnect_gives_up_after_exhausting_attempts() {
 
     // No answer exists, so the renegotiate offer is published but never completes; after the
     // single allowed attempt the orchestration gives up.
-    let result =
-        attempt_offer_reconnect(&mut ctx, &codec, &mut h.transport, &mut h.session, &h.remote)
-            .await;
+    let result = attempt_offer_reconnect(
+        &mut ctx,
+        &codec,
+        &mut h.transport,
+        &mut h.session,
+        &h.remote,
+        None,
+    )
+    .await;
 
     assert!(
         matches!(result, Ok(false)),

@@ -14,6 +14,8 @@ use tokio::time::interval;
 use super::process_offer_session_payload;
 use crate::DaemonError;
 use crate::config::*;
+#[cfg(any(test, debug_assertions))]
+use crate::offer::OfferSessionTestEvent;
 use crate::predicates::*;
 use crate::signaling::*;
 use crate::types::*;
@@ -24,6 +26,10 @@ pub(crate) async fn attempt_offer_reconnect<T: DaemonSignalingTransport>(
     transport: &mut T,
     session: &mut ActiveSession,
     remote: &AuthorizedKey,
+    #[cfg(any(test, debug_assertions))] test_events: Option<
+        &tokio::sync::mpsc::UnboundedSender<OfferSessionTestEvent>,
+    >,
+    #[cfg(not(any(test, debug_assertions)))] _test_events: Option<&()>,
 ) -> Result<bool, DaemonError> {
     if !ctx.config.reconnect.enable_auto_reconnect {
         return Ok(false);
@@ -41,7 +47,15 @@ pub(crate) async fn attempt_offer_reconnect<T: DaemonSignalingTransport>(
             },
         )
         .await;
-        tokio::time::sleep(compute_backoff_delay(ctx.config, attempt)).await;
+        let delay = compute_backoff_delay(ctx.config, attempt);
+        #[cfg(any(test, debug_assertions))]
+        if let Some(test_events) = test_events {
+            let _ = test_events.send(OfferSessionTestEvent::ReconnectBackoffStarted {
+                session_id: session.session_id,
+                delay,
+            });
+        }
+        tokio::time::sleep(delay).await;
 
         if ctx.config.webrtc.enable_ice_restart && can_attempt_same_session_ice_restart(session) {
             session.state = DaemonState::IceRestarting;

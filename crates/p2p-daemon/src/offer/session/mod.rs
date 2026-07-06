@@ -58,6 +58,8 @@ pub(crate) use inbound::{
 
 use super::OfferAcceptTaskExit;
 #[cfg(any(test, debug_assertions))]
+use super::OfferSessionTestEvent;
+#[cfg(any(test, debug_assertions))]
 use super::OfferSessionTestHandle;
 pub(crate) struct OfferSessionIo<'a> {
     pub(crate) client: OfferClient,
@@ -169,12 +171,20 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
     .await?;
 
     #[cfg(any(test, debug_assertions))]
-    if let Some(session_hook) = io.session_hook {
-        let _ = session_hook.send(OfferSessionTestHandle {
-            session_id: session.session_id,
-            ice_state_injector: session.peer.ice_state_injector_for_tests(),
-        });
-    }
+    let test_event_tx: Option<mpsc::UnboundedSender<OfferSessionTestEvent>> =
+        if let Some(session_hook) = io.session_hook {
+            let (test_event_tx, test_event_rx) = mpsc::unbounded_channel();
+            let _ = session_hook.send(OfferSessionTestHandle {
+                session_id: session.session_id,
+                ice_state_injector: session.peer.ice_state_injector_for_tests(),
+                test_events: test_event_rx,
+            });
+            Some(test_event_tx)
+        } else {
+            None
+        };
+    #[cfg(not(any(test, debug_assertions)))]
+    let test_event_tx: Option<()> = None;
 
     let mut tick = interval(Duration::from_secs(1));
     let mut pending_client = Some(io.client);
@@ -393,6 +403,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                                         transport,
                                         &mut session,
                                         remote,
+                                        test_event_tx.as_ref(),
                                     ) => result?,
                                     _ = shutdown.cancelled() => {
                                         tracing::info!(

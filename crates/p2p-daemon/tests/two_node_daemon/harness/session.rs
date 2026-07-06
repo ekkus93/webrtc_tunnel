@@ -83,7 +83,7 @@ pub(crate) async fn run_one_in_memory_session(
 
     let mut client = connect_with_retry(offer_port).await;
     if inject_offer_disconnect {
-        let OfferSessionTestHandle { session_id, ice_state_injector } =
+        let OfferSessionTestHandle { session_id, ice_state_injector, .. } =
             timeout(Duration::from_secs(10), hook_rx.recv())
                 .await
                 .expect("offer session hook should arrive in time")

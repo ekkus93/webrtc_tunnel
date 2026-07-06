@@ -34,10 +34,20 @@ pub(crate) use session::{
 };
 
 #[cfg(any(test, debug_assertions))]
-#[derive(Clone)]
 pub struct OfferSessionTestHandle {
     pub session_id: p2p_core::SessionId,
     pub ice_state_injector: p2p_webrtc::IceStateInjectorForTests,
+    /// Deterministic lifecycle events (currently: reconnect/backoff transitions),
+    /// so tests can observe the actual state instead of guessing it with a sleep.
+    pub test_events: mpsc::UnboundedReceiver<OfferSessionTestEvent>,
+}
+
+/// Deterministic offer-session lifecycle events, observed by tests instead of a
+/// timing sleep.
+#[cfg(any(test, debug_assertions))]
+#[derive(Clone, Debug)]
+pub enum OfferSessionTestEvent {
+    ReconnectBackoffStarted { session_id: p2p_core::SessionId, delay: std::time::Duration },
 }
 
 /// Bundles the offer daemon's test-only observation hooks so `run_offer_daemon_inner`
