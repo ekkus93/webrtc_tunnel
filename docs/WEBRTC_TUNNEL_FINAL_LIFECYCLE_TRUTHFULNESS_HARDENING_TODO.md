@@ -659,11 +659,11 @@ Keep the existing handler-level test if useful, but it is not a substitute.
 
 ### Acceptance criteria
 
-- [ ] Real spawned answer task panics.
-- [ ] Test runner itself does not panic.
-- [ ] Registry is not stranded.
-- [ ] Other session drains.
-- [ ] Daemon returns nonzero result.
+- [x] Real spawned answer task panics.
+- [x] Test runner itself does not panic.
+- [x] Registry is not stranded.
+- [x] Other session drains.
+- [x] Daemon returns nonzero result.
 
 ---
 
