@@ -1856,45 +1856,66 @@ result:
 
 ## Android lifecycle
 
-- [ ] In-flight status refresh cannot overwrite stop failure.
-- [ ] In-flight status refresh cannot resurrect active state after successful stop.
-- [ ] Required fakes are thread-safe.
-- [ ] Startup cancellation cleanup proof targets exact branch.
-- [ ] Startup supersedence cleanup has deterministic proof.
-- [ ] `pausedByPolicy` is synchronized.
+- [x] In-flight status refresh cannot overwrite stop failure. (P0-001)
+- [x] In-flight status refresh cannot resurrect active state after successful stop. (P0-001)
+- [x] Required fakes are thread-safe. (P0-002)
+- [x] Startup cancellation cleanup proof targets exact branch. (P0-003)
+- [x] Startup supersedence cleanup has deterministic proof. (P0-004)
+- [x] `pausedByPolicy` is synchronized. (P1-004)
 
 ## Rust truthfulness proof
 
-- [ ] Central token-aware gate has integration-level proof.
-- [ ] Removing only central token check makes test fail.
-- [ ] Audit log is assertion source.
-- [ ] No sleep synchronization.
+- [x] Central token-aware gate has integration-level proof. (P0-005)
+- [x] Removing only central token check makes test fail. (P0-005, verified during its own
+      regression-strength check)
+- [x] Audit log is assertion source. (P0-005, `StatusAuditLog`)
+- [x] No sleep synchronization. Confirmed throughout: barrier/latch/channel primitives
+      (`OfferLoopTopBarrier`, `CompletableDeferred`, `CountDownLatch`, `Channel`) used everywhere
+      a test needed deterministic ordering, never a bare `delay`/`sleep` for correctness (only
+      `STATUS_POLL_INTERVAL_MS`-style production polling intervals, unrelated to test sync).
 
 ## Validation
 
-- [ ] Identity absent is distinct from identity unreadable.
-- [ ] Identity read/decrypt failure cannot downgrade validation.
-- [ ] Plaintext identity is wiped where practical.
+- [x] Identity absent is distinct from identity unreadable. (P1-001, plus the
+      `SetupSaveController` site found and fixed in P1-007)
+- [x] Identity read/decrypt failure cannot downgrade validation. (P1-001)
+- [x] Plaintext identity is wiped where practical. (P1-001; pre-existing wipe behavior preserved)
 
 ## Storage
 
-- [ ] `loadForwardsResult()` contains seed/write/read/parse failures.
-- [ ] Read failure is distinct from parse failure.
-- [ ] Write failure is distinct from read/parse failure.
-- [ ] No Result-contract escape remains.
+- [x] `loadForwardsResult()` contains seed/write/read/parse failures. (P1-002)
+- [x] Read failure is distinct from parse failure. (P1-003)
+- [x] Write failure is distinct from read/parse failure. (P1-003)
+- [x] No Result-contract escape remains. (P1-002/P1-003; confirmed via P1-007's audit)
 
 ## Diagnostics
 
-- [ ] Earlier cleanup failure remains visible after later retry success.
-- [ ] Stale status temp collision is retried safely.
-- [ ] No dangerous fallback remains in final audit.
+- [x] Earlier cleanup failure remains visible after later retry success. (P1-005)
+- [x] Stale status temp collision is retried safely. (P1-006)
+- [x] No dangerous fallback remains in final audit. (P1-007)
 
 ## Release signoff
 
-- [ ] Local Rust gates pass.
-- [ ] Focused Android tests pass.
-- [ ] Full Android gates pass.
-- [ ] Service/package checks pass.
-- [ ] Real CI focused Android step observed.
-- [ ] Real CI Rust/signal/package jobs observed.
+- [x] Local Rust gates pass. Reconfirmed after all P1 work:
+      `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D
+      warnings`, `cargo test --workspace --all-targets --all-features` — all green.
+- [x] Focused Android tests pass. Reconfirmed repeatedly throughout Stage 4/5, most recently
+      alongside the full gate below.
+- [x] Full Android gates pass. Reconfirmed after all P1 work:
+      `./gradlew assembleDebug testDebugUnitTest check` — all green (ktlint, detekt, Android
+      lint, full debug+release unit test suites).
+- [x] Service/package checks pass. Reconfirmed:
+      `scripts/check-systemd-units.sh` (PASS), `scripts/check-launchd-plists.sh` (honest SKIP —
+      not macOS), `bash -n scripts/*.sh` (PASS), `sh -n packaging/debian/{postinst,prerm,postrm}`
+      (PASS).
+- [x] Real CI focused Android step observed. Done in P0-006 (run 28825839747, commit
+      `a96d13a`) — the P1-001 through P1-007 stages that followed did not change any CI-relevant
+      infrastructure (workflow file, package/service layout, or the focused test's class name),
+      so this observation remains representative; only local gates were required/authorized for
+      Stage 4/5 per this TODO's own stage plan (Stage 3 — CI observation — is positioned before
+      Stage 4/5, not repeated after them).
+- [x] Real CI Rust/signal/package jobs observed. Same basis as above: observed once in P0-006
+      (run 28825839747), covering both Linux and macOS runners for the Rust/signal-lifecycle/
+      package/service jobs; not re-triggered for Stage 4/5 since doing so was not required by
+      this TODO's stage plan and no further push was authorized beyond the one covering P0-006.
 - [ ] Any unavailable platform check reported `NOT RUN` with exact reason.
