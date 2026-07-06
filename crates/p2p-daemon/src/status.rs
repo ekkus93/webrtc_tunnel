@@ -1,10 +1,17 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use p2p_core::{AppConfig, DaemonState, NodeRole, PeerId, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::DaemonError;
+
+/// Distinguishes concurrent same-process writers to the same status path (e.g.
+/// two forwards, or a session status update racing a steady-state one), so their
+/// temp files never collide even though `std::process::id()` alone is identical
+/// for all of them.
+static STATUS_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Replaces `path`'s contents atomically: writes to a same-directory temporary
 /// file, flushes it, then renames it over `path`. A reader can therefore only
@@ -17,10 +24,15 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     tokio::fs::create_dir_all(parent).await?;
 
     let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("status.json");
-    let temp_path = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
+    let sequence = STATUS_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp_path = parent.join(format!(".{file_name}.tmp-{}-{sequence}", std::process::id()));
 
     let write_result = async {
-        let mut file = tokio::fs::File::create(&temp_path).await?;
+        // create_new (O_EXCL) rather than create/truncate: if two writers ever did
+        // compute the same temp path, this fails loudly instead of one silently
+        // truncating the other's in-flight write.
+        let mut file =
+            tokio::fs::OpenOptions::new().write(true).create_new(true).open(&temp_path).await?;
         file.write_all(bytes).await?;
         file.flush().await?;
         drop(file);
@@ -683,6 +695,80 @@ mod tests {
         let (writer_result, reader_result) = tokio::join!(writer, reader);
         writer_result.expect("writer task should not panic");
         reader_result.expect("reader task should not panic");
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    /// Regression test for P1-008: with several *genuinely concurrent* writers (not
+    /// one task writing sequentially, which can never exercise a temp-path
+    /// collision), the old `.{file_name}.tmp-{pid}` temp path — identical for
+    /// every writer in this same process — let one writer's `File::create`
+    /// truncate another's in-flight temp file. Each writer here emits a distinct
+    /// document (its own id) so a reader observing a torn write would very likely
+    /// see a mismatched pair.
+    #[tokio::test]
+    async fn concurrent_multi_writer_stress_never_produces_malformed_json_or_stale_temp_files() {
+        let path = std::env::temp_dir()
+            .join(format!("p2ptunnel-atomic-multiwriter-{}.json", std::process::id()));
+        write_atomic(&path, br#"{"writer":"seed","seq":0}"#)
+            .await
+            .expect("seed write should succeed");
+
+        const WRITER_COUNT: u32 = 8;
+        const ITERATIONS: u32 = 50;
+
+        let writers = (0..WRITER_COUNT).map(|writer_id| {
+            let writer_path = path.clone();
+            tokio::spawn(async move {
+                for seq in 0..ITERATIONS {
+                    let body = format!(r#"{{"writer":"{writer_id}","seq":{seq}}}"#);
+                    write_atomic(&writer_path, body.as_bytes())
+                        .await
+                        .expect("write should succeed");
+                }
+            })
+        });
+
+        let reader_path = path.clone();
+        let reader = tokio::spawn(async move {
+            for _ in 0..(WRITER_COUNT * ITERATIONS * 2) {
+                if let Ok(bytes) = tokio::fs::read(&reader_path).await {
+                    let parsed: serde_json::Value =
+                        serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                            panic!(
+                                "reader observed invalid/partial JSON: {error} (bytes: {:?})",
+                                String::from_utf8_lossy(&bytes)
+                            )
+                        });
+                    assert!(
+                        parsed["writer"].is_string(),
+                        "every observed document must be complete"
+                    );
+                    assert!(parsed["seq"].is_u64(), "every observed document must be complete");
+                }
+            }
+        });
+
+        for writer in writers {
+            writer.await.expect("writer task should not panic");
+        }
+        reader.await.expect("reader task should not panic");
+
+        let parent = path.parent().expect("status path should have a parent");
+        let file_name = path.file_name().and_then(|name| name.to_str()).expect("status file name");
+        let mut entries = tokio::fs::read_dir(parent).await.expect("temp dir should be readable");
+        let mut stale_temp_files = Vec::new();
+        while let Some(entry) = entries.next_entry().await.expect("dir entry should read") {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&format!(".{file_name}.tmp-")) {
+                stale_temp_files.push(name.into_owned());
+            }
+        }
+        assert!(
+            stale_temp_files.is_empty(),
+            "no stale temp files may remain after every writer succeeds, found {stale_temp_files:?}"
+        );
+
         let _ = tokio::fs::remove_file(&path).await;
     }
 }
