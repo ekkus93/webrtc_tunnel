@@ -1404,9 +1404,9 @@ Critical stop-failure truthfulness is also covered by Robolectric unit tests tha
 
 ### Acceptance criteria
 
-- [ ] Required CI proof location is clear.
-- [ ] Instrumentation tests remain available as supplemental coverage.
-- [ ] No documentation claims instrumentation tests ran when only unit tests ran.
+- [x] Required CI proof location is clear.
+- [x] Instrumentation tests remain available as supplemental coverage.
+- [x] No documentation claims instrumentation tests ran when only unit tests ran.
 
 ---
 
