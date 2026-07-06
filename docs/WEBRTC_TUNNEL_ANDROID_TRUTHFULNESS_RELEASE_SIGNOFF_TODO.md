@@ -357,11 +357,13 @@ Do not overbuild.
 
 ### Acceptance criteria
 
-- [ ] No required test relies on plain unsynchronized mutable fields across IO threads.
-- [ ] Stop counts are atomic.
-- [ ] Failure plan is atomic.
-- [ ] Shared state is thread-safe.
-- [ ] Required Robolectric tests remain deterministic under repeated execution.
+- [x] No required test relies on plain unsynchronized mutable fields across IO threads.
+- [x] Stop counts are atomic.
+- [x] Failure plan is atomic.
+- [x] Shared state is thread-safe.
+- [x] Required Robolectric tests remain deterministic under repeated execution —
+      ran `*TunnelForegroundServiceStopFailureTest` 3x fresh with
+      `--rerun-tasks`, all green.
 
 ### Flake gate
 
