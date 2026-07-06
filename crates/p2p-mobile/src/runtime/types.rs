@@ -74,13 +74,20 @@ impl AndroidIceInfo {
 
 /// Per-forward runtime status surfaced to the Android UI. Joins the daemon's
 /// per-forward listen state with the configured local host/port. Carries no secrets.
+///
+/// `local_host`/`local_port` are `None`, and `configuration_error` is `Some(..)`, when the
+/// daemon reports a forward id that has no matching entry in the controller's own
+/// `forward_config` — this should never happen in practice (both come from the same
+/// loaded config), but if it ever does, the UI must not display a fabricated `:0`
+/// endpoint as if it were real.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AndroidForwardRuntimeStatus {
     pub id: String,
-    pub local_host: String,
-    pub local_port: u16,
+    pub local_host: Option<String>,
+    pub local_port: Option<u16>,
     pub listen_state: String,
     pub last_error: Option<String>,
+    pub configuration_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

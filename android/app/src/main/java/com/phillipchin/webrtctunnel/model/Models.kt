@@ -61,12 +61,16 @@ data class ForwardConfig(
 data class ForwardStatus(
     val id: String,
     val name: String,
-    val localHost: String,
-    val localPort: Int,
+    // Null when the daemon reported this forward but the app has no matching configured
+    // endpoint for it — a mismatch that should never happen in practice, but must never be
+    // displayed as a fabricated "null:0"/":0" address. Check `configurationError` first.
+    val localHost: String?,
+    val localPort: Int?,
     val remoteForwardId: String,
     val enabled: Boolean,
     val listenState: ListenState,
     val lastError: String? = null,
+    val configurationError: String? = null,
 )
 
 @Serializable
@@ -129,10 +133,13 @@ data class NativeIceInfoDto(
 @Serializable
 data class NativeRuntimeForwardStatusDto(
     val id: String,
-    @SerialName("local_host") val localHost: String = "127.0.0.1",
-    @SerialName("local_port") val localPort: Int = 0,
+    // Null (rather than defaulted to a real-looking "127.0.0.1"/0) when the native side
+    // reports a forward with no matching configured endpoint. See `configurationError`.
+    @SerialName("local_host") val localHost: String? = null,
+    @SerialName("local_port") val localPort: Int? = null,
     @SerialName("listen_state") val listenState: String = "stopped",
     @SerialName("last_error") val lastError: String? = null,
+    @SerialName("configuration_error") val configurationError: String? = null,
 )
 
 @Serializable

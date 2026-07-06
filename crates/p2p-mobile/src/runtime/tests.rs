@@ -46,6 +46,62 @@ fn snapshot_status_overlays_daemon_status_when_active() {
     drop(tx);
 }
 
+fn daemon_status_with_forward(forward: p2p_daemon::ForwardRuntimeStatus) -> DaemonStatus {
+    DaemonStatus::with_sessions(
+        "offer-home".parse().expect("peer id"),
+        NodeRole::Offer,
+        true,
+        DaemonState::WaitingForLocalClient,
+        vec!["ssh".to_owned()],
+        16,
+        Vec::new(),
+    )
+    .with_forward_statuses(vec![forward])
+}
+
+#[test]
+fn snapshot_status_reports_configuration_error_for_a_forward_with_no_matching_config() {
+    let mut inner = RuntimeInner::default();
+    inner.state.active = true;
+    // Deliberately left empty: the daemon reports a forward id the controller's own
+    // config never recorded, which should never happen in practice (both come from the
+    // same loaded config) but must not fabricate a `:0` endpoint if it ever does.
+    inner.forward_config = Vec::new();
+    let (tx, rx) = tokio::sync::watch::channel(daemon_status_with_forward(
+        p2p_daemon::ForwardRuntimeStatus::listening("orphan"),
+    ));
+    inner.status_rx = Some(rx);
+
+    let snapshot = inner.snapshot_status();
+    assert_eq!(snapshot.forwards.len(), 1);
+    let forward = &snapshot.forwards[0];
+    assert_eq!(forward.local_host, None);
+    assert_eq!(forward.local_port, None);
+    let configuration_error =
+        forward.configuration_error.as_deref().expect("configuration_error set");
+    assert!(configuration_error.contains("orphan"), "got: {configuration_error}");
+    drop(tx);
+}
+
+#[test]
+fn snapshot_status_reports_the_configured_endpoint_when_the_forward_matches() {
+    let mut inner = RuntimeInner::default();
+    inner.state.active = true;
+    inner.forward_config = vec![("ssh".to_owned(), "127.0.0.1".to_owned(), 2222)];
+    let (tx, rx) = tokio::sync::watch::channel(daemon_status_with_forward(
+        p2p_daemon::ForwardRuntimeStatus::listening("ssh"),
+    ));
+    inner.status_rx = Some(rx);
+
+    let snapshot = inner.snapshot_status();
+    assert_eq!(snapshot.forwards.len(), 1);
+    let forward = &snapshot.forwards[0];
+    assert_eq!(forward.local_host.as_deref(), Some("127.0.0.1"));
+    assert_eq!(forward.local_port, Some(2222));
+    assert_eq!(forward.configuration_error, None);
+    drop(tx);
+}
+
 #[test]
 fn snapshot_status_is_quiescent_when_inactive() {
     let mut inner = RuntimeInner::default();

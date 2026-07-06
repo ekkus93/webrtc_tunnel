@@ -108,15 +108,22 @@ internal fun formatUptime(seconds: Long): String {
     return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, secs)
 }
 
-private fun ForwardStatus.toConfig(): ForwardConfig =
-    ForwardConfig(
-        id = id,
-        name = name,
-        localHost = localHost,
-        localPort = localPort,
-        remoteForwardId = remoteForwardId,
-        enabled = enabled,
-    )
+// Null when this runtime status has no real endpoint (a configuration mismatch) — such a
+// forward can never be browser-openable, so callers must skip it rather than substitute a
+// fabricated host/port.
+private fun ForwardStatus.toConfig(): ForwardConfig? =
+    if (localHost == null || localPort == null) {
+        null
+    } else {
+        ForwardConfig(
+            id = id,
+            name = name,
+            localHost = localHost,
+            localPort = localPort,
+            remoteForwardId = remoteForwardId,
+            enabled = enabled,
+        )
+    }
 
 @Composable
 internal fun HomeStatusIcon(statusUi: HomeStatusUi) {
@@ -292,7 +299,7 @@ private fun HomeBottomActions(
         )
     }
     val browserForward =
-        (configuredForwards + status.forwards.map { it.toConfig() }).firstOrNull { isBrowserOpenable(it) }
+        (configuredForwards + status.forwards.mapNotNull { it.toConfig() }).firstOrNull { isBrowserOpenable(it) }
     HomeActionRow(
         status = status,
         actions =

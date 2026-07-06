@@ -52,18 +52,31 @@ impl RuntimeInner {
                     .forwards
                     .iter()
                     .map(|forward| {
-                        let (local_host, local_port) = self
-                            .forward_config
-                            .iter()
-                            .find(|(id, _, _)| id == &forward.id)
-                            .map(|(_, host, port)| (host.clone(), *port))
-                            .unwrap_or_default();
-                        AndroidForwardRuntimeStatus {
-                            id: forward.id.clone(),
-                            local_host,
-                            local_port,
-                            listen_state: forward_listen_state_str(forward.listen_state),
-                            last_error: forward.last_error.clone(),
+                        match self.forward_config.iter().find(|(id, _, _)| id == &forward.id) {
+                            Some((_, host, port)) => AndroidForwardRuntimeStatus {
+                                id: forward.id.clone(),
+                                local_host: Some(host.clone()),
+                                local_port: Some(*port),
+                                listen_state: forward_listen_state_str(forward.listen_state),
+                                last_error: forward.last_error.clone(),
+                                configuration_error: None,
+                            },
+                            None => {
+                                let message = format!(
+                                    "daemon reported forward '{}' but no matching configured \
+                                     endpoint exists",
+                                    forward.id
+                                );
+                                tracing::error!(forward_id = %forward.id, "{message}");
+                                AndroidForwardRuntimeStatus {
+                                    id: forward.id.clone(),
+                                    local_host: None,
+                                    local_port: None,
+                                    listen_state: forward_listen_state_str(forward.listen_state),
+                                    last_error: forward.last_error.clone(),
+                                    configuration_error: Some(message),
+                                }
+                            }
                         }
                     })
                     .collect();

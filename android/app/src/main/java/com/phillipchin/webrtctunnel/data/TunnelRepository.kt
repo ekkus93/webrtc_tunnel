@@ -227,6 +227,7 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
         }
     val mappedForwards =
         forwards.map { forward ->
+            val configurationError = forward.configurationError?.let(SensitiveDataRedactor::redactText)
             ForwardStatus(
                 id = forward.id,
                 name = forward.id,
@@ -234,8 +235,16 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
                 localPort = forward.localPort,
                 remoteForwardId = forward.id,
                 enabled = forward.listenState.lowercase() != "disabled",
-                listenState = mapNativeListenState(forward.listenState, forward.lastError),
-                lastError = forward.lastError?.let(SensitiveDataRedactor::redactText),
+                // A configuration mismatch always means an error, regardless of what
+                // listen_state the daemon reported alongside it.
+                listenState =
+                    if (configurationError != null) {
+                        ListenState.Error
+                    } else {
+                        mapNativeListenState(forward.listenState, forward.lastError)
+                    },
+                lastError = configurationError ?: forward.lastError?.let(SensitiveDataRedactor::redactText),
+                configurationError = configurationError,
             )
         }
     return previous.copy(

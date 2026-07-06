@@ -246,6 +246,27 @@ class TunnelRepositoryTest {
     }
 
     @Test
+    fun refreshStatusReportsConfigurationErrorInsteadOfFabricatingAnEndpoint() {
+        bridge.statusPayload =
+            """
+            {"state":"running","active":true,
+             "forwards":[
+               {"id":"orphan","local_host":null,"local_port":null,"listen_state":"listening",
+                "configuration_error":"daemon reported forward 'orphan' but no matching configured endpoint exists"}
+             ]}
+            """.trimIndent()
+        repository.refreshStatus()
+        val forward = repository.status.value.forwards.single()
+        assertEquals(null, forward.localHost)
+        assertEquals(null, forward.localPort)
+        // A configuration mismatch always surfaces as an error, regardless of the
+        // (meaningless, since there's no real endpoint) listen_state the daemon reported.
+        assertEquals(ListenState.Error, forward.listenState)
+        assertTrue(forward.configurationError?.contains("orphan") == true)
+        assertTrue(forward.lastError?.contains("orphan") == true)
+    }
+
+    @Test
     fun refreshStatusForwardUnknownListenStateFallsBack() {
         bridge.statusPayload =
             """{"state":"running","active":true,"forwards":[{"id":"x","listen_state":"weird"}]}"""
