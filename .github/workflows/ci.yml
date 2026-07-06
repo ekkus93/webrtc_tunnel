@@ -76,6 +76,17 @@ jobs:
         if: runner.os == 'macOS'
         run: scripts/check-launchd-plists.sh
 
+      - name: launchd install-layout smoke test
+        if: runner.os == 'macOS'
+        run: sudo scripts/test-launchd-install-layout.sh
+
+      - name: Debian package/install smoke test
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot
+          scripts/test-debian-package.sh
+
       - name: Install mosquitto (Linux)
         if: runner.os == 'Linux'
         run: |
