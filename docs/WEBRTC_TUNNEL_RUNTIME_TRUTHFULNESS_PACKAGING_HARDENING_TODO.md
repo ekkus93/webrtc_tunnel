@@ -1854,10 +1854,10 @@ with explicit error logging through a mechanism that does not require that mutex
 
 ### Acceptance criteria
 
-- [ ] No runtime mutex poison path becomes a no-op.
-- [ ] No poison path becomes empty logs.
-- [ ] No poison path becomes `None` error.
-- [ ] FFI error propagation remains specific.
+- [x] No runtime mutex poison path becomes a no-op.
+- [x] No poison path becomes empty logs.
+- [x] No poison path becomes `None` error.
+- [x] FFI error propagation remains specific.
 
 ---
 
