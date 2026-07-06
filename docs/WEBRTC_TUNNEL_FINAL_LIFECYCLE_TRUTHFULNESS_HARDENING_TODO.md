@@ -997,11 +997,11 @@ Also test idempotence.
 
 ### Acceptance criteria
 
-- [ ] Double-quoted multi-word values fully removed.
-- [ ] Single-quoted multi-word values fully removed.
-- [ ] Unquoted values still redacted.
-- [ ] MQTT/MQTTS scheme preservation remains correct.
-- [ ] No secret suffix remains after replacement.
+- [x] Double-quoted multi-word values fully removed.
+- [x] Single-quoted multi-word values fully removed.
+- [x] Unquoted values still redacted.
+- [x] MQTT/MQTTS scheme preservation remains correct.
+- [x] No secret suffix remains after replacement.
 
 ---
 
