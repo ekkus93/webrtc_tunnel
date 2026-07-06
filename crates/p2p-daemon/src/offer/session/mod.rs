@@ -56,12 +56,17 @@ pub(crate) use inbound::{
     handle_offer_session_message, maybe_ack_duplicate_active_session_message,
 };
 
+use super::OfferAcceptTaskExit;
 #[cfg(any(test, debug_assertions))]
 use super::OfferSessionTestHandle;
 pub(crate) struct OfferSessionIo<'a> {
     pub(crate) client: OfferClient,
     pub(crate) accepted_clients:
         &'a mut mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>>,
+    /// Independently observed accept-worker completion (see
+    /// `OfferAcceptRuntime::worker_exits`), so an active session notices a worker
+    /// dying just as promptly as the idle daemon loop does.
+    pub(crate) worker_exits: &'a mut mpsc::UnboundedReceiver<OfferAcceptTaskExit>,
     pub(crate) remote: &'a AuthorizedKey,
     #[cfg(any(test, debug_assertions))]
     pub(crate) session_hook: Option<mpsc::UnboundedSender<OfferSessionTestHandle>>,
@@ -174,6 +179,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
     let mut tick = interval(Duration::from_secs(1));
     let mut pending_client = Some(io.client);
     let mut accepted_clients = Some(io.accepted_clients);
+    let worker_exits = io.worker_exits;
     let mut offer_bridge: Option<OfferBridgeFuture<'a>> = None;
     // Absolute deadline for the first data-channel open. Only enforced until the bridge
     // first goes active; a working tunnel disables it so a live stream is never killed.
@@ -257,6 +263,27 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                         "offer session shutdown requested"
                     );
                     return Ok(());
+                }
+                exit = worker_exits.recv() => {
+                    let Some(exit) = exit else {
+                        return Err(DaemonError::Logging(
+                            "offer accept-worker supervisor channel closed unexpectedly".to_owned(),
+                        ));
+                    };
+
+                    if shutdown.is_shutdown_requested() {
+                        tracing::debug!(
+                            forward_id = %exit.forward_id,
+                            outcome = ?exit.outcome,
+                            "offer accept worker exited during shutdown"
+                        );
+                        return Ok(());
+                    }
+
+                    return Err(DaemonError::OfferAcceptWorkerFailed {
+                        forward_id: exit.forward_id,
+                        reason: format!("{:?}", exit.outcome),
+                    });
                 }
                 _ = sleep_until(first_data_channel_deadline),
                     if !bridge_ever_active

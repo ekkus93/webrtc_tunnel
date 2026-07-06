@@ -32,4 +32,6 @@ pub enum DaemonError {
     DataPlaneProbeFailed(p2p_tunnel::TunnelError),
     #[error("logging setup error: {0}")]
     Logging(String),
+    #[error("offer accept worker for forward '{forward_id}' exited unexpectedly: {reason}")]
+    OfferAcceptWorkerFailed { forward_id: String, reason: String },
 }

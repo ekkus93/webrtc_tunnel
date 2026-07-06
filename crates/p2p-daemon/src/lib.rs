@@ -61,6 +61,7 @@ pub use types::{ActiveSession, DaemonSignalingTransport};
 pub use offer::{
     OfferSessionTestHandle, run_offer_daemon_with_transport_and_test_hook,
     run_offer_daemon_with_transport_and_test_hook_and_shutdown,
+    run_offer_daemon_with_worker_fault_hook_and_shutdown,
 };
 
 // Crate-internal symbols surfaced at the root so the unit-test module reaches them

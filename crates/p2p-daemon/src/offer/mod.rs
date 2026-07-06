@@ -40,6 +40,15 @@ pub struct OfferSessionTestHandle {
     pub ice_state_injector: p2p_webrtc::IceStateInjectorForTests,
 }
 
+/// Bundles the offer daemon's test-only observation hooks so `run_offer_daemon_inner`
+/// stays under Clippy's argument-count lint as test seams accumulate.
+#[cfg(any(test, debug_assertions))]
+#[derive(Default)]
+struct OfferDaemonTestHooks {
+    session_hook: Option<mpsc::UnboundedSender<OfferSessionTestHandle>>,
+    worker_fault_hook: Option<mpsc::UnboundedSender<Vec<tokio::task::AbortHandle>>>,
+}
+
 pub async fn run_offer_daemon(
     config: AppConfig,
     local_identity: IdentityFile,
@@ -197,7 +206,36 @@ pub async fn run_offer_daemon_with_transport_and_test_hook_and_shutdown<
         local_identity,
         authorized_keys,
         &mut transport,
-        session_hook,
+        Some(OfferDaemonTestHooks { session_hook, worker_fault_hook: None }),
+        None,
+        shutdown,
+    )
+    .await
+}
+
+/// Like [`run_offer_daemon_with_transport_and_test_hook_and_shutdown`], but also
+/// hands back the accept-worker `AbortHandle`s (via `worker_fault_hook`) once the
+/// accept runtime has started, so a lifecycle test can deterministically force one
+/// worker to fail — during idle waiting or mid-session — and observe that the
+/// daemon treats it as fatal (see P0-003/P0-016).
+#[cfg(any(test, debug_assertions))]
+pub async fn run_offer_daemon_with_worker_fault_hook_and_shutdown<T: DaemonSignalingTransport>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    mut transport: T,
+    worker_fault_hook: mpsc::UnboundedSender<Vec<tokio::task::AbortHandle>>,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
+    run_offer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        &mut transport,
+        Some(OfferDaemonTestHooks {
+            session_hook: None,
+            worker_fault_hook: Some(worker_fault_hook),
+        }),
         None,
         shutdown,
     )
@@ -209,13 +247,13 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     local_identity: IdentityFile,
     authorized_keys: AuthorizedKeys,
     transport: &mut T,
-    #[cfg(any(test, debug_assertions))] session_hook: Option<
-        mpsc::UnboundedSender<OfferSessionTestHandle>,
-    >,
-    #[cfg(not(any(test, debug_assertions)))] _session_hook: Option<()>,
+    #[cfg(any(test, debug_assertions))] test_hooks: Option<OfferDaemonTestHooks>,
+    #[cfg(not(any(test, debug_assertions)))] _test_hooks: Option<()>,
     status_sink: Option<tokio::sync::watch::Sender<DaemonStatus>>,
     mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
+    #[cfg(any(test, debug_assertions))]
+    let OfferDaemonTestHooks { session_hook, worker_fault_hook } = test_hooks.unwrap_or_default();
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let codec = SignalCodec::new(
         &local_identity,
@@ -236,7 +274,14 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     let (listeners, forward_statuses) = bind_offer_listeners(&config).await?;
     ctx.runtime.forward_statuses = forward_statuses;
     write_steady_state_status(&ctx).await;
-    let mut accept_runtime = spawn_offer_accept_loops(listeners, shutdown.clone());
+    let (mut accept_runtime, worker_abort_handles) =
+        spawn_offer_accept_loops(listeners, shutdown.clone());
+    #[cfg(any(test, debug_assertions))]
+    if let Some(hook) = worker_fault_hook {
+        let _ = hook.send(worker_abort_handles);
+    }
+    #[cfg(not(any(test, debug_assertions)))]
+    let _ = worker_abort_handles;
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
     let remote_peer_id = offer_remote_peer_id(&config)?;
     let remote = authorized_keys
@@ -260,6 +305,33 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
                 _ = shutdown.cancelled() => {
                     tracing::info!("offer daemon shutdown requested");
                     break Ok(());
+                }
+
+                exit = accept_runtime.worker_exits.recv() => {
+                    let Some(exit) = exit else {
+                        // All monitors already finished and dropped their exit_tx handle;
+                        // only expected once shutdown has begun.
+                        if shutdown.is_shutdown_requested() {
+                            break Ok(());
+                        }
+                        break Err(DaemonError::Logging(
+                            "offer accept-worker supervisor channel closed unexpectedly".to_owned(),
+                        ));
+                    };
+
+                    if shutdown.is_shutdown_requested() {
+                        tracing::debug!(
+                            forward_id = %exit.forward_id,
+                            outcome = ?exit.outcome,
+                            "offer accept worker exited during shutdown"
+                        );
+                        continue;
+                    }
+
+                    break Err(DaemonError::OfferAcceptWorkerFailed {
+                        forward_id: exit.forward_id,
+                        reason: format!("{:?}", exit.outcome),
+                    });
                 }
 
                 client = accept_runtime.accepted_clients.recv() => {
@@ -305,6 +377,7 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
                             OfferSessionIo {
                                 client,
                                 accepted_clients: &mut accept_runtime.accepted_clients,
+                                worker_exits: &mut accept_runtime.worker_exits,
                                 remote: &remote,
                                 #[cfg(any(test, debug_assertions))]
                                 session_hook: session_hook.clone(),
@@ -391,7 +464,7 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     ctx.runtime.phase = DaemonRuntimePhase::Draining;
     shutdown.request_shutdown();
 
-    join_offer_accept_tasks(accept_runtime.tasks).await;
+    join_offer_accept_tasks(accept_runtime.monitors).await;
 
     ctx.runtime.phase = DaemonRuntimePhase::Closed;
     write_offer_closed_status(&mut ctx).await;
@@ -404,15 +477,39 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
 /// `JoinHandle`s (which made listener-port release non-deterministic).
 struct OfferAcceptRuntime {
     accepted_clients: mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>>,
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Independently observed accept-worker completion, fed by `monitors` below.
+    /// After successful bind/start, an unexpected exit here (panic or unexpected
+    /// return while the daemon has not requested shutdown) is daemon-fatal: the
+    /// worker holding a bound listener died silently, but nothing else would ever
+    /// notice, leaving status falsely `Listening`/`WaitingForLocalClient`.
+    worker_exits: mpsc::UnboundedReceiver<OfferAcceptTaskExit>,
+    monitors: Vec<tokio::task::JoinHandle<()>>,
 }
 
-/// Await every offer accept-loop task and log (rather than silently discard) any
-/// task that failed to join, per the spec's "no quiet listener-task loss" rule.
-async fn join_offer_accept_tasks(tasks: Vec<tokio::task::JoinHandle<()>>) {
-    for task in tasks {
-        if let Err(error) = task.await {
-            tracing::warn!(reason = %error, "offer accept task failed while stopping");
+/// Why an offer accept-loop task returned normally (i.e. did not panic).
+#[derive(Debug)]
+pub(crate) enum OfferAcceptLoopExitReason {
+    /// Cooperative shutdown was observed; expected during daemon teardown.
+    Shutdown,
+    /// The outbound client queue's receiver was dropped; not expected while the
+    /// daemon owns `accepted_clients` for the runtime's lifetime.
+    ClientQueueClosed,
+}
+
+/// One accept-loop task's completion, independently observed by its monitor task
+/// rather than self-reported, so a panic is never silently invisible.
+#[derive(Debug)]
+pub(crate) struct OfferAcceptTaskExit {
+    pub(crate) forward_id: String,
+    pub(crate) outcome: Result<OfferAcceptLoopExitReason, String>,
+}
+
+/// Await every offer accept-loop monitor task and log (rather than silently discard)
+/// any monitor that failed to join, per the spec's "no quiet listener-task loss" rule.
+async fn join_offer_accept_tasks(monitors: Vec<tokio::task::JoinHandle<()>>) {
+    for monitor in monitors {
+        if let Err(error) = monitor.await {
+            tracing::warn!(reason = %error, "offer accept worker monitor failed while stopping");
         }
     }
 }
@@ -421,7 +518,7 @@ async fn join_offer_accept_tasks(tasks: Vec<tokio::task::JoinHandle<()>>) {
 pub(crate) fn spawn_offer_accept_loop(
     listener: OfferListener,
 ) -> mpsc::Receiver<Result<OfferClient, p2p_tunnel::TunnelError>> {
-    spawn_offer_accept_loops(vec![listener], ShutdownToken::new()).accepted_clients
+    spawn_offer_accept_loops(vec![listener], ShutdownToken::new()).0.accepted_clients
 }
 
 /// Bind a local TCP listener for each configured offer forward. Individual forwards
@@ -471,51 +568,90 @@ pub(crate) async fn bind_offer_listeners(
     Ok((listeners, statuses))
 }
 
-fn spawn_offer_accept_loops(
-    listeners: Vec<OfferListener>,
-    shutdown: ShutdownToken,
-) -> OfferAcceptRuntime {
-    let (tx, rx) = mpsc::channel(64);
-    let mut tasks = Vec::with_capacity(listeners.len());
-    for listener in listeners {
-        let tx = tx.clone();
-        let mut task_shutdown = shutdown.clone();
-        tasks.push(tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = task_shutdown.cancelled() => {
-                        tracing::debug!(
-                            forward_id = listener.forward_id(),
-                            "offer accept loop stopping"
-                        );
-                        return;
-                    }
-                    accepted = listener.accept_client() => {
-                        match accepted {
-                            Ok(accepted) => match tx.try_send(Ok(accepted)) {
-                                Ok(()) => {}
-                                Err(mpsc::error::TrySendError::Full(Ok(dropped))) => {
-                                    tracing::warn!(
-                                        forward_id = dropped.forward_id(),
-                                        "offer pending client queue is full; closing local client"
-                                    );
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => return,
-                                Err(mpsc::error::TrySendError::Full(Err(_))) => {}
-                            },
-                            Err(error) => {
-                                tracing::warn!(reason = %error, "offer accept loop hit recoverable listener error");
-                                tokio::select! {
-                                    _ = task_shutdown.cancelled() => return,
-                                    _ = sleep(DAEMON_RUNTIME_RETRY_DELAY) => {}
-                                }
-                            }
+/// One accept listener's loop: forwards accepted clients into `tx`, retrying past
+/// recoverable listener errors, until shutdown is observed or the receiving end of
+/// `tx` disappears. Returns (rather than silently exits) so its monitor task can
+/// report completion independently — see [`OfferAcceptRuntime::worker_exits`].
+async fn run_offer_accept_loop(
+    listener: OfferListener,
+    tx: mpsc::Sender<Result<OfferClient, p2p_tunnel::TunnelError>>,
+    mut shutdown: ShutdownToken,
+) -> OfferAcceptLoopExitReason {
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                tracing::debug!(
+                    forward_id = listener.forward_id(),
+                    "offer accept loop stopping"
+                );
+                return OfferAcceptLoopExitReason::Shutdown;
+            }
+            accepted = listener.accept_client() => {
+                match accepted {
+                    Ok(accepted) => match tx.try_send(Ok(accepted)) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(Ok(dropped))) => {
+                            tracing::warn!(
+                                forward_id = dropped.forward_id(),
+                                "offer pending client queue is full; closing local client"
+                            );
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            return OfferAcceptLoopExitReason::ClientQueueClosed;
+                        }
+                        Err(mpsc::error::TrySendError::Full(Err(_))) => {}
+                    },
+                    Err(error) => {
+                        tracing::warn!(reason = %error, "offer accept loop hit recoverable listener error");
+                        tokio::select! {
+                            _ = shutdown.cancelled() => return OfferAcceptLoopExitReason::Shutdown,
+                            _ = sleep(DAEMON_RUNTIME_RETRY_DELAY) => {}
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/// Spawns the accept-loop workers and their independent completion monitors.
+/// Also returns each worker's [`tokio::task::AbortHandle`] (decoupled from the
+/// `JoinHandle` the monitor awaits) so `#[cfg(any(test, debug_assertions))]` test
+/// hooks can deterministically force one worker to fail — aborting a task and a
+/// genuine panic are indistinguishable to the monitor, both surface as `Err` on
+/// `worker.await`, so this exercises the exact same fatal-supervision path.
+fn spawn_offer_accept_loops(
+    listeners: Vec<OfferListener>,
+    shutdown: ShutdownToken,
+) -> (OfferAcceptRuntime, Vec<tokio::task::AbortHandle>) {
+    let (tx, rx) = mpsc::channel(64);
+    let (exit_tx, exit_rx) = mpsc::unbounded_channel();
+    let mut monitors = Vec::with_capacity(listeners.len());
+    let mut abort_handles = Vec::with_capacity(listeners.len());
+    for listener in listeners {
+        let forward_id = listener.forward_id().to_owned();
+        let tx = tx.clone();
+        let task_shutdown = shutdown.clone();
+        let exit_tx = exit_tx.clone();
+        let worker = tokio::spawn(run_offer_accept_loop(listener, tx, task_shutdown));
+        abort_handles.push(worker.abort_handle());
+        monitors.push(tokio::spawn(async move {
+            let outcome = match worker.await {
+                Ok(reason) => Ok(reason),
+                Err(error) => Err(error.to_string()),
+            };
+            if exit_tx
+                .send(OfferAcceptTaskExit { forward_id: forward_id.clone(), outcome })
+                .is_err()
+            {
+                tracing::error!(
+                    forward_id = %forward_id,
+                    "offer accept worker exit could not be delivered to supervisor",
+                );
+            }
         }));
     }
     drop(tx);
-    OfferAcceptRuntime { accepted_clients: rx, tasks }
+    drop(exit_tx);
+    (OfferAcceptRuntime { accepted_clients: rx, worker_exits: exit_rx, monitors }, abort_handles)
 }

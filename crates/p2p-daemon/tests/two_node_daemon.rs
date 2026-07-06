@@ -13,9 +13,13 @@ mod harness;
 mod basics_tests;
 #[path = "two_node_daemon/isolation_tests.rs"]
 mod isolation_tests;
+#[path = "two_node_daemon/lifecycle_regression_tests.rs"]
+mod lifecycle_regression_tests;
 #[path = "two_node_daemon/recovery_tests.rs"]
 mod recovery_tests;
 #[path = "two_node_daemon/shutdown_tests.rs"]
 mod shutdown_tests;
 #[path = "two_node_daemon/stream_tests/mod.rs"]
 mod stream_tests;
+#[path = "two_node_daemon/worker_supervision_tests.rs"]
+mod worker_supervision_tests;
