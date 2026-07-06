@@ -1354,11 +1354,11 @@ Call it before building the package.
 
 ### Acceptance criteria
 
-- [ ] Package units use `/usr/bin`.
-- [ ] Manual units may remain `/usr/local/bin`.
-- [ ] Package build fails on any missing absolute ExecStart executable.
-- [ ] `dpkg -c` shows all referenced executables.
-- [ ] Package smoke test reaches the packaged `p2pctl` `ExecStartPre` path.
+- [x] Package units use `/usr/bin`.
+- [x] Manual units may remain `/usr/local/bin`.
+- [x] Package build fails on any missing absolute ExecStart executable.
+- [x] `dpkg -c` shows all referenced executables.
+- [ ] Package smoke test reaches the packaged `p2pctl` `ExecStartPre` path. (deferred to P1-011, a dedicated packaging smoke test task)
 
 ---
 
