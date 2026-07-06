@@ -1,8 +1,10 @@
 package com.phillipchin.webrtctunnel
 
 import android.content.Intent
+import android.net.ConnectivityManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ServiceState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -17,8 +19,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows
 import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowNetwork
 import java.util.concurrent.TimeUnit
 
 /**
@@ -114,7 +118,7 @@ class TunnelForegroundServiceStopFailureTest {
         // First policy pause succeeds, establishing the precondition this bug needs:
         // pausedByPolicy already true from a prior, clean pause.
         runBlocking { service.offer.pauseForPolicy("first policy pause") }
-        assertTrue(service.pausedByPolicy)
+        assertTrue(service.pausedByPolicy.get())
         assertEquals(ServiceState.PausedMeteredBlocked, deps.tunnelRepository.status.value.serviceState)
 
         // A second, re-entrant policy pause now fails to stop the tunnel.
@@ -123,14 +127,56 @@ class TunnelForegroundServiceStopFailureTest {
 
         assertFalse(
             "a failed policy-pause stop must never leave a stale pausedByPolicy == true",
-            service.pausedByPolicy,
+            service.pausedByPolicy.get(),
         )
         assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
 
         // Retry/reevaluation stays open: a subsequent successful pause still lands cleanly.
         runBlocking { service.offer.pauseForPolicy("retry policy pause") }
-        assertTrue(service.pausedByPolicy)
+        assertTrue(service.pausedByPolicy.get())
         assertEquals(ServiceState.PausedMeteredBlocked, deps.tunnelRepository.status.value.serviceState)
+    }
+
+    @Test
+    fun autoResumeOnUnmeteredSeesLatestPausedByPolicyAcrossThreads() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // The fake NetworkPolicyManager always reports UnmeteredWifi; every other test in
+        // this file pins resumeOnUnmetered = false to avoid racing that against direct
+        // pauseForPolicy() calls (see TunnelForegroundServiceTestFakes.kt). This test wants
+        // exactly that race, deliberately: it enables auto-resume, then proves the
+        // networkMonitorJob coroutine (running on this service's real IO dispatcher, a
+        // different JVM thread than this JUnit test thread) observes a pausedByPolicy value
+        // written from the test thread — a genuine cross-thread write/read pair, not just a
+        // same-thread sanity check (P1-004).
+        runBlocking {
+            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+        }
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        runBlocking { service.offer.pauseForPolicy("policy pause before auto-resume check") }
+        assertTrue(service.pausedByPolicy.get())
+        assertEquals(ServiceState.PausedMeteredBlocked, deps.tunnelRepository.status.value.serviceState)
+
+        // NetworkPolicyManager.monitor()'s flow already emitted once during onCreate() (before
+        // this test ever paused), so re-triggering the real ConnectivityManager.NetworkCallback
+        // is the only way to make the auto-resume check in onCreate() run again and actually
+        // observe the pausedByPolicy write above.
+        val connectivityManager =
+            ApplicationProvider.getApplicationContext<android.content.Context>()
+                .getSystemService(ConnectivityManager::class.java)
+        val shadowConnectivityManager = Shadows.shadowOf(connectivityManager)
+        val network = ShadowNetwork.newInstance(1)
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+
+        assertTrue(
+            "auto-resume must observe the pausedByPolicy write made from the test thread",
+            waitForCondition { !service.pausedByPolicy.get() },
+        )
+        assertTrue(waitForCondition { bridge.startOfferCalls >= 2 })
     }
 
     @Test

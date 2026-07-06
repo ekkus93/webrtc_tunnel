@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 // Control-flow signal: a startup attempt aborted after publishing its own error/state.
 private class StartupAborted : Exception()
@@ -108,7 +109,11 @@ class TunnelForegroundService
 
         // internal (not private): P0-004's Robolectric test reads this directly rather
         // than through any new public accessor, matching the "no public mutator" rule.
-        internal var pausedByPolicy: Boolean = false
+        // AtomicBoolean (not a plain var) because reads happen from coroutines that never
+        // hold lifecycleMutex — the network-policy monitor callback and the status-poll
+        // loop below — so a plain Boolean write under the mutex would have no guaranteed
+        // visibility to those unsynchronized readers (P1-004).
+        internal val pausedByPolicy = AtomicBoolean(false)
         private var allowMeteredForCurrentRun: Boolean = false
 
         // internal (not private): P0-004's Robolectric test bumps this directly, under
@@ -146,8 +151,8 @@ class TunnelForegroundService
                         val policy = evaluatePolicy(prefs)
                         repository.updateNetworkStatus(policy)
                         if (policy.networkType == NetworkType.UnmeteredWifi) {
-                            if (pausedByPolicy && prefs.resumeOnUnmetered) {
-                                pausedByPolicy = false
+                            if (pausedByPolicy.get() && prefs.resumeOnUnmetered) {
+                                pausedByPolicy.set(false)
                                 serviceScope.launch { offer.resume() }
                             }
                         } else if (!policy.tunnelAllowed) {
@@ -230,7 +235,7 @@ class TunnelForegroundService
                                 code = "stop_failed",
                             )
                         }
-                        pausedByPolicy = false
+                        pausedByPolicy.set(false)
                         clearTemporaryMeteredAllowance()
                     }
                 }
@@ -308,9 +313,9 @@ class TunnelForegroundService
                     serviceScope.launch {
                         var lastState = repository.status.value.serviceState
                         var active = true
-                        while (active && !pausedByPolicy) {
+                        while (active && !pausedByPolicy.get()) {
                             delay(STATUS_POLL_INTERVAL_MS)
-                            if (pausedByPolicy) break
+                            if (pausedByPolicy.get()) break
                             withContext(ioDispatcher) { runCatching { repository.refreshStatus() } }
                             val state = repository.status.value.serviceState
                             if (state != lastState) {
@@ -480,7 +485,7 @@ class TunnelForegroundService
                         }
                     } else {
                         result.onSuccess {
-                            pausedByPolicy = false
+                            pausedByPolicy.set(false)
                             reporter.publishStatus()
                             reporter.startStatusPolling()
                         }.onFailure {
@@ -499,7 +504,7 @@ class TunnelForegroundService
                 lifecycleMutex.withLock {
                     allowMeteredForCurrentRun = true
                     repository.updateSessionMeteredAllowance(true)
-                    pausedByPolicy = false
+                    pausedByPolicy.set(false)
                 }
                 startOffer()
             }
@@ -546,7 +551,7 @@ class TunnelForegroundService
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
                             onSuccess = {
-                                pausedByPolicy = true
+                                pausedByPolicy.set(true)
                                 repository.setPolicyBlocked(reason)
                                 reporter.publishStatus(reason)
                             },
@@ -555,7 +560,7 @@ class TunnelForegroundService
                                 // reported as the normal policy-paused state. Force false
                                 // unconditionally rather than restoring a stale prior
                                 // value, so a retry/reevaluation path stays open.
-                                pausedByPolicy = false
+                                pausedByPolicy.set(false)
                                 reporter.publishError(
                                     message = it.message ?: "Failed stopping tunnel after policy block",
                                     code = "stop_failed",
@@ -571,7 +576,7 @@ class TunnelForegroundService
                     reporter.stopStatusPollingAndJoin()
                     cancelStartupJobLocked()
                     val stopResult = withContext(ioDispatcher) { repository.stop() }
-                    pausedByPolicy = false
+                    pausedByPolicy.set(false)
                     clearTemporaryMeteredAllowance()
                     stopResult.fold(
                         onSuccess = {
