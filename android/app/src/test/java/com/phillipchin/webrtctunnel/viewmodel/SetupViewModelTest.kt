@@ -250,6 +250,42 @@ class SetupViewModelTest : AppViewModelTestBase() {
     }
 
     @Test
+    fun deleteForwardFailurePreservesErrorAndDoesNotClaimSuccess() {
+        val viewModel = SetupViewModel(deps)
+        viewModel.forwardsEditor.refreshForwards()
+        awaitSetupState(viewModel) { viewModel.forwards.value.isNotEmpty() }
+        val existing = viewModel.forwards.value.first()
+
+        // Force the real persistence write to fail (a read-only files dir means
+        // ForwardsConfigStore.saveForwards' temp-file creation fails), rather than
+        // asserting against a fake/mocked failure.
+        app.filesDir.setWritable(false)
+        try {
+            viewModel.forwardsEditor.deleteForward(existing.id)
+            val state = awaitSetupState(viewModel) { !it.isBusy }
+            assertTrue(state.errorMessage != null)
+            assertEquals(null, state.saveResult)
+            assertTrue(viewModel.forwards.value.any { it.id == existing.id })
+        } finally {
+            app.filesDir.setWritable(true)
+        }
+    }
+
+    @Test
+    fun deleteForwardSuccessStillReportsSuccess() {
+        val viewModel = SetupViewModel(deps)
+        viewModel.forwardsEditor.refreshForwards()
+        awaitSetupState(viewModel) { viewModel.forwards.value.isNotEmpty() }
+        val existing = viewModel.forwards.value.first()
+
+        viewModel.forwardsEditor.deleteForward(existing.id)
+
+        val state = awaitSetupState(viewModel) { it.saveResult == "Forward deleted" }
+        assertEquals(null, state.errorMessage)
+        assertTrue(viewModel.forwards.value.none { it.id == existing.id })
+    }
+
+    @Test
     fun goNextClearsPreviousErrorOnSuccessfulAdvance() {
         val viewModel = newValidViewModel("clear_error")
         deps.forwardsStore.saveForwards(emptyList()) // clear the seeded default forward
