@@ -159,11 +159,11 @@ Also assert an ordinary session error is not classified as infrastructure failur
 
 ### Acceptance criteria
 
-- [ ] Active-session accept-worker failure skips cooldown.
-- [ ] Active-session accept-worker failure skips ordinary recovery.
-- [ ] Active-session infrastructure failure breaks run loop with `Err`.
-- [ ] Ordinary session failures retain existing recovery behavior.
-- [ ] Classification is tested.
+- [x] Active-session accept-worker failure skips cooldown.
+- [x] Active-session accept-worker failure skips ordinary recovery.
+- [x] Active-session infrastructure failure breaks run loop with `Err`.
+- [x] Ordinary session failures retain existing recovery behavior.
+- [x] Classification is tested.
 
 ---
 
