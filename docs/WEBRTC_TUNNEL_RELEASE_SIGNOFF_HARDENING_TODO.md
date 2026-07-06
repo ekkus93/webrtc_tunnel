@@ -1359,11 +1359,11 @@ both snapshots see same events
 
 ### Acceptance criteria
 
-- [ ] Audit is append-only.
-- [ ] Audit preserves order.
-- [ ] Audit is non-coalescing.
-- [ ] Clone observes shared log.
-- [ ] Production watch semantics remain latest-value.
+- [x] Audit is append-only.
+- [x] Audit preserves order.
+- [x] Audit is non-coalescing.
+- [x] Clone observes shared log.
+- [x] Production watch semantics remain latest-value.
 
 ---
 
