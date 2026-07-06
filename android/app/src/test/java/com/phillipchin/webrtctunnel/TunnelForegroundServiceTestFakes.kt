@@ -16,6 +16,8 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * A `test`-only-scoped Application/bridge fake for
@@ -92,6 +94,13 @@ class FailableRecordingBridge : TunnelNativeBridge {
     private var startOfferRelease = CountDownLatch(0)
     var state: ServiceState = ServiceState.Stopped
 
+    // P0-001: deterministic barrier for a status refresh blocked mid-read, built with
+    // thread-safe primitives from the start since it's exercised by a real
+    // Dispatchers.IO caller concurrently with the Robolectric test thread.
+    private val blockStatusJsonRead = AtomicBoolean(false)
+    private val statusJsonReadEntered = AtomicReference(CountDownLatch(0))
+    private val statusJsonReadRelease = AtomicReference(CountDownLatch(0))
+
     /** The next (and only the next) `stop()` call fails instead of succeeding. */
     fun failNextStop() {
         failNextStop = true
@@ -108,6 +117,25 @@ class FailableRecordingBridge : TunnelNativeBridge {
 
     fun releaseBlockedStartOffer() {
         startOfferRelease.countDown()
+    }
+
+    /**
+     * The next `getStatusJson()` call blocks (mid native-status-read) until
+     * [releaseBlockedStatusJsonRead] is called, reporting whatever [state] was at
+     * the moment the read began — simulating a real native read that started
+     * before a concurrent stop/pause changed the underlying state.
+     */
+    fun blockNextStatusJsonRead() {
+        statusJsonReadEntered.set(CountDownLatch(1))
+        statusJsonReadRelease.set(CountDownLatch(1))
+        blockStatusJsonRead.set(true)
+    }
+
+    fun awaitStatusJsonReadEntered(timeoutMs: Long): Boolean =
+        statusJsonReadEntered.get().await(timeoutMs, TimeUnit.MILLISECONDS)
+
+    fun releaseBlockedStatusJsonRead() {
+        statusJsonReadRelease.get().countDown()
     }
 
     override fun startOffer(
@@ -139,21 +167,29 @@ class FailableRecordingBridge : TunnelNativeBridge {
         return Result.success(Unit)
     }
 
-    override fun getStatusJson(): String =
-        Json.encodeToString(
+    override fun getStatusJson(): String {
+        // Snapshot before blocking: a real native read observes state as of when it
+        // began, not as of when it happens to return after being delayed.
+        val snapshotState = state
+        if (blockStatusJsonRead.compareAndSet(true, false)) {
+            statusJsonReadEntered.get().countDown()
+            statusJsonReadRelease.get().await(5, TimeUnit.SECONDS)
+        }
+        return Json.encodeToString(
             NativeRuntimeStatusDto(
                 state =
-                    when (state) {
+                    when (snapshotState) {
                         ServiceState.Connected, ServiceState.Serving -> "running"
                         ServiceState.Starting -> "starting"
                         ServiceState.Stopping -> "stopping"
                         ServiceState.Error -> "error"
                         else -> "stopped"
                     },
-                mode = if (state == ServiceState.Serving) "answer" else "offer",
-                active = state == ServiceState.Connected || state == ServiceState.Serving,
+                mode = if (snapshotState == ServiceState.Serving) "answer" else "offer",
+                active = snapshotState == ServiceState.Connected || snapshotState == ServiceState.Serving,
             ),
         )
+    }
 
     override fun getRecentLogsJson(maxEvents: Int): String = "[]"
 

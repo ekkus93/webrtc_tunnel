@@ -27,6 +27,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
@@ -57,6 +58,13 @@ class TunnelForegroundService
         private var startupJob: Job? = null
         private var statusPollJob: Job? = null
         private var lastMode: TunnelMode = TunnelMode.Offer
+
+        // internal (not private): P0-001's Robolectric test captures this reference and
+        // joins it directly, so it can deterministically wait for a specific stale poll
+        // iteration to fully settle (commit or be discarded) before asserting final
+        // status, instead of racing on timing.
+        internal val statusPollJobForTest: Job?
+            get() = statusPollJob
 
         // internal (not private): P0-004's Robolectric test reads this directly rather
         // than through any new public accessor, matching the "no public mutator" rule.
@@ -163,12 +171,12 @@ class TunnelForegroundService
 
         override fun onDestroy() {
             networkMonitorJob?.cancel()
-            reporter.stopStatusPolling()
             val pendingStop =
                 serviceScope.launch {
                     lifecycleMutex.withLock {
                         lifecycleGeneration += 1
                         cancelStartupJobLocked()
+                        reporter.stopStatusPollingAndJoin()
                         withContext(ioDispatcher) {
                             repository.stop()
                         }.onFailure {
@@ -272,6 +280,20 @@ class TunnelForegroundService
             fun stopStatusPolling() {
                 statusPollJob?.cancel()
                 statusPollJob = null
+            }
+
+            /**
+             * Cancels the poll job and waits for it to fully finish before returning,
+             * so a caller about to commit a lifecycle-changing stop truth (pause,
+             * policy pause, service stop, startup cleanup, service destruction) can be
+             * sure a stale in-flight refresh can no longer resurrect an older status
+             * afterward (P0-001). The poll loop never acquires `lifecycleMutex`, so
+             * joining it while holding that mutex cannot deadlock.
+             */
+            suspend fun stopStatusPollingAndJoin() {
+                val job = statusPollJob
+                statusPollJob = null
+                job?.cancelAndJoin()
             }
         }
 
@@ -378,8 +400,12 @@ class TunnelForegroundService
                             // plain `withContext(ioDispatcher) { ... }` would rethrow immediately
                             // without ever running the block ("prompt cancellation") — the native
                             // tunnel would be silently left running behind a "cancelled" startup.
-                            // NonCancellable lets this cleanup actually execute.
-                            withContext(NonCancellable + ioDispatcher) { repository.stop() }.onFailure {
+                            // NonCancellable lets this cleanup actually execute; it also covers
+                            // stopStatusPollingAndJoin() for the same reason (P0-001).
+                            withContext(NonCancellable + ioDispatcher) {
+                                reporter.stopStatusPollingAndJoin()
+                                repository.stop()
+                            }.onFailure {
                                 reporter.publishError(
                                     message = it.message ?: "Unable to stop tunnel after startup was cancelled",
                                     code = "stop_failed",
@@ -391,7 +417,10 @@ class TunnelForegroundService
                         // Same "prompt cancellation" hazard as above: a newer start may have
                         // cancelled this job's generation (or the job itself) by the time the
                         // native start call returns, so this cleanup also needs NonCancellable.
-                        withContext(NonCancellable + ioDispatcher) { repository.stop() }.onFailure {
+                        withContext(NonCancellable + ioDispatcher) {
+                            reporter.stopStatusPollingAndJoin()
+                            repository.stop()
+                        }.onFailure {
                             reporter.publishError(
                                 message = it.message ?: "Unable to stop tunnel after a newer start superseded it",
                                 code = "stop_failed",
@@ -440,7 +469,7 @@ class TunnelForegroundService
             suspend fun pause() {
                 lifecycleMutex.withLock {
                     lifecycleGeneration += 1
-                    reporter.stopStatusPolling()
+                    reporter.stopStatusPollingAndJoin()
                     cancelStartupJobLocked()
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
@@ -460,7 +489,7 @@ class TunnelForegroundService
             suspend fun pauseForPolicy(reason: String) {
                 lifecycleMutex.withLock {
                     lifecycleGeneration += 1
-                    reporter.stopStatusPolling()
+                    reporter.stopStatusPollingAndJoin()
                     cancelStartupJobLocked()
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
@@ -487,7 +516,7 @@ class TunnelForegroundService
             suspend fun stopServiceWork() {
                 lifecycleMutex.withLock {
                     lifecycleGeneration += 1
-                    reporter.stopStatusPolling()
+                    reporter.stopStatusPollingAndJoin()
                     cancelStartupJobLocked()
                     val stopResult = withContext(ioDispatcher) { repository.stop() }
                     pausedByPolicy = false

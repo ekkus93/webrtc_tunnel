@@ -150,6 +150,61 @@ class TunnelForegroundServiceStopFailureTest {
         assertTrue(waitForCondition { bridge.stopCalls >= 2 })
         assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error })
     }
+
+    @Test
+    fun staleStatusRefreshCannotOverwriteFailedStop() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Start the tunnel; a successful start begins status polling. Wait for the
+        // poll job itself (not just the bridge's Connected state, which flips
+        // slightly earlier, before startStatusPolling() has assigned the job).
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        assertTrue(waitForCondition { service.statusPollJobForTest != null })
+
+        // Capture the exact poll Job instance before arming the block, then wait for
+        // the poll loop to actually reach the blocked read (not just schedule it).
+        val staleJob = service.statusPollJobForTest
+        bridge.blockNextStatusJsonRead()
+        assertTrue(
+            "status polling should have entered the blocked refresh by now",
+            bridge.awaitStatusJsonReadEntered(10_000),
+        )
+
+        // Trigger pause with a failing stop. This action call itself returns
+        // immediately (onStartCommand's launch is fire-and-forget); the pause
+        // operation runs in the background from here.
+        bridge.failNextStop()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 2)
+
+        // The core proof: pause() must not be able to even attempt the native stop
+        // while the stale refresh it depends on quiescing is still blocked. This is
+        // a positive assertion of absence within a generous bounded window, not a
+        // sleep used to synchronize correctness — without quiescing, nothing else
+        // holds pause() back, so this reliably distinguishes the two behaviors
+        // instead of racing the eventual final state (which either implementation
+        // can reach through incidental thread-scheduling timing, proving nothing).
+        assertFalse(
+            "pause() must not call native stop before the in-flight stale status " +
+                "refresh has been quiesced",
+            waitForCondition(timeoutMs = 500) { bridge.stopCalls >= 1 },
+        )
+
+        // Release the stale refresh so its blocked native read can finally return,
+        // and wait for that *exact* stale poll iteration to fully settle (commit its
+        // result or be discarded by cancellation) before checking the final state.
+        bridge.releaseBlockedStatusJsonRead()
+        runBlocking { staleJob?.join() }
+
+        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+        assertTrue(
+            "a failed stop must be the final truth even though a status refresh was " +
+                "in flight when the stop was requested",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
+    }
 }
 
 /**
