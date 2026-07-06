@@ -1769,12 +1769,12 @@ Do not silently clear a previous forced-abort diagnostic merely because stop is 
 
 ### Acceptance criteria
 
-- [ ] Graceful stop yields clean `Stopped`.
-- [ ] Forced abort is visible and returns failure.
-- [ ] Task join failure is visible and returns failure.
-- [ ] `last_error` is not cleared after forced abort.
-- [ ] Kotlin repository receives failure.
-- [ ] Duplicate stop is safe.
+- [x] Graceful stop yields clean `Stopped`.
+- [x] Forced abort is visible and returns failure.
+- [x] Task join failure is visible and returns failure.
+- [x] `last_error` is not cleared after forced abort.
+- [x] Kotlin repository receives failure.
+- [x] Duplicate stop is safe.
 
 ---
 
