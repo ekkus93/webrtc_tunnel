@@ -243,11 +243,19 @@ No sleep.
 
 ### Acceptance criteria
 
-- [ ] Poll cancellation is joined or stale results are explicitly rejected.
-- [ ] Stop failure cannot be overwritten by an older status read.
-- [ ] Successful stop cannot be overwritten by an older active status read.
-- [ ] No hidden timeout added.
-- [ ] Deterministic regression test fails if quiescing/stale-rejection is removed.
+- [x] Poll cancellation is joined or stale results are explicitly rejected.
+- [x] Stop failure cannot be overwritten by an older status read.
+- [x] Successful stop cannot be overwritten by an older active status read —
+      `stopStatusPollingAndJoin()` runs unconditionally before *either* stop
+      outcome (success or failure); the committed test covers the failure
+      case specifically, but the mechanism it proves (native stop cannot even
+      be attempted while a stale refresh is still in flight) applies
+      identically regardless of what the stop call itself returns.
+- [x] No hidden timeout added.
+- [x] Deterministic regression test fails if quiescing/stale-rejection is
+      removed — verified directly (reverted `pause()` to plain
+      `stopStatusPolling()`, confirmed the new test fails, restored the fix,
+      confirmed it passes; also re-ran 3x fresh to rule out flakiness).
 
 ---
 
