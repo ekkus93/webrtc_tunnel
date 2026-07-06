@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::DaemonError;
+use crate::ShutdownToken;
 use crate::busy::{ActiveBusyOfferCache, DuplicateActiveAckCache};
 use crate::status::{ForwardRuntimeStatus, SessionStatus, StatusWriter};
 
@@ -79,7 +80,7 @@ pub(crate) enum DaemonRuntimePhase {
     Closed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct DaemonRuntimeState {
     pub(crate) mqtt_connected: bool,
     pub(crate) last_transport_failure_at_ms: Option<u64>,
@@ -87,16 +88,43 @@ pub(crate) struct DaemonRuntimeState {
     /// listeners; included in every emitted `DaemonStatus`.
     pub(crate) forward_statuses: Vec<ForwardRuntimeStatus>,
     pub(crate) phase: DaemonRuntimePhase,
+    /// Clone of the same shared token the daemon loop itself watches. Lets the
+    /// central ordinary-status gate (`normal_status_allowed`) see a shutdown
+    /// request immediately, even in the narrow window before the daemon loop has
+    /// locally observed it and transitioned `phase` to `Draining`.
+    shutdown: ShutdownToken,
 }
 
 impl DaemonRuntimeState {
+    /// For tests/helpers that don't exercise the shutdown-token race itself: an
+    /// uncancelled token of its own, so `normal_status_allowed()` behaves exactly
+    /// as the old phase-only check did. No production caller should use this —
+    /// real daemons must observe their own real shutdown token, so this is
+    /// test-only.
+    #[cfg(test)]
     pub(crate) fn new_connected() -> Self {
+        Self::new_connected_with_shutdown(ShutdownToken::new())
+    }
+
+    /// Production daemons must pass a clone of their own daemon loop's shared
+    /// token here, not a fresh one — otherwise this state can never observe a
+    /// real shutdown request.
+    pub(crate) fn new_connected_with_shutdown(shutdown: ShutdownToken) -> Self {
         Self {
             mqtt_connected: true,
             last_transport_failure_at_ms: None,
             forward_statuses: Vec::new(),
             phase: DaemonRuntimePhase::Starting,
+            shutdown,
         }
+    }
+
+    /// Ordinary (non-terminal) status is only truthful while the daemon is fully
+    /// `Running` *and* no shutdown has been requested yet on the shared token —
+    /// checking phase alone leaves a window where the token was requested but the
+    /// daemon loop hasn't yet observed it and locally moved to `Draining`.
+    pub(crate) fn normal_status_allowed(&self) -> bool {
+        matches!(self.phase, DaemonRuntimePhase::Running) && !self.shutdown.is_shutdown_requested()
     }
 }
 

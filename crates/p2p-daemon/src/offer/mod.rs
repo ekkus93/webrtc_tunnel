@@ -409,7 +409,7 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
         Some(sink) => StatusWriter::with_sink(&config, sink),
         None => StatusWriter::new(&config),
     };
-    let mut runtime = DaemonRuntimeState::new_connected();
+    let mut runtime = DaemonRuntimeState::new_connected_with_shutdown(shutdown.clone());
     let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
     write_steady_state_status(&ctx).await;
 

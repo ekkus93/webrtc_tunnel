@@ -61,6 +61,25 @@ async fn offer_steady_state_write_succeeds_once_running() {
     let _ = tokio::fs::remove_file(&path).await;
 }
 
+/// P0-001: `Running` alone is not sufficient — a shared shutdown token requested
+/// before the daemon loop has locally observed it (and moved phase to `Draining`)
+/// must also suppress ordinary status, closing the race the phase-only gate left
+/// open.
+#[tokio::test]
+async fn offer_steady_state_write_is_suppressed_when_running_but_shared_token_already_requested() {
+    let mut config = sample_config();
+    let (path, writer) = status_writer_for_test(&mut config, "offer-phase-running-token-requested");
+    let shutdown = ShutdownToken::new();
+    let mut runtime = DaemonRuntimeState::new_connected_with_shutdown(shutdown.clone());
+    runtime.phase = DaemonRuntimePhase::Running;
+    shutdown.request_shutdown();
+    let ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
+
+    write_steady_state_status(&ctx).await;
+
+    assert_status_file_absent(&path).await;
+}
+
 #[tokio::test]
 async fn answer_registry_write_is_suppressed_before_running() {
     let mut config = sample_config();
@@ -110,6 +129,25 @@ async fn answer_registry_write_succeeds_once_running() {
     let status = read_status_file(&path).await;
     assert_eq!(status["current_state"], "serving");
     let _ = tokio::fs::remove_file(&path).await;
+}
+
+/// P0-001 answer-side equivalent of the offer test above.
+#[tokio::test]
+async fn answer_registry_write_is_suppressed_when_running_but_shared_token_already_requested() {
+    let mut config = sample_config();
+    config.node.role = NodeRole::Answer;
+    let (path, writer) =
+        status_writer_for_test(&mut config, "answer-phase-running-token-requested");
+    let shutdown = ShutdownToken::new();
+    let mut runtime = DaemonRuntimeState::new_connected_with_shutdown(shutdown.clone());
+    runtime.phase = DaemonRuntimePhase::Running;
+    shutdown.request_shutdown();
+    let sessions = std::collections::HashMap::new();
+    let ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
+
+    write_answer_registry_status(&ctx, &sessions).await;
+
+    assert_status_file_absent(&path).await;
 }
 
 #[tokio::test]

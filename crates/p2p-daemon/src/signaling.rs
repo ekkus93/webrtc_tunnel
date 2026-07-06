@@ -23,18 +23,19 @@ use crate::messages::current_time_ms;
 use crate::status::{DaemonStatus, ForwardRuntimeStatus, StatusWriter};
 use crate::types::{
     ANSWER_SESSION_CAPACITY, ActiveSession, AnswerSessionEvent, AnswerSessionHandle,
-    AnswerStatusSnapshot, DAEMON_RUNTIME_RETRY_DELAY, DaemonRuntimePhase, DaemonSignalingTransport,
-    OutgoingSignal, PublishRequest, PublishedSignal, RuntimeContext, SessionStatusSnapshot,
-    StatusSnapshot,
+    AnswerStatusSnapshot, DAEMON_RUNTIME_RETRY_DELAY, DaemonSignalingTransport, OutgoingSignal,
+    PublishRequest, PublishedSignal, RuntimeContext, SessionStatusSnapshot, StatusSnapshot,
 };
 
 /// Ordinary (non-terminal) status is only truthful while the daemon is fully
-/// `Running`: before that, startup has not actually finished; after that, shutdown
-/// is already underway and must not resurrect a "serving"/"waiting" status.
-/// Terminal `Closed` writes intentionally bypass this gate (see
+/// `Running` and the shared shutdown token has not been requested: before
+/// `Running`, startup has not actually finished; once shutdown is requested
+/// (even if the daemon loop hasn't yet locally observed it and moved to
+/// `Draining`), it must not resurrect a "serving"/"waiting" status. Terminal
+/// `Closed` writes intentionally bypass this gate (see
 /// `write_daemon_status_unchecked`/`write_answer_status_unchecked`).
 fn runtime_status_allowed(ctx: &RuntimeContext<'_>) -> bool {
-    matches!(ctx.runtime.phase, DaemonRuntimePhase::Running)
+    ctx.runtime.normal_status_allowed()
 }
 
 pub(crate) async fn write_daemon_status(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot) {

@@ -313,7 +313,7 @@ async fn run_answer_daemon_inner<T: DaemonSignalingTransport>(
     );
     transport.subscribe_own_topic().await?;
     let status = StatusWriter::new(&config);
-    let mut runtime = DaemonRuntimeState::new_connected();
+    let mut runtime = DaemonRuntimeState::new_connected_with_shutdown(shutdown.clone());
     let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };
     let (event_tx, mut event_rx) = mpsc::channel(128);
     let mut sessions_by_id: HashMap<SessionId, AnswerSessionHandle> = HashMap::new();
