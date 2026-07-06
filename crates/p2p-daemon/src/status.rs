@@ -345,8 +345,8 @@ mod tests {
     use p2p_core::{DaemonState, NodeRole};
 
     use super::{
-        DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
-        write_atomic,
+        DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusAuditLog,
+        StatusWriter, write_atomic,
     };
 
     #[test]
@@ -850,5 +850,85 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    fn sample_status(state: DaemonState) -> DaemonStatus {
+        DaemonStatus::new(
+            "offer-home".parse().expect("peer id"),
+            NodeRole::Offer,
+            true,
+            None,
+            state,
+            vec!["ssh".to_owned()],
+        )
+    }
+
+    #[tokio::test]
+    async fn status_audit_log_retains_every_write_in_order() {
+        let audit = StatusAuditLog::default();
+        let writer = StatusWriter {
+            enabled: false,
+            path: PathBuf::new(),
+            sink: None,
+            audit: Some(audit.clone()),
+        };
+
+        let a = sample_status(DaemonState::WaitingForLocalClient);
+        let b = sample_status(DaemonState::Negotiating);
+        let c = sample_status(DaemonState::TunnelOpen);
+        writer.write(a.clone()).await.expect("write A should succeed");
+        writer.write(b.clone()).await.expect("write B should succeed");
+        writer.write(c.clone()).await.expect("write C should succeed");
+
+        assert_eq!(audit.len(), 3);
+        assert_eq!(audit.snapshot(), vec![a, b, c]);
+    }
+
+    #[tokio::test]
+    async fn watch_coalescing_does_not_affect_audit() {
+        // This test documents why StatusAuditLog exists alongside the watch sink:
+        // a watch::Receiver is deliberately latest-value-only for its real
+        // (Android/UI) consumers, so sampling it after a burst of writes can never
+        // prove every intermediate state was actually emitted — only that the
+        // final one isn't illegal. The audit log is the only trustworthy source
+        // for that proof.
+        let audit = StatusAuditLog::default();
+        let seed = sample_status(DaemonState::Idle);
+        let (tx, rx) = tokio::sync::watch::channel(seed.clone());
+        let writer = StatusWriter {
+            enabled: false,
+            path: PathBuf::new(),
+            sink: Some(tx),
+            audit: Some(audit.clone()),
+        };
+
+        let a = sample_status(DaemonState::WaitingForLocalClient);
+        let b = sample_status(DaemonState::Negotiating);
+        let c = sample_status(DaemonState::TunnelOpen);
+        // No polling of `rx` between writes: the watch channel only ever holds its
+        // single latest value, so it necessarily coalesces A and B away.
+        writer.write(a.clone()).await.expect("write A should succeed");
+        writer.write(b.clone()).await.expect("write B should succeed");
+        writer.write(c.clone()).await.expect("write C should succeed");
+
+        assert_eq!(*rx.borrow(), c, "watch must show only the latest write");
+        assert_eq!(
+            audit.snapshot(),
+            vec![a, b, c],
+            "audit must retain every write in order despite watch coalescing"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_audit_log_clone_shares_same_log() {
+        let audit = StatusAuditLog::default();
+        let audit_clone = audit.clone();
+        let writer =
+            StatusWriter { enabled: false, path: PathBuf::new(), sink: None, audit: Some(audit) };
+
+        let status = sample_status(DaemonState::Serving);
+        writer.write(status.clone()).await.expect("write should succeed");
+
+        assert_eq!(audit_clone.snapshot(), vec![status]);
     }
 }
