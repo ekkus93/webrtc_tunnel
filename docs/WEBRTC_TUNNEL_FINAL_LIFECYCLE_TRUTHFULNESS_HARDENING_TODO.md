@@ -234,11 +234,12 @@ Then the test can fail a specific forward rather than depending on vector order.
 
 ### Acceptance criteria
 
-- [ ] Test uses at least two offer workers.
-- [ ] One worker is deliberately kept alive after the other fails.
-- [ ] Daemon still exits `Err`.
-- [ ] Remaining worker is stopped by finalization.
-- [ ] Test fails if P0-001 classification is removed.
+- [x] Test uses at least two offer workers.
+- [x] One worker is deliberately kept alive after the other fails.
+- [x] Daemon still exits `Err`.
+- [x] Remaining worker is stopped by finalization.
+- [x] Test fails if P0-001 classification is removed. (Verified by temporarily reverting
+      the classification locally and observing this test fail with a timeout.)
 
 ---
 
@@ -302,9 +303,9 @@ spawn_offer_accept_loops(...)
 
 ### Acceptance criteria
 
-- [ ] No fallible immutable peer/config lookup remains after accept-runtime creation.
-- [ ] Every error after accept-runtime creation is represented in `run_result` or cleanup result.
-- [ ] Finalizer is structurally unavoidable after worker start.
+- [x] No fallible immutable peer/config lookup remains after accept-runtime creation.
+- [x] Every error after accept-runtime creation is represented in `run_result` or cleanup result.
+- [x] Finalizer is structurally unavoidable after worker start.
 
 ---
 
