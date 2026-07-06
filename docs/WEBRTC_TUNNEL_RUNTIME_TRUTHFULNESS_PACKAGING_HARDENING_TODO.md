@@ -1510,12 +1510,12 @@ Do not run the service as root to avoid fixing permissions.
 
 ### Acceptance criteria
 
-- [ ] User and group both validated.
-- [ ] New config dirs are `root:_p2ptunnel 0750`.
-- [ ] New log dir is service-user owned/writable.
-- [ ] Existing inaccessible directories cause explicit failure.
-- [ ] Standalone installer and `.pkg` scripts use the same policy.
-- [ ] Docs match actual ownership.
+- [x] User and group both validated.
+- [x] New config dirs are `root:_p2ptunnel 0750`.
+- [x] New log dir is service-user owned/writable.
+- [x] Existing inaccessible directories cause explicit failure.
+- [x] Standalone installer and `.pkg` scripts use the same policy.
+- [x] Docs match actual ownership.
 
 ---
 
