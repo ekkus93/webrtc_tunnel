@@ -4,9 +4,11 @@ import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 class SetupStepValidationTest : AppViewModelTestBase() {
@@ -62,5 +64,26 @@ class SetupStepValidationTest : AppViewModelTestBase() {
             IdentityValidationResult(valid = true, peerId = "remote-peer")
 
         assertNull(validateStep(deps, SetupStep.Peer, peerState()))
+    }
+
+    @Test
+    fun forwardsStepReportsStorageErrorForCorruptFileInsteadOfNoForwards() {
+        // A corrupt forwards.json must surface as a storage/config error, not be
+        // silently treated as an empty list (which would misreport as "no forwards
+        // configured" instead of the real problem).
+        File(app.filesDir, "forwards.json").writeText("{not valid json")
+
+        val message = validateStep(deps, SetupStep.Forwards, SetupWizardState())
+
+        assertTrue(message != null)
+        assertTrue(message != "Enable at least one forward")
+        assertTrue(message!!.contains("Unable to read forwards configuration"))
+    }
+
+    @Test
+    fun forwardsStepStillReportsNoForwardsForARealEmptyList() {
+        deps.forwardsStore.saveForwards(emptyList())
+
+        assertEquals("Enable at least one forward", validateStep(deps, SetupStep.Forwards, SetupWizardState()))
     }
 }

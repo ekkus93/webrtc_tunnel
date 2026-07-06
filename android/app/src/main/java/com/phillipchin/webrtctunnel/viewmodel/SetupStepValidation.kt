@@ -1,6 +1,7 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 
 internal fun validateStep(
@@ -59,12 +60,21 @@ private fun validatePeerStep(
 }
 
 private fun validateForwardsStep(deps: AppDependencies): String? =
-    deps.forwardsStore.validateForwards(deps.forwardsStore.loadForwards())
-        ?: if (deps.forwardsStore.loadForwards().none { it.enabled }) {
-            "Enable at least one forward"
-        } else {
-            null
-        }
+    deps.forwardsStore.loadForwardsResult().fold(
+        onSuccess = { forwards ->
+            deps.forwardsStore.validateForwards(forwards)
+                ?: if (forwards.none { it.enabled }) {
+                    "Enable at least one forward"
+                } else {
+                    null
+                }
+        },
+        onFailure = { error ->
+            SensitiveDataRedactor.redactText(
+                "Unable to read forwards configuration: ${error.message ?: "unknown storage error"}",
+            )
+        },
+    )
 
 private fun validateReviewStep(
     deps: AppDependencies,
