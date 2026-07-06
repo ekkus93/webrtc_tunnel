@@ -4,8 +4,8 @@ use clap::{Parser, Subcommand};
 use p2p_core::AppConfig;
 use p2p_crypto::{AuthorizedKeys, IdentityFile};
 use p2p_daemon::{
-    ShutdownToken, apply_answer_overrides, apply_env_overrides, notify_ready, notify_stopping,
-    run_answer_daemon_with_shutdown, setup_logging, wait_for_process_shutdown_signal,
+    ShutdownToken, apply_answer_overrides, apply_env_overrides, run_answer_daemon_with_shutdown,
+    setup_logging, wait_for_process_shutdown_signal,
 };
 
 #[derive(Debug, Parser)]
@@ -53,16 +53,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         run_answer_daemon_with_shutdown(config, local_identity, authorized_keys, shutdown.clone());
     tokio::pin!(daemon);
 
-    // No-op unless built with --features sd-notify and running under a systemd
-    // Type=notify unit; see crates/p2p-daemon/src/notify.rs.
-    notify_ready();
-
     let result = tokio::select! {
         result = &mut daemon => result,
         signal = wait_for_process_shutdown_signal() => {
             let signal = signal?;
             tracing::info!(signal, "process shutdown requested");
-            notify_stopping();
             shutdown.request_shutdown();
             daemon.await
         }

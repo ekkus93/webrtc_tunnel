@@ -13,19 +13,12 @@ p2p-tunnel = { path = "../p2p-tunnel" }
 p2p-webrtc = { path = "../p2p-webrtc" }
 futures-util.workspace = true
 rand_core.workspace = true
-sd-notify = { version = "0.5", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[features]
-# Optional systemd `sd_notify` (Type=notify) readiness/stopping signaling. Off
-# by default: the default build does not link or require systemd at all. See
-# crates/p2p-daemon/src/notify.rs and docs/SYSTEMD.md ("Type=notify").
-sd-notify = ["dep:sd-notify"]
 
 [lints]
 workspace = true

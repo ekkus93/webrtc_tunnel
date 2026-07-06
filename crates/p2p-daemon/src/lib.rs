@@ -22,7 +22,6 @@ mod config;
 mod error;
 mod logging;
 mod messages;
-mod notify;
 mod offer;
 mod predicates;
 mod process_signal;
@@ -43,7 +42,6 @@ pub use error::DaemonError;
 pub use logging::{
     candidate_log_summary, redact_candidate, redact_sdp, redact_secret, setup_logging,
 };
-pub use notify::{notify_ready, notify_stopping};
 pub use offer::{
     run_offer_daemon, run_offer_daemon_with_shutdown, run_offer_daemon_with_status,
     run_offer_daemon_with_status_and_shutdown, run_offer_daemon_with_transport,
