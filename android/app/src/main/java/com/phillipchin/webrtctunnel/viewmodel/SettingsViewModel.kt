@@ -12,9 +12,26 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+
+@Serializable
+private data class StatusDiagnosticsError(
+    @SerialName("status_json_error") val statusJsonError: String,
+)
+
+// Extracted so a test can force the statusJson() error path with a specific message
+// (quotes/backslashes/newlines/secrets) without depending on the status object
+// actually failing to serialize.
+internal fun statusDiagnosticsErrorJson(message: String?): String =
+    Json.encodeToString(
+        StatusDiagnosticsError(
+            statusJsonError = SensitiveDataRedactor.redactText(message ?: "unknown status serialization failure"),
+        ),
+    )
 
 data class SettingsUiState(
     val publicIdentity: String? = null,
@@ -97,14 +114,7 @@ class SettingsViewModel(
     fun statusJson(): String =
         runCatching {
             Json.encodeToString(SensitiveDataRedactor.redactStatus(deps.tunnelRepository.status.value))
-        }.fold(
-            onSuccess = { it },
-            onFailure = { error ->
-                "{\"status_json_error\":\"" +
-                    SensitiveDataRedactor.redactText(error.message ?: "unknown status serialization failure") +
-                    "\"}"
-            },
-        )
+        }.getOrElse { error -> statusDiagnosticsErrorJson(error.message) }
 
     /** Redacted config file contents, or an explicit marker distinguishing "no config file
      * yet" (expected before setup completes) from "config file present but unreadable/failed

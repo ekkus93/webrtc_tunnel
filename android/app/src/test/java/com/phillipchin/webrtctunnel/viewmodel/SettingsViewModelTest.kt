@@ -5,6 +5,9 @@ import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -87,6 +90,25 @@ class SettingsViewModelTest : AppViewModelTestBase() {
         val json = viewModel.statusJson()
         assertTrue(json.startsWith("{"))
         assertFalse(json.contains("status_json_error"))
+    }
+
+    @Test
+    fun statusDiagnosticsErrorJsonEscapesSpecialCharactersAndRedactsSecrets() {
+        val message = "quote \" backslash \\ newline \n password: \"secret sentinel\""
+        val json = statusDiagnosticsErrorJson(message)
+
+        // Must parse as real JSON, not a hand-concatenated string that merely looks like one.
+        val parsed = Json.parseToJsonElement(json).jsonObject
+        val fieldValue = parsed["status_json_error"]?.jsonPrimitive?.content
+        assertTrue(fieldValue != null)
+        assertFalse(fieldValue!!.contains("sentinel"))
+        assertFalse(fieldValue.contains("secret"))
+        // The quote/backslash/newline from the original message survive redaction and
+        // round-trip correctly once escaped/re-parsed (i.e. they weren't corrupted or
+        // used to break out of the JSON string).
+        assertTrue(fieldValue.contains("quote \""))
+        assertTrue(fieldValue.contains("backslash \\"))
+        assertTrue(fieldValue.contains("newline \n"))
     }
 
     @Test
