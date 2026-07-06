@@ -1107,9 +1107,9 @@ Or propagate a test-only error that fails the owning test.
 
 ### Acceptance criteria
 
-- [ ] Barrier observer disappearance fails test.
-- [ ] Barrier release sender disappearance fails test.
-- [ ] Test cannot silently continue without having synchronized.
+- [x] Barrier observer disappearance fails test.
+- [x] Barrier release sender disappearance fails test.
+- [x] Test cannot silently continue without having synchronized.
 
 ---
 
@@ -1610,7 +1610,7 @@ fix(status): make atomic temp paths unique per write
 ## Tests
 
 - [x] Shutdown status boundary is exact action boundary.
-- [ ] Publish barrier failures are loud.
+- [x] Publish barrier failures are loud.
 - [ ] Signal-test children are always reaped.
 - [x] Required task-panic test uses a real spawned task.
 - [ ] Status atomic-write test covers concurrent writers.
