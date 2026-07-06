@@ -126,8 +126,21 @@ async fn offer_no_normal_status_write_survives_shutdown_request() {
         .expect("offer daemon task should not panic");
     assert!(result.is_ok(), "graceful offer shutdown should return Ok, got {result:?}");
 
-    // Give the poller a final tick to observe the terminal write before stopping it.
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // The terminal write already landed on disk before `offer_task` joined above;
+    // wait (bounded, but generously so this doesn't flake under CI/parallel-test
+    // scheduling contention) for the poller to actually get scheduled and observe
+    // it, rather than assuming a fixed short sleep is always enough CPU time.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if samples.lock().await.last().map(String::as_str) == Some("closed") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "poller never observed the terminal closed status in time"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     poller.abort();
     let _ = poller.await;
 
