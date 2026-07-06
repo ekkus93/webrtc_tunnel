@@ -386,11 +386,11 @@ runtime error > cleanup error > terminal status error
 
 ### Acceptance criteria
 
-- [ ] Monitor panic cannot become warning + `Ok(())`.
-- [ ] Cleanup returns `Err` for unexpected monitor join failure.
-- [ ] Primary runtime error still wins if both runtime and cleanup fail.
-- [ ] Secondary cleanup errors are logged with context.
-- [ ] Focused test covers monitor panic/join failure.
+- [x] Monitor panic cannot become warning + `Ok(())`.
+- [x] Cleanup returns `Err` for unexpected monitor join failure.
+- [x] Primary runtime error still wins if both runtime and cleanup fail.
+- [x] Secondary cleanup errors are logged with context.
+- [x] Focused test covers monitor panic/join failure.
 
 ---
 
