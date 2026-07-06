@@ -94,7 +94,26 @@ for role in offer answer; do
   plutil -lint "$plist_dst" || fail "plutil -lint rejected the installed copy at $plist_dst"
 done
 
+validate_role_config_as_service_user() {
+  role="$1"
+  config="$APP_SUPPORT_ROOT/$role/config.toml"
+
+  [ -f "$config" ] || fail "missing '$config'; refusing to bootstrap $role"
+
+  log "validating $role config as $SERVICE_USER"
+  sudo -u "$SERVICE_USER" \
+    /usr/local/bin/p2pctl check-config --config "$config" \
+    || fail "$role config failed validation as $SERVICE_USER"
+}
+
 if [ "$ENABLE" -eq 1 ]; then
+  # Validate both roles' configs as the actual service user before
+  # bootstrapping either one — so a bad second config can't leave the pair
+  # half-enabled (first role running, second refused) after this script exits.
+  for role in offer answer; do
+    validate_role_config_as_service_user "$role"
+  done
+
   for role in offer answer; do
     log "bootstrapping com.p2ptunnel.$role"
     launchctl bootstrap system "$LAUNCHD_DIR/com.p2ptunnel.$role.plist"

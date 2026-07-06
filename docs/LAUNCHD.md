@@ -107,6 +107,14 @@ overwrites an existing config directory, refuses to run as non-root or on a
 non-macOS host, and stops with an explicit message rather than creating the
 `_p2ptunnel` account itself (see step 2 above).
 
+With `--enable`, before bootstrapping *either* role it runs
+`p2pctl check-config` for *both* roles' `config.toml` as `_p2ptunnel` itself
+(`sudo -u _p2ptunnel`), not as root — a config, identity, or
+`authorized_keys` file root can read but `_p2ptunnel` cannot is exactly the
+failure mode that matters here. If either role's validation fails, the
+script exits before bootstrapping anything, so a bad second config can never
+leave the pair half-enabled (one role running, the other refused).
+
 ## 6. Load, inspect, restart, and stop
 
 ```bash
