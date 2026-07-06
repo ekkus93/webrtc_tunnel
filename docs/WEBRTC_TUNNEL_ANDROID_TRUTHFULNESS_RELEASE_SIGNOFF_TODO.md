@@ -789,14 +789,102 @@ result
 
 Do not claim PASS because local commands succeeded.
 
+### Actual observed result (real CI, not local reproduction)
+
+```text
+commit SHA:      a96d13a39aa5055e8d564712f59466994b4814ec
+workflow run:    https://github.com/ekkus93/webrtc_tunnel/actions/runs/28825839747
+run number:      28825839747
+overall status:  completed / success
+```
+
+Per-job results:
+
+```text
+Android (job 85488570768) — completed / success
+  Set up job                                                     PASS
+  Check out repository                                           PASS
+  Set up JDK 17                                                  PASS
+  Install Android SDK tools                                      PASS
+  Install Android SDK components                                 PASS
+  Install Rust toolchain with Android targets                    PASS
+  Cache Cargo artifacts                                          PASS
+  Install cargo-ndk                                               PASS
+  Build Android Rust JNI libraries                                PASS
+  Run foreground-service stop-failure truthfulness tests         PASS   (focused step; runs
+                                                                          --tests
+                                                                          '*TunnelForegroundServiceStopFailureTest')
+  Build Android app and run unit tests                            PASS   (full Android job)
+
+Lint (job 85488570796) — completed / success
+  Check formatting                                                PASS  (cargo fmt --check)
+  Run clippy                                                      PASS
+  Run clippy (release profile)                                    PASS
+
+Test (ubuntu-latest) (job 85488570820) — completed / success
+  Run tests                                                       PASS  (cargo test --workspace)
+  Validate systemd units                                          PASS
+  Validate launchd plists                                         NOT RUN: skipped by workflow
+                                                                          (macOS-only step,
+                                                                          this job runs on
+                                                                          ubuntu-latest)
+  launchd install-layout smoke test                                NOT RUN: skipped by workflow
+                                                                          (macOS-only step,
+                                                                          this job runs on
+                                                                          ubuntu-latest)
+  Debian package/install smoke test                                PASS
+  Install mosquitto (Linux)                                       PASS
+  Install mosquitto (macOS)                                       NOT RUN: skipped by workflow
+                                                                          (macOS-only step,
+                                                                          this job runs on
+                                                                          ubuntu-latest)
+  Build offer/answer/p2pctl binaries for signal lifecycle test    PASS
+  Run required real-process signal lifecycle test                 PASS
+
+Test (macos-latest) (job 85488570826) — completed / success
+  Run tests                                                       PASS  (cargo test --workspace,
+                                                                          real macOS runner)
+  Validate systemd units                                          NOT RUN: skipped by workflow
+                                                                          (Linux-only step,
+                                                                          this job runs on
+                                                                          macos-latest)
+  Validate launchd plists                                         PASS  (real macOS runner —
+                                                                          this is the job that
+                                                                          exercises plutil
+                                                                          validation that Linux
+                                                                          dev environments can
+                                                                          only SKIP locally)
+  launchd install-layout smoke test                                PASS  (real macOS runner)
+  Debian package/install smoke test                                NOT RUN: skipped by workflow
+                                                                          (Linux-only step,
+                                                                          this job runs on
+                                                                          macos-latest)
+  Install mosquitto (Linux)                                       NOT RUN: skipped by workflow
+                                                                          (Linux-only step,
+                                                                          this job runs on
+                                                                          macos-latest)
+  Install mosquitto (macOS)                                       PASS
+  Build offer/answer/p2pctl binaries for signal lifecycle test    PASS
+  Run required real-process signal lifecycle test                 PASS  (real macOS runner)
+
+Release artifacts (matrix) — completed / skipped
+  Entire job SKIPPED by workflow trigger condition (release-artifact
+  job only runs on tag/release events, not a plain push to master).
+  NOT RUN: not applicable to this push — release-artifact publishing
+  is out of scope for this hardening round and was not claimed as
+  observed.
+```
+
+No defect was exposed by real CI that was not already caught locally; every job matches the local gate results recorded in Stage 3 above. This closes the one item every prior round of this repository's hardening work had to leave as `NOT RUN: not pushed` — this round, real CI (including the macOS-only launchd validation and install-layout smoke test) was actually observed, not deferred.
+
 ### Acceptance criteria
 
-- [ ] New focused Android step executed remotely.
-- [ ] Full Android job executed remotely.
-- [ ] Rust jobs executed remotely.
-- [ ] Signal lifecycle job executed remotely.
-- [ ] Package/service jobs remained green.
-- [ ] Any macOS unavailable job is reported honestly.
+- [x] New focused Android step executed remotely. Verified: `Run foreground-service stop-failure truthfulness tests` step, job `Android`, run 28825839747 — PASS.
+- [x] Full Android job executed remotely. Verified: `Build Android app and run unit tests` step, job `Android`, run 28825839747 — PASS.
+- [x] Rust jobs executed remotely. Verified: `Lint` job (fmt + clippy + clippy --release) and `Run tests` step on both `Test (ubuntu-latest)` and `Test (macos-latest)`, run 28825839747 — all PASS.
+- [x] Signal lifecycle job executed remotely. Verified: `Run required real-process signal lifecycle test` step on both `Test (ubuntu-latest)` and `Test (macos-latest)`, run 28825839747 — PASS on both runners.
+- [x] Package/service jobs remained green. Verified: `Validate systemd units` + `Debian package/install smoke test` (ubuntu-latest) and `Validate launchd plists` + `launchd install-layout smoke test` (macos-latest), run 28825839747 — all PASS.
+- [x] Any macOS unavailable job is reported honestly. See per-job table above — steps that don't apply to a given runner are reported `NOT RUN: skipped by workflow` with the specific reason, not silently omitted or claimed as PASS.
 
 ---
 
