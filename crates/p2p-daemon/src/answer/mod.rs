@@ -131,16 +131,12 @@ impl PayloadAdmissionBarrierRelease {
 /// real, spawned `run_answer_session_task`, at the next opportunity in its select
 /// loop. A broken channel is a test-harness bug, not something to continue past
 /// silently — see P1-004.
-///
-/// Not `#[cfg]`-gated (unlike the other test hooks in this file): `tokio::select!`
-/// does not support per-branch `cfg` attributes, so the session task's select loop
-/// carries this branch unconditionally, disabled via `Option::is_some()` the same
-/// way the existing `bridge_result` branch is — dead weight in release builds, not
-/// a functional difference.
+#[cfg(any(test, debug_assertions))]
 pub struct AnswerSessionPanicTrigger {
     fire_tx: tokio::sync::oneshot::Sender<()>,
 }
 
+#[cfg(any(test, debug_assertions))]
 impl AnswerSessionPanicTrigger {
     pub fn new() -> (Self, AnswerSessionPanicArm) {
         let (fire_tx, fire_rx) = tokio::sync::oneshot::channel();
@@ -153,6 +149,14 @@ impl AnswerSessionPanicTrigger {
 }
 
 /// Daemon-held half of the P0-009 real-panic proof; see [`AnswerSessionPanicTrigger`].
+///
+/// Unlike its trigger counterpart, this is NOT `#[cfg]`-gated: `tokio::select!`
+/// does not support per-branch `cfg` attributes, so the session task's select loop
+/// carries the branch that reads this unconditionally, disabled via
+/// `Option::is_some()` the same way the existing `bridge_result` branch is — dead
+/// weight in release builds, not a functional difference. Only the trigger side
+/// (`AnswerSessionPanicTrigger`, constructed solely by tests) needs to be gated to
+/// avoid an unreachable-in-release dead-code warning.
 pub struct AnswerSessionPanicArm {
     fire_rx: tokio::sync::oneshot::Receiver<()>,
 }
@@ -287,8 +291,16 @@ async fn run_answer_daemon_inner<T: DaemonSignalingTransport>(
     mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
     #[cfg(any(test, debug_assertions))]
-    let AnswerDaemonTestHooks { mut payload_admission_barrier, mut session_panic_trigger } =
+    let AnswerDaemonTestHooks { mut payload_admission_barrier, session_panic_trigger } =
         test_hooks.unwrap_or_default();
+    // `session_panic_trigger` is threaded through `AnswerSessionRegistry` and
+    // `run_answer_session_task` unconditionally (tokio::select! does not support
+    // per-branch cfg attributes, so that branch is always compiled), so the
+    // binding providing it must always exist too, not just under test/debug_assertions.
+    #[cfg(any(test, debug_assertions))]
+    let mut session_panic_trigger = session_panic_trigger;
+    #[cfg(not(any(test, debug_assertions)))]
+    let mut session_panic_trigger: Option<AnswerSessionPanicArm> = None;
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let config = Arc::new(config);
     let local_identity = Arc::new(local_identity);
