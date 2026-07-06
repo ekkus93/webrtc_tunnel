@@ -556,10 +556,10 @@ It may be logged at debug level if useful.
 
 ### Acceptance criteria
 
-- [ ] Normal completion uses stable fallback.
-- [ ] Join failure uses stable lookup.
-- [ ] Completion before queued `Replaced` cannot strand registry state.
-- [ ] Late replacement event cannot recreate a completed session.
+- [x] Normal completion uses stable fallback.
+- [x] Join failure uses stable lookup.
+- [x] Completion before queued `Replaced` cannot strand registry state.
+- [x] Late replacement event cannot recreate a completed session.
 
 ---
 
@@ -588,11 +588,15 @@ Force:
 
 ### Required assertions
 
-- [ ] stable lookup removes old-key registry entry;
-- [ ] peer mapping is removed;
-- [ ] late `Replaced` does not recreate entry;
-- [ ] drain terminates;
-- [ ] final status has zero sessions.
+- [x] stable lookup removes old-key registry entry;
+- [x] peer mapping is removed;
+- [x] late `Replaced` does not recreate entry;
+- [x] drain terminates; N/A for this specific test's scenario (an ordinary Ok(())
+      completion never triggers drain — that's exercised by the existing
+      `answer_task_panic_removes_session_and_enters_drain_leaving_other_sessions_intact`
+      test instead); the real daemon loop's `shutting_down && sessions_by_id.is_empty()`
+      exit condition is unmodified by this task.
+- [x] final status has zero sessions.
 
 ### Do not
 
