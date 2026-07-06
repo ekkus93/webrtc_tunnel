@@ -822,13 +822,13 @@ asserted). Add a direct test of its contract.
 
 ## Regression gate (run once, at the end, in addition to per-task runs)
 
-- [ ] `cargo fmt --all --check`
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- [ ] `cargo clippy --workspace --release --all-features -- -D warnings`
-- [ ] `cargo test --workspace --all-targets --all-features`
-- [ ] `cd android && ./gradlew check` (ktlint + detekt + Android lint +
+- [x] `cargo fmt --all --check`
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- [x] `cargo clippy --workspace --release --all-features -- -D warnings`
+- [x] `cargo test --workspace --all-targets --all-features`
+- [x] `cd android && ./gradlew check` (ktlint + detekt + Android lint +
       unit tests)
-- [ ] No `#[allow(...)]`/`@Suppress`/baseline additions introduced anywhere
+- [x] No `#[allow(...)]`/`@Suppress`/baseline additions introduced anywhere
       in this batch of work.
 
 # Definition of done

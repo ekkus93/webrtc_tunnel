@@ -3,11 +3,9 @@ package com.phillipchin.webrtctunnel.viewmodel
 import android.net.Uri
 import android.os.Looper
 import com.phillipchin.webrtctunnel.data.AppDependencies
-import com.phillipchin.webrtctunnel.data.AppDispatchers
 import com.phillipchin.webrtctunnel.model.NetworkStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -92,7 +90,7 @@ class LogsViewModelTest : AppViewModelTestBase() {
     fun concurrentExportIsRejectedWhileOneIsAlreadyInFlight() {
         // The shared `deps` fixture uses fully inline (Unconfined) dispatchers, so
         // exportDiagnostics() would run start-to-finish before a second call could ever
-        // observe isBusy == true. Use the real Dispatchers.IO here so `withContext(io)`
+        // observe isBusy == true. Use real IO dispatchers here so `withContext(io)`
         // genuinely suspends the launch at that point, giving us a window to fire the
         // second call while the first is still in flight.
         val realIoDeps =
@@ -102,7 +100,7 @@ class LogsViewModelTest : AppViewModelTestBase() {
                 configRepository = configRepository,
                 networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
                 identityRepository = deps.identityRepository,
-                dispatchers = AppDispatchers(io = Dispatchers.IO, default = Dispatchers.IO, main = Dispatchers.Main),
+                dispatchers = realIoTestDispatchers(),
             )
         val viewModel = LogsViewModel(realIoDeps)
         val firstOutput = File(app.filesDir, "diagnostics_first.txt")

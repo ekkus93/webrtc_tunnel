@@ -126,3 +126,10 @@ open class AppViewModelTestBase {
  * only direct reference inside a parameter default (DI), satisfying `InjectDispatcher`. */
 fun inlineTestDispatchers(dispatcher: CoroutineDispatcher = Dispatchers.Unconfined): AppDispatchers =
     AppDispatchers(io = dispatcher, default = dispatcher, main = dispatcher)
+
+/** Real (non-inline) dispatchers for tests that need a genuine suspension point — e.g.
+ * observing a busy-guard mid-flight, which an always-synchronous inline dispatcher would
+ * never leave a window for. The `Dispatchers.IO` default keeps the only direct reference
+ * inside a parameter default (DI), satisfying `InjectDispatcher`. */
+fun realIoTestDispatchers(dispatcher: CoroutineDispatcher = Dispatchers.IO): AppDispatchers =
+    AppDispatchers(io = dispatcher, default = dispatcher)
