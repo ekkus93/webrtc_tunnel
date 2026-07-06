@@ -141,24 +141,35 @@ class ForwardsViewModel(
                 prefs.androidIceMode,
             )
         val temp = File(deps.context.cacheDir, "config-forwards-candidate.toml")
-        val identity = runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }.getOrNull()
         return runCatching {
-            temp.parentFile?.mkdirs()
-            temp.writeText(candidate)
-            val result =
-                if (identity != null && identity.isNotEmpty()) {
-                    deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identity)
+            // Identity absence and identity-present-but-unreadable are different states: only
+            // the former may fall back to identity-less validation. A read/decrypt failure on a
+            // present identity must surface as a visible failure, not silently downgrade (P1-001).
+            val identity =
+                if (deps.identityRepository.hasEncryptedIdentity()) {
+                    runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }
+                        .getOrElse { error("Identity exists but could not be loaded: ${it.message}") }
                 } else {
-                    deps.identityValidation.validateConfig(temp.absolutePath)
+                    null
                 }
-            if (result.valid) {
-                deps.configRepository.writeConfigAtomically(candidate)
+            try {
+                temp.parentFile?.mkdirs()
+                temp.writeText(candidate)
+                val result =
+                    if (identity != null) {
+                        deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identity)
+                    } else {
+                        deps.identityValidation.validateConfig(temp.absolutePath)
+                    }
+                if (result.valid) {
+                    deps.configRepository.writeConfigAtomically(candidate)
+                }
+                result
+            } finally {
+                // Wipe the plaintext identity buffer regardless of success/failure.
+                identity?.fill(0)
+                temp.delete()
             }
-            result
-        }.getOrElse { ValidationResult(false, it.message) }.also {
-            // Wipe the plaintext identity buffer regardless of success/failure.
-            identity?.fill(0)
-            temp.delete()
-        }
+        }.getOrElse { ValidationResult(false, it.message) }
     }
 }

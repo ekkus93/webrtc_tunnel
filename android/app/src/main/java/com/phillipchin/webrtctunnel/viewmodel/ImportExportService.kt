@@ -30,11 +30,20 @@ class ImportExportService(private val deps: AppDependencies) {
     private fun importConfigContent(candidate: String) {
         val temp = File(deps.context.cacheDir, "config-import-candidate.toml")
         temp.parentFile?.mkdirs()
-        val identity = runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }.getOrNull()
+        // Identity absence and identity-present-but-unreadable are different states: only the
+        // former may fall back to identity-less validation. A read/decrypt failure on a
+        // present identity must surface as a visible failure, not silently downgrade (P1-001).
+        val identity =
+            if (deps.identityRepository.hasEncryptedIdentity()) {
+                runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }
+                    .getOrElse { error("Identity exists but could not be loaded: ${it.message}") }
+            } else {
+                null
+            }
         try {
             temp.writeText(candidate)
             val validation =
-                if (identity != null && identity.isNotEmpty()) {
+                if (identity != null) {
                     deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identity)
                 } else {
                     deps.identityValidation.validateConfig(temp.absolutePath)

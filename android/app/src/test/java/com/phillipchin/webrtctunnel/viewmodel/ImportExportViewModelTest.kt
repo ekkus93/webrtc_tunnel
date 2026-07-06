@@ -6,6 +6,8 @@ import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+import com.phillipchin.webrtctunnel.security.IdentityCrypto
+import com.phillipchin.webrtctunnel.security.IdentityRepository
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -46,6 +48,79 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
         assertTrue(!tempFile.exists())
         assertEquals(baseline, configRepository.readConfig())
         assertNotNull(vm.state.value.resultMessage)
+    }
+
+    @Test
+    fun importExportViewModelUsesIdentityAwareValidationWhenIdentityReadable() {
+        deps.identityRepository.storeEncryptedIdentity("private-identity-bytes".toByteArray(), "canon-pub")
+        val vm = ImportExportViewModel(deps)
+        val configFile =
+            File(app.filesDir, "identity-aware-import-config.toml").apply {
+                writeText(configRepository.readConfig())
+            }
+        vm.updateState { it.copy(configImportPath = configFile.absolutePath) }
+        recordingBridge.validationResult = ValidationResult(true, null)
+
+        vm.importConfig()
+
+        assertEquals(1, recordingBridge.validateConfigWithIdentityCalls)
+        assertEquals(0, recordingBridge.validateConfigCalls)
+    }
+
+    @Test
+    fun importExportViewModelUsesIdentityLessValidationWhenNoIdentity() {
+        assertTrue(!deps.identityRepository.hasEncryptedIdentity())
+        val vm = ImportExportViewModel(deps)
+        val configFile =
+            File(app.filesDir, "identity-less-import-config.toml").apply {
+                writeText(configRepository.readConfig())
+            }
+        vm.updateState { it.copy(configImportPath = configFile.absolutePath) }
+        recordingBridge.validationResult = ValidationResult(true, null)
+
+        vm.importConfig()
+
+        assertEquals(0, recordingBridge.validateConfigWithIdentityCalls)
+        assertEquals(1, recordingBridge.validateConfigCalls)
+    }
+
+    @Test
+    fun importExportViewModelSurfacesVisibleFailureWhenIdentityPresentButUnreadable() {
+        val unreadableIdentityRepository =
+            IdentityRepository(
+                app,
+                object : IdentityCrypto {
+                    override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
+
+                    override fun decrypt(payload: ByteArray): ByteArray = error("decrypt boom")
+                },
+            )
+        unreadableIdentityRepository.storeEncryptedIdentity("garbage".toByteArray(), "canon-pub")
+        val brokenDeps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = { recordingBridge },
+                configRepository = configRepository,
+                networkPolicyManager =
+                    NetworkPolicyManager {
+                        NetworkType.UnmeteredWifi to false
+                    },
+                identityRepository = unreadableIdentityRepository,
+                dispatchers = deps.dispatchers,
+            )
+        val vm = ImportExportViewModel(brokenDeps)
+        val configFile =
+            File(app.filesDir, "unreadable-identity-import-config.toml").apply {
+                writeText(configRepository.readConfig())
+            }
+        vm.updateState { it.copy(configImportPath = configFile.absolutePath) }
+        recordingBridge.validationResult = ValidationResult(true, null)
+
+        vm.importConfig()
+
+        assertEquals(0, recordingBridge.validateConfigWithIdentityCalls)
+        assertEquals(0, recordingBridge.validateConfigCalls)
+        assertTrue(vm.state.value.resultMessage?.contains("Identity exists but could not be loaded") == true)
     }
 
     @Test

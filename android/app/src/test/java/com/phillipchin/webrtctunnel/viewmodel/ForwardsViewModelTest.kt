@@ -1,13 +1,19 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import android.os.Looper
+import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.model.ForwardConfig
+import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+import com.phillipchin.webrtctunnel.security.IdentityCrypto
+import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,6 +52,73 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
         awaitMessage(vm) { it?.contains("bad config") == true }
         assertTrue(vm.forwards.value.none { it.id == "web" })
         assertFalse(vm.isBusy.value)
+    }
+
+    @Test
+    fun forwardsViewModelSaveUsesIdentityAwareValidationWhenIdentityReadable() {
+        deps.identityRepository.storeEncryptedIdentity("private-identity-bytes".toByteArray(), "canon-pub")
+        val vm = ForwardsViewModel(deps)
+        recordingBridge.validationResult = ValidationResult(true, null)
+        val forward =
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+
+        vm.saveForward(forward)
+
+        awaitMessage(vm) { it == "Forward saved" }
+        assertEquals(1, recordingBridge.validateConfigWithIdentityCalls)
+        assertEquals(0, recordingBridge.validateConfigCalls)
+    }
+
+    @Test
+    fun forwardsViewModelSaveUsesIdentityLessValidationWhenNoIdentity() {
+        assertFalse(deps.identityRepository.hasEncryptedIdentity())
+        val vm = ForwardsViewModel(deps)
+        recordingBridge.validationResult = ValidationResult(true, null)
+        val forward =
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+
+        vm.saveForward(forward)
+
+        awaitMessage(vm) { it == "Forward saved" }
+        assertEquals(0, recordingBridge.validateConfigWithIdentityCalls)
+        assertEquals(1, recordingBridge.validateConfigCalls)
+    }
+
+    @Test
+    fun forwardsViewModelSaveReportsVisibleFailureWhenIdentityPresentButUnreadable() {
+        val unreadableIdentityRepository =
+            IdentityRepository(
+                app,
+                object : IdentityCrypto {
+                    override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
+
+                    override fun decrypt(payload: ByteArray): ByteArray = error("decrypt boom")
+                },
+            )
+        unreadableIdentityRepository.storeEncryptedIdentity("garbage".toByteArray(), "canon-pub")
+        val brokenDeps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = { recordingBridge },
+                configRepository = configRepository,
+                networkPolicyManager =
+                    NetworkPolicyManager {
+                        NetworkType.UnmeteredWifi to false
+                    },
+                identityRepository = unreadableIdentityRepository,
+                dispatchers = deps.dispatchers,
+            )
+        val vm = ForwardsViewModel(brokenDeps)
+        recordingBridge.validationResult = ValidationResult(true, null)
+        val forward =
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+
+        vm.saveForward(forward)
+
+        awaitMessage(vm) { it?.contains("Identity exists but could not be loaded") == true }
+        assertEquals(0, recordingBridge.validateConfigWithIdentityCalls)
+        assertEquals(0, recordingBridge.validateConfigCalls)
+        assertTrue(vm.forwards.value.none { it.id == "web" })
     }
 
     @Test

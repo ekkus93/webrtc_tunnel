@@ -34,6 +34,12 @@ class RecordingBridge : TunnelNativeBridge {
     // LogsViewModel.refresh() specific log events.
     var recentLogsJson: String = "[]"
 
+    // Tracks which config-validation entry point callers actually used, so a test can
+    // prove identity-aware vs. identity-absent validation was chosen (P1-001) instead of
+    // only observing the (identical) canned ValidationResult either path returns.
+    var validateConfigCalls = 0
+    var validateConfigWithIdentityCalls = 0
+
     override fun startOffer(
         configPath: String,
         identityBytes: ByteArray?,
@@ -53,12 +59,18 @@ class RecordingBridge : TunnelNativeBridge {
 
     override fun getRecentLogsJson(maxEvents: Int): String = recentLogsJson
 
-    override fun validateConfig(configPath: String): ValidationResult = validationResult
+    override fun validateConfig(configPath: String): ValidationResult {
+        validateConfigCalls += 1
+        return validationResult
+    }
 
     override fun validateConfigWithIdentity(
         configPath: String,
         identityBytes: ByteArray,
-    ): ValidationResult = validationResult
+    ): ValidationResult {
+        validateConfigWithIdentityCalls += 1
+        return validationResult
+    }
 
     override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
         privateIdentityValidationResult ?: IdentityValidationResult(
