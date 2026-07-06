@@ -484,13 +484,13 @@ Add a specific `DaemonError` variant rather than hiding this inside a generic lo
 
 ### Acceptance criteria
 
-- [ ] Worker exit/panic is observed during idle daemon operation.
-- [ ] Worker exit/panic is observed during an active offer session.
-- [ ] Unexpected worker death is daemon-fatal.
-- [ ] Remaining workers receive cooperative shutdown.
-- [ ] Worker monitor join failures are returned or logged as secondary errors.
-- [ ] Status cannot remain `Listening` after an undetected worker death.
-- [ ] Deterministic test hook can force one worker failure.
+- [x] Worker exit/panic is observed during idle daemon operation.
+- [x] Worker exit/panic is observed during an active offer session.
+- [x] Unexpected worker death is daemon-fatal.
+- [x] Remaining workers receive cooperative shutdown.
+- [x] Worker monitor join failures are returned or logged as secondary errors.
+- [x] Status cannot remain `Listening` after an undetected worker death.
+- [x] Deterministic test hook can force one worker failure.
 
 ---
 
