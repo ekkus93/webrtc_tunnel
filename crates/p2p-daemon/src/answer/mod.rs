@@ -255,6 +255,28 @@ fn find_session_id_by_generation_and_peer(
     })
 }
 
+/// Resolves a completed task's current registry key: `candidate_session_id` (the
+/// task's own final/initial session id) is tried first as a fast path, but is only
+/// trusted if the registry entry at that key still has the *same* generation and
+/// remote peer — otherwise a same-peer replacement raced ahead of this completion
+/// (its `Replaced` event may still be queued, unprocessed) and the entry now lives
+/// under a different key. Falling back to the stable generation+peer search finds
+/// it regardless of which key it currently sits under.
+fn resolve_completion_registry_session_id(
+    sessions: &HashMap<SessionId, AnswerSessionHandle>,
+    candidate_session_id: SessionId,
+    generation: SessionGeneration,
+    remote_peer_id: &PeerId,
+) -> Option<SessionId> {
+    if sessions.get(&candidate_session_id).is_some_and(|handle| {
+        handle.generation == generation && &handle.remote_peer_id == remote_peer_id
+    }) {
+        return Some(candidate_session_id);
+    }
+
+    find_session_id_by_generation_and_peer(sessions, generation, remote_peer_id)
+}
+
 /// Handles one independently-observed answer session task completion (normal end,
 /// remote/ICE failure, or — critically — a panic/join failure that the task never
 /// self-reported). A panic can no longer strand the registry entry: this removes
@@ -271,13 +293,22 @@ pub(crate) async fn handle_answer_task_completion(
     let AnswerTaskCompletion { initial_session_id, generation, remote_peer_id, outcome } =
         completion;
 
-    let lookup_session_id = match &outcome {
+    // Both arms use the same stable-identity resolution: the task's own reported
+    // session id (final on success, initial on join failure) is only a fast-path
+    // hint, never trusted blindly, because a same-peer replacement can change the
+    // registry key out from under an in-flight task before its completion is
+    // observed here (see `resolve_completion_registry_session_id`).
+    let candidate_session_id = match &outcome {
         Ok(result) => result.final_session_id,
-        Err(_) => {
-            find_session_id_by_generation_and_peer(sessions_by_id, generation, &remote_peer_id)
-                .unwrap_or(initial_session_id)
-        }
+        Err(_) => initial_session_id,
     };
+    let lookup_session_id = resolve_completion_registry_session_id(
+        sessions_by_id,
+        candidate_session_id,
+        generation,
+        &remote_peer_id,
+    )
+    .unwrap_or(candidate_session_id);
 
     let matched = sessions_by_id.get(&lookup_session_id).is_some_and(|handle| {
         handle.generation == generation && handle.remote_peer_id == remote_peer_id
