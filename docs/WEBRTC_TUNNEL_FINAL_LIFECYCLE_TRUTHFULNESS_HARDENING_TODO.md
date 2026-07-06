@@ -938,10 +938,10 @@ If true user switching cannot be simulated in a local shell test, add:
 
 ### Acceptance criteria
 
-- [ ] Existing log dir must be writable by `_p2ptunnel`.
-- [ ] Traversable-but-nonwritable directory fails.
-- [ ] Standalone installer and pkg script use same policy.
-- [ ] Smoke test can detect regression.
+- [x] Existing log dir must be writable by `_p2ptunnel`.
+- [x] Traversable-but-nonwritable directory fails.
+- [x] Standalone installer and pkg script use same policy.
+- [x] Smoke test can detect regression (implemented; NOT RUN in this Linux sandbox — `test-launchd-install-layout.sh` is Darwin-only and requires root; verified via `bash -n`/manual trace only, see final report).
 
 ---
 
