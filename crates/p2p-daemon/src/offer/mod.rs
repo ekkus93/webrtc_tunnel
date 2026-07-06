@@ -913,12 +913,15 @@ async fn run_offer_accept_loop(
 }
 
 /// Spawns the accept-loop workers and their independent completion monitors.
-/// Also returns each worker's [`OfferAcceptWorkerTestHandle`] (its forward ID
-/// paired with an `AbortHandle` decoupled from the `JoinHandle` the monitor
-/// awaits) so `#[cfg(any(test, debug_assertions))]` test hooks can
-/// deterministically force one worker to fail — aborting a task and a genuine
-/// panic are indistinguishable to the monitor, both surface as `Err` on
-/// `worker.await`, so this exercises the exact same fatal-supervision path.
+/// In test/debug builds also returns each worker's [`OfferAcceptWorkerTestHandle`]
+/// (its forward ID paired with an `AbortHandle` decoupled from the `JoinHandle`
+/// the monitor awaits) so test hooks can deterministically force one worker to
+/// fail — aborting a task and a genuine panic are indistinguishable to the
+/// monitor, both surface as `Err` on `worker.await`, so this exercises the exact
+/// same fatal-supervision path. Release builds have no consumer for that
+/// bookkeeping, so they skip it entirely (a plain `Vec<AbortHandle>`) rather than
+/// building `OfferAcceptWorkerTestHandle`s whose fields would then go unread.
+#[cfg(any(test, debug_assertions))]
 fn spawn_offer_accept_loops(
     listeners: Vec<OfferListener>,
     shutdown: ShutdownToken,
@@ -961,6 +964,45 @@ fn spawn_offer_accept_loops(
         OfferAcceptRuntime { accepted_clients: rx, worker_exits: exit_rx, monitors },
         worker_test_handles,
     )
+}
+
+#[cfg(not(any(test, debug_assertions)))]
+fn spawn_offer_accept_loops(
+    listeners: Vec<OfferListener>,
+    shutdown: ShutdownToken,
+) -> (OfferAcceptRuntime, Vec<tokio::task::AbortHandle>) {
+    let (tx, rx) = mpsc::channel(64);
+    let (exit_tx, exit_rx) = mpsc::unbounded_channel();
+    let mut monitors = Vec::with_capacity(listeners.len());
+    let mut abort_handles = Vec::with_capacity(listeners.len());
+    for listener in listeners {
+        let forward_id = listener.forward_id().to_owned();
+        let monitor_forward_id = forward_id.clone();
+        let tx = tx.clone();
+        let task_shutdown = shutdown.clone();
+        let exit_tx = exit_tx.clone();
+        let worker = tokio::spawn(run_offer_accept_loop(listener, tx, task_shutdown));
+        abort_handles.push(worker.abort_handle());
+        let handle = tokio::spawn(async move {
+            let outcome = match worker.await {
+                Ok(reason) => Ok(reason),
+                Err(error) => Err(error.to_string()),
+            };
+            if exit_tx
+                .send(OfferAcceptTaskExit { forward_id: forward_id.clone(), outcome })
+                .is_err()
+            {
+                tracing::error!(
+                    forward_id = %forward_id,
+                    "offer accept worker exit could not be delivered to supervisor",
+                );
+            }
+        });
+        monitors.push(OfferAcceptMonitor { forward_id: monitor_forward_id, handle });
+    }
+    drop(tx);
+    drop(exit_tx);
+    (OfferAcceptRuntime { accepted_clients: rx, worker_exits: exit_rx, monitors }, abort_handles)
 }
 
 #[cfg(test)]
