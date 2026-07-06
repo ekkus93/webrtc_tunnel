@@ -46,6 +46,43 @@ impl StatusAuditLog {
     }
 }
 
+/// Bounds `open_unique_temp_file`'s collision retry so a persistently broken
+/// directory (not just ordinary stale debris) fails loudly instead of looping
+/// forever (P1-006).
+const MAX_TEMP_NAME_ATTEMPTS: u32 = 16;
+
+/// Opens a not-yet-existing `.{file_name}.tmp-{pid}-{sequence}` file under `parent`,
+/// drawing `sequence` from `sequence_source`. On `AlreadyExists` (most likely stale
+/// debris left behind by a crashed prior process reusing this PID) this retries with
+/// a fresh sequence rather than failing the whole status write outright — the stale
+/// file is never touched, since a fresh, never-before-used sequence value always
+/// picks a different name (P1-006). `sequence_source` is a parameter (rather than
+/// always the process-wide [`STATUS_TEMP_SEQUENCE`]) so a test can supply its own
+/// freshly-zeroed counter and stay deterministic regardless of what value the real,
+/// process-shared counter happens to be at when other tests run concurrently.
+async fn open_unique_temp_file(
+    parent: &Path,
+    file_name: &str,
+    sequence_source: &AtomicU64,
+) -> Result<(tokio::fs::File, PathBuf), std::io::Error> {
+    let mut last_error: Option<std::io::Error> = None;
+    for _ in 0..MAX_TEMP_NAME_ATTEMPTS {
+        let sequence = sequence_source.fetch_add(1, Ordering::Relaxed);
+        let temp_path = parent.join(format!(".{file_name}.tmp-{}-{sequence}", std::process::id()));
+        // create_new (O_EXCL) rather than create/truncate: a colliding path fails
+        // loudly instead of silently truncating whatever (possibly another writer's
+        // in-flight, possibly stale) file already occupies that name.
+        match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&temp_path).await {
+            Ok(file) => return Ok((file, temp_path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_error = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.expect("loop runs at least once since MAX_TEMP_NAME_ATTEMPTS > 0"))
+}
+
 /// Replaces `path`'s contents atomically: writes to a same-directory temporary
 /// file, flushes it, then renames it over `path`. A reader can therefore only
 /// ever see the previous complete content or the new complete content — never a
@@ -57,15 +94,10 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     tokio::fs::create_dir_all(parent).await?;
 
     let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("status.json");
-    let sequence = STATUS_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temp_path = parent.join(format!(".{file_name}.tmp-{}-{sequence}", std::process::id()));
+    let (mut file, temp_path) =
+        open_unique_temp_file(parent, file_name, &STATUS_TEMP_SEQUENCE).await?;
 
     let write_result = async {
-        // create_new (O_EXCL) rather than create/truncate: if two writers ever did
-        // compute the same temp path, this fails loudly instead of one silently
-        // truncating the other's in-flight write.
-        let mut file =
-            tokio::fs::OpenOptions::new().write(true).create_new(true).open(&temp_path).await?;
         file.write_all(bytes).await?;
         file.flush().await?;
         drop(file);
@@ -341,12 +373,14 @@ impl StatusWriter {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicU64;
 
     use p2p_core::{DaemonState, NodeRole};
+    use tokio::io::AsyncWriteExt;
 
     use super::{
         DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusAuditLog,
-        StatusWriter, write_atomic,
+        StatusWriter, open_unique_temp_file, write_atomic,
     };
 
     #[test]
@@ -740,6 +774,60 @@ mod tests {
 
         assert!(result.is_err(), "cannot create a directory where a file already exists");
         let _ = tokio::fs::remove_file(&blocking_file).await;
+    }
+
+    /// Regression test for P1-006: a stale temp file left behind at the exact name a
+    /// writer's first sequence draw would produce (e.g. debris from a crashed prior
+    /// process reusing this PID) must not fail the whole write. Uses a private,
+    /// freshly-zeroed sequence counter rather than the real, process-shared
+    /// `STATUS_TEMP_SEQUENCE` — this file's own stress tests below perform hundreds of
+    /// `write_atomic` calls that run concurrently with every other `#[tokio::test]` in
+    /// this module, so predicting the shared counter's live value here would be
+    /// inherently racy.
+    #[tokio::test]
+    async fn open_unique_temp_file_skips_a_stale_collision_and_leaves_it_untouched() {
+        let dir =
+            std::env::temp_dir().join(format!("p2ptunnel-atomic-collision-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.expect("create test dir");
+        let path = dir.join("status.json");
+        let local_sequence = AtomicU64::new(0);
+
+        // Occupies the exact path the first sequence draw (0) will produce.
+        let stale_temp_path = dir.join(format!(".status.json.tmp-{}-0", std::process::id()));
+        tokio::fs::write(&stale_temp_path, b"stale debris from a crashed prior process")
+            .await
+            .expect("pre-create stale temp file");
+
+        let (mut file, temp_path) = open_unique_temp_file(&dir, "status.json", &local_sequence)
+            .await
+            .expect("should skip the collision and open a fresh temp file instead of failing");
+        assert_ne!(temp_path, stale_temp_path, "must not reuse the colliding stale name");
+
+        file.write_all(b"{\"ok\":true}").await.expect("write should succeed");
+        file.flush().await.expect("flush should succeed");
+        drop(file);
+        tokio::fs::rename(&temp_path, &path).await.expect("rename into place should succeed");
+
+        // Stale file remains untouched.
+        assert_eq!(
+            tokio::fs::read(&stale_temp_path).await.expect("stale file should still exist"),
+            b"stale debris from a crashed prior process",
+        );
+        // Target JSON valid.
+        assert_eq!(tokio::fs::read(&path).await.expect("read target"), b"{\"ok\":true}");
+        // New temp cleaned (renamed away): only the target and the untouched stale file remain.
+        let mut entries = tokio::fs::read_dir(&dir).await.expect("read dir");
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.expect("dir entry") {
+            names.push(entry.file_name());
+        }
+        assert_eq!(
+            names.len(),
+            2,
+            "expected only status.json and the untouched stale file, got {names:?}"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
     #[tokio::test]
