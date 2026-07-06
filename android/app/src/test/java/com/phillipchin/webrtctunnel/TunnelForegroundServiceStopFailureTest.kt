@@ -7,6 +7,7 @@ import com.phillipchin.webrtctunnel.model.ServiceState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -140,15 +141,27 @@ class TunnelForegroundServiceStopFailureTest {
         assertTrue(bridge.awaitStartOfferEntered(10_000))
 
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
-        // stopServiceWork()'s own stop() call (unblocked) lands first; only after that do
-        // we arm the failure, so it lands on the startup-cancellation cleanup's own
-        // repository.stop() call once the blocked start is released.
+        // stopServiceWork()'s own stop() call (unblocked) lands first and succeeds;
+        // only after that do we arm the failure, so it targets the startup-
+        // cancellation cleanup's own stop() call specifically, once the blocked
+        // start is released.
         assertTrue(waitForCondition { bridge.stopCalls >= 1 })
         bridge.failNextStop()
         bridge.releaseBlockedStartOffer()
 
+        // Exact-branch proof (P0-003): wait for the cancellation cleanup's own
+        // event, not just a stop-call count — a generic "some later stop failed"
+        // check cannot distinguish this branch from stopServiceWork()'s own call or
+        // the supersedence-cleanup branch.
+        val event = runBlocking { withTimeout(10_000) { service.testEvents.receive() } }
+        assertEquals(ServiceTestEvent.StartupCancellationCleanupStopEntered, event)
+
         assertTrue(waitForCondition { bridge.stopCalls >= 2 })
         assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error })
+        // No clean startup success can have been published: the cancellation catch
+        // branch returns unconditionally after handling cleanup, never reaching the
+        // result.onSuccess { ... } success path.
+        assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
     }
 
     @Test

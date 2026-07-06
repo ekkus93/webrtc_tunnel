@@ -28,6 +28,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
@@ -38,6 +39,19 @@ import kotlinx.coroutines.withContext
 
 // Control-flow signal: a startup attempt aborted after publishing its own error/state.
 private class StartupAborted : Exception()
+
+/**
+ * Branch-keyed startup-cleanup events (P0-003/P0-004): a required test must prove
+ * failure came from the *exact* cleanup branch under test, not merely that some
+ * stop call somewhere eventually failed — a generic "fail the next stop call"
+ * cannot distinguish this branch from the explicit-stop or supersedence-cleanup
+ * branches when more than one stop call can occur in a scenario.
+ */
+internal sealed interface ServiceTestEvent {
+    data object StartupCancellationCleanupStopEntered : ServiceTestEvent
+
+    data object StartupSupersedenceCleanupStopEntered : ServiceTestEvent
+}
 
 class TunnelForegroundService
     @JvmOverloads
@@ -58,6 +72,13 @@ class TunnelForegroundService
         private var startupJob: Job? = null
         private var statusPollJob: Job? = null
         private var lastMode: TunnelMode = TunnelMode.Offer
+
+        // internal (not private): P0-003/P0-004's Robolectric tests wait for the exact
+        // startup-cleanup branch event before releasing an armed stop failure, instead
+        // of inferring which branch is about to run from stop-call counts alone.
+        // Unlimited capacity: a test-only channel with a single, always-draining
+        // reader per test method, so this never needs to apply backpressure.
+        internal val testEvents = Channel<ServiceTestEvent>(Channel.UNLIMITED)
 
         // internal (not private): P0-001's Robolectric test captures this reference and
         // joins it directly, so it can deterministically wait for a specific stale poll
@@ -402,6 +423,7 @@ class TunnelForegroundService
                             // tunnel would be silently left running behind a "cancelled" startup.
                             // NonCancellable lets this cleanup actually execute; it also covers
                             // stopStatusPollingAndJoin() for the same reason (P0-001).
+                            testEvents.trySend(ServiceTestEvent.StartupCancellationCleanupStopEntered)
                             withContext(NonCancellable + ioDispatcher) {
                                 reporter.stopStatusPollingAndJoin()
                                 repository.stop()
@@ -417,6 +439,7 @@ class TunnelForegroundService
                         // Same "prompt cancellation" hazard as above: a newer start may have
                         // cancelled this job's generation (or the job itself) by the time the
                         // native start call returns, so this cleanup also needs NonCancellable.
+                        testEvents.trySend(ServiceTestEvent.StartupSupersedenceCleanupStopEntered)
                         withContext(NonCancellable + ioDispatcher) {
                             reporter.stopStatusPollingAndJoin()
                             repository.stop()
