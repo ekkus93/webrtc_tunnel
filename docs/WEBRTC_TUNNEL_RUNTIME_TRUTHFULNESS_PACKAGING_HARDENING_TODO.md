@@ -2216,10 +2216,10 @@ config_redacted_error=...
 
 ### Acceptance criteria
 
-- [ ] Serialization failure is visible.
-- [ ] Config read failure is visible.
-- [ ] Missing optional file is distinguishable from permission/read failure.
-- [ ] Error text is redacted before sharing.
+- [x] Serialization failure is visible.
+- [x] Config read failure is visible.
+- [x] Missing optional file is distinguishable from permission/read failure.
+- [x] Error text is redacted before sharing.
 
 ---
 
