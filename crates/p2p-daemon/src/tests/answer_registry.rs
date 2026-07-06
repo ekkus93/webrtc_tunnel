@@ -347,6 +347,108 @@ async fn replacement_event_remaps_only_replaced_peer_session() {
     let _ = tokio::fs::remove_file(&path).await;
 }
 
+/// P0-008: deterministically forces the exact ordering the spec describes —
+/// completion observed before its `Replaced` event is processed — instead of
+/// racing real time against the scheduler. `handle_answer_task_completion` and
+/// `handle_answer_session_event` are plain (async) functions over the same
+/// registry maps, so the ordering is enforced simply by calling them in the
+/// required sequence, with no sleep or barrier needed.
+#[tokio::test]
+async fn completion_before_queued_replaced_event_cannot_strand_registry_state() {
+    let mut config = sample_config();
+    config.node.role = NodeRole::Answer;
+    let (path, status_writer) = status_writer_for_test(&mut config, "completion-before-replaced");
+    let config = Arc::new(config);
+    let answer = generate_identity("answer-office").expect("answer identity");
+    let authorized_keys = AuthorizedKeys::parse("").expect("empty keys");
+    let codec = SignalCodec::new(&answer.identity, &authorized_keys, 120, 300);
+    let mut runtime = connected_runtime();
+    let mut ctx = RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+    let mut transport = RecordingTransport::default();
+    let mut sessions_by_id = HashMap::new();
+    let mut session_by_peer = HashMap::new();
+    let remote: PeerId = "offer-home".parse().expect("remote peer");
+    let generation = SessionGeneration(5);
+    let old_session_id = SessionId::random();
+    let new_session_id = SessionId::random();
+    let (handle, _rx) =
+        test_answer_handle(old_session_id, generation, remote.clone(), DaemonState::Negotiating);
+    sessions_by_id.insert(old_session_id, handle);
+    session_by_peer.insert(remote.clone(), old_session_id);
+    let shutdown = ShutdownToken::new();
+    let mut primary_error = None;
+
+    // Step 1: the session task, having internally adopted `new_session_id` via a
+    // same-peer replacement (as `maybe_replace_pending_same_peer_session` does
+    // before ever sending `Replaced`), now completes. Its own `Replaced` event is
+    // still unprocessed (queued but not yet delivered) — the registry is still
+    // keyed by `old_session_id` at this exact moment.
+    handle_answer_task_completion(
+        &mut ctx,
+        &mut sessions_by_id,
+        &mut session_by_peer,
+        AnswerTaskCompletion {
+            initial_session_id: old_session_id,
+            generation,
+            remote_peer_id: remote.clone(),
+            outcome: Ok(AnswerSessionTaskResult {
+                final_session_id: new_session_id,
+                result: Ok(()),
+            }),
+        },
+        &shutdown,
+        &mut primary_error,
+    )
+    .await;
+
+    // The stable generation+peer fallback must have found the entry under its
+    // *old* key even though the task reported its *new* id — a lookup keyed only
+    // on `final_session_id` would have missed entirely here.
+    assert!(
+        !sessions_by_id.contains_key(&old_session_id),
+        "completion must remove the entry under its actual (old) registry key"
+    );
+    assert!(
+        !sessions_by_id.contains_key(&new_session_id),
+        "completion must not fabricate an entry under the new id it never actually held"
+    );
+    assert_eq!(session_by_peer.get(&remote), None);
+    assert!(primary_error.is_none());
+
+    // Step 2: the previously-queued `Replaced` event is now delivered, late.
+    handle_answer_session_event(
+        &mut ctx,
+        &codec,
+        &mut transport,
+        &mut sessions_by_id,
+        &mut session_by_peer,
+        AnswerSessionEvent::Replaced {
+            old_session_id,
+            new_session_id,
+            remote_peer_id: remote.clone(),
+            generation,
+            status: test_session_status(
+                new_session_id,
+                generation,
+                remote.clone(),
+                DaemonState::ConnectingDataChannel,
+            ),
+        },
+    )
+    .await;
+
+    // The late event must not recreate any state: the completed session is gone
+    // for good, under neither the old nor the new id.
+    assert!(!sessions_by_id.contains_key(&old_session_id));
+    assert!(!sessions_by_id.contains_key(&new_session_id));
+    assert_eq!(session_by_peer.get(&remote), None);
+    assert!(sessions_by_id.is_empty(), "registry must remain empty after the stale replacement");
+
+    let status = read_status_file(&path).await;
+    assert_eq!(status["active_session_count"], 0);
+    let _ = tokio::fs::remove_file(&path).await;
+}
+
 #[tokio::test]
 async fn answer_registry_reports_serving_when_sessions_are_active() {
     let mut config = sample_config();
