@@ -687,13 +687,13 @@ return nonzero after finalization
 
 ### Acceptance criteria
 
-- [ ] Session registry does not depend on a self-sent `Ended` event.
-- [ ] `AnswerSessionEvent::Ended` is removed or no longer authoritative.
-- [ ] Normal task completion is not followed by `abort()`.
-- [ ] Task panic/join failure is observed independently.
-- [ ] Same-peer replacement does not make completion cleanup miss the current map entry.
-- [ ] Panic cannot strand a session registry entry.
-- [ ] Panic triggers daemon shutdown and nonzero result after cooperative drain.
+- [x] Session registry does not depend on a self-sent `Ended` event.
+- [x] `AnswerSessionEvent::Ended` is removed or no longer authoritative.
+- [x] Normal task completion is not followed by `abort()`.
+- [x] Task panic/join failure is observed independently.
+- [x] Same-peer replacement does not make completion cleanup miss the current map entry.
+- [x] Panic cannot strand a session registry entry.
+- [x] Panic triggers daemon shutdown and nonzero result after cooperative drain.
 
 ---
 
@@ -785,11 +785,11 @@ match primary_error {
 
 ### Acceptance criteria
 
-- [ ] No fatal answer branch with active sessions bypasses drain.
-- [ ] Event channel failure triggers drain and nonzero result.
-- [ ] Task panic triggers drain and nonzero result.
-- [ ] Other sessions still receive cooperative shutdown.
-- [ ] Terminal status is attempted after registry reaches zero.
+- [x] No fatal answer branch with active sessions bypasses drain.
+- [x] Event channel failure triggers drain and nonzero result.
+- [x] Task panic triggers drain and nonzero result.
+- [x] Other sessions still receive cooperative shutdown.
+- [x] Terminal status is attempted after registry reaches zero.
 
 ---
 
@@ -1641,9 +1641,9 @@ Assert:
 
 ### Acceptance criteria
 
-- [ ] All four regression classes have deterministic tests.
-- [ ] No fixed sleep is the primary synchronization mechanism.
-- [ ] Tests fail when supervision/finalization is removed.
+- [x] All four regression classes have deterministic tests.
+- [x] No fixed sleep is the primary synchronization mechanism.
+- [x] Tests fail when supervision/finalization is removed.
 
 ---
 
