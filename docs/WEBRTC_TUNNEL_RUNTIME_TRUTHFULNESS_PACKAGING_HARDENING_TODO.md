@@ -2444,9 +2444,18 @@ At minimum on macOS CI:
 
 ### Acceptance criteria
 
-- [ ] Debian path mismatch cannot recur unnoticed.
-- [ ] Upgrade lifecycle script behavior is tested.
-- [ ] macOS permission policy has executable validation, not docs only.
+- [x] Debian path mismatch cannot recur unnoticed. Verified for real on GitHub Actions
+      Linux CI (run 28780695739): scripts/test-debian-package.sh builds the real .deb,
+      extracts it, and asserts every unit's ExecStart(Pre)= resolves in the extracted tree.
+- [x] Upgrade lifecycle script behavior is tested. Verified for real on GitHub Actions
+      Linux CI (same run): all 6 postinst/prerm/postrm scenarios passed in a throwaway
+      Docker container. Also verified locally that the test catches a real regression
+      (temporarily reintroduced the prerm-stops-on-upgrade bug; test failed as expected).
+- [x] macOS permission policy has executable validation, not docs only. Verified for real
+      on GitHub Actions macOS CI (same run): scripts/test-launchd-install-layout.sh ran
+      the real install-launchd-services.sh and all 5 scenarios passed (missing-account
+      failure, 0750 directory creation + plutil-lint, idempotent re-validation, and the
+      half-enabled-pair refusal on --enable).
 
 ---
 
