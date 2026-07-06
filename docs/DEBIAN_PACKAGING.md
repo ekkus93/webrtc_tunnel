@@ -40,22 +40,39 @@ after install.
   `/var/log/p2ptunnel-*` directories if they don't already exist, then runs
   `systemctl daemon-reload` if systemd is present. Never touches an existing
   config directory's contents (so upgrades preserve your config/identity
-  untouched) and never enables/starts the services.
+  untouched) and never enables/starts a service on first install. On an
+  **upgrade**, it `try-restart`s each of `p2p-offer.service`/
+  `p2p-answer.service` that was already active, so the upgrade actually picks
+  up the new binary instead of leaving the old process running until someone
+  notices and restarts it by hand; `try-restart` only touches units that were
+  already active, so a first install never gets auto-started here.
 - **prerm**: stops `p2p-offer.service`/`p2p-answer.service` cleanly (a normal
-  `systemctl stop`, which the daemons handle as graceful shutdown) before
-  removal, if systemd is present and the units are active.
-- **postrm**: on ordinary `remove`, does nothing — config, state, logs, and
-  the service account are all left in place. Only `purge` removes
-  `/etc/p2ptunnel/*`, `/var/lib/p2ptunnel-*`, and `/var/log/p2ptunnel-*`
-  (including any private identity files under `/etc/p2ptunnel/*`). The
-  service account is deliberately **not** removed even on purge, to avoid
-  a freed system UID/GID being reused later.
+  `systemctl stop`, which the daemons handle as graceful shutdown) — but only
+  on `remove`/`deconfigure`, i.e. when the package is actually going away.
+  Deliberately **not** on upgrade: stopping here would take the tunnel down
+  for the whole duration of the upgrade, when postinst's try-restart above
+  already brings a previously-active service back up on the new binary
+  afterward.
+- **postrm**: on both ordinary `remove` and `purge`, runs
+  `systemctl daemon-reload` — the package's own unit files under
+  `/lib/systemd/system/` are already gone by the time postrm runs (removed as
+  part of the package), so without this, systemd keeps stale in-memory unit
+  state around after a plain `remove`. On ordinary `remove`, config, state,
+  logs, and the service account are otherwise all left in place. Only `purge`
+  removes `/etc/p2ptunnel/*`, `/var/lib/p2ptunnel-*`, and
+  `/var/log/p2ptunnel-*` (including any private identity files under
+  `/etc/p2ptunnel/*`). The service account is deliberately **not** removed
+  even on purge, to avoid a freed system UID/GID being reused later.
 
-Verified for real in an isolated `ubuntu:24.04` container (not the host):
-install → verify files/account/directories → write a marker into
-`config.toml` → reinstall (upgrade) → confirm the marker survived → remove →
-confirm the marker still survives → purge → confirm `/etc/p2ptunnel` is gone
-and the service account is retained.
+Verified for real via `scripts/test-debian-package.sh` (also wired into CI):
+builds the real `.deb`, extracts it to confirm every packaged unit's
+`ExecStart(Pre)=` path resolves to a real installed binary, then drives
+postinst/prerm/postrm through fresh-install, upgrade (with a unit already
+active), `prerm upgrade` (confirms nothing is stopped), `prerm remove`
+(confirms active units are stopped), `postrm remove`, and `postrm purge` in a
+throwaway `debian:bookworm-slim` container — asserting the exact
+try-restart/stop/daemon-reload behavior described above at each step, not
+just that the commands run without error.
 
 ## Known limitations
 

@@ -7,6 +7,20 @@ Docker both remain fully supported without `systemd`; see the main
 [README](../README.md#running-offer-and-answer) and
 [Docker/container lifecycle](../README.md#dockercontainer-lifecycle) sections.
 
+## Package (`.deb`) versus manual install
+
+This guide (steps 1–6 below) is the **manual** install path: binaries at
+`/usr/local/bin/`, units installed by hand or via
+[`scripts/install-systemd-services.sh`](../scripts/install-systemd-services.sh)
+into `/etc/systemd/system/`. If you instead install the Debian package (see
+[`docs/DEBIAN_PACKAGING.md`](DEBIAN_PACKAGING.md)), the binaries live at
+`/usr/bin/` and the units ship at `/lib/systemd/system/` — the package's own
+`postinst`/`prerm`/`postrm` maintainer scripts handle the service account,
+config/state/log directories, and upgrade/remove lifecycle for you, so most of
+steps 1–3 and 5 below do not apply. Do not mix the two: a `/usr/local/bin`
+manual unit and a `/usr/bin` packaged unit share the same unit filename, so
+installing both is a path/ownership conflict, not additive.
+
 ## 1. Build and install binaries
 
 ```bash
