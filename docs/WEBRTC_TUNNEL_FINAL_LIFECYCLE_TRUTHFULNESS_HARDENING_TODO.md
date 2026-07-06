@@ -1374,9 +1374,9 @@ Use actual logging dependency. If detailed user-facing errors are undesirable, k
 
 ### Acceptance criteria
 
-- [ ] Underlying failure reason is not discarded.
-- [ ] Sensitive content is redacted.
-- [ ] UI still clearly reports failure.
+- [x] Underlying failure reason is not discarded.
+- [x] Sensitive content is redacted.
+- [x] UI still clearly reports failure.
 
 ---
 
@@ -1605,7 +1605,7 @@ fix(status): make atomic temp paths unique per write
 - [ ] Quoted multi-word secrets are fully removed.
 - [ ] Diagnostic error path always returns valid JSON.
 - [ ] Error details remain redacted.
-- [ ] Reset failure reason is preserved in diagnostics/logs.
+- [x] Reset failure reason is preserved in diagnostics/logs.
 
 ## Tests
 
