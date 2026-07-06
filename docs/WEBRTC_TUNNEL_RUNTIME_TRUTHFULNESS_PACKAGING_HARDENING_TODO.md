@@ -1114,11 +1114,11 @@ assert Closed + zero sessions
 
 ### Acceptance criteria
 
-- [ ] The publish is proven in flight before shutdown.
-- [ ] The answer event loop continues servicing the publish path during drain.
-- [ ] No deadlock.
-- [ ] Final registry is empty.
-- [ ] Final state is `Closed`.
+- [x] The publish is proven in flight before shutdown.
+- [x] The answer event loop continues servicing the publish path during drain.
+- [x] No deadlock.
+- [x] Final registry is empty.
+- [x] Final state is `Closed`.
 
 ---
 
