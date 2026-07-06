@@ -1494,10 +1494,54 @@ new temp cleaned
 
 ### Acceptance criteria
 
-- [ ] Stale collision does not fail write.
-- [ ] Stale file is not deleted.
-- [ ] Writer advances to unique temp name.
-- [ ] No infinite retry introduced.
+- [x] Stale collision does not fail write. Extracted a new `open_unique_temp_file()` helper
+      (`crates/p2p-daemon/src/status.rs`) that retries with a fresh sequence number on
+      `AlreadyExists` instead of `write_atomic()` failing outright on the very first collision.
+- [x] Stale file is not deleted. `open_unique_temp_file()` never touches a colliding path — on
+      `AlreadyExists` it simply draws a new sequence and tries a different name; the pre-existing
+      file at the old name is left completely alone. Verified by the new test asserting the
+      pre-created "stale" file's exact byte content is unchanged after the write.
+- [x] Writer advances to unique temp name. Each retry draws a fresh value from
+      `STATUS_TEMP_SEQUENCE.fetch_add(...)` (never-repeating for the process lifetime), so a
+      colliding name is never retried — it always moves to a genuinely new one.
+- [x] No infinite retry introduced. Bounded by a new `MAX_TEMP_NAME_ATTEMPTS = 16` constant; after
+      that many consecutive collisions (a sign of something more wrong than ordinary stale
+      debris) the function gives up and returns the last error, matching `write_atomic()`'s
+      existing "fail loudly" philosophy rather than hanging forever.
+- Deviation from the TODO's suggested shape: made the sequence source (`sequence_source:
+  &AtomicU64`) a parameter instead of always reaching for the module-level
+  `STATUS_TEMP_SEQUENCE` directly, so a test can supply its own freshly-zeroed counter.
+  This crate's own existing stress tests in this file
+  (`concurrent_multi_writer_stress_never_produces_malformed_json_or_stale_temp_files`,
+  `concurrent_writes_and_reads_never_observe_partial_json`) perform hundreds of concurrent
+  `write_atomic()` calls against the real shared `STATUS_TEMP_SEQUENCE`, and Rust's test harness
+  runs different `#[tokio::test]` functions in the same binary concurrently by default — so a new
+  test trying to predict that static's live value to engineer an exact collision would be
+  inherently racy. Injecting the sequence source keeps the real call path
+  (`write_atomic → open_unique_temp_file(..., &STATUS_TEMP_SEQUENCE)`) unchanged while making the
+  retry logic itself fully deterministic to test in isolation.
+- Test added: `open_unique_temp_file_skips_a_stale_collision_and_leaves_it_untouched` — pre-creates
+  a file at the exact path a fresh, private `AtomicU64::new(0)` counter's first draw would
+  produce, calls `open_unique_temp_file()` directly, and asserts: it succeeds (doesn't fail on
+  the collision), the returned temp path differs from the stale one, the stale file's content is
+  byte-for-byte unchanged, the target file ends up with the correct JSON after a manual
+  write+rename, and no leftover temp file remains in the directory (only the target and the
+  still-untouched stale file). Ran 3x back-to-back plus alongside the full crate's other 19
+  `status.rs` tests (including the two heavy concurrent-writer stress tests) with no flakiness.
+  Regression-strength verified: temporarily replaced the retry loop with a single
+  non-retrying attempt (same signature, so it still compiled) — the new test failed with the
+  real `AlreadyExists` OS error, while the other 19 tests in this module (including both stress
+  tests) still passed. Restored the fix, reran: passes. Full gates rerun after restoring
+  (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D
+  warnings`, `cargo test --workspace --all-targets --all-features`) — all green. (Confirmed
+  separately, and unrelated to this change: `cargo clippy --workspace --all-targets --all-features
+  --release` already fails to compile several `two_node_daemon` integration test files on the
+  pre-existing `master` tip, before any of this round's changes — those files import test-only
+  items gated `#[cfg(any(test, debug_assertions))]`, which `debug_assertions` disables in a
+  `--release` build for an external integration-test crate, and `cfg(test)` does not apply across
+  the crate boundary either. This is pre-existing and out of scope for P1-006; the tracked
+  `CLAUDE.md` lint requirement is `cargo clippy --workspace --all-targets` with no `--release`
+  variant, and that passes cleanly.)
 
 ---
 
