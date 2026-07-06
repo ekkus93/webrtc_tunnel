@@ -151,8 +151,7 @@ jobs:
         run: |
           cd android
           ./gradlew --no-daemon testDebugUnitTest \
-            --tests '*TunnelForegroundServiceStopFailureTest' \
-            --tests '*TunnelForegroundServiceStartupCancellationStopFailureTest'
+            --tests '*TunnelForegroundServiceStopFailureTest'
 
       - name: Build Android app and run unit tests
         run: |
