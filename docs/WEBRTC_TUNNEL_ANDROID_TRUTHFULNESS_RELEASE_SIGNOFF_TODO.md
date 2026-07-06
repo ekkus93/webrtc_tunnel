@@ -731,11 +731,15 @@ Restore central token-aware gate.
 
 ### Acceptance criteria
 
-- [ ] Central gate has integration-level proof.
-- [ ] Local loop check remains intact.
-- [ ] Removing only central token check makes test fail.
-- [ ] Non-coalescing audit is the assertion source.
-- [ ] No sleep-based synchronization.
+- [x] Central gate has integration-level proof — new
+      `offer_central_gate_is_the_only_defense_before_ordinary_recovery` test.
+- [x] Local loop check remains intact — unchanged; verified the older
+      loop-top test still passes with only the central gate reverted.
+- [x] Removing only central token check makes test fail — verified directly.
+- [x] Non-coalescing audit is the assertion source (`StatusAuditLog`, same as
+      the existing loop-top test).
+- [x] No sleep-based synchronization (barrier-based, via `OfferLoopTopBarrier`
+      reused at the new recovery point).
 
 ---
 
