@@ -688,13 +688,41 @@ Then keep:
 
 ### Acceptance criteria
 
-- [ ] Four critical stop-failure scenarios exist under `src/test`.
-- [ ] They run with Robolectric through `testDebugUnitTest`.
-- [ ] They exercise the actual foreground service path.
-- [ ] Shared fakes are not shipped in production source sets.
-- [ ] Existing instrumentation coverage may remain.
-- [ ] CI explicitly runs the focused P0 test class.
-- [ ] Full Android unit-test gate also passes.
+- [x] Four critical stop-failure scenarios exist under `src/test`.
+- [x] They run with Robolectric through `testDebugUnitTest`.
+- [x] They exercise the actual foreground service path.
+- [x] Shared fakes are not shipped in production source sets.
+- [x] Existing instrumentation coverage may remain.
+- [x] CI explicitly runs the focused P0 test class.
+- [x] Full Android unit-test gate also passes.
+
+Implemented as two classes under `android/app/src/test/java/com/phillipchin/webrtctunnel/`:
+`TunnelForegroundServiceStopFailureTest` (policy-pause failure via direct
+`offer.pauseForPolicy()`, plus pause/stopServiceWork failure driven through the
+real `onStartCommand` → `ServiceController.startCommand(...)` action path with
+`Dispatchers.Unconfined`) and `TunnelForegroundServiceStartupCancellationStopFailureTest`
+(the startup-cancellation scenario, needing genuine asynchrony — real
+`Dispatchers.IO` rather than `Unconfined` — because it blocks a native start on
+one thread while driving a second action from the test thread, matching how
+`TunnelForegroundServiceInstrumentationTest` proves the same scenario under
+real instrumentation). Fakes live in `TunnelForegroundServiceTestFakes.kt`,
+`test`-only-scoped per the P0-004 finding above (not shared with `androidTest`).
+CI wiring: a new `Run foreground-service stop-failure truthfulness tests` step
+in `.github/workflows/ci.yml`, before the full Android build step.
+
+**Significant finding**: building the startup-cancellation test caught a real
+production bug, not just a test gap. `runOfferStart`'s two cleanup branches
+(cancellation-catch and supersedence-check) called
+`withContext(ioDispatcher) { repository.stop() }` from inside a coroutine whose
+own Job is already cancelled at that point. kotlinx.coroutines' prompt-
+cancellation behavior means that `withContext` rethrows `CancellationException`
+immediately without ever running its block in that situation — so this cleanup
+`stop()` call was silently never happening, leaving the native tunnel running
+behind what looked like a cancelled/superseded startup. Fixed by wrapping both
+calls in `withContext(NonCancellable + ioDispatcher) { repository.stop() }`.
+Verified via the standard regression-strength check: reverted to plain
+`ioDispatcher`, confirmed the new test fails, restored `NonCancellable`,
+confirmed it passes.
 
 ---
 
