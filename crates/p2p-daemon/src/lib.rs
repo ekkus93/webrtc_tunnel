@@ -68,6 +68,7 @@ pub use offer::{
     OfferLoopTopBarrierRelease, OfferSessionTestEvent, OfferSessionTestHandle,
     run_offer_daemon_with_loop_top_barrier_and_shutdown,
     run_offer_daemon_with_loop_top_barrier_and_status_audit_and_shutdown,
+    run_offer_daemon_with_recovery_barrier_and_status_audit_and_shutdown,
     run_offer_daemon_with_transport_and_status_and_shutdown,
     run_offer_daemon_with_transport_and_test_hook,
     run_offer_daemon_with_transport_and_test_hook_and_shutdown,

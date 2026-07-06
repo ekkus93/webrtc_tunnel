@@ -17,6 +17,7 @@ use p2p_crypto::generate_identity;
 use p2p_daemon::{
     OfferLoopTopBarrier, ShutdownToken, StatusAuditLog,
     run_offer_daemon_with_loop_top_barrier_and_status_audit_and_shutdown,
+    run_offer_daemon_with_recovery_barrier_and_status_audit_and_shutdown,
 };
 use tokio::time::timeout;
 
@@ -78,6 +79,95 @@ async fn offer_admits_no_ordinary_write_when_shutdown_lands_between_session_outc
     timeout(Duration::from_secs(10), barrier_entered.wait()).await.expect(
         "the offer daemon should reach the loop-top barrier again after the session outcome",
     );
+    let boundary = audit.len();
+    offer_shutdown.request_shutdown();
+    barrier_release.release().await;
+
+    let result = timeout(Duration::from_secs(10), &mut offer_task)
+        .await
+        .expect("offer daemon should drain and stop instead of hanging")
+        .expect("offer daemon task should not panic");
+    assert!(result.is_ok(), "a clean shutdown should return Ok, got {result:?}");
+
+    let events = audit.snapshot();
+    for status in &events[boundary..] {
+        assert!(
+            !matches!(
+                status.current_state,
+                DaemonState::WaitingForLocalClient
+                    | DaemonState::Serving
+                    | DaemonState::Negotiating
+                    | DaemonState::TunnelOpen
+            ),
+            "normal state emitted after the shutdown boundary: {:?} in {:?}",
+            status.current_state,
+            &events[boundary..],
+        );
+    }
+    assert!(
+        events[boundary..].iter().any(|status| status.current_state == DaemonState::Closed),
+        "terminal Closed status was not emitted after the shutdown boundary, got {events:?}"
+    );
+
+    let _ = tokio::fs::remove_file(&offer_status_path).await;
+}
+
+/// P0-005: the loop-top barrier test above has two independent defenses in play —
+/// the central `runtime_status_allowed` token-aware gate, and the local
+/// `shutdown.is_shutdown_requested()` check at the very top of the run loop —
+/// so reverting only the central gate does not make that test fail (documented
+/// in the release-signoff TODO). This test uses a barrier immediately before
+/// `recover_daemon_after_session` instead: the local loop-top check has already
+/// run for this iteration (on the session's `Ok`/`Err` return) and will not run
+/// again before recovery, so this isolates the central gate as the *only*
+/// defense against a stale ordinary status write landing after shutdown.
+#[tokio::test]
+async fn offer_central_gate_is_the_only_defense_before_ordinary_recovery() {
+    let offer_identity = generate_identity("offer-home").expect("offer identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+    let offer_keys = authorized_keys_for(&answer_identity);
+
+    let offer_status_path = unique_path("offer-status-recovery-gate");
+    let offer_port = unused_local_port();
+    let target_port = unused_local_port();
+
+    let offer_config =
+        sample_config(NodeRole::Offer, offer_status_path.clone(), offer_port, target_port);
+
+    let mesh = InMemoryTransportMesh::new();
+    let offer_transport = mesh.add_transport("offer-home");
+    let _answer_transport = mesh.add_transport("answer-office");
+    let control = mesh.control();
+
+    // The offer session's very first outbound message is an unrequired-ack Hello;
+    // failing its publish ends the session quickly with an ordinary (non-fatal)
+    // error, bringing the loop to the recovery barrier without needing a real
+    // answer daemon or WebRTC negotiation.
+    control.fail_next_publish("offer-home", "answer-office", 1);
+
+    let audit = StatusAuditLog::default();
+
+    let (barrier, mut barrier_entered, barrier_release) = OfferLoopTopBarrier::new();
+    let offer_shutdown = ShutdownToken::new();
+    let mut offer_task =
+        tokio::spawn(run_offer_daemon_with_recovery_barrier_and_status_audit_and_shutdown(
+            offer_config,
+            clone_identity(&offer_identity.identity),
+            offer_keys,
+            offer_transport,
+            barrier,
+            audit.clone(),
+            offer_shutdown.clone(),
+        ));
+
+    // Connect a client; its session fails quickly (injected publish failure) with
+    // an ordinary error, reaching the recovery barrier exactly once (unlike the
+    // loop-top barrier, this one does not fire at daemon startup or idle waiting).
+    let _client = connect_with_retry(offer_port).await;
+    timeout(Duration::from_secs(10), barrier_entered.wait()).await.expect(
+        "the offer daemon should reach the recovery barrier after the ordinary session outcome",
+    );
+
     let boundary = audit.len();
     offer_shutdown.request_shutdown();
     barrier_release.release().await;

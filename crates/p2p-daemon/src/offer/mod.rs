@@ -79,6 +79,12 @@ struct OfferDaemonTestHooks {
     /// shutdown boundary instead of relying on a `watch` stream that can
     /// coalesce away an illegal intermediate write (P0-002).
     status_audit: Option<StatusAuditLog>,
+    /// Fires immediately before `recover_daemon_after_session` on an ordinary
+    /// (non-infrastructure) session outcome — a point the local loop-top shutdown
+    /// check does *not* re-guard, unlike `loop_top_barrier`'s position. Lets a test
+    /// isolate the central `runtime_status_allowed` token-aware gate as the *only*
+    /// defense against a stale ordinary status write (P0-005).
+    recovery_barrier: Option<OfferLoopTopBarrier>,
 }
 
 /// A repeatable rendezvous at the top of the offer run loop (see
@@ -304,6 +310,7 @@ pub async fn run_offer_daemon_with_transport_and_test_hook_and_shutdown<
             worker_fault_hook: None,
             loop_top_barrier: None,
             status_audit: None,
+            recovery_barrier: None,
         }),
         None,
         shutdown,
@@ -337,6 +344,7 @@ pub async fn run_offer_daemon_with_loop_top_barrier_and_shutdown<T: DaemonSignal
             worker_fault_hook: None,
             loop_top_barrier: Some(loop_top_barrier),
             status_audit: None,
+            recovery_barrier: None,
         }),
         Some(status_sink),
         shutdown,
@@ -372,6 +380,44 @@ pub async fn run_offer_daemon_with_loop_top_barrier_and_status_audit_and_shutdow
             worker_fault_hook: None,
             loop_top_barrier: Some(loop_top_barrier),
             status_audit: Some(status_audit),
+            recovery_barrier: None,
+        }),
+        None,
+        shutdown,
+    )
+    .await
+}
+
+/// Combines a [`StatusAuditLog`] with a barrier immediately before
+/// `recover_daemon_after_session` on an ordinary session outcome, so a test can
+/// force `shutdown.request_shutdown()` into a window the local loop-top shutdown
+/// check does *not* re-guard — isolating the central `runtime_status_allowed`
+/// token-aware gate as the only defense against a stale ordinary status write
+/// (P0-005). Contrast with [`run_offer_daemon_with_loop_top_barrier_and_status_audit_and_shutdown`],
+/// whose barrier sits at a point the local loop-top check *does* also protect.
+#[cfg(any(test, debug_assertions))]
+pub async fn run_offer_daemon_with_recovery_barrier_and_status_audit_and_shutdown<
+    T: DaemonSignalingTransport,
+>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    mut transport: T,
+    recovery_barrier: OfferLoopTopBarrier,
+    status_audit: StatusAuditLog,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
+    run_offer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        &mut transport,
+        Some(OfferDaemonTestHooks {
+            session_hook: None,
+            worker_fault_hook: None,
+            loop_top_barrier: None,
+            status_audit: Some(status_audit),
+            recovery_barrier: Some(recovery_barrier),
         }),
         None,
         shutdown,
@@ -430,6 +476,7 @@ pub async fn run_offer_daemon_with_worker_fault_hook_and_shutdown<T: DaemonSigna
             worker_fault_hook: Some(worker_fault_hook),
             loop_top_barrier: None,
             status_audit: None,
+            recovery_barrier: None,
         }),
         None,
         shutdown,
@@ -453,6 +500,7 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
         worker_fault_hook,
         mut loop_top_barrier,
         status_audit,
+        mut recovery_barrier,
     } = test_hooks.unwrap_or_default();
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let codec = SignalCodec::new(
@@ -639,6 +687,16 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
                                 );
                             } else {
                                 probe_cooldown.reset();
+                            }
+                            // P0-005 test-only barrier: no-op in production (field is
+                            // None). The local shutdown check above (on session
+                            // return) has already run for this iteration and won't
+                            // run again before recover_daemon_after_session, so a test
+                            // holding here and requesting shutdown isolates the
+                            // central token-aware status gate as the only defense.
+                            #[cfg(any(test, debug_assertions))]
+                            if let Some(barrier) = recovery_barrier.as_mut() {
+                                barrier.enter_and_wait_for_release().await;
                             }
                             recover_daemon_after_session(&ctx, ordinary_result).await;
                             tracing::info!("offer daemon returned to waiting state");
