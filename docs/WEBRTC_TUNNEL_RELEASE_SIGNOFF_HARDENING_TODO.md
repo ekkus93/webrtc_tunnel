@@ -793,11 +793,34 @@ Do not expose mutable policy state publicly.
 
 ### Acceptance criteria
 
-- [ ] Failed policy stop always leaves `pausedByPolicy == false`.
-- [ ] Successful policy stop sets it true only after stop succeeds.
-- [ ] Failure does not publish normal policy-paused state.
-- [ ] Test covers stale true precondition.
-- [ ] Retry/reevaluation remains possible.
+- [x] Failed policy stop always leaves `pausedByPolicy == false`.
+- [x] Successful policy stop sets it true only after stop succeeds.
+- [x] Failure does not publish normal policy-paused state.
+- [x] Test covers stale true precondition.
+- [x] Retry/reevaluation remains possible.
+
+Implemented as `android/app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceStopFailureTest.kt`,
+driving the real `TunnelForegroundService.OfferCoordinator.pauseForPolicy()` path
+under Robolectric via `ServiceController.of(...)` with `Dispatchers.Unconfined`
+(both `offer` and `pausedByPolicy` widened from `private` to `internal` so the
+test reads/drives them directly — no new public mutator). Verified the
+regression-strength requirement: temporarily reverted to the old
+`pausedByPolicy = previousPausedByPolicy` restore, confirmed the test fails,
+restored the fix, confirmed it passes again.
+
+**Note for P0-003**: the spec's suggested `src/sharedTest/java` source set
+(shared between `test` and `androidTest`) was tried first and reverted — merely
+compiling the existing `TestWebRtcTunnelApplication`/`RecordingBridge` into the
+`test` source set (even completely unused by any test) made unrelated
+Robolectric `viewmodel` tests elsewhere in this module fail nondeterministically
+depending on run composition. Root cause not fully pinned down (suspected
+Robolectric default-`Application`/manifest resolution interaction with a second
+`Application` subclass newly visible on the `test` classpath). P0-004's test
+uses a small `test`-only-scoped duplicate instead
+(`TunnelForegroundServiceTestFakes.kt`, not shared with `androidTest`). P0-003
+should either reuse/extend that duplicate for its remaining 3 scenarios, or
+re-investigate the sharedTest approach with this interaction in mind before
+relying on it.
 
 ---
 
