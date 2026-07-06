@@ -20,6 +20,7 @@ import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.notification.NotificationController
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,21 @@ internal sealed interface ServiceTestEvent {
     data object StartupSupersedenceCleanupStopEntered : ServiceTestEvent
 }
 
+/**
+ * P0-004 test-only barrier: pauses `runOfferStart` after a *successful* native
+ * start but before the generation check that decides whether a newer start
+ * superseded this one. No current production path can reach that check without
+ * also cancelling `startupJob` (which routes through the cancellation-catch
+ * branch instead, at an earlier point) — this hook exists purely to construct
+ * the supersedence scenario deterministically under test so the branch's real
+ * production check and `NonCancellable` cleanup can be proven, not to change
+ * production behavior itself.
+ */
+internal data class StartupTestHooks(
+    val afterNativeStartBeforeGenerationCheck: CompletableDeferred<Unit>? = null,
+    val releaseAfterNativeStart: CompletableDeferred<Unit>? = null,
+)
+
 class TunnelForegroundService
     @JvmOverloads
     constructor(
@@ -80,6 +96,9 @@ class TunnelForegroundService
         // reader per test method, so this never needs to apply backpressure.
         internal val testEvents = Channel<ServiceTestEvent>(Channel.UNLIMITED)
 
+        // internal (not private): P0-004 test-only barrier, see StartupTestHooks.
+        internal var startupTestHooks: StartupTestHooks? = null
+
         // internal (not private): P0-001's Robolectric test captures this reference and
         // joins it directly, so it can deterministically wait for a specific stale poll
         // iteration to fully settle (commit or be discarded) before asserting final
@@ -91,8 +110,13 @@ class TunnelForegroundService
         // than through any new public accessor, matching the "no public mutator" rule.
         internal var pausedByPolicy: Boolean = false
         private var allowMeteredForCurrentRun: Boolean = false
-        private var lifecycleGeneration: Long = 0
-        private val lifecycleMutex = Mutex()
+
+        // internal (not private): P0-004's Robolectric test bumps this directly, under
+        // the same mutex below, to construct the startup-supersedence scenario (see
+        // StartupTestHooks) without adding a new member function to this class (which
+        // would trip detekt's TooManyFunctions threshold).
+        internal var lifecycleGeneration: Long = 0
+        internal val lifecycleMutex = Mutex()
 
         // Notification + status-polling slice; accesses the shared lifecycle fields directly.
         private val reporter = StatusReporter()
@@ -435,6 +459,11 @@ class TunnelForegroundService
                             }
                             return
                         }
+                    // P0-004 test-only barrier: no-op in production (both fields null).
+                    startupTestHooks?.let { hooks ->
+                        hooks.afterNativeStartBeforeGenerationCheck?.complete(Unit)
+                        hooks.releaseAfterNativeStart?.await()
+                    }
                     if (!isCurrentGeneration(startGeneration)) {
                         // Same "prompt cancellation" hazard as above: a newer start may have
                         // cancelled this job's generation (or the job itself) by the time the

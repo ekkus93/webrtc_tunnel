@@ -4,9 +4,11 @@ import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.phillipchin.webrtctunnel.model.ServiceState
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -216,6 +218,52 @@ class TunnelForegroundServiceStopFailureTest {
                 "in flight when the stop was requested",
             waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
         )
+        assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
+    }
+
+    @Test
+    fun startupSupersedenceCleanupStopFailurePublishesError() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Pause runOfferStart after a *successful* native start but before the
+        // generation check that decides whether a newer start superseded this one.
+        val hooks =
+            StartupTestHooks(
+                afterNativeStartBeforeGenerationCheck = CompletableDeferred(),
+                releaseAfterNativeStart = CompletableDeferred(),
+            )
+        service.startupTestHooks = hooks
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        runBlocking { withTimeout(10_000) { hooks.afterNativeStartBeforeGenerationCheck!!.await() } }
+
+        // Simulate a newer start having superseded this one: bump the generation
+        // alone, without touching startupJob. No current production path can do this
+        // — every real generation bump also cancels startupJob in the same lock
+        // scope, which the in-flight runOfferStart observes as a
+        // CancellationException from its native-start withContext call (the
+        // cancellation-cleanup branch, P0-003) rather than this supersedence check.
+        // This exists solely to stimulate that real check/cleanup under test.
+        runBlocking { service.lifecycleMutex.withLock { service.lifecycleGeneration += 1 } }
+
+        // Arm the failure for the supersedence cleanup's own stop() call, then let
+        // runOfferStart proceed to its (now-stale) generation check.
+        bridge.failNextStop()
+        hooks.releaseAfterNativeStart!!.complete(Unit)
+
+        // Exact-branch proof (P0-004): wait for the supersedence cleanup's own
+        // event, not just a stop-call count.
+        val event = runBlocking { withTimeout(10_000) { service.testEvents.receive() } }
+        assertEquals(ServiceTestEvent.StartupSupersedenceCleanupStopEntered, event)
+
+        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+        assertTrue(
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        // No clean startup success can have been published: the supersedence branch
+        // returns to the outer `if`'s `else` only when the generation still matches,
+        // which it deliberately does not here.
         assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
     }
 }
