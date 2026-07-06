@@ -175,7 +175,13 @@ async fn reconnect_with_offer<T: DaemonSignalingTransport>(
         )
         .await?
         {
-            let _ = session.peer.close().await;
+            if let Err(error) = session.peer.close().await {
+                tracing::warn!(
+                    reason = %error,
+                    session_id = %session.session_id,
+                    "failed to close superseded session's peer connection during reconnect"
+                );
+            }
             *session = replacement;
             return Ok(true);
         }

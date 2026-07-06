@@ -36,6 +36,10 @@ pub(crate) fn spawn_tcp_bridge(
         loop {
             match reader.read(&mut buffer).await {
                 Ok(0) => {
+                    // Both sends below: a closed receiver here means the session's stream
+                    // manager/data channel already tore down (normal end-of-session race
+                    // with this stream's own EOF), so a failed send is expected and not
+                    // worth logging per-stream.
                     let _ = read_frame_tx.send(TunnelFrame::close(stream_id)).await;
                     let _ = read_event_tx.send(StreamRuntimeEvent::LocalEof { stream_id }).await;
                     break;
@@ -50,6 +54,10 @@ pub(crate) fn spawn_tcp_bridge(
                     }
                 }
                 Err(error) => {
+                    // The read failure itself is reported to the stream event loop below
+                    // (which is what actually surfaces it in daemon/session diagnostics);
+                    // both sends here failing only means the receiver already tore down,
+                    // same as the EOF case above.
                     let _ = read_frame_tx
                         .send(
                             TunnelFrame::error(
@@ -80,6 +88,8 @@ pub(crate) fn spawn_tcp_bridge(
             match command {
                 TcpWriteCommand::Data(payload) => {
                     if let Err(error) = writer.write_all(&payload).await {
+                        // Surfaced by handle_stream_runtime_event's LocalIoError handling; a
+                        // failed send here just means the receiver already tore down.
                         let _ = write_event_tx
                             .send(StreamRuntimeEvent::LocalIoError {
                                 stream_id,
@@ -91,6 +101,9 @@ pub(crate) fn spawn_tcp_bridge(
                     }
                 }
                 TcpWriteCommand::Close => {
+                    // Best-effort: we are closing this stream regardless of the outcome,
+                    // and a half-close failing here (e.g. the peer already reset the TCP
+                    // connection) is a routine, non-actionable network condition.
                     let _ = writer.shutdown().await;
                     break;
                 }
@@ -111,6 +124,10 @@ pub(crate) async fn handle_stream_runtime_event(
             close_stream(stream_id, manager, streams).await?;
         }
         StreamRuntimeEvent::LocalIoError { stream_id, message, notify_peer } => {
+            // The single choke point for every local TCP read/write failure across all
+            // streams, so this is where the underlying error becomes visible — the
+            // originating read/write task only carries it this far via the event channel.
+            tracing::warn!(stream_id, reason = %message, "local stream I/O failed; closing stream");
             if notify_peer && (manager.get(stream_id).is_ok() || streams.contains_key(&stream_id)) {
                 send_stream_error(frame_tx, stream_id, "local_io_error", &message).await?;
             }
@@ -190,6 +207,8 @@ pub(crate) fn spawn_writer_only(
                         reason = %error,
                         "failed to encode tunnel frame; closing writer",
                     );
+                    // Already logged above; this best-effort forward to the supervisor
+                    // only fails if it is already shutting down for its own reasons.
                     let _ = failure_tx.send(error).await;
                     return Err(TunnelError::WriterClosed);
                 }
@@ -205,6 +224,8 @@ pub(crate) fn spawn_writer_only(
                     "data channel send failed; closing writer",
                 );
                 let tunnel_error = TunnelError::WebRtc(error);
+                // Already logged above; see the encode-failure comment for why a failed
+                // forward here is not itself worth logging.
                 let _ = failure_tx.send(tunnel_error).await;
                 return Err(TunnelError::WriterClosed);
             }

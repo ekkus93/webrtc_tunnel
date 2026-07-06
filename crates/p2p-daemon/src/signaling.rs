@@ -447,6 +447,8 @@ pub(crate) async fn publish_answer_session_request<T: DaemonSignalingTransport>(
         }
         Err(error) => Err(error.into()),
     };
+    // A transport failure is already logged by mark_transport_unusable above; a failed
+    // send here just means the caller stopped waiting on this reply.
     let _ = request.result.send(result);
 }
 

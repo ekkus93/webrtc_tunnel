@@ -157,8 +157,8 @@ async fn run_answer_session_task_inner(
                 session.bridge_handle = None;
                 session.bridge_state = BridgeSessionState::Closed;
                 send_answer_session_status(config, event_tx, generation, session).await?;
-                if let Err(p2p_tunnel::TunnelError::TargetConnectFailed(message)) = &result {
-                    let _ = publish_from_answer_session(
+                if let Err(p2p_tunnel::TunnelError::TargetConnectFailed(message)) = &result
+                    && let Err(error) = publish_from_answer_session(
                         config,
                         event_tx,
                         session,
@@ -176,9 +176,16 @@ async fn run_answer_session_task_inner(
                         },
                         true,
                     )
-                    .await;
+                    .await
+                {
+                    tracing::warn!(
+                        reason = %error,
+                        session_id = %session.session_id,
+                        remote_peer_id = %session.remote_peer_id,
+                        "failed to publish best-effort target-connect-failed notification",
+                    );
                 }
-                let _ = publish_from_answer_session(
+                if let Err(error) = publish_from_answer_session(
                     config,
                     event_tx,
                     session,
@@ -198,7 +205,15 @@ async fn run_answer_session_task_inner(
                     },
                     true,
                 )
-                .await;
+                .await
+                {
+                    tracing::warn!(
+                        reason = %error,
+                        session_id = %session.session_id,
+                        remote_peer_id = %session.remote_peer_id,
+                        "failed to publish best-effort close notification",
+                    );
+                }
                 result?;
                 return Ok(());
             }
@@ -435,10 +450,33 @@ async fn maybe_replace_pending_same_peer_session(
 
     if let Some(handle) = session.bridge_handle.take() {
         handle.abort();
-        let _ = handle.await;
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    reason = %error,
+                    session_id = %session.session_id,
+                    "bridge task ended with an error while superseding session with a new offer"
+                );
+            }
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => {
+                tracing::warn!(
+                    reason = %error,
+                    session_id = %session.session_id,
+                    "aborted bridge task failed unexpectedly while superseding session with a new offer"
+                );
+            }
+        }
     }
     session.data_channel = None;
-    let _ = session.peer.close().await;
+    if let Err(error) = session.peer.close().await {
+        tracing::warn!(
+            reason = %error,
+            session_id = %session.session_id,
+            "failed to close superseded session's peer connection"
+        );
+    }
 
     let peer = WebRtcPeer::new(&config.webrtc).await?;
     peer.apply_remote_offer(&offer.sdp).await?;

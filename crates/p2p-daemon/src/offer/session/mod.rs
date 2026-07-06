@@ -455,7 +455,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                         .map_err(|error| DaemonError::Logging(format!("bridge task join error: {error}")))?;
                     session.bridge_handle = None;
                     session.bridge_state = BridgeSessionState::Closed;
-                    let _ = publish_message(
+                    if let Err(error) = publish_message(
                         ctx,
                         codec,
                         transport,
@@ -478,7 +478,15 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                             response: false,
                         },
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::warn!(
+                            reason = %error,
+                            session_id = %session.session_id,
+                            remote_peer_id = %session.remote_peer_id,
+                            "failed to publish best-effort close notification",
+                        );
+                    }
                     result?;
                     return Ok(());
                 }
@@ -511,7 +519,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                     let (bridge_result, returned_clients) = bridge_result;
                     accepted_clients = Some(returned_clients);
                     session.bridge_state = BridgeSessionState::Closed;
-                    let _ = publish_message(
+                    if let Err(error) = publish_message(
                         ctx,
                         codec,
                         transport,
@@ -534,7 +542,15 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                             response: false,
                         },
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::warn!(
+                            reason = %error,
+                            session_id = %session.session_id,
+                            remote_peer_id = %session.remote_peer_id,
+                            "failed to publish best-effort close notification",
+                        );
+                    }
                     bridge_result?;
                     return Ok(());
                 }

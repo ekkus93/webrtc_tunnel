@@ -420,7 +420,7 @@ pub(crate) async fn handle_answer_daemon_payload<T: DaemonSignalingTransport>(
             if registry.session_by_peer.contains_key(&decoded.sender.peer_id)
                 || registry.sessions_by_id.len() >= ANSWER_SESSION_CAPACITY
             {
-                let _ = publish_message(
+                if let Err(error) = publish_message(
                     ctx,
                     codec,
                     transport,
@@ -441,7 +441,15 @@ pub(crate) async fn handle_answer_daemon_payload<T: DaemonSignalingTransport>(
                         response: true,
                     },
                 )
-                .await;
+                .await
+                {
+                    tracing::warn!(
+                        reason = %error,
+                        session_id = %decoded.message.session_id,
+                        sender_peer_id = %decoded.sender.peer_id,
+                        "failed to publish best-effort busy rejection",
+                    );
+                }
                 return;
             }
             let generation = SessionGeneration(*registry.next_generation);
@@ -632,6 +640,8 @@ pub(crate) async fn handle_answer_session_event<T: DaemonSignalingTransport>(
                     Err(error.into())
                 }
             };
+            // Already logged by mark_transport_unusable/usable above; a failed send here
+            // just means the caller stopped waiting (e.g. its session already ended).
             let _ = result.send(publish_result);
         }
         AnswerSessionEvent::Status(status) => {
@@ -724,10 +734,33 @@ pub(crate) async fn maybe_replace_pending_answer_session<T: DaemonSignalingTrans
 
     if let Some(handle) = session.bridge_handle.take() {
         handle.abort();
-        let _ = handle.await;
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    reason = %error,
+                    session_id = %session.session_id,
+                    "bridge task ended with an error while superseding session with a new offer"
+                );
+            }
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => {
+                tracing::warn!(
+                    reason = %error,
+                    session_id = %session.session_id,
+                    "aborted bridge task failed unexpectedly while superseding session with a new offer"
+                );
+            }
+        }
     }
     session.data_channel = None;
-    let _ = session.peer.close().await;
+    if let Err(error) = session.peer.close().await {
+        tracing::warn!(
+            reason = %error,
+            session_id = %session.session_id,
+            "failed to close superseded session's peer connection"
+        );
+    }
 
     let peer = WebRtcPeer::new(&config.webrtc).await?;
     peer.apply_remote_offer(&offer.sdp).await?;

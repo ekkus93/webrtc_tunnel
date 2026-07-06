@@ -26,6 +26,8 @@ impl ShutdownToken {
     }
 
     pub fn request_shutdown(&self) {
+        // Every `ShutdownToken` clone keeps its own `receiver` alive (see the struct doc),
+        // so this channel can never actually be closed and this send cannot fail.
         let _ = self.sender.send(true);
     }
 

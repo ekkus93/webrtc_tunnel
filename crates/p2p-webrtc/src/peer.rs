@@ -122,6 +122,10 @@ impl WebRtcPeer {
                         IceCandidateSignal { candidate: None, sdp_mid: None, sdp_mline_index: None }
                     }
                 };
+                // Fired by the underlying peer connection's own callback thread, which
+                // outlives this Rust-side `WebRtcPeer` in the sense that a candidate can
+                // arrive after `local_candidate_rx` (owned by the peer) has been dropped
+                // during teardown. That send failure is expected and not actionable.
                 let _ = local_candidate_tx.send(payload).await;
             })
         }));
@@ -133,6 +137,9 @@ impl WebRtcPeer {
                 // and are the key signal for diagnosing whether a peer connection
                 // ever establishes, so log every transition unconditionally.
                 tracing::info!(target: "ice", state = %state, "ICE connection state changed");
+                // The transition itself is already logged above regardless of whether a
+                // consumer is still listening; a dropped receiver during teardown is
+                // expected and would otherwise be logged twice for no benefit.
                 let _ = ice_state_tx.send(state.into()).await;
             })
         }));
@@ -140,6 +147,9 @@ impl WebRtcPeer {
         peer_connection.on_data_channel(Box::new(move |channel| {
             let incoming_dc_tx = incoming_dc_tx.clone();
             Box::pin(async move {
+                // Both sends below: a dropped `incoming_data_channel_rx` means the peer is
+                // already being torn down and nothing is waiting for this channel anymore,
+                // so a failed send here is expected, not an error worth logging.
                 if channel.label() != expected_data_channel_label() {
                     let _ = incoming_dc_tx
                         .send(Err(WebRtcError::UnexpectedDataChannel(channel.label().to_owned())))
@@ -294,6 +304,10 @@ impl WebRtcPeer {
     async fn local_sdp(&self) -> Result<String, WebRtcError> {
         if !self.config.enable_trickle_ice {
             let mut gathering_complete = self.peer_connection.gathering_complete_promise().await;
+            // `recv()` returning `None` (sender dropped without a final signal) is not
+            // distinguished from `Some(())` (gathering actually completed): either way,
+            // gathering has stopped and it is time to read whatever local description
+            // exists, so there is nothing actionable to log.
             let _ = gathering_complete.recv().await;
         }
         self.peer_connection

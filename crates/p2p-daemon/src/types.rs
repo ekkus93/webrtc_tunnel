@@ -290,7 +290,24 @@ impl ActiveSession {
 pub(crate) async fn cleanup_active_session(session: &mut ActiveSession) {
     if let Some(handle) = session.bridge_handle.take() {
         handle.abort();
-        let _ = handle.await;
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    reason = %error,
+                    session_id = %session.session_id,
+                    "bridge task ended with an error during cleanup"
+                );
+            }
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => {
+                tracing::warn!(
+                    reason = %error,
+                    session_id = %session.session_id,
+                    "aborted bridge task failed unexpectedly during cleanup"
+                );
+            }
+        }
     }
     session.bridge_state = BridgeSessionState::Closed;
     session.data_channel = None;
