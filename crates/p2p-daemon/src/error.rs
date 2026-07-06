@@ -34,4 +34,49 @@ pub enum DaemonError {
     Logging(String),
     #[error("offer accept worker for forward '{forward_id}' exited unexpectedly: {reason}")]
     OfferAcceptWorkerFailed { forward_id: String, reason: String },
+    #[error("offer accept monitor for forward '{forward_id}' failed: {reason}")]
+    OfferAcceptMonitorJoinFailed { forward_id: String, reason: String },
+}
+
+/// True for daemon runtime infrastructure failures (an accept-worker or its monitor
+/// dying unexpectedly) as opposed to ordinary session outcomes (remote close, probe
+/// failure, ICE failure, etc.). An infrastructure failure must never be fed into
+/// ordinary session cooldown/recovery just because it happened while a session was
+/// active — see `is_offer_infrastructure_failure`'s callers in `offer::mod`.
+pub(crate) fn is_offer_infrastructure_failure(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::OfferAcceptWorkerFailed { .. }
+            | DaemonError::OfferAcceptMonitorJoinFailed { .. }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offer_accept_worker_failed_is_infrastructure_failure() {
+        assert!(is_offer_infrastructure_failure(&DaemonError::OfferAcceptWorkerFailed {
+            forward_id: "a".to_owned(),
+            reason: "panic".to_owned(),
+        }));
+    }
+
+    #[test]
+    fn offer_accept_monitor_join_failed_is_infrastructure_failure() {
+        assert!(is_offer_infrastructure_failure(&DaemonError::OfferAcceptMonitorJoinFailed {
+            forward_id: "a".to_owned(),
+            reason: "join error".to_owned(),
+        }));
+    }
+
+    #[test]
+    fn ordinary_session_error_is_not_infrastructure_failure() {
+        assert!(!is_offer_infrastructure_failure(&DaemonError::IceFailed(
+            IceConnectionState::Failed
+        )));
+        assert!(!is_offer_infrastructure_failure(&DaemonError::AckTimeout));
+        assert!(!is_offer_infrastructure_failure(&DaemonError::RemoteClosed("bye".to_owned())));
+    }
 }

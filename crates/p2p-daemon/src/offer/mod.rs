@@ -13,6 +13,7 @@ use tokio::time::{Instant, sleep};
 use crate::DaemonError;
 use crate::ShutdownToken;
 use crate::config::*;
+use crate::error::is_offer_infrastructure_failure;
 use crate::messages::*;
 use crate::signaling::*;
 use crate::status::*;
@@ -404,18 +405,35 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
                         }
                         break Ok(());
                     }
-                    if cooldown::session_outcome_enters_cooldown(&result) {
-                        let wait = probe_cooldown.record_failure(Instant::now());
-                        tracing::warn!(
-                            remote_peer_id = %remote.peer_id,
-                            cooldown = ?wait,
-                            "entering data-plane probe-failure cooldown before accepting new clients",
-                        );
-                    } else {
-                        probe_cooldown.reset();
+
+                    // Infrastructure failures (an accept worker or its monitor dying
+                    // unexpectedly) are never an ordinary session outcome: a second,
+                    // still-healthy forward's worker must not mask the first's death by
+                    // letting cooldown/recovery treat this as recoverable session
+                    // turbulence. Skip straight to daemon-fatal finalization instead.
+                    match result {
+                        Err(error) if is_offer_infrastructure_failure(&error) => {
+                            tracing::error!(
+                                reason = %error,
+                                "offer runtime infrastructure failed during active session",
+                            );
+                            break Err(error);
+                        }
+                        ordinary_result => {
+                            if cooldown::session_outcome_enters_cooldown(&ordinary_result) {
+                                let wait = probe_cooldown.record_failure(Instant::now());
+                                tracing::warn!(
+                                    remote_peer_id = %remote.peer_id,
+                                    cooldown = ?wait,
+                                    "entering data-plane probe-failure cooldown before accepting new clients",
+                                );
+                            } else {
+                                probe_cooldown.reset();
+                            }
+                            recover_daemon_after_session(&ctx, ordinary_result).await;
+                            tracing::info!("offer daemon returned to waiting state");
+                        }
                     }
-                    recover_daemon_after_session(&ctx, result).await;
-                    tracing::info!("offer daemon returned to waiting state");
                 }
 
                 payload = poll_idle_signal_payload(&mut ctx, transport) => {
