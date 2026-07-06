@@ -1987,11 +1987,11 @@ for required schema fields.
 
 ### Acceptance criteria
 
-- [ ] Missing HOME yields normal error.
-- [ ] Malformed status JSON yields error.
-- [ ] Missing required field yields error.
-- [ ] Valid zero-session status renders correctly.
-- [ ] Valid multi-session status renders correctly.
+- [x] Missing HOME yields normal error.
+- [x] Malformed status JSON yields error.
+- [x] Missing required field yields error.
+- [x] Valid zero-session status renders correctly.
+- [x] Valid multi-session status renders correctly.
 
 ---
 
