@@ -37,6 +37,89 @@ pub(crate) use session::{
     process_answer_session_signal,
 };
 
+/// Bundles the answer daemon's test-only observation/injection hooks so
+/// `run_answer_daemon_inner` stays under Clippy's argument-count lint as test seams
+/// accumulate (mirrors `OfferDaemonTestHooks` on the offer side).
+#[cfg(any(test, debug_assertions))]
+#[derive(Default)]
+pub(crate) struct AnswerDaemonTestHooks {
+    /// Fires once, right after a payload is confirmed present but before the
+    /// post-payload shutdown admission check, so a test can deterministically
+    /// force `shutdown.request_shutdown()` to land in that exact window instead
+    /// of racing real time against the scheduler (P0-006).
+    pub(crate) payload_admission_barrier: Option<PayloadAdmissionBarrier>,
+}
+
+/// A repeatable rendezvous: the daemon loop calls
+/// [`PayloadAdmissionBarrier::enter_and_wait_for_release`] every time a payload is
+/// ready (mirroring the production gate, which checks shutdown for every payload,
+/// not just offers), blocking until the test observes entry (via
+/// [`PayloadAdmissionBarrierEntered::wait`]) and explicitly releases it (via
+/// [`PayloadAdmissionBarrierRelease::release`]). It must fire more than once per test:
+/// an incoming offer is preceded by an unrelated Hello payload, so the test needs to
+/// let that first payload through untouched and only force the race on the second.
+/// A broken channel on either side is a test-harness bug, not something to continue
+/// past silently — see P1-004.
+#[cfg(any(test, debug_assertions))]
+pub struct PayloadAdmissionBarrier {
+    entered_tx: mpsc::Sender<()>,
+    release_rx: mpsc::Receiver<()>,
+}
+
+#[cfg(any(test, debug_assertions))]
+impl PayloadAdmissionBarrier {
+    pub fn new() -> (Self, PayloadAdmissionBarrierEntered, PayloadAdmissionBarrierRelease) {
+        let (entered_tx, entered_rx) = mpsc::channel(1);
+        let (release_tx, release_rx) = mpsc::channel(1);
+        (
+            Self { entered_tx, release_rx },
+            PayloadAdmissionBarrierEntered { entered_rx },
+            PayloadAdmissionBarrierRelease { release_tx },
+        )
+    }
+
+    async fn enter_and_wait_for_release(&mut self) {
+        self.entered_tx
+            .send(())
+            .await
+            .expect("payload admission barrier observer must remain alive");
+        self.release_rx
+            .recv()
+            .await
+            .expect("payload admission barrier release sender must remain alive");
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+pub struct PayloadAdmissionBarrierEntered {
+    entered_rx: mpsc::Receiver<()>,
+}
+
+#[cfg(any(test, debug_assertions))]
+impl PayloadAdmissionBarrierEntered {
+    pub async fn wait(&mut self) {
+        self.entered_rx
+            .recv()
+            .await
+            .expect("payload admission barrier must not be dropped before entering");
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+pub struct PayloadAdmissionBarrierRelease {
+    release_tx: mpsc::Sender<()>,
+}
+
+#[cfg(any(test, debug_assertions))]
+impl PayloadAdmissionBarrierRelease {
+    pub async fn release(&self) {
+        self.release_tx
+            .send(())
+            .await
+            .expect("payload admission barrier observer must remain alive");
+    }
+}
+
 pub async fn run_answer_daemon(
     config: AppConfig,
     local_identity: IdentityFile,
@@ -83,9 +166,59 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
     config: AppConfig,
     local_identity: IdentityFile,
     authorized_keys: AuthorizedKeys,
+    transport: T,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
+    run_answer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        transport,
+        #[cfg(any(test, debug_assertions))]
+        None,
+        #[cfg(not(any(test, debug_assertions)))]
+        None,
+        shutdown,
+    )
+    .await
+}
+
+/// Like [`run_answer_daemon_with_transport_and_shutdown`], but also accepts a
+/// [`PayloadAdmissionBarrier`] (see [`AnswerDaemonTestHooks`]) so a test can
+/// deterministically force the post-payload shutdown-admission race (P0-006).
+#[cfg(any(test, debug_assertions))]
+pub async fn run_answer_daemon_with_payload_admission_barrier_and_shutdown<
+    T: DaemonSignalingTransport,
+>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    transport: T,
+    payload_admission_barrier: PayloadAdmissionBarrier,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
+    run_answer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        transport,
+        Some(AnswerDaemonTestHooks { payload_admission_barrier: Some(payload_admission_barrier) }),
+        shutdown,
+    )
+    .await
+}
+
+async fn run_answer_daemon_inner<T: DaemonSignalingTransport>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
     mut transport: T,
+    #[cfg(any(test, debug_assertions))] test_hooks: Option<AnswerDaemonTestHooks>,
+    #[cfg(not(any(test, debug_assertions)))] _test_hooks: Option<()>,
     mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
+    #[cfg(any(test, debug_assertions))]
+    let AnswerDaemonTestHooks { mut payload_admission_barrier } = test_hooks.unwrap_or_default();
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let config = Arc::new(config);
     let local_identity = Arc::new(local_identity);
@@ -154,6 +287,18 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
                 let Some(payload) = payload else {
                     continue;
                 };
+
+                #[cfg(any(test, debug_assertions))]
+                if let Some(barrier) = payload_admission_barrier.as_mut() {
+                    barrier.enter_and_wait_for_release().await;
+                }
+
+                if shutdown.is_shutdown_requested() {
+                    shutting_down = true;
+                    begin_answer_drain(&mut ctx, &shutdown, &mut primary_error, None);
+                    continue;
+                }
+
                 handle_answer_daemon_payload(
                     &AnswerDeps {
                         config: &config,

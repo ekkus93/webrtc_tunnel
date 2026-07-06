@@ -11,6 +11,8 @@ mod harness;
 
 #[path = "two_node_daemon/answer_drain_publish_barrier_tests.rs"]
 mod answer_drain_publish_barrier_tests;
+#[path = "two_node_daemon/answer_post_payload_shutdown_gate_tests.rs"]
+mod answer_post_payload_shutdown_gate_tests;
 #[path = "two_node_daemon/basics_tests.rs"]
 mod basics_tests;
 #[path = "two_node_daemon/isolation_tests.rs"]

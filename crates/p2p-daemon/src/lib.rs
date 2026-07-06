@@ -56,6 +56,11 @@ pub use types::{ActiveSession, DaemonSignalingTransport};
 
 // Test-only entry points, available whenever debug assertions are on (tests + dev).
 #[cfg(any(test, debug_assertions))]
+pub use answer::{
+    PayloadAdmissionBarrier, PayloadAdmissionBarrierEntered, PayloadAdmissionBarrierRelease,
+    run_answer_daemon_with_payload_admission_barrier_and_shutdown,
+};
+#[cfg(any(test, debug_assertions))]
 pub use offer::{
     OfferSessionTestEvent, OfferSessionTestHandle, run_offer_daemon_with_transport_and_test_hook,
     run_offer_daemon_with_transport_and_test_hook_and_shutdown,
