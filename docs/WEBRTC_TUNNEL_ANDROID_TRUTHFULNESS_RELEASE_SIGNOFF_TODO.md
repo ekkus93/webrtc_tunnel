@@ -580,12 +580,29 @@ Restore before commit.
 
 ### Acceptance criteria
 
-- [ ] Supersedence cleanup branch has dedicated test.
-- [ ] Test uses deterministic barrier.
-- [ ] Test targets exact cleanup stop.
-- [ ] Test fails if cleanup stop is removed.
-- [ ] Test fails if `NonCancellable` is removed.
-- [ ] P0-005 previous “5 of 6” gap is closed.
+- [x] Supersedence cleanup branch has dedicated test.
+- [x] Test uses deterministic barrier (`StartupTestHooks`, pauses after a
+      successful native start but before the generation check).
+- [x] Test targets exact cleanup stop (waits for
+      `ServiceTestEvent.StartupSupersedenceCleanupStopEntered`).
+- [x] Test fails if cleanup stop is removed — verified directly.
+- [ ] Test fails if `NonCancellable` is removed — **verified directly that it
+      does NOT fail**, and this is not a test gap: reaching this branch
+      requires bumping `lifecycleGeneration` alone, without cancelling
+      `startupJob` (confirmed no current production path can bump generation
+      without also cancelling `startupJob`, which routes through the
+      cancellation-cleanup branch — P0-003 — at an earlier point instead).
+      Since the job is never actually cancelled in this scenario, the
+      `withContext` call this branch makes never hits "prompt cancellation,"
+      so `NonCancellable` genuinely isn't exercised by this branch as
+      constructible today. It remains in the code as defensive/consistency
+      hardening (matching the cancellation branch's identical shape) against
+      a future code path that might cancel `startupJob` and bump generation
+      together, but no test can honestly claim to need it without inventing
+      a scenario. Kept `NonCancellable` in place; documenting this rather
+      than reporting false regression-strength coverage.
+- [x] P0-005 previous "5 of 6" gap is closed — the previously-undocumented
+      supersedence stop call now has dedicated coverage.
 
 ---
 
