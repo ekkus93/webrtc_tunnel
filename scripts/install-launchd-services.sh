@@ -58,6 +58,21 @@ require_service_traverse() {
     || fail "service account $SERVICE_USER cannot traverse existing directory '$path'"
 }
 
+# The log directory is not just traversed, it's written to at runtime. A
+# directory left over from a previous install (or hand-created read-only,
+# e.g. root:wheel 0755) would pass a traverse-only check yet still make the
+# service fail to write its own logs at runtime instead of at install time.
+# Permission bits alone (test -w) can also lie (ACLs, immutable flags,
+# read-only mounts), so probe with a real create+delete as the service user.
+require_service_create_delete() {
+  path="$1"
+  probe="$path/.p2ptunnel-write-probe-$$"
+  sudo -u "$SERVICE_USER" sh -c 'umask 077; : > "$1"' sh "$probe" \
+    || fail "service account $SERVICE_USER cannot create files in '$path'"
+  sudo -u "$SERVICE_USER" rm -f "$probe" \
+    || fail "service account $SERVICE_USER cannot remove files from '$path'"
+}
+
 for role in offer answer; do
   dir="$APP_SUPPORT_ROOT/$role"
   if [ -d "$dir" ]; then
@@ -70,7 +85,7 @@ for role in offer answer; do
 done
 if [ -d "$LOG_DIR" ]; then
   log "log directory '$LOG_DIR' already exists; validating it is still service-writable"
-  require_service_traverse "$LOG_DIR"
+  require_service_create_delete "$LOG_DIR"
 else
   log "creating '$LOG_DIR'"
   install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$LOG_DIR"

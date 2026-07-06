@@ -19,6 +19,19 @@ require_service_traverse() {
     || { echo "p2ptunnel installer: service account $SERVICE_USER cannot traverse existing directory '$path'" >&2; exit 1; }
 }
 
+# The log directory is written to at runtime, not just traversed; a
+# traverse-only check would pass for a read-only leftover directory that
+# still fails the service at runtime. Permission bits can also lie (ACLs,
+# immutable flags, read-only mounts), so probe with a real create+delete.
+require_service_create_delete() {
+  path="$1"
+  probe="$path/.p2ptunnel-write-probe-$$"
+  sudo -u "$SERVICE_USER" sh -c 'umask 077; : > "$1"' sh "$probe" \
+    || { echo "p2ptunnel installer: service account $SERVICE_USER cannot create files in '$path'" >&2; exit 1; }
+  sudo -u "$SERVICE_USER" rm -f "$probe" \
+    || { echo "p2ptunnel installer: service account $SERVICE_USER cannot remove files from '$path'" >&2; exit 1; }
+}
+
 for role in offer answer; do
   dir="$APP_SUPPORT_ROOT/$role"
   if [ -d "$dir" ]; then
@@ -29,7 +42,7 @@ for role in offer answer; do
 done
 
 if [ -d "$LOG_DIR" ]; then
-  require_service_traverse "$LOG_DIR"
+  require_service_create_delete "$LOG_DIR"
 else
   install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$LOG_DIR"
 fi

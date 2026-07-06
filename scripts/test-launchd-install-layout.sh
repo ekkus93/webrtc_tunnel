@@ -6,11 +6,14 @@
 # genuinely OS-privileged/side-effecting bits faked — `launchctl` (so it
 # never actually loads a system daemon) and `install`'s -o/-g ownership
 # arguments (so this does not depend on a real `_p2ptunnel` account
-# existing on the CI runner). `dscl`/`sudo` are also faked so both the
-# "service account missing" failure path and the `require_service_traverse`/
-# `validate_role_config_as_service_user` control flow can be driven
-# deterministically. Everything else (directory creation, mode bits,
-# `plutil -lint`) is real.
+# existing on the CI runner). `dscl`/`sudo` are also faked so the
+# "service account missing" failure path, the `require_service_traverse`/
+# `validate_role_config_as_service_user` control flow, and the
+# `require_service_create_delete` log-dir write probe (P1-001) can all be
+# driven deterministically — the write probe specifically needs a fake
+# failure path since this test runs as real root, which would create/remove
+# the probe file regardless of the directory's actual permission bits.
+# Everything else (directory creation, mode bits, `plutil -lint`) is real.
 #
 # Only runs on macOS; SKIPs elsewhere (mirrors check-launchd-plists.sh).
 # Must run as root (the real script requires it too).
@@ -40,7 +43,9 @@ STATE_DIR="$WORK/state"
 mkdir -p "$STUB_BIN" "$STATE_DIR"
 DSCL_STATE="$STATE_DIR/dscl-users-groups-present"
 LAUNCHCTL_LOG="$STATE_DIR/launchctl.log"
+WRITE_PROBE_STATE="$STATE_DIR/write-probe-should-fail"
 echo "1" > "$DSCL_STATE" # 1 = service account present, 0 = missing
+echo "0" > "$WRITE_PROBE_STATE" # 1 = simulate the log-dir write probe failing
 : > "$LAUNCHCTL_LOG"
 
 # Fakes only the service-account existence check; every other `dscl`
@@ -53,16 +58,29 @@ fi
 exit 1
 STUB_EOF
 
-# Strips \`-u <user>\` and runs the remaining command as-is (already root
+# Strips `-u <user>` and runs the remaining command as-is (already root
 # here). This exercises the script's own control flow (does it call
-# \`sudo -u \$SERVICE_USER ...\` at all, does it correctly propagate that
-# command's exit code) without needing a real _p2ptunnel account.
-cat > "$STUB_BIN/sudo" <<'STUB_EOF'
+# `sudo -u $SERVICE_USER ...` at all, does it correctly propagate that
+# command's exit code) without needing a real _p2ptunnel account. The one
+# exception is the log-dir write probe (`.p2ptunnel-write-probe-*`):
+# running as real root would create/remove the file regardless of the
+# directory's actual permission bits, which can't exercise a genuine
+# "traversable but not writable by the service user" failure without a
+# real non-root _p2ptunnel account, so this stub can be told (via
+# $WRITE_PROBE_STATE) to fail that specific command deterministically.
+cat > "$STUB_BIN/sudo" <<STUB_EOF
 #!/bin/sh
-if [ "$1" = "-u" ]; then
+if [ "\$1" = "-u" ]; then
   shift 2
 fi
-exec "$@"
+case "\$*" in
+  *.p2ptunnel-write-probe-*)
+    if [ "\$(cat "$WRITE_PROBE_STATE")" = "1" ]; then
+      exit 1
+    fi
+    ;;
+esac
+exec "\$@"
 STUB_EOF
 
 # Never actually loads a system daemon; just records that it was asked to.
@@ -159,6 +177,17 @@ log "PASS: first install creates 0750 directories, installs plists that pass plu
 "$ROOT/scripts/install-launchd-services.sh" >/tmp/install-3.log 2>&1 || { cat /tmp/install-3.log; fail "idempotent re-run should succeed"; }
 grep -q "already exists; validating" /tmp/install-3.log || { cat /tmp/install-3.log; fail "expected the re-run to validate the existing directories instead of recreating them"; }
 log "PASS: re-running validates existing directories instead of silently recreating them"
+
+# --- Scenario 3.5 (P1-001): existing log dir that's traversable but not
+# writable by the service user must fail the install, not just warn ---
+echo "1" > "$WRITE_PROBE_STATE"
+if "$ROOT/scripts/install-launchd-services.sh" >/tmp/install-3.5.log 2>&1; then
+  cat /tmp/install-3.5.log
+  fail "script should have failed when the log directory fails the service-user write probe"
+fi
+grep -q "cannot create files in" /tmp/install-3.5.log || { cat /tmp/install-3.5.log; fail "expected a clear write-probe failure message"; }
+echo "0" > "$WRITE_PROBE_STATE"
+log "PASS: a traversable-but-not-writable existing log directory fails the install"
 
 # --- Scenario 4: --enable with one missing config must not bootstrap either role ---
 echo "valid offer config" > "$APP_SUPPORT_ROOT/offer/config.toml"
