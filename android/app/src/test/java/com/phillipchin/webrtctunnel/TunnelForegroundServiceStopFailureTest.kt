@@ -112,6 +112,37 @@ class TunnelForegroundServiceStopFailureTest {
     }
 
     @Test
+    fun laterSuccessfulStopDoesNotEraseEarlierCleanupFailureHistory() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        // First stop attempt fails.
+        bridge.failNextStop()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
+        assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error })
+        assertTrue(
+            "a stop failure must record sticky cleanup-failure history",
+            waitForCondition { deps.tunnelRepository.status.value.lastCleanupError != null },
+        )
+
+        // A later retry succeeds: the current runtime state may truthfully become Stopped...
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 3)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 4)
+        assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Stopped })
+
+        // ...but the earlier cleanup failure must remain visible in diagnostics, not silently
+        // erased by the later successful retry (P1-005).
+        assertTrue(
+            "an earlier cleanup failure must remain visible after a later successful stop",
+            deps.tunnelRepository.status.value.lastCleanupError != null,
+        )
+    }
+
+    @Test
     fun failedPolicyStopForcesPausedByPolicyFalseEvenFromStaleTruePrecondition() {
         val deps = (service.applicationContext as HasAppDependencies).deps
 

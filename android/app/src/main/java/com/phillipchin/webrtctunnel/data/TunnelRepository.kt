@@ -146,17 +146,23 @@ class TunnelRepository(
         details: String? = null,
         state: ServiceState = ServiceState.Error,
     ) {
+        val error =
+            TunnelError(
+                code = code,
+                message = SensitiveDataRedactor.redactText(message),
+                details = details?.let(SensitiveDataRedactor::redactText),
+            )
         _status.value =
             _status.value.copy(
                 serviceState = state,
                 mqttConnected = false,
                 activeSessionCount = 0,
-                lastError =
-                    TunnelError(
-                        code = code,
-                        message = SensitiveDataRedactor.redactText(message),
-                        details = details?.let(SensitiveDataRedactor::redactText),
-                    ),
+                lastError = error,
+                // "stop_failed" is the code every tunnel-stop/cleanup failure site in
+                // TunnelForegroundService uses; record it as sticky history (P1-005) rather
+                // than only in lastError, which a later successful stop's refreshStatus()
+                // would otherwise overwrite and silently erase.
+                lastCleanupError = if (code == "stop_failed") error else _status.value.lastCleanupError,
             )
     }
 

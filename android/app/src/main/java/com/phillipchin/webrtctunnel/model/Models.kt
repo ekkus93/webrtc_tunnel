@@ -182,6 +182,11 @@ data class TunnelStatus(
     val allowMeteredForCurrentSession: Boolean = false,
     val forwards: List<ForwardStatus> = emptyList(),
     val lastError: TunnelError? = null,
+    // Sticky diagnostic history, distinct from [lastError]: a tunnel-stop/cleanup failure is
+    // recorded here and never auto-cleared by a later status refresh or successful retry (a
+    // later successful stop legitimately reports Stopped via [serviceState]/[lastError], but
+    // this field keeps the earlier failure visible instead of silently erasing it) (P1-005).
+    val lastCleanupError: TunnelError? = null,
 )
 
 @Serializable
