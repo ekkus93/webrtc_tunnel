@@ -225,6 +225,37 @@ impl Drop for MosquittoBroker {
     }
 }
 
+/// Kills and reaps the wrapped real `p2p-offer`/`p2p-answer` child process on
+/// drop unless [`Self::take`] has already handed it off. `std::process::Child`
+/// does not kill its process on drop, so without this, a ready-marker timeout or
+/// a failed signal-delivery assertion between spawn and the final wait would
+/// panic and leave a full daemon process (bound port, live broker connection)
+/// running indefinitely instead of being cleaned up.
+struct ChildGuard {
+    child: Option<std::process::Child>,
+}
+
+impl ChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    /// Takes ownership of the child for the real, final wait(), disarming the
+    /// guard so Drop does not also try to kill/reap it.
+    fn take(&mut self) -> std::process::Child {
+        self.child.take().expect("child already taken")
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 async fn wait_for_tcp(port: u16, label: &str) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -421,7 +452,7 @@ async fn assert_process_graceful_shutdown(
     signal_flag: &str,
     label: &str,
 ) {
-    let mut child = Command::new(bin)
+    let child = Command::new(bin)
         .args(["run", "--config"])
         .arg(config_path)
         .stdout(Stdio::piped())
@@ -429,6 +460,7 @@ async fn assert_process_graceful_shutdown(
         .spawn()
         .unwrap_or_else(|error| panic!("{label} should spawn: {error}"));
     let pid = child.id();
+    let mut guard = ChildGuard::new(child);
 
     wait_for_status_state(status_path, expected_steady_state, label).await;
 
@@ -439,11 +471,22 @@ async fn assert_process_graceful_shutdown(
         .expect("kill command should run");
     assert!(status.success(), "{label}: kill {signal_flag} {pid} should succeed");
 
-    let exit = timeout(Duration::from_secs(10), tokio::task::spawn_blocking(move || child.wait()))
-        .await
-        .unwrap_or_else(|_| panic!("{label} should exit before the test timeout"))
-        .expect("wait task should not panic")
-        .expect("wait should succeed");
+    // Disarm the guard now: ownership moves into the blocking wait below, which
+    // is the real, final reap. If that hangs, the timeout branch force-kills by
+    // pid directly (the guard can no longer reach the child once moved).
+    let mut child = guard.take();
+    let exit =
+        match timeout(Duration::from_secs(10), tokio::task::spawn_blocking(move || child.wait()))
+            .await
+        {
+            Ok(join_result) => {
+                join_result.expect("wait task should not panic").expect("wait should succeed")
+            }
+            Err(_) => {
+                let _ = Command::new("kill").arg("-KILL").arg(pid.to_string()).status();
+                panic!("{label} should exit before the test timeout");
+            }
+        };
 
     assert_eq!(
         exit.code(),

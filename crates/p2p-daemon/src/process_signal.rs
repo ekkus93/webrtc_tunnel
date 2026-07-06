@@ -61,6 +61,36 @@ mod tests {
     const READY_PATH: &str = "P2P_SIGNAL_TEST_READY";
     const RESULT_PATH: &str = "P2P_SIGNAL_TEST_RESULT";
 
+    /// Kills and reaps the wrapped child on drop unless [`Self::take`] has
+    /// already handed it off. `std::process::Child` does not kill its process on
+    /// drop, so without this, a ready-marker timeout or a failed signal-delivery
+    /// assertion between spawn and the final `wait()` would panic and leave the
+    /// child running indefinitely instead of being cleaned up.
+    struct ChildGuard {
+        child: Option<std::process::Child>,
+    }
+
+    impl ChildGuard {
+        fn new(child: std::process::Child) -> Self {
+            Self { child: Some(child) }
+        }
+
+        /// Takes ownership of the child for the real, final wait(), disarming
+        /// the guard so Drop does not also try to kill/reap it.
+        fn take(&mut self) -> std::process::Child {
+            self.child.take().expect("child already taken")
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
     /// Re-execs this same test binary as a child process (never signals the
     /// Cargo test runner itself), sends it a real OS signal, and asserts the
     /// adapter reports it. This exercises the actual `tokio::signal::unix`
@@ -104,7 +134,7 @@ mod tests {
         let _ = std::fs::remove_file(&result_path);
 
         let exe = std::env::current_exe().expect("current test executable");
-        let mut child = std::process::Command::new(exe)
+        let child = std::process::Command::new(exe)
             .arg("process_signal::tests::sigterm_and_sigint_are_observed_and_named")
             .arg("--exact")
             .env(CHILD_MODE, "1")
@@ -113,6 +143,7 @@ mod tests {
             .spawn()
             .expect("spawn child test process");
         let pid = child.id();
+        let mut guard = ChildGuard::new(child);
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !ready_path.exists() {
@@ -130,7 +161,21 @@ mod tests {
             .expect("kill command should run");
         assert!(status.success(), "kill {flag} {pid} should succeed");
 
-        let exit = child.wait().expect("child process should be waitable");
+        // Bounded poll instead of a blocking wait(): a child that ignores/mishandles
+        // the signal must fail this test loudly instead of hanging it forever.
+        let mut child = guard.take();
+        let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let exit = loop {
+            if let Some(status) = child.try_wait().expect("child process should be pollable") {
+                break status;
+            }
+            if std::time::Instant::now() >= exit_deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child process did not exit before the test timeout after {flag} {pid}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         assert!(exit.success(), "child process should exit successfully, got {exit:?}");
 
         let observed =
