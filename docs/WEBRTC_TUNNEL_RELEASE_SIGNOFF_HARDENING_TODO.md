@@ -1450,11 +1450,77 @@ Do not mechanically delete legitimate ignored cleanup results.
 
 Add a short completion note listing intentionally retained ignored/default behaviors.
 
+### Completion note
+
+Audit command run verbatim; every match classified:
+
+```text
+crates/p2p-daemon/src/signaling.rs:453  let _ = request.result.send(result);
+  → expected teardown/cancellation. Already commented: "a failed send here
+    just means the caller stopped waiting on this reply." The transport
+    failure itself is logged by mark_transport_unusable above this line.
+
+crates/p2p-daemon/src/status.rs:211  .unwrap_or_default()
+  → safe default with explicit semantics: Option<(SessionId, PeerId)>::None
+    (no active session) maps to an empty Vec<SessionStatus>, which is the
+    correct representation of "no session," not a masked failure.
+
+crates/p2p-daemon/src/status.rs:329  let _ = sink.send(status.clone());
+  → expected teardown. Already commented: "A closed receiver is not an
+    error for the daemon" (no live watch subscriber to broadcast to).
+
+crates/p2p-daemon/src/status.rs:475,511,558,729,742,778,852  let _ = tokio::fs::remove_file/remove_dir_all(...).await;
+  → all inside #[cfg(test)] mod tests, best-effort temp-file/dir cleanup
+    after a test's assertions already ran; not a production failure path.
+
+crates/p2p-daemon/src/offer/mod.rs:456  test_hooks.unwrap_or_default()
+crates/p2p-daemon/src/answer/mod.rs:295  test_hooks.unwrap_or_default()
+  → safe default with explicit semantics: #[derive(Default)] test-hook
+    bundle, all fields None in production/non-test-hook callers.
+
+crates/p2p-daemon/src/offer/mod.rs:498  let _ = hook.send(worker_abort_handles);
+  → expected teardown, #[cfg(any(test, debug_assertions))] only: fires
+    when a test wired the hook; a dropped receiver means the test isn't
+    watching, not a daemon failure.
+
+crates/p2p-daemon/src/offer/mod.rs:501  let _ = worker_abort_handles;
+  → not a Result at all — production-only branch silencing the unused-
+    binding warning for a Vec the non-test build has no use for.
+
+crates/p2p-daemon/src/answer/mod.rs:910  let _ = result.send(publish_result);
+  → same shape and rationale as signaling.rs:453 above (already commented
+    inline).
+
+android/.../TunnelForegroundService.kt:261  runCatching { repository.refreshStatus() }
+  → redundant but not a hidden failure: TunnelRepository.refreshStatus()
+    (data/TunnelRepository.kt:55) already wraps its own body in
+    runCatching and publishes ServiceState.Error + a redacted TunnelError
+    on failure internally; it never throws. The outer runCatching's
+    Result is genuinely unused, but there is nothing left for it to hide.
+    Left as-is (removing it is an unrelated dead-code cleanup, out of
+    this audit's scope).
+
+android/.../TunnelForegroundService.kt:330  runCatching { identityRepository.readPrivateIdentityPlaintext() }
+  → checked: chained with .getOrElse { abortStartup(...) } immediately
+    below (not shown in the grep match line itself).
+
+android/.../ForwardsConfigStore.kt:62  runCatching { Json.decodeFromString(...) }
+  → checked: this is loadForwardsResult()'s own body; the Result is
+    returned to the caller (with .onFailure { Log.w(...) } logging first),
+    never discarded.
+```
+
+No fixes were required — no newly touched call site in this pass silently
+maps an unexpected failure to empty/default/success. All ignored results
+above already have (or now have, via this note) explicit rationale, and no
+broad failure suppression (`|| true` or equivalent) exists anywhere in
+scope.
+
 ### Acceptance criteria
 
-- [ ] No newly touched failure path becomes empty/default/success silently.
-- [ ] Remaining ignored results have explicit rationale.
-- [ ] No broad `|| true` or equivalent failure suppression added.
+- [x] No newly touched failure path becomes empty/default/success silently.
+- [x] Remaining ignored results have explicit rationale.
+- [x] No broad `|| true` or equivalent failure suppression added.
 
 ---
 
