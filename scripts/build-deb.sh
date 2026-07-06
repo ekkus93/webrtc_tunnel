@@ -17,6 +17,30 @@ OUT_DIR="${1:-$ROOT/target/debian}"
 log() { printf '\033[1;34m[build-deb]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[build-deb FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Fails the build if any staged systemd unit's ExecStart/ExecStartPre points at
+# an absolute path that does not actually exist (and is not executable) in the
+# staged tree — the exact class of bug where a unit references a binary the
+# package never installs (e.g. a manually-installed-only /usr/local/bin path
+# leaking into the packaged /usr/bin unit).
+verify_staged_unit_executables() {
+  local stage="$1"
+  local unit line command_line exe staged
+  for unit in "$stage"/lib/systemd/system/p2p-*.service; do
+    [ -f "$unit" ] || continue
+    while IFS= read -r line; do
+      command_line="${line#*=}"
+      exe="${command_line%% *}"
+      case "$exe" in
+        /*)
+          staged="$stage$exe"
+          [ -x "$staged" ] || fail \
+            "$(basename "$unit") references $exe, but $staged is absent or not executable"
+          ;;
+      esac
+    done < <(grep -E '^ExecStart(Pre)?=' "$unit")
+  done
+}
+
 command -v dpkg-deb >/dev/null 2>&1 || fail "dpkg-deb not found (this only runs on Debian/Ubuntu-family hosts)"
 command -v fakeroot >/dev/null 2>&1 || fail "fakeroot not found"
 
@@ -54,8 +78,8 @@ if command -v strip >/dev/null 2>&1; then
   strip "$STAGE/usr/bin/p2p-offer" "$STAGE/usr/bin/p2p-answer" "$STAGE/usr/bin/p2pctl"
 fi
 
-install -m 0644 "$ROOT/packaging/systemd/p2p-offer.service" "$STAGE/lib/systemd/system/p2p-offer.service"
-install -m 0644 "$ROOT/packaging/systemd/p2p-answer.service" "$STAGE/lib/systemd/system/p2p-answer.service"
+install -m 0644 "$ROOT/packaging/debian/systemd/p2p-offer.service" "$STAGE/lib/systemd/system/p2p-offer.service"
+install -m 0644 "$ROOT/packaging/debian/systemd/p2p-answer.service" "$STAGE/lib/systemd/system/p2p-answer.service"
 
 install -m 0644 "$ROOT/README.md" "$STAGE/usr/share/doc/p2ptunnel/README.md"
 install -m 0644 "$ROOT/docs/SYSTEMD.md" "$STAGE/usr/share/doc/p2ptunnel/SYSTEMD.md"
@@ -63,6 +87,8 @@ install -m 0644 "$ROOT/packaging/debian/copyright" "$STAGE/usr/share/doc/p2ptunn
 sed "s/__VERSION__/$VERSION/" "$ROOT/packaging/debian/changelog" \
   | gzip -9n > "$STAGE/usr/share/doc/p2ptunnel/changelog.gz"
 chmod 0644 "$STAGE/usr/share/doc/p2ptunnel/changelog.gz"
+
+verify_staged_unit_executables "$STAGE"
 
 mkdir -p "$OUT_DIR"
 DEB_PATH="$OUT_DIR/p2ptunnel_${VERSION}_${ARCH}.deb"
