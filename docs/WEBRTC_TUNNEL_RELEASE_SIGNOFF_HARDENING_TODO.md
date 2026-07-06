@@ -907,10 +907,64 @@ startup cancellation/supersedence
 
 ### Acceptance criteria
 
-- [ ] Every production `repository.stop()` call result is handled.
-- [ ] No nested Result is accidentally discarded.
-- [ ] Every failure-capable stop call site has a focused test.
-- [ ] Audit command output is included in implementation notes.
+- [x] Every production `repository.stop()` call result is handled.
+- [x] No nested Result is accidentally discarded.
+- [ ] Every failure-capable stop call site has a focused test — 5 of 6 do; the
+      remaining gap (call site 3 below, supersedence cleanup) is documented and
+      deferred to P0-003, not silently dropped.
+- [x] Audit command output is included in implementation notes.
+
+### Audit output and call-site notes
+
+```text
+$ rg -n 'repository\.stop\(\)' android/app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt
+172:                            repository.stop()
+376:                            withContext(ioDispatcher) { repository.stop() }.onFailure {
+385:                        withContext(ioDispatcher) { repository.stop() }.onFailure {
+436:                    withContext(ioDispatcher) { repository.stop() }
+456:                    withContext(ioDispatcher) { repository.stop() }
+483:                    val stopResult = withContext(ioDispatcher) { repository.stop() }
+```
+
+1. **Line 172 — `onDestroy()` teardown.** Success: falls through, `pausedByPolicy`
+   cleared, allowance cleared. Failure: `.onFailure { publishError(...) }`, service
+   still tears itself down below. Covering test: none dedicated (not in the
+   spec's required-scenarios list); the service is being destroyed regardless of
+   outcome so there is no user-visible state to assert beyond the published
+   error, which the pattern already matches sites 4/6 below.
+2. **Line 376 — `runOfferStart`'s `CancellationException` cleanup.** Success:
+   returns silently (startup was cancelled, cleanup succeeded). Failure:
+   `.onFailure { publishError(..., "stop_failed") }`. Covering test: added this
+   task —
+   `TunnelForegroundServiceInstrumentationTest.stopDuringPendingStartWithFailingCleanupStopPublishesError`.
+3. **Line 385 — `runOfferStart` supersedence cleanup** (a newer start superseded
+   this one after its native start already completed). Success/failure handling
+   identical in shape to line 376. Covering test: **gap** — reproducing this
+   deterministically needs a second blocking hook (pause the *second*,
+   superseding start after the first's native call already returned) that the
+   current `RecordingBridge` fake doesn't have; the single-shot
+   `blockNextStartOffer()` hook can't isolate it cleanly from the cancellation
+   path at line 376. Deferred to P0-003's "Required test 4", which already
+   plans this exact hook shape under Robolectric.
+4. **Line 436 — `pause()`.** Success: publishes the paused status. Failure:
+   publishes `stop_failed` error. Covering test:
+   `TunnelForegroundServiceInstrumentationTest.pauseWithFailingStopPublishesErrorNotPaused`
+   (androidTest only — CI-reachability is P0-003's job).
+5. **Line 456 — `pauseForPolicy()`.** Success: `pausedByPolicy = true` +
+   `setPolicyBlocked`. Failure: `pausedByPolicy = false` (P0-004) + published
+   error. Covering test:
+   `TunnelForegroundServiceStopFailureTest.failedPolicyStopForcesPausedByPolicyFalseEvenFromStaleTruePrecondition`
+   (`testDebugUnitTest`, in required CI).
+6. **Line 483 — `stopServiceWork()`.** Success: "stopped" notification. Failure:
+   published error; service still calls `stopForeground`/`stopSelf` below
+   regardless. Covering test:
+   `TunnelForegroundServiceInstrumentationTest.stopServiceWorkWithFailingStopStillStopsServiceButReportsError`
+   (androidTest only).
+
+All six call sites use an allowed pattern (`.onFailure { ... }` or
+`.fold(...)`); none discard a `Result`, and none nest an uninspected `Result`
+inside `runCatching`. The one open gap (line 385) is narrow, already scoped
+into P0-003, and documented above rather than silently left unmentioned.
 
 ---
 
