@@ -2280,9 +2280,9 @@ If changing the serialized model is too disruptive, preserve host/port fields bu
 
 ### Acceptance criteria
 
-- [ ] Missing config match is explicit.
-- [ ] UI cannot display `:0` as a real endpoint.
-- [ ] Test covers daemon/config mismatch.
+- [x] Missing config match is explicit.
+- [x] UI cannot display `:0` as a real endpoint.
+- [x] Test covers daemon/config mismatch.
 
 ---
 
