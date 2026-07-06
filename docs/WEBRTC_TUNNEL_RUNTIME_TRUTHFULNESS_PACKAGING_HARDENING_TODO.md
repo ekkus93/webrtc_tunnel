@@ -2395,9 +2395,14 @@ If `actions/upload-artifact` or another job requires a different permission, add
 
 ### Acceptance criteria
 
-- [ ] Lint/test/Android jobs do not get contents write.
-- [ ] Release publishing still works.
-- [ ] Workflow syntax validates.
+- [x] Lint/test/Android jobs do not get contents write.
+- [ ] Release publishing still works. NOT RUN: requires pushing a version tag to trigger
+      the real `release-artifacts` job on GitHub Actions (tag-push is the job's only
+      trigger); not exercised here since that pushes a real tag/release to the shared
+      remote. Verify by pushing a tag and confirming the job creates the GitHub release.
+- [x] Workflow syntax validates. Verified via `python3 -c "import yaml; yaml.safe_load(...)"`;
+      `actionlint` itself was not available in this sandbox (no network-installable binary
+      permitted) and was not run.
 
 ---
 
