@@ -2674,32 +2674,32 @@ chore(ci): apply least-privilege permissions
 
 ## Daemon lifecycle
 
-- [ ] Runtime phase exists.
-- [ ] No normal status outside `Running`.
-- [ ] Offer post-start exits always finalize.
-- [ ] Offer channel-close/shutdown race is fixed.
-- [ ] Offer work admission is checked after select wake.
-- [ ] Offer worker death is supervised while idle.
-- [ ] Offer worker death is supervised during active session.
-- [ ] Answer session completion is independent of self-sent `Ended`.
-- [ ] Normal answer completion does not call `abort()`.
-- [ ] Answer panic cannot strand registry state.
-- [ ] Fatal answer paths drain before returning.
+- [x] Runtime phase exists.
+- [x] No normal status outside `Running`.
+- [x] Offer post-start exits always finalize.
+- [x] Offer channel-close/shutdown race is fixed.
+- [x] Offer work admission is checked after select wake.
+- [x] Offer worker death is supervised while idle.
+- [x] Offer worker death is supervised during active session.
+- [x] Answer session completion is independent of self-sent `Ended`.
+- [x] Normal answer completion does not call `abort()`.
+- [x] Answer panic cannot strand registry state.
+- [x] Fatal answer paths drain before returning.
 
 ## Status
 
-- [ ] Ordinary status remains best-effort and logged.
-- [ ] Terminal status is strict.
-- [ ] Status replacement is atomic.
-- [ ] Reader stress test sees no partial JSON.
+- [x] Ordinary status remains best-effort and logged.
+- [x] Terminal status is strict.
+- [x] Status replacement is atomic.
+- [x] Reader stress test sees no partial JSON.
 
 ## Tests
 
-- [ ] Reconnect test observes actual reconnect/backoff event.
-- [ ] Answer drain test forces in-flight publish.
-- [ ] Signal adapter tests signal child processes only.
-- [ ] Required real-binary signal test cannot self-skip.
-- [ ] Worker panic tests exist.
+- [x] Reconnect test observes actual reconnect/backoff event.
+- [x] Answer drain test forces in-flight publish.
+- [x] Signal adapter tests signal child processes only.
+- [x] Required real-binary signal test cannot self-skip.
+- [x] Worker panic tests exist.
 
 ## Services and packages
 
@@ -2715,33 +2715,36 @@ chore(ci): apply least-privilege permissions
 
 ## Android and diagnostics
 
-- [ ] Forced abort is not clean stop.
-- [ ] Stop failure reaches Kotlin.
-- [ ] Mutex poison is never empty/default/no-op.
-- [ ] Tracing install failure is visible.
-- [ ] Log-buffer poison is visible.
-- [ ] Secret colon/space variants are redacted.
-- [ ] MQTT scheme is preserved.
-- [ ] Diagnostics collection errors are explicit.
-- [ ] Forward/config mismatch is explicit.
+- [x] Forced abort is not clean stop.
+- [x] Stop failure reaches Kotlin.
+- [x] Mutex poison is never empty/default/no-op.
+- [x] Tracing install failure is visible.
+- [x] Log-buffer poison is visible.
+- [x] Secret colon/space variants are redacted.
+- [x] MQTT scheme is preserved.
+- [x] Diagnostics collection errors are explicit.
+- [x] Forward/config mismatch is explicit.
 
 ## CLI and CI
 
-- [ ] `p2pctl` missing HOME is a normal error.
-- [ ] `p2pctl status` uses typed strict parsing.
-- [ ] `p2pctl check-config` verifies authorized peers.
-- [ ] CI default permission is `contents: read`.
-- [ ] Release job alone has `contents: write`.
+- [x] `p2pctl` missing HOME is a normal error.
+- [x] `p2pctl status` uses typed strict parsing.
+- [x] `p2pctl check-config` verifies authorized peers.
+- [x] CI default permission is `contents: read`.
+- [x] Release job alone has `contents: write`.
 
 ## Quality gates
 
-- [ ] `cargo fmt --all --check` passes.
-- [ ] Clippy debug/all-targets/all-features passes with warnings denied.
-- [ ] Clippy release/all-features passes with warnings denied.
-- [ ] Workspace tests pass.
-- [ ] Android unit tests pass.
-- [ ] systemd validation passes.
-- [ ] launchd validation passes on macOS.
-- [ ] Debian package builds and package smoke tests pass.
-- [ ] Required real-process signal suite actually ran.
+- [x] `cargo fmt --all --check` passes.
+- [x] Clippy debug/all-targets/all-features passes with warnings denied.
+- [x] Clippy release/all-features passes with warnings denied.
+- [x] Workspace tests pass.
+- [x] Android unit tests pass.
+- [x] systemd validation passes.
+- [x] launchd validation passes on macOS. (Verified for real on GitHub Actions macOS CI,
+      run 28780695739 — see P1-011.)
+- [x] Debian package builds and package smoke tests pass.
+- [x] Required real-process signal suite actually ran. (Ran locally in this sandbox via
+      Docker-provisioned mosquitto with `P2P_REQUIRE_SIGNAL_TEST=1`; also runs on every CI
+      push for both ubuntu-latest and macos-latest.)
 
