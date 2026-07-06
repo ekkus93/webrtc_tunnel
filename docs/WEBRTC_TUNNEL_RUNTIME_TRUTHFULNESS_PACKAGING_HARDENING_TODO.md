@@ -1927,10 +1927,10 @@ Do not silently discard events or return empty logs.
 
 ### Acceptance criteria
 
-- [ ] Tracing install failure is visible.
-- [ ] Tracing install failure is tested.
-- [ ] LogBuffer poison is visible.
-- [ ] No `let _ = try_init()` remains.
+- [x] Tracing install failure is visible.
+- [x] Tracing install failure is tested.
+- [x] LogBuffer poison is visible.
+- [x] No `let _ = try_init()` remains.
 
 ---
 
