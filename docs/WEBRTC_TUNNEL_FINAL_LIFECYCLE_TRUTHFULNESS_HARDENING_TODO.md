@@ -1205,10 +1205,10 @@ Use actual `ValidationResult` API.
 
 ### Acceptance criteria
 
-- [ ] Delete failure never shows `Forward deleted`.
-- [ ] Error message remains visible.
-- [ ] Delete success still shows success.
-- [ ] Tests cover persistence failure.
+- [x] Delete failure never shows `Forward deleted`.
+- [x] Error message remains visible.
+- [x] Delete success still shows success.
+- [x] Tests cover persistence failure.
 
 ---
 
