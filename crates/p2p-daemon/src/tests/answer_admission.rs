@@ -40,6 +40,8 @@ async fn answer_daemon_admits_unknown_authenticated_offer() {
     let mut sessions_by_id = HashMap::new();
     let mut session_by_peer = HashMap::new();
     let mut next_generation = 1_u64;
+    let mut session_completions: AnswerSessionCompletions =
+        futures_util::stream::FuturesUnordered::new();
     let offer_peer = WebRtcPeer::new(&config.webrtc).await.expect("offer peer");
     let _data_channel = offer_peer.create_data_channel().await.expect("data channel");
     let offer_sdp = offer_peer.create_offer().await.expect("offer sdp");
@@ -74,6 +76,7 @@ async fn answer_daemon_admits_unknown_authenticated_offer() {
             replay_cache: &mut replay_cache,
             sessions_by_id: &mut sessions_by_id,
             session_by_peer: &mut session_by_peer,
+            session_completions: &mut session_completions,
             next_generation: &mut next_generation,
         },
         payload,
@@ -86,9 +89,9 @@ async fn answer_daemon_admits_unknown_authenticated_offer() {
         transport.published.lock().await.len() >= 2,
         "offer admission should publish ack and answer"
     );
-    for handle in sessions_by_id.into_values() {
-        handle.task.abort();
-    }
+    // No explicit task cleanup needed: the session task is now tracked only via
+    // `session_completions`, and this test's `#[tokio::test]` runtime aborts every
+    // task it spawned (including the one behind that completion future) on drop.
 }
 
 #[tokio::test]
@@ -125,6 +128,8 @@ async fn answer_daemon_rejects_sender_session_owner_mismatch() {
     let mut sessions_by_id = HashMap::new();
     let mut session_by_peer = HashMap::new();
     let mut next_generation = 1_u64;
+    let mut session_completions: AnswerSessionCompletions =
+        futures_util::stream::FuturesUnordered::new();
     let session_a = SessionId::random();
     let (handle_a, mut rx_a) = test_answer_handle(
         session_a,
@@ -168,6 +173,7 @@ async fn answer_daemon_rejects_sender_session_owner_mismatch() {
             replay_cache: &mut replay_cache,
             sessions_by_id: &mut sessions_by_id,
             session_by_peer: &mut session_by_peer,
+            session_completions: &mut session_completions,
             next_generation: &mut next_generation,
         },
         payload,
@@ -212,6 +218,8 @@ async fn duplicate_signal_for_one_session_does_not_route_to_another_session() {
     let mut sessions_by_id = HashMap::new();
     let mut session_by_peer = HashMap::new();
     let mut next_generation = 1_u64;
+    let mut session_completions: AnswerSessionCompletions =
+        futures_util::stream::FuturesUnordered::new();
     let session_a = SessionId::random();
     let session_b = SessionId::random();
     let (handle_a, mut rx_a) = test_answer_handle(
@@ -265,6 +273,7 @@ async fn duplicate_signal_for_one_session_does_not_route_to_another_session() {
                 replay_cache: &mut replay_cache,
                 sessions_by_id: &mut sessions_by_id,
                 session_by_peer: &mut session_by_peer,
+                session_completions: &mut session_completions,
                 next_generation: &mut next_generation,
             },
             payload.clone(),

@@ -54,7 +54,7 @@ pub(crate) async fn run_answer_session_task(
     generation: SessionGeneration,
     mut session: ActiveSession,
     shutdown: ShutdownToken,
-) {
+) -> AnswerSessionTaskResult {
     let result =
         run_answer_session_task_inner(&deps, &mut inbound, generation, &mut session, shutdown)
             .await;
@@ -67,15 +67,7 @@ pub(crate) async fn run_answer_session_task(
         );
     }
     cleanup_active_session(&mut session).await;
-    let _ = deps
-        .event_tx
-        .send(AnswerSessionEvent::Ended {
-            session_id: session.session_id,
-            generation,
-            remote_peer_id: session.remote_peer_id.clone(),
-            result,
-        })
-        .await;
+    AnswerSessionTaskResult { final_session_id: session.session_id, result }
 }
 
 async fn run_answer_session_task_inner(

@@ -29,16 +29,17 @@ use tokio::time::{sleep, timeout};
 
 pub(crate) use crate::{
     ActiveBusyOfferAction, ActiveBusyOfferCache, ActiveBusyOfferKey, ActiveSession, AnswerDeps,
-    AnswerSessionEvent, AnswerSessionHandle, AnswerSessionRegistry, BridgeSessionState,
-    DaemonError, DaemonRuntimePhase, DaemonRuntimeState, DaemonSignalingTransport, DaemonState,
+    AnswerSessionCompletions, AnswerSessionEvent, AnswerSessionHandle, AnswerSessionRegistry,
+    AnswerSessionTaskResult, AnswerTaskCompletion, BridgeSessionState, DaemonError,
+    DaemonRuntimePhase, DaemonRuntimeState, DaemonSignalingTransport, DaemonState,
     ForwardListenState, IceConnectionState, OfferListener, OfferSessionPayloadOutcome,
     RuntimeContext, SessionGeneration, SessionStatusSnapshot, ShutdownToken, StatusSnapshot,
     StatusWriter, WebRtcPeer, apply_answer_overrides, apply_offer_overrides, apply_override_pairs,
     bind_offer_listeners, classify_active_busy_offer, compute_backoff_delay,
     decode_idle_signaling_message, duplicate_active_session_ack_message,
     handle_answer_daemon_payload, handle_answer_incoming_data_channel, handle_answer_session_event,
-    handle_answer_session_message, handle_offer_session_message, mark_transport_unusable,
-    mark_transport_usable, maybe_ack_duplicate_active_session_message,
+    handle_answer_session_message, handle_answer_task_completion, handle_offer_session_message,
+    mark_transport_unusable, mark_transport_usable, maybe_ack_duplicate_active_session_message,
     maybe_replace_pending_answer_session, process_answer_session_signal,
     process_offer_session_payload, recover_daemon_after_session, replayed_active_busy_offer_key,
     run_answer_daemon_with_transport_and_shutdown, run_offer_daemon_with_transport_and_shutdown,
@@ -272,8 +273,7 @@ pub(super) fn test_answer_handle(
 ) -> (AnswerSessionHandle, mpsc::Receiver<p2p_signaling::DecodedSignal>) {
     let (tx, rx) = mpsc::channel(4);
     let status = test_session_status(session_id, generation, remote_peer_id.clone(), state);
-    let task = tokio::spawn(async { pending::<()>().await });
-    (AnswerSessionHandle { generation, remote_peer_id, inbound: tx, status, task }, rx)
+    (AnswerSessionHandle { generation, remote_peer_id, inbound: tx, status }, rx)
 }
 
 pub(super) struct AnswerRoutingFixture {
@@ -285,6 +285,7 @@ pub(super) struct AnswerRoutingFixture {
     pub(super) active_session: SessionId,
     pub(super) sessions_by_id: HashMap<SessionId, AnswerSessionHandle>,
     pub(super) session_by_peer: HashMap<PeerId, SessionId>,
+    pub(super) session_completions: AnswerSessionCompletions,
     pub(super) receiver: mpsc::Receiver<p2p_signaling::DecodedSignal>,
     pub(super) transport: RecordingTransport,
     pub(super) replay_cache: ReplayCache,
@@ -326,6 +327,7 @@ impl AnswerRoutingFixture {
             active_session,
             sessions_by_id,
             session_by_peer,
+            session_completions: futures_util::stream::FuturesUnordered::new(),
             receiver,
             transport: RecordingTransport::default(),
             replay_cache: ReplayCache::new(64),
@@ -458,6 +460,7 @@ impl AnswerRoutingFixture {
                 replay_cache: &mut self.replay_cache,
                 sessions_by_id: &mut self.sessions_by_id,
                 session_by_peer: &mut self.session_by_peer,
+                session_completions: &mut self.session_completions,
                 next_generation: &mut self.next_generation,
             },
             payload,

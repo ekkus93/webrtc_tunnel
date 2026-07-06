@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use p2p_core::{AppConfig, DaemonState, FailureCode, PeerId, SessionId};
 use p2p_crypto::{AuthorizedKey, AuthorizedKeys, IdentityFile};
 use p2p_signaling::{
@@ -102,6 +103,8 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
     let (event_tx, mut event_rx) = mpsc::channel(128);
     let mut sessions_by_id: HashMap<SessionId, AnswerSessionHandle> = HashMap::new();
     let mut session_by_peer: HashMap<PeerId, SessionId> = HashMap::new();
+    let mut session_completions: AnswerSessionCompletions =
+        futures_util::stream::FuturesUnordered::new();
     let mut next_generation = 1_u64;
 
     // Startup is only truthfully complete once the broker is subscribed and the
@@ -112,6 +115,7 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
 
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
     let mut shutting_down = false;
+    let mut primary_error: Option<DaemonError> = None;
 
     loop {
         if shutting_down && sessions_by_id.is_empty() {
@@ -119,14 +123,33 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
         }
 
         tokio::select! {
+            biased;
+
             _ = shutdown.cancelled(), if !shutting_down => {
                 tracing::info!(
                     active_session_count = sessions_by_id.len(),
                     "answer daemon shutdown requested; draining active sessions"
                 );
                 shutting_down = true;
-                ctx.runtime.phase = DaemonRuntimePhase::Draining;
+                begin_answer_drain(&mut ctx, &shutdown, &mut primary_error, None);
             }
+
+            completion = session_completions.next(), if !session_completions.is_empty() => {
+                let completion = completion.expect("guarded by is_empty");
+                handle_answer_task_completion(
+                    &mut ctx,
+                    &mut sessions_by_id,
+                    &mut session_by_peer,
+                    completion,
+                    &shutdown,
+                    &mut primary_error,
+                )
+                .await;
+                if !shutting_down && shutdown.is_shutdown_requested() {
+                    shutting_down = true;
+                }
+            }
+
             payload = poll_idle_signal_payload(&mut ctx, &mut transport), if !shutting_down => {
                 let Some(payload) = payload else {
                     continue;
@@ -146,15 +169,30 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
                         replay_cache: &mut replay_cache,
                         sessions_by_id: &mut sessions_by_id,
                         session_by_peer: &mut session_by_peer,
+                        session_completions: &mut session_completions,
                         next_generation: &mut next_generation,
                     },
                     payload,
                 )
                 .await;
             }
+
             event = event_rx.recv() => {
                 let Some(event) = event else {
-                    return Err(DaemonError::Logging("answer session event channel closed".to_owned()));
+                    // Fatal, but must not bypass drain: enter Draining, request
+                    // shutdown, and keep consuming task completions below until the
+                    // registry empties, so in-flight sessions still unwind cleanly.
+                    tracing::error!("answer session event channel closed unexpectedly");
+                    shutting_down = true;
+                    begin_answer_drain(
+                        &mut ctx,
+                        &shutdown,
+                        &mut primary_error,
+                        Some(DaemonError::Logging(
+                            "answer session event channel closed".to_owned(),
+                        )),
+                    );
+                    continue;
                 };
                 handle_answer_session_event(
                     &mut ctx,
@@ -171,7 +209,110 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
 
     ctx.runtime.phase = DaemonRuntimePhase::Closed;
     write_answer_closed_status(&mut ctx).await;
-    Ok(())
+
+    match primary_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Enters `Draining`, requests cooperative shutdown, and records `error` as the
+/// primary daemon failure — unless a primary error is already set, in which case
+/// `error` is logged as an additional (secondary) failure during drain. Used by
+/// every fatal answer-daemon path (event-channel closure, session task panic) so
+/// none of them can bypass drain/finalization by returning directly.
+fn begin_answer_drain(
+    ctx: &mut RuntimeContext<'_>,
+    shutdown: &ShutdownToken,
+    primary_error: &mut Option<DaemonError>,
+    error: Option<DaemonError>,
+) {
+    ctx.runtime.phase = DaemonRuntimePhase::Draining;
+    if primary_error.is_none() {
+        *primary_error = error;
+    } else if let Some(error) = error {
+        tracing::error!(reason = %error, "additional answer daemon failure during drain");
+    }
+    shutdown.request_shutdown();
+}
+
+/// Locates a session's current registry key by its stable identity (generation +
+/// remote peer), not by session id — a same-peer pending-session replacement can
+/// change the map key out from under an in-flight task.
+fn find_session_id_by_generation_and_peer(
+    sessions: &HashMap<SessionId, AnswerSessionHandle>,
+    generation: SessionGeneration,
+    remote_peer_id: &PeerId,
+) -> Option<SessionId> {
+    sessions.iter().find_map(|(session_id, handle)| {
+        (handle.generation == generation && &handle.remote_peer_id == remote_peer_id)
+            .then_some(*session_id)
+    })
+}
+
+/// Handles one independently-observed answer session task completion (normal end,
+/// remote/ICE failure, or — critically — a panic/join failure that the task never
+/// self-reported). A panic can no longer strand the registry entry: this removes
+/// it by stable identity and, on panic, enters drain via [`begin_answer_drain`]
+/// instead of leaving the daemon silently unaware that a session vanished.
+pub(crate) async fn handle_answer_task_completion(
+    ctx: &mut RuntimeContext<'_>,
+    sessions_by_id: &mut HashMap<SessionId, AnswerSessionHandle>,
+    session_by_peer: &mut HashMap<PeerId, SessionId>,
+    completion: AnswerTaskCompletion,
+    shutdown: &ShutdownToken,
+    primary_error: &mut Option<DaemonError>,
+) {
+    let AnswerTaskCompletion { initial_session_id, generation, remote_peer_id, outcome } =
+        completion;
+
+    let lookup_session_id = match &outcome {
+        Ok(result) => result.final_session_id,
+        Err(_) => {
+            find_session_id_by_generation_and_peer(sessions_by_id, generation, &remote_peer_id)
+                .unwrap_or(initial_session_id)
+        }
+    };
+
+    let matched = sessions_by_id.get(&lookup_session_id).is_some_and(|handle| {
+        handle.generation == generation && handle.remote_peer_id == remote_peer_id
+    });
+
+    if matched {
+        sessions_by_id.remove(&lookup_session_id);
+        session_by_peer.remove(&remote_peer_id);
+    } else {
+        tracing::warn!(
+            session_id = %lookup_session_id,
+            generation = generation.0,
+            remote_peer_id = %remote_peer_id,
+            "ignoring stale or already-removed answer session completion"
+        );
+    }
+
+    match outcome {
+        Ok(result) => {
+            if matched {
+                recover_daemon_after_session(ctx, result.result).await;
+            }
+        }
+        Err(join_reason) => {
+            tracing::error!(
+                session_id = %lookup_session_id,
+                remote_peer_id = %remote_peer_id,
+                reason = %join_reason,
+                "answer session task panicked or was aborted unexpectedly; entering drain",
+            );
+            begin_answer_drain(
+                ctx,
+                shutdown,
+                primary_error,
+                Some(DaemonError::Logging(format!("answer session task panicked: {join_reason}"))),
+            );
+        }
+    }
+
+    write_answer_registry_status(ctx, sessions_by_id).await;
 }
 
 pub(crate) struct AnswerDeps<'a> {
@@ -186,6 +327,7 @@ pub(crate) struct AnswerSessionRegistry<'a> {
     pub(crate) replay_cache: &'a mut p2p_signaling::ReplayCache,
     pub(crate) sessions_by_id: &'a mut HashMap<SessionId, AnswerSessionHandle>,
     pub(crate) session_by_peer: &'a mut HashMap<PeerId, SessionId>,
+    pub(crate) session_completions: &'a mut AnswerSessionCompletions,
     pub(crate) next_generation: &'a mut u64,
 }
 
@@ -421,6 +563,16 @@ async fn start_answer_session_from_offer<T: DaemonSignalingTransport>(
         session,
         shutdown.clone(),
     ));
+    let completion_remote_peer_id = remote_peer_id.clone();
+    registry.session_completions.push(Box::pin(async move {
+        let outcome = task.await.map_err(|error| error.to_string());
+        AnswerTaskCompletion {
+            initial_session_id: session_id,
+            generation,
+            remote_peer_id: completion_remote_peer_id,
+            outcome,
+        }
+    }));
     registry.sessions_by_id.insert(
         session_id,
         AnswerSessionHandle {
@@ -428,7 +580,6 @@ async fn start_answer_session_from_offer<T: DaemonSignalingTransport>(
             remote_peer_id: remote_peer_id.clone(),
             inbound: inbound_tx,
             status,
-            task,
         },
     );
     registry.session_by_peer.insert(remote_peer_id, session_id);
@@ -509,23 +660,6 @@ pub(crate) async fn handle_answer_session_event<T: DaemonSignalingTransport>(
                         old_session_id = %old_session_id,
                         new_session_id = %new_session_id,
                         "ignoring stale answer-session replacement event"
-                    );
-                }
-            }
-            write_answer_registry_status(ctx, sessions_by_id).await;
-        }
-        AnswerSessionEvent::Ended { session_id, generation, remote_peer_id, result } => {
-            if let Some(handle) = sessions_by_id.get(&session_id) {
-                if handle.generation == generation && handle.remote_peer_id == remote_peer_id {
-                    let handle = sessions_by_id.remove(&session_id).expect("checked above");
-                    handle.task.abort();
-                    session_by_peer.remove(&handle.remote_peer_id);
-                    recover_daemon_after_session(ctx, result).await;
-                } else {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        remote_peer_id = %remote_peer_id,
-                        "ignoring stale answer-session end event"
                     );
                 }
             }

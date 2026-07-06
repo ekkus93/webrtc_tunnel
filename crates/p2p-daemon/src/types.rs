@@ -199,12 +199,6 @@ pub(crate) enum AnswerSessionEvent {
         generation: SessionGeneration,
         status: SessionStatusSnapshot,
     },
-    Ended {
-        session_id: SessionId,
-        generation: SessionGeneration,
-        remote_peer_id: PeerId,
-        result: Result<(), DaemonError>,
-    },
 }
 
 pub(crate) struct AnswerSessionHandle {
@@ -212,8 +206,34 @@ pub(crate) struct AnswerSessionHandle {
     pub(crate) remote_peer_id: PeerId,
     pub(crate) inbound: mpsc::Sender<DecodedSignal>,
     pub(crate) status: SessionStatusSnapshot,
-    pub(crate) task: JoinHandle<()>,
 }
+
+/// An answer session task's own result, captured once `run_answer_session_task`
+/// returns. `final_session_id` reflects same-peer pending-session replacement,
+/// which can change the task's active session id mid-run — the registry lookup
+/// on completion must use this, not the id the task was originally spawned with.
+pub(crate) struct AnswerSessionTaskResult {
+    pub(crate) final_session_id: SessionId,
+    pub(crate) result: Result<(), DaemonError>,
+}
+
+/// An answer session task's completion, independently observed by awaiting its
+/// `JoinHandle` (see [`AnswerSessionCompletions`]) rather than trusting the task to
+/// self-report — a panic before self-reporting used to strand the registry entry
+/// forever and could hang shutdown drain.
+pub(crate) struct AnswerTaskCompletion {
+    pub(crate) initial_session_id: SessionId,
+    pub(crate) generation: SessionGeneration,
+    pub(crate) remote_peer_id: PeerId,
+    pub(crate) outcome: Result<AnswerSessionTaskResult, String>,
+}
+
+/// Every currently-running answer session task's completion future, polled
+/// concurrently by the daemon's outer select loop. Boxed/type-erased because each
+/// entry closes over a distinct `JoinHandle<AnswerSessionTaskResult>`.
+pub(crate) type AnswerSessionCompletions = futures_util::stream::FuturesUnordered<
+    std::pin::Pin<Box<dyn Future<Output = AnswerTaskCompletion> + Send>>,
+>;
 
 /// Shared, cloneable dependencies an answer session task needs. Bundled into one
 /// struct (rather than passed as individual arguments) to keep the task functions

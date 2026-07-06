@@ -71,17 +71,13 @@ async fn answer_status_event_does_not_rekey_by_peer_or_cross_generation() {
 }
 
 #[tokio::test]
-async fn stale_answer_end_event_cannot_remove_newer_same_peer_session() {
+async fn stale_answer_task_completion_cannot_remove_newer_same_peer_session() {
     let mut config = sample_config();
     config.node.role = NodeRole::Answer;
     let (_path, status_writer) = status_writer_for_test(&mut config, "stale-ended");
     let config = Arc::new(config);
-    let answer = generate_identity("answer-office").expect("answer identity");
-    let authorized_keys = AuthorizedKeys::parse("").expect("empty keys");
-    let codec = SignalCodec::new(&answer.identity, &authorized_keys, 120, 300);
     let mut runtime = connected_runtime();
     let mut ctx = RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
-    let mut transport = RecordingTransport::default();
     let mut sessions_by_id = HashMap::new();
     let mut session_by_peer = HashMap::new();
     let remote: PeerId = "offer-home".parse().expect("remote peer");
@@ -91,42 +87,121 @@ async fn stale_answer_end_event_cannot_remove_newer_same_peer_session() {
         test_answer_handle(current_session, generation, remote.clone(), DaemonState::TunnelOpen);
     sessions_by_id.insert(current_session, handle);
     session_by_peer.insert(remote.clone(), current_session);
+    let shutdown = ShutdownToken::new();
+    let mut primary_error = None;
 
-    handle_answer_session_event(
+    let stale_session_id = SessionId::random();
+    handle_answer_task_completion(
         &mut ctx,
-        &codec,
-        &mut transport,
         &mut sessions_by_id,
         &mut session_by_peer,
-        AnswerSessionEvent::Ended {
-            session_id: SessionId::random(),
+        AnswerTaskCompletion {
+            initial_session_id: stale_session_id,
             generation: SessionGeneration(2),
             remote_peer_id: remote.clone(),
-            result: Ok(()),
+            outcome: Ok(AnswerSessionTaskResult {
+                final_session_id: stale_session_id,
+                result: Ok(()),
+            }),
         },
+        &shutdown,
+        &mut primary_error,
     )
     .await;
 
     assert!(sessions_by_id.contains_key(&current_session));
     assert_eq!(session_by_peer.get(&remote), Some(&current_session));
+    assert!(!shutdown.is_shutdown_requested());
 
-    handle_answer_session_event(
+    handle_answer_task_completion(
         &mut ctx,
-        &codec,
-        &mut transport,
         &mut sessions_by_id,
         &mut session_by_peer,
-        AnswerSessionEvent::Ended {
-            session_id: current_session,
+        AnswerTaskCompletion {
+            initial_session_id: current_session,
             generation: SessionGeneration(4),
             remote_peer_id: remote.clone(),
-            result: Ok(()),
+            outcome: Ok(AnswerSessionTaskResult {
+                final_session_id: current_session,
+                result: Ok(()),
+            }),
         },
+        &shutdown,
+        &mut primary_error,
     )
     .await;
 
     assert!(sessions_by_id.contains_key(&current_session));
     assert_eq!(session_by_peer.get(&remote), Some(&current_session));
+    assert!(!shutdown.is_shutdown_requested());
+    assert!(primary_error.is_none());
+}
+
+#[tokio::test]
+async fn answer_task_panic_removes_session_and_enters_drain_leaving_other_sessions_intact() {
+    let mut config = sample_config();
+    config.node.role = NodeRole::Answer;
+    let (path, status_writer) = status_writer_for_test(&mut config, "panicked-ended");
+    let config = Arc::new(config);
+    let mut runtime = connected_runtime();
+    let mut ctx = RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
+    let mut sessions_by_id = HashMap::new();
+    let mut session_by_peer = HashMap::new();
+    let peer_a: PeerId = "offer-a".parse().expect("peer a");
+    let peer_b: PeerId = "offer-b".parse().expect("peer b");
+    let session_a = SessionId::random();
+    let session_b = SessionId::random();
+    let generation_a = SessionGeneration(9);
+    let generation_b = SessionGeneration(10);
+    let (handle_a, _rx_a) =
+        test_answer_handle(session_a, generation_a, peer_a.clone(), DaemonState::TunnelOpen);
+    let (handle_b, _rx_b) =
+        test_answer_handle(session_b, generation_b, peer_b.clone(), DaemonState::TunnelOpen);
+    sessions_by_id.insert(session_a, handle_a);
+    sessions_by_id.insert(session_b, handle_b);
+    session_by_peer.insert(peer_a.clone(), session_a);
+    session_by_peer.insert(peer_b.clone(), session_b);
+    let shutdown = ShutdownToken::new();
+    let mut primary_error = None;
+
+    // A join failure (panic or abort) never carries an `AnswerSessionTaskResult`,
+    // so the registry lookup falls back to generation+peer instead of a returned
+    // final_session_id.
+    handle_answer_task_completion(
+        &mut ctx,
+        &mut sessions_by_id,
+        &mut session_by_peer,
+        AnswerTaskCompletion {
+            initial_session_id: session_a,
+            generation: generation_a,
+            remote_peer_id: peer_a.clone(),
+            outcome: Err("panicked at 'boom'".to_owned()),
+        },
+        &shutdown,
+        &mut primary_error,
+    )
+    .await;
+
+    assert!(!sessions_by_id.contains_key(&session_a), "panicked session should be removed");
+    assert_eq!(session_by_peer.get(&peer_a), None, "panicked peer mapping should be removed");
+    assert!(shutdown.is_shutdown_requested(), "a task panic must trigger daemon shutdown");
+    assert!(primary_error.is_some(), "a task panic must become the primary daemon error");
+
+    // The unrelated session is untouched by the panic and would still drain
+    // normally through its own eventual completion — the real daemon loop's
+    // `shutting_down && sessions_by_id.is_empty()` gate (unchanged by this
+    // refactor) is what keeps the daemon alive until it does.
+    assert!(sessions_by_id.contains_key(&session_b), "unrelated session must remain to drain");
+    assert_eq!(session_by_peer.get(&peer_b), Some(&session_b));
+
+    // The registry-status write at the end of `handle_answer_task_completion` is
+    // itself an ordinary (non-terminal) write, so P0-001's phase gate correctly
+    // suppresses it once `begin_answer_drain` has moved the phase to `Draining` —
+    // no file is written here; only the eventual terminal `Closed` write will be.
+    assert!(
+        tokio::fs::metadata(&path).await.is_err(),
+        "ordinary status write must stay suppressed once drain has begun"
+    );
 }
 
 #[tokio::test]
@@ -149,13 +224,9 @@ async fn failed_session_end_events_remove_only_that_session() {
         config.node.role = NodeRole::Answer;
         let (path, status_writer) = status_writer_for_test(&mut config, label);
         let config = Arc::new(config);
-        let answer = generate_identity("answer-office").expect("answer identity");
-        let authorized_keys = AuthorizedKeys::parse("").expect("empty keys");
-        let codec = SignalCodec::new(&answer.identity, &authorized_keys, 120, 300);
         let mut runtime = connected_runtime();
         let mut ctx =
             RuntimeContext { config: &config, status: &status_writer, runtime: &mut runtime };
-        let mut transport = RecordingTransport::default();
         let mut sessions_by_id = HashMap::new();
         let mut session_by_peer = HashMap::new();
         let peer_a: PeerId = "offer-a".parse().expect("peer a");
@@ -172,19 +243,24 @@ async fn failed_session_end_events_remove_only_that_session() {
         sessions_by_id.insert(session_b, handle_b);
         session_by_peer.insert(peer_a.clone(), session_a);
         session_by_peer.insert(peer_b.clone(), session_b);
+        let shutdown = ShutdownToken::new();
+        let mut primary_error = None;
 
-        handle_answer_session_event(
+        handle_answer_task_completion(
             &mut ctx,
-            &codec,
-            &mut transport,
             &mut sessions_by_id,
             &mut session_by_peer,
-            AnswerSessionEvent::Ended {
-                session_id: session_a,
+            AnswerTaskCompletion {
+                initial_session_id: session_a,
                 generation: generation_a,
                 remote_peer_id: peer_a.clone(),
-                result: Err(failure),
+                outcome: Ok(AnswerSessionTaskResult {
+                    final_session_id: session_a,
+                    result: Err(failure),
+                }),
             },
+            &shutdown,
+            &mut primary_error,
         )
         .await;
 
@@ -196,6 +272,10 @@ async fn failed_session_end_events_remove_only_that_session() {
             Some(&session_b),
             "{label}: peer B mapping remains"
         );
+        // A session's own failure (as opposed to a task join failure) is not
+        // daemon-fatal: no drain should be triggered.
+        assert!(!shutdown.is_shutdown_requested(), "{label}: no daemon-wide shutdown");
+        assert!(primary_error.is_none(), "{label}: no primary daemon error");
         let status = read_status_file(&path).await;
         assert_eq!(status["current_state"], "serving", "{label}: daemon still serving");
         assert_eq!(status["active_session_count"], 1, "{label}: only peer B remains active");

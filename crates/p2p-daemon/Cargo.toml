@@ -11,6 +11,7 @@ p2p-crypto = { path = "../p2p-crypto" }
 p2p-signaling = { path = "../p2p-signaling" }
 p2p-tunnel = { path = "../p2p-tunnel" }
 p2p-webrtc = { path = "../p2p-webrtc" }
+futures-util.workspace = true
 rand_core.workspace = true
 sd-notify = { version = "0.5", optional = true }
 serde.workspace = true

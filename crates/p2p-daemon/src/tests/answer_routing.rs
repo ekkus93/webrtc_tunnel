@@ -46,6 +46,8 @@ async fn answer_daemon_routes_only_authenticated_sender_and_session() {
     let mut sessions_by_id = HashMap::new();
     let mut session_by_peer = HashMap::new();
     let mut next_generation = 1_u64;
+    let mut session_completions: AnswerSessionCompletions =
+        futures_util::stream::FuturesUnordered::new();
     let session_a = SessionId::random();
     let session_b = SessionId::random();
     let (handle_a, mut rx_a) = test_answer_handle(
@@ -99,6 +101,7 @@ async fn answer_daemon_routes_only_authenticated_sender_and_session() {
             replay_cache: &mut replay_cache,
             sessions_by_id: &mut sessions_by_id,
             session_by_peer: &mut session_by_peer,
+            session_completions: &mut session_completions,
             next_generation: &mut next_generation,
         },
         payload,
@@ -145,6 +148,8 @@ async fn forged_outer_sender_kid_is_not_routed_to_matching_peer_session() {
     let mut sessions_by_id = HashMap::new();
     let mut session_by_peer = HashMap::new();
     let mut next_generation = 1_u64;
+    let mut session_completions: AnswerSessionCompletions =
+        futures_util::stream::FuturesUnordered::new();
     let session_a = SessionId::random();
     let (handle_a, mut rx_a) = test_answer_handle(
         session_a,
@@ -191,6 +196,7 @@ async fn forged_outer_sender_kid_is_not_routed_to_matching_peer_session() {
             replay_cache: &mut replay_cache,
             sessions_by_id: &mut sessions_by_id,
             session_by_peer: &mut session_by_peer,
+            session_completions: &mut session_completions,
             next_generation: &mut next_generation,
         },
         forged_payload,
@@ -224,6 +230,8 @@ async fn answer_daemon_ignores_unknown_authenticated_non_offer() {
     let mut sessions_by_id = HashMap::new();
     let mut session_by_peer = HashMap::new();
     let mut next_generation = 1_u64;
+    let mut session_completions: AnswerSessionCompletions =
+        futures_util::stream::FuturesUnordered::new();
     let message = InnerMessageBuilder::new(
         SessionId::random(),
         offer.identity.peer_id.clone(),
@@ -258,6 +266,7 @@ async fn answer_daemon_ignores_unknown_authenticated_non_offer() {
             replay_cache: &mut replay_cache,
             sessions_by_id: &mut sessions_by_id,
             session_by_peer: &mut session_by_peer,
+            session_completions: &mut session_completions,
             next_generation: &mut next_generation,
         },
         payload,
@@ -293,6 +302,8 @@ async fn answer_daemon_does_not_peer_fallback_route_unknown_non_offer() {
     let mut sessions_by_id = HashMap::new();
     let mut session_by_peer = HashMap::new();
     let mut next_generation = 1_u64;
+    let mut session_completions: AnswerSessionCompletions =
+        futures_util::stream::FuturesUnordered::new();
     let active_session = SessionId::random();
     let (handle, mut rx) = test_answer_handle(
         active_session,
@@ -337,6 +348,7 @@ async fn answer_daemon_does_not_peer_fallback_route_unknown_non_offer() {
             replay_cache: &mut replay_cache,
             sessions_by_id: &mut sessions_by_id,
             session_by_peer: &mut session_by_peer,
+            session_completions: &mut session_completions,
             next_generation: &mut next_generation,
         },
         payload,
@@ -444,6 +456,8 @@ async fn answer_daemon_unknown_same_peer_offer_enters_session_policy() {
     let mut sessions_by_id = HashMap::new();
     let mut session_by_peer = HashMap::new();
     let mut next_generation = 1_u64;
+    let mut session_completions: AnswerSessionCompletions =
+        futures_util::stream::FuturesUnordered::new();
     let active_session = SessionId::random();
     let (handle, mut rx) = test_answer_handle(
         active_session,
@@ -485,6 +499,7 @@ async fn answer_daemon_unknown_same_peer_offer_enters_session_policy() {
             replay_cache: &mut replay_cache,
             sessions_by_id: &mut sessions_by_id,
             session_by_peer: &mut session_by_peer,
+            session_completions: &mut session_completions,
             next_generation: &mut next_generation,
         },
         payload,
