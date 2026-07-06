@@ -1043,10 +1043,10 @@ Remove the fixed 300 ms synchronization sleep.
 
 ### Acceptance criteria
 
-- [ ] Test observes actual reconnect/backoff state.
-- [ ] Shutdown is requested only after the observed event.
-- [ ] Daemon exits before configured backoff.
-- [ ] Test does not rely on a guessed sleep for correctness.
+- [x] Test observes actual reconnect/backoff state.
+- [x] Shutdown is requested only after the observed event.
+- [x] Daemon exits before configured backoff.
+- [x] Test does not rely on a guessed sleep for correctness.
 
 ---
 
