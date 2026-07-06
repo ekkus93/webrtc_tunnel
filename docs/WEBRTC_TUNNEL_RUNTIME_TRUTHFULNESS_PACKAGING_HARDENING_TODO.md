@@ -1194,10 +1194,10 @@ The child can call `install()`, create the ready marker, then `wait()`.
 
 ### Acceptance criteria
 
-- [ ] Test runner PID is never signaled.
-- [ ] Child signals are deterministic without registration sleep.
-- [ ] SIGTERM and SIGINT both tested on Unix.
-- [ ] Adapter setup failures remain real errors.
+- [x] Test runner PID is never signaled.
+- [x] Child signals are deterministic without registration sleep.
+- [x] SIGTERM and SIGINT both tested on Unix.
+- [x] Adapter setup failures remain real errors.
 
 ---
 
