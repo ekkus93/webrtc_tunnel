@@ -3,9 +3,14 @@ package com.phillipchin.webrtctunnel.viewmodel
 import android.net.Uri
 import android.os.Looper
 import com.phillipchin.webrtctunnel.TunnelForegroundService
+import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.IdentityValidationResult
+import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+import com.phillipchin.webrtctunnel.security.IdentityCrypto
+import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -436,6 +441,66 @@ class SetupViewModelTest : AppViewModelTestBase() {
         assertEquals(null, state.errorMessage)
         assertEquals(false, state.isBusy)
         assertEquals("canon", deps.identityRepository.readPublicIdentity())
+    }
+
+    @Test
+    fun saveReportsStoredIdentityUnreadableDistinctlyFromMissing() {
+        // A stored (not freshly-imported) identity that fails to load/validate must not be
+        // reported as "missing" — that would tell the user their identity vanished, when it
+        // actually exists but is broken (P1-007, following the same absent-vs-unreadable
+        // distinction established for ForwardsViewModel/ImportExportService in P1-001).
+        val unreadableIdentityRepository =
+            IdentityRepository(
+                app,
+                object : IdentityCrypto {
+                    override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
+
+                    override fun decrypt(payload: ByteArray): ByteArray = error("decrypt boom")
+                },
+            )
+        unreadableIdentityRepository.storeEncryptedIdentity("garbage".toByteArray(), "canon-pub")
+        val brokenDeps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = { recordingBridge },
+                configRepository = configRepository,
+                networkPolicyManager =
+                    NetworkPolicyManager {
+                        NetworkType.UnmeteredWifi to false
+                    },
+                identityRepository = unreadableIdentityRepository,
+                dispatchers = deps.dispatchers,
+            )
+        val viewModel = SetupViewModel(brokenDeps)
+        val forward = ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)
+        brokenDeps.forwardsStore.saveForwards(listOf(forward))
+        recordingBridge.validationResult = ValidationResult(true, null)
+        // No importIdentityPath set: the wizard's Identity-step gate only checks presence
+        // (hasEncryptedIdentity()), which is true here, so it lets the wizard reach Review
+        // relying on the already-stored identity.
+        viewModel.setImportPublicIdentity("kid peer")
+        viewModel.setInput(
+            viewModel.state.value.input.copy(
+                brokerHost = "broker.local",
+                remotePeerId = "remote-peer",
+            ),
+        )
+        while (viewModel.state.value.currentStep != SetupStep.Review) {
+            viewModel.goNext()
+        }
+
+        viewModel.save.saveAndApplyConfig()
+
+        val state = awaitSetupState(viewModel) { it.errorMessage != null }
+        assertTrue(
+            "expected a message distinguishing 'unreadable' from 'missing', got: ${state.errorMessage}",
+            state.errorMessage?.contains("could not be loaded") == true ||
+                state.errorMessage?.contains("invalid") == true,
+        )
+        assertTrue(
+            "must not claim the identity is simply missing when it actually exists but is broken",
+            state.errorMessage?.contains("Missing encrypted identity") != true,
+        )
     }
 
     @Test

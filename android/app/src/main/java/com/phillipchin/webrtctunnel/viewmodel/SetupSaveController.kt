@@ -154,10 +154,16 @@ class SetupSaveController(
             if (current.importIdentityPath.isNotBlank()) {
                 withContext(ioDispatcher) { importPrivateIdentity(deps, current.importIdentityPath) }
                     .getOrElse { saveError(it.message ?: "Failed importing private identity", redact = false) }
+            } else if (!deps.identityRepository.hasEncryptedIdentity()) {
+                // Absence and present-but-unreadable are different states (P1-001/P1-007): only
+                // absence may report "missing" — a present identity that fails to load/validate
+                // must say so, not tell the user their identity vanished.
+                saveError("Missing encrypted identity", redact = true)
             } else {
                 resolveStoredIdentity(deps, ioDispatcher)
+                    ?: saveError("Stored private key exists but could not be loaded or is invalid", redact = true)
             }
-        if (resolved == null || resolved.first.isEmpty()) {
+        if (resolved.first.isEmpty()) {
             saveError("Missing encrypted identity", redact = true)
         }
         return resolved
