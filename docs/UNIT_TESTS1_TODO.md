@@ -105,34 +105,34 @@ with nothing to catch it.
 For each redaction rule the class implements (read the file first to get
 the exact list — do not guess at rule names), add at least:
 
-- [ ] A **positive** case: input containing the real secret shape is fully
+- [x] A **positive** case: input containing the real secret shape is fully
       redacted (assert the secret substring is *absent* from the output,
       not just that *some* redaction happened).
-- [ ] A **boundary** case: secret-like text embedded inside otherwise
+- [x] A **boundary** case: secret-like text embedded inside otherwise
       benign surrounding text (e.g. a private key block in the middle of a
       multi-line log dump) — assert only the secret span is redacted and
       surrounding text survives.
-- [ ] A **near-miss** case designed to catch an overly broad regex: text
+- [x] A **near-miss** case designed to catch an overly broad regex: text
       that looks similar to the secret pattern but isn't one (e.g. a
       hex-looking string that isn't actually a key) — assert it is *not*
       redacted if it shouldn't be, or *is* redacted if the class
       intentionally over-redacts for safety (confirm which behavior is
       intended by reading the code, then test that intent explicitly).
-- [ ] Multiple distinct secrets of different rule types in the same input
+- [x] Multiple distinct secrets of different rule types in the same input
       blob — assert all are redacted, not just the first match (a common
       bug class with global-vs-first-match regex usage).
-- [ ] Empty string / no-secrets input — output equals input unchanged.
-- [ ] Idempotency: redacting already-redacted output doesn't corrupt it
+- [x] Empty string / no-secrets input — output equals input unchanged.
+- [x] Idempotency: redacting already-redacted output doesn't corrupt it
       further (running the function twice gives the same result as once).
 
 ### Acceptance criteria
 
-- [ ] Every distinct redaction rule in the class has at least one positive
+- [x] Every distinct redaction rule in the class has at least one positive
       test.
-- [ ] At least one test proves multiple secrets in one input are all
+- [x] At least one test proves multiple secrets in one input are all
       caught.
-- [ ] `./gradlew testDebugUnitTest` passes.
-- [ ] `./gradlew ktlintCheck detekt` clean on the new file.
+- [x] `./gradlew testDebugUnitTest` passes.
+- [x] `./gradlew ktlintCheck detekt` clean on the new file.
 
 ---
 
@@ -172,17 +172,17 @@ Read the file to enumerate the exact fields/tokens expected (format
 marker, peer_id, signing key, kex key, any version/algorithm tags), then
 add a malformed-input test for each of these failure classes:
 
-- [ ] Missing format marker / wrong marker string.
-- [ ] Missing a required field (each required field, one at a time —
+- [x] Missing format marker / wrong marker string.
+- [x] Missing a required field (each required field, one at a time —
       table-driven if the test harness supports it).
-- [ ] Invalid base64 in a key field (non-base64 characters).
-- [ ] Valid base64 but wrong decoded byte length for a key field (too
+- [x] Invalid base64 in a key field (non-base64 characters).
+- [x] Valid base64 but wrong decoded byte length for a key field (too
       short and too long).
-- [ ] Unknown/unsupported algorithm tag, if the format encodes one.
-- [ ] Empty input.
-- [ ] Only whitespace/comments, no actual identity line.
-- [ ] Trailing garbage after an otherwise-valid entry.
-- [ ] Extremely long line (defend against unbounded-allocation concerns —
+- [x] Unknown/unsupported algorithm tag, if the format encodes one.
+- [x] Empty input.
+- [x] Only whitespace/comments, no actual identity line.
+- [x] Trailing garbage after an otherwise-valid entry.
+- [x] Extremely long line (defend against unbounded-allocation concerns —
       assert it errors cleanly rather than hangs/panics; skip if the
       parser is already bounded by line-based reading with a sane limit,
       but confirm that explicitly rather than assuming).
@@ -195,14 +195,14 @@ caught by the test.
 
 ### Acceptance criteria
 
-- [ ] Each failure class above has its own test function (clear names,
+- [x] Each failure class above has its own test function (clear names,
       e.g. `parse_rejects_truncated_signing_key`).
-- [ ] No test causes a panic — the parser must return `Result::Err` for
+- [x] No test causes a panic — the parser must return `Result::Err` for
       all malformed input, never `unwrap`/index-panic internally. If a
       test reveals a panic, that is itself a bug to fix as part of this
       task (fix the parser, not just document the crash).
-- [ ] `cargo test -p p2p-crypto` passes.
-- [ ] `cargo clippy -p p2p-crypto --all-targets --all-features -- -D warnings`
+- [x] `cargo test -p p2p-crypto` passes.
+- [x] `cargo clippy -p p2p-crypto --all-targets --all-features -- -D warnings`
       clean.
 
 ---
@@ -234,30 +234,30 @@ CI silently.
 
 Using `tempfile`/`std::fs` with explicit `set_permissions`:
 
-- [ ] A file with mode `0o644` (not world-writable) passes when the flag
+- [x] A file with mode `0o644` (not world-writable) passes when the flag
       is enabled.
-- [ ] A file with mode `0o646` / `0o666` (world-writable) is rejected when
+- [x] A file with mode `0o646` / `0o666` (world-writable) is rejected when
       the flag is enabled, with the expected error variant.
-- [ ] A directory in the path chain that is world-writable is rejected
+- [x] A directory in the path chain that is world-writable is rejected
       (if the function walks ancestor directories — confirm by reading the
       code first; only write this case if applicable).
-- [ ] World-writable-but-flag-disabled still passes (this restores/keeps
+- [x] World-writable-but-flag-disabled still passes (this restores/keeps
       the existing bypass-path test — don't drop it).
-- [ ] Path whose immediate parent directory doesn't exist yet (confirm and
+- [x] Path whose immediate parent directory doesn't exist yet (confirm and
       test whatever the function's documented behavior is for this case —
       error vs. skip-check — don't assume; read the code).
-- [ ] Group-writable-but-not-world-writable (mode `0o664`) is **not**
+- [x] Group-writable-but-not-world-writable (mode `0o664`) is **not**
       rejected (proves the check targets the world bit specifically, not
       group).
 
 ### Acceptance criteria
 
-- [ ] A world-writable path is demonstrably rejected by an enabled test
+- [x] A world-writable path is demonstrably rejected by an enabled test
       (this is the core gap being closed).
-- [ ] The group-vs-world bit distinction is explicitly tested (prevents a
+- [x] The group-vs-world bit distinction is explicitly tested (prevents a
       regression that's too strict or too loose by one bit).
-- [ ] `cargo test -p p2p-core` passes.
-- [ ] Tests clean up temp files/dirs (use `tempfile::tempdir()`, not
+- [x] `cargo test -p p2p-core` passes.
+- [x] Tests clean up temp files/dirs (use `tempfile::tempdir()`, not
       hand-rolled paths in `/tmp`, consistent with existing test
       conventions in the workspace).
 
@@ -297,30 +297,30 @@ single happy-path call each, from `SetupViewModelTest`.
 
 ### Required test cases
 
-- [ ] `generateIdentity()` success path: assert the resulting identity is
+- [x] `generateIdentity()` success path: assert the resulting identity is
       persisted/exposed correctly and the busy flag clears.
-- [ ] `generateIdentity()` while already busy (re-entrancy guard via
+- [x] `generateIdentity()` while already busy (re-entrancy guard via
       `launchBusy`) — assert a second concurrent call is rejected/ignored
       rather than corrupting state or running twice.
-- [ ] `importIdentityFromUri()` success path with a well-formed identity
+- [x] `importIdentityFromUri()` success path with a well-formed identity
       TOML behind a fake `Uri`/`ContentResolver`.
-- [ ] `importIdentityFromUri()` with an unreadable URI (resolver throws /
+- [x] `importIdentityFromUri()` with an unreadable URI (resolver throws /
       returns null stream) — assert a clear error surfaces, no crash.
-- [ ] `importIdentityFromUri()` with malformed identity content behind a
+- [x] `importIdentityFromUri()` with malformed identity content behind a
       valid URI — assert the parse error is surfaced, not swallowed.
-- [ ] `importPublicIdentityFromUri()` success and the same
+- [x] `importPublicIdentityFromUri()` success and the same
       unreadable/malformed failure modes as above.
-- [ ] Busy-guard reentrancy for the import functions, same as
+- [x] Busy-guard reentrancy for the import functions, same as
       `generateIdentity()`.
 
 ### Acceptance criteria
 
-- [ ] Every public entry point on the identity-onboarding path has at
+- [x] Every public entry point on the identity-onboarding path has at
       least one success and one failure test.
-- [ ] Busy-guard reentrancy is explicitly tested for at least one of the
+- [x] Busy-guard reentrancy is explicitly tested for at least one of the
       three functions (ideally all three, but don't skip this on all of
       them).
-- [ ] `./gradlew testDebugUnitTest` passes.
+- [x] `./gradlew testDebugUnitTest` passes.
 
 ---
 
@@ -346,26 +346,26 @@ logic has no test today.
 
 ### Required test cases
 
-- [ ] Adding a new peer to an existing non-empty `authorized_keys` file
+- [x] Adding a new peer to an existing non-empty `authorized_keys` file
       appends correctly and leaves prior entries untouched.
-- [ ] Adding a peer whose `peer_id` already exists — assert the documented
+- [x] Adding a peer whose `peer_id` already exists — assert the documented
       behavior (reject with a clear error, or replace — read the code
       first to determine which is intended, then test that exact
       behavior; do not assume).
-- [ ] Adding to a missing/empty file — assert it creates the file
+- [x] Adding to a missing/empty file — assert it creates the file
       correctly rather than erroring.
-- [ ] Adding a malformed public-identity input (reuse malformed-input
+- [x] Adding a malformed public-identity input (reuse malformed-input
       shapes from P0-002 if `add_authorized_key` calls the same parser) —
       assert a clear error, no partial/corrupt file write.
 
 ### Acceptance criteria
 
-- [ ] Duplicate-peer behavior is pinned down by a test matching the
+- [x] Duplicate-peer behavior is pinned down by a test matching the
       code's actual documented/intended semantics.
-- [ ] No test leaves a partially-written `authorized_keys` file on disk
+- [x] No test leaves a partially-written `authorized_keys` file on disk
       after a failure case (assert the file is either fully updated or
       untouched — no half-written state).
-- [ ] `cargo test -p p2pctl` passes.
+- [x] `cargo test -p p2pctl` passes.
 
 ---
 
@@ -388,26 +388,26 @@ all unverified.
 
 ### Required test cases
 
-- [ ] `exportDiagnostics()` success path — assert the expected
+- [x] `exportDiagnostics()` success path — assert the expected
       success message/state.
-- [ ] `exportDiagnosticsToUri()` success path with a fake writable `Uri`.
-- [ ] `exportDiagnosticsToUri()` when `openOutputStream` throws/returns
+- [x] `exportDiagnosticsToUri()` success path with a fake writable `Uri`.
+- [x] `exportDiagnosticsToUri()` when `openOutputStream` throws/returns
       null — assert a clear failure message, no crash.
-- [ ] Concurrent export re-entrancy: calling export again while one is
+- [x] Concurrent export re-entrancy: calling export again while one is
       already in flight is rejected/ignored, matching whatever guard
       pattern `SetupIdentityController`'s `launchBusy` uses (check for a
       shared helper — if `LogsViewModel` has its own separate guard
       implementation, test that one specifically).
-- [ ] `filteredLogs` (referenced in the class's nested lambdas per the
+- [x] `filteredLogs` (referenced in the class's nested lambdas per the
       build output) — if this is a meaningful filter (level/search-term),
       add a test for at least one non-trivial filter case; skip if it's a
       trivial passthrough (confirm by reading first).
 
 ### Acceptance criteria
 
-- [ ] Both export entry points have a success and a failure test.
-- [ ] Re-entrancy guard is tested.
-- [ ] `./gradlew testDebugUnitTest` passes.
+- [x] Both export entry points have a success and a failure test.
+- [x] Re-entrancy guard is tested.
+- [x] `./gradlew testDebugUnitTest` passes.
 
 ---
 
@@ -439,14 +439,14 @@ Read the file first to determine what's actually mockable without a real
 `RTCDataChannel` — the goal is unit-level coverage of the Rust-side
 dispatch logic, not re-testing the underlying WebRTC library:
 
-- [ ] `wait_for_open` returns promptly once an "open" event is dispatched.
-- [ ] `wait_for_open` returns/errors appropriately if a "close" event
+- [x] `wait_for_open` returns promptly once an "open" event is dispatched.
+- [x] `wait_for_open` returns/errors appropriately if a "close" event
       arrives before "open" (channel never opened).
-- [ ] `wait_for_open` respects its timeout when neither event arrives.
-- [ ] Message dispatch delivers payloads to the `mpsc` receiver in order.
-- [ ] Behavior when the receiver has been dropped (sender-side send
+- [x] `wait_for_open` respects its timeout when neither event arrives.
+- [x] Message dispatch delivers payloads to the `mpsc` receiver in order.
+- [x] Behavior when the receiver has been dropped (sender-side send
       failure) — assert it doesn't panic.
-- [ ] Behavior when the internal buffer/channel is at capacity (if
+- [x] Behavior when the internal buffer/channel is at capacity (if
       bounded) — assert the documented backpressure/drop behavior.
 
 If the type genuinely cannot be constructed without a live WebRTC
@@ -458,11 +458,11 @@ this crate for the same problem.
 
 ### Acceptance criteria
 
-- [ ] At least the timeout and ordering behaviors above are covered
+- [x] At least the timeout and ordering behaviors above are covered
       without relying on a real WebRTC connection.
-- [ ] Any new test-only seam is `#[cfg(test)]`/`pub(crate)`-scoped, not
+- [x] Any new test-only seam is `#[cfg(test)]`/`pub(crate)`-scoped, not
       exposed in the public API.
-- [ ] `cargo test -p p2p-webrtc` passes.
+- [x] `cargo test -p p2p-webrtc` passes.
 
 ---
 
@@ -485,17 +485,17 @@ currently tested; the signing-key-reuse path is not.
 
 ### Required test cases
 
-- [ ] Two entries with different `peer_id`s but the same signing key —
+- [x] Two entries with different `peer_id`s but the same signing key —
       assert parsing rejects this with the expected error.
-- [ ] Two entries with the same `peer_id` and same signing key (the
+- [x] Two entries with the same `peer_id` and same signing key (the
       already-tested case) — keep/confirm this still passes.
-- [ ] Two entries with different `peer_id`s and different signing keys —
+- [x] Two entries with different `peer_id`s and different signing keys —
       both accepted normally (sanity/negative-control case).
 
 ### Acceptance criteria
 
-- [ ] Signing-key reuse across distinct peer_ids is proven to be rejected.
-- [ ] `cargo test -p p2p-crypto` passes.
+- [x] Signing-key reuse across distinct peer_ids is proven to be rejected.
+- [x] `cargo test -p p2p-crypto` passes.
 
 ---
 
@@ -523,19 +523,19 @@ signing/kex algorithm tags aren't directly tested.
 
 ### Required test cases
 
-- [ ] Unsupported/missing format marker in the identity TOML.
-- [ ] Unknown `sign.alg` value.
-- [ ] Unknown `kex.alg` value.
-- [ ] Truncated/invalid base64 in a key field (mirror the shapes from
+- [x] Unsupported/missing format marker in the identity TOML.
+- [x] Unknown `sign.alg` value.
+- [x] Unknown `kex.alg` value.
+- [x] Truncated/invalid base64 in a key field (mirror the shapes from
       P0-002 for consistency).
-- [ ] Existing mismatched-key-pair test is retained (don't regress it
+- [x] Existing mismatched-key-pair test is retained (don't regress it
       while adding these).
 
 ### Acceptance criteria
 
-- [ ] Each unsupported/malformed case above has its own test with a
+- [x] Each unsupported/malformed case above has its own test with a
       specific expected error.
-- [ ] `cargo test -p p2p-crypto` passes.
+- [x] `cargo test -p p2p-crypto` passes.
 
 ---
 
@@ -559,15 +559,15 @@ different peer than the decoding node).
 
 ### Required test cases
 
-- [ ] Decode a message with an unsupported/future version number —
+- [x] Decode a message with an unsupported/future version number —
       assert the expected rejection.
-- [ ] Decode a message addressed (encrypted/signed) to a different
+- [x] Decode a message addressed (encrypted/signed) to a different
       recipient peer_id than the one decoding it — assert rejection.
 
 ### Acceptance criteria
 
-- [ ] Both branches have an explicit test.
-- [ ] `cargo test -p p2p-signaling` passes.
+- [x] Both branches have an explicit test.
+- [x] `cargo test -p p2p-signaling` passes.
 
 ---
 
@@ -590,18 +590,18 @@ these, but worth closing for completeness).
 
 ### Required test cases
 
-- [ ] Invalid QoS byte value (`qos_from_u8` out-of-range) is rejected.
-- [ ] `require_mqtt_tls = false` produces a plain (non-TLS) transport
+- [x] Invalid QoS byte value (`qos_from_u8` out-of-range) is rejected.
+- [x] `require_mqtt_tls = false` produces a plain (non-TLS) transport
       configuration.
-- [ ] Non-`mqtts://` URL scheme handling matches documented behavior.
-- [ ] `insecure_skip_verify = true` is rejected at this layer too (defense
+- [x] Non-`mqtts://` URL scheme handling matches documented behavior.
+- [x] `insecure_skip_verify = true` is rejected at this layer too (defense
       in depth alongside the config-level check, if this layer
       independently enforces it — confirm by reading the code first).
 
 ### Acceptance criteria
 
-- [ ] Each case above has an explicit test.
-- [ ] `cargo test -p p2p-signaling` passes.
+- [x] Each case above has an explicit test.
+- [x] `cargo test -p p2p-signaling` passes.
 
 ---
 
@@ -630,19 +630,19 @@ validation rules).
 
 ### Required test cases
 
-- [ ] Broker port `0` is rejected.
-- [ ] Broker port `65536` (out of `u16` range as entered/parsed) is
+- [x] Broker port `0` is rejected.
+- [x] Broker port `65536` (out of `u16` range as entered/parsed) is
       rejected.
-- [ ] Broker port `1` and `65535` (the exact boundaries) are accepted.
-- [ ] Remote peer identity equal to the local identity is rejected with
+- [x] Broker port `1` and `65535` (the exact boundaries) are accepted.
+- [x] Remote peer identity equal to the local identity is rejected with
       the expected validation message.
-- [ ] Remote peer identity different from local identity passes this
+- [x] Remote peer identity different from local identity passes this
       specific check (sanity/negative control).
 
 ### Acceptance criteria
 
-- [ ] Both validation rules have explicit boundary tests.
-- [ ] `./gradlew testDebugUnitTest` passes.
+- [x] Both validation rules have explicit boundary tests.
+- [x] `./gradlew testDebugUnitTest` passes.
 
 ---
 
@@ -671,25 +671,25 @@ error path.
 
 Per binary:
 
-- [ ] Explicit config path is used as-is when provided.
-- [ ] Missing `--config` falls back to `$HOME/.config/p2ptunnel/config.toml`
+- [x] Explicit config path is used as-is when provided.
+- [x] Missing `--config` falls back to `$HOME/.config/p2ptunnel/config.toml`
       (use a scoped env-var override for the test — do not use
       `std::env::set_var` directly per the unsafe-code ban; if the
       function reads `HOME` via `std::env::var`, prefer refactoring
       `default_config_dir` to accept an injectable home-directory
       parameter for testability, defaulting to reading the real env var
       only at the call site in `main`/`run`).
-- [ ] `HOME` unset (or the injected equivalent) produces the documented
+- [x] `HOME` unset (or the injected equivalent) produces the documented
       error, not a panic.
 
 ### Acceptance criteria
 
-- [ ] Both binaries have these three cases covered.
-- [ ] No test uses `std::env::set_var`/`remove_var` (forbidden `unsafe`
+- [x] Both binaries have these three cases covered.
+- [x] No test uses `std::env::set_var`/`remove_var` (forbidden `unsafe`
       code in this workspace) — use dependency injection or a child
       process instead, per the pattern in
       `crates/p2p-daemon/src/notify.rs`.
-- [ ] `cargo test -p p2p-offer -p p2p-answer` passes.
+- [x] `cargo test -p p2p-offer -p p2p-answer` passes.
 
 ---
 
@@ -710,19 +710,19 @@ test per subcommand for regression safety as the CLI evolves.
 
 ### Required test cases
 
-- [ ] `fingerprint()` on a valid public identity file produces the
+- [x] `fingerprint()` on a valid public identity file produces the
       expected fingerprint string format.
-- [ ] `fingerprint()` on a missing/invalid file produces a clear error.
-- [ ] `check_config()` on a valid config file succeeds.
-- [ ] `check_config()` on an invalid/missing config file produces a clear
+- [x] `fingerprint()` on a missing/invalid file produces a clear error.
+- [x] `check_config()` on a valid config file succeeds.
+- [x] `check_config()` on an invalid/missing config file produces a clear
       error (reuse existing config-validation fixtures from
       `p2p-core`'s test suite if convenient, rather than duplicating
       sample configs).
 
 ### Acceptance criteria
 
-- [ ] Each subcommand has a success and a failure test.
-- [ ] `cargo test -p p2pctl` passes.
+- [x] Each subcommand has a success and a failure test.
+- [x] `cargo test -p p2pctl` passes.
 
 ---
 
@@ -744,16 +744,16 @@ state combinations.
 
 ### Required test cases
 
-- [ ] Table-driven test covering each relevant `ActiveSession` state
+- [x] Table-driven test covering each relevant `ActiveSession` state
       combination the predicate branches on (read the function to
       enumerate them — likely bridge state and/or session state
       variants), asserting the expected `true`/`false` result for each.
 
 ### Acceptance criteria
 
-- [ ] The predicate's full decision table is covered by direct tests
+- [x] The predicate's full decision table is covered by direct tests
       (not just indirectly via integration tests).
-- [ ] `cargo test -p p2p-daemon --lib predicates::` passes.
+- [x] `cargo test -p p2p-daemon --lib predicates::` passes.
 
 ---
 
@@ -775,19 +775,19 @@ asserted). Add a direct test of its contract.
 
 ### Required test cases
 
-- [ ] Multiple forwards with offer configs produce listeners in the
+- [x] Multiple forwards with offer configs produce listeners in the
       expected (documented) order.
-- [ ] A forward with no `[forwards.offer]` block is excluded from the
+- [x] A forward with no `[forwards.offer]` block is excluded from the
       result.
-- [ ] Duplicate listen host/port across two forwards — assert the
+- [x] Duplicate listen host/port across two forwards — assert the
       function's documented behavior (error vs. dedup vs. pass-through —
       confirm by reading the code; don't assume).
 
 ### Acceptance criteria
 
-- [ ] `offer_listeners()`'s return value is asserted directly, not just
+- [x] `offer_listeners()`'s return value is asserted directly, not just
       used as an input to something else.
-- [ ] `cargo test -p p2p-core` passes.
+- [x] `cargo test -p p2p-core` passes.
 
 ---
 
