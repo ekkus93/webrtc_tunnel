@@ -368,11 +368,21 @@ class TunnelForegroundService
                                 repository.start(TunnelMode.Offer, configRepository.configPath, identity)
                             }
                         } catch (_: CancellationException) {
-                            withContext(ioDispatcher) { repository.stop() }
+                            withContext(ioDispatcher) { repository.stop() }.onFailure {
+                                reporter.publishError(
+                                    message = it.message ?: "Unable to stop tunnel after startup was cancelled",
+                                    code = "stop_failed",
+                                )
+                            }
                             return
                         }
                     if (!isCurrentGeneration(startGeneration)) {
-                        withContext(ioDispatcher) { repository.stop() }
+                        withContext(ioDispatcher) { repository.stop() }.onFailure {
+                            reporter.publishError(
+                                message = it.message ?: "Unable to stop tunnel after a newer start superseded it",
+                                code = "stop_failed",
+                            )
+                        }
                     } else {
                         result.onSuccess {
                             pausedByPolicy = false
@@ -418,34 +428,45 @@ class TunnelForegroundService
                     lifecycleGeneration += 1
                     reporter.stopStatusPolling()
                     cancelStartupJobLocked()
-                    withContext(ioDispatcher) {
-                        repository.stop()
-                    }.onFailure {
-                        reporter.publishError(
-                            message = it.message ?: "Unable to stop tunnel",
-                            code = "stop_failed",
+                    withContext(ioDispatcher) { repository.stop() }
+                        .fold(
+                            onSuccess = {
+                                reporter.publishStatus(getString(R.string.service_msg_paused))
+                            },
+                            onFailure = {
+                                reporter.publishError(
+                                    message = it.message ?: "Unable to stop tunnel",
+                                    code = "stop_failed",
+                                )
+                            },
                         )
-                    }
-                    reporter.publishStatus(getString(R.string.service_msg_paused))
                 }
             }
 
             suspend fun pauseForPolicy(reason: String) {
                 lifecycleMutex.withLock {
                     lifecycleGeneration += 1
-                    pausedByPolicy = true
+                    val previousPausedByPolicy = pausedByPolicy
                     reporter.stopStatusPolling()
                     cancelStartupJobLocked()
-                    withContext(ioDispatcher) {
-                        repository.stop()
-                    }.onFailure {
-                        reporter.publishError(
-                            message = it.message ?: "Failed stopping tunnel after policy block",
-                            code = "stop_failed",
+                    withContext(ioDispatcher) { repository.stop() }
+                        .fold(
+                            onSuccess = {
+                                pausedByPolicy = true
+                                repository.setPolicyBlocked(reason)
+                                reporter.publishStatus(reason)
+                            },
+                            onFailure = {
+                                // Leave pausedByPolicy as it was: the tunnel did not stop
+                                // cleanly, so this must not be reported as the normal
+                                // policy-paused state, and a retry path stays open.
+                                pausedByPolicy = previousPausedByPolicy
+                                reporter.publishError(
+                                    message = it.message ?: "Failed stopping tunnel after policy block",
+                                    code = "stop_failed",
+                                )
+                            },
                         )
-                    }
-                    repository.setPolicyBlocked(reason)
-                    reporter.publishStatus(reason)
                 }
             }
 
@@ -454,17 +475,24 @@ class TunnelForegroundService
                     lifecycleGeneration += 1
                     reporter.stopStatusPolling()
                     cancelStartupJobLocked()
-                    withContext(ioDispatcher) {
-                        repository.stop()
-                    }.onFailure {
-                        reporter.publishError(
-                            message = it.message ?: "Unable to stop tunnel",
-                            code = "stop_failed",
-                        )
-                    }
+                    val stopResult = withContext(ioDispatcher) { repository.stop() }
                     pausedByPolicy = false
                     clearTemporaryMeteredAllowance()
-                    notifications.show(notifications.buildStatusNotification(ServiceState.Stopped, "Tunnel stopped"))
+                    stopResult.fold(
+                        onSuccess = {
+                            notifications.show(
+                                notifications.buildStatusNotification(ServiceState.Stopped, "Tunnel stopped"),
+                            )
+                        },
+                        onFailure = {
+                            // The service still stops itself below, but must not claim a
+                            // clean tunnel stop it didn't actually achieve.
+                            reporter.publishError(
+                                message = it.message ?: "Unable to stop tunnel cleanly",
+                                code = "stop_failed",
+                            )
+                        },
+                    )
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }

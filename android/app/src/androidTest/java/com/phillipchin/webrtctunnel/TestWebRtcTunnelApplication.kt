@@ -73,6 +73,7 @@ class RecordingBridge : TunnelNativeBridge {
     private var blockValidation = false
     private var validationEntered = CountDownLatch(0)
     private var validationRelease = CountDownLatch(0)
+    private var failNextStop = false
     var state: ServiceState = ServiceState.Stopped
 
     fun reset() {
@@ -86,7 +87,13 @@ class RecordingBridge : TunnelNativeBridge {
         blockValidation = false
         validationEntered = CountDownLatch(0)
         validationRelease = CountDownLatch(0)
+        failNextStop = false
         state = ServiceState.Stopped
+    }
+
+    /** The next (and only the next) `stop()` call fails instead of succeeding (P0-011). */
+    fun failNextStop() {
+        failNextStop = true
     }
 
     fun blockNextStartOffer() {
@@ -138,6 +145,10 @@ class RecordingBridge : TunnelNativeBridge {
 
     override fun stop(): Result<Unit> {
         stopCalls += 1
+        if (failNextStop) {
+            failNextStop = false
+            return Result.failure(RuntimeException("injected stop failure"))
+        }
         state = ServiceState.Stopped
         return Result.success(Unit)
     }

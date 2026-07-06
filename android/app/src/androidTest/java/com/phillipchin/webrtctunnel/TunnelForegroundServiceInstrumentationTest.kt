@@ -155,6 +155,50 @@ class TunnelForegroundServiceInstrumentationTest {
     }
 
     @Test
+    fun pauseWithFailingStopPublishesErrorNotPaused() {
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
+        assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.startOfferCalls >= 1 })
+        TestTunnelHooks.bridge.failNextStop()
+        context.startService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_PAUSE),
+        )
+        assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
+        assertTrue(
+            waitForCondition(timeoutMs = 5_000) {
+                (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState ==
+                    com.phillipchin.webrtctunnel.model.ServiceState.Error
+            },
+        )
+        assertEquals(
+            com.phillipchin.webrtctunnel.model.ServiceState.Error,
+            (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState,
+        )
+    }
+
+    @Test
+    fun stopServiceWorkWithFailingStopStillStopsServiceButReportsError() {
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
+        assertTrue(waitForCondition(timeoutMs = 5_000) { TestTunnelHooks.bridge.startOfferCalls >= 1 })
+        TestTunnelHooks.bridge.failNextStop()
+        context.startService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP),
+        )
+        assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
+        // A failed stop must never be reported as the clean "stopped" state, even though
+        // the service still tears itself down (stopForeground/stopSelf still run).
+        assertTrue(
+            waitForCondition(timeoutMs = 5_000) {
+                (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState ==
+                    com.phillipchin.webrtctunnel.model.ServiceState.Error
+            },
+        )
+    }
+
+    @Test
     fun startStopStartWorks() {
         context.startForegroundService(
             Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
