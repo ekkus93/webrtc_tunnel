@@ -905,11 +905,11 @@ Add:
 
 ### Acceptance criteria
 
-- [ ] Final `Closed` write is result-returning.
-- [ ] Daemon exit reflects terminal write failure when no earlier primary error exists.
-- [ ] Earlier primary error is preserved if terminal write also fails.
-- [ ] Status target is atomically replaced on Linux/macOS.
-- [ ] Reader stress test sees no partial JSON.
+- [x] Final `Closed` write is result-returning.
+- [x] Daemon exit reflects terminal write failure when no earlier primary error exists.
+- [x] Earlier primary error is preserved if terminal write also fails.
+- [x] Status target is atomically replaced on Linux/macOS.
+- [x] Reader stress test sees no partial JSON.
 
 ---
 
