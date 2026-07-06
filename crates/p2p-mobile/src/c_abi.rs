@@ -31,8 +31,12 @@ pub unsafe extern "C" fn p2ptunnel_destroy_runtime(handle: *mut AndroidTunnelCon
     // SAFETY: the pointer was allocated by `p2ptunnel_create_runtime`.
     let mut controller = ManuallyDrop::new(unsafe { Box::from_raw(handle) });
     let stop_result = catch_unwind(AssertUnwindSafe(|| (*controller).stop()));
-    if stop_result.is_err() {
-        error!("panic while stopping Android runtime during destroy");
+    match stop_result {
+        Ok(Err(message)) => {
+            error!(reason = %message, "runtime did not stop cleanly during destroy")
+        }
+        Err(_) => error!("panic while stopping Android runtime during destroy"),
+        Ok(Ok(())) => {}
     }
     let drop_result = catch_unwind(AssertUnwindSafe(|| unsafe {
         ManuallyDrop::drop(&mut controller);
@@ -122,10 +126,7 @@ pub unsafe extern "C" fn p2ptunnel_start_answer(
 ///
 /// `handle` must be a valid runtime pointer from `p2ptunnel_create_runtime`.
 pub unsafe extern "C" fn p2ptunnel_stop(handle: *mut AndroidTunnelController) -> i32 {
-    catch_api_recording(handle, || {
-        with_controller(handle, |controller| controller.stop())?;
-        Ok(())
-    })
+    catch_api_recording(handle, || with_controller(handle, |controller| controller.stop())?)
 }
 
 #[unsafe(no_mangle)]

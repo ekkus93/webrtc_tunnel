@@ -37,6 +37,24 @@ use types::android_state_from_daemon;
 /// caller indefinitely.
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
+/// How the runtime task actually finished when `stop()` was called. Distinct
+/// from a plain `()` so a forced abort or a join failure can never be reported
+/// to Kotlin as a clean stop — see [`AndroidTunnelController::stop`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum StopOutcome {
+    /// The daemon task observed the shutdown request and finished on its own
+    /// within the grace period.
+    Graceful,
+    /// Nothing was running (duplicate/no-op stop); always safe.
+    NotRunning,
+    /// The task never finished within the grace period and had to be aborted.
+    /// Not a clean stop: the daemon did not run its own cleanup to completion.
+    ForcedAbort { grace_period: Duration },
+    /// The task handle failed to join (the spawned future panicked or was
+    /// otherwise cancelled) before or instead of finishing normally.
+    TaskJoinFailed { reason: String },
+}
+
 #[derive(Clone, Default)]
 pub struct AndroidTunnelController {
     inner: Arc<Mutex<RuntimeInner>>,
@@ -222,65 +240,119 @@ impl AndroidTunnelController {
         Ok(())
     }
 
-    pub fn stop(&self) {
-        self.stop_with_grace_period(STOP_GRACE_PERIOD);
+    /// Stops the runtime, returning an error rather than silently succeeding when
+    /// the stop was not actually clean (forced abort after the grace period, or a
+    /// task join failure) — a Kotlin caller must be able to tell "stopped
+    /// gracefully" apart from "gave up and forced it".
+    pub fn stop(&self) -> Result<(), String> {
+        match self.stop_with_grace_period(STOP_GRACE_PERIOD)? {
+            StopOutcome::Graceful | StopOutcome::NotRunning => Ok(()),
+            StopOutcome::ForcedAbort { grace_period } => {
+                Err(format!("runtime required forced abort after {grace_period:?}"))
+            }
+            StopOutcome::TaskJoinFailed { reason } => {
+                Err(format!("runtime task join failed: {reason}"))
+            }
+        }
     }
 
     /// Core of [`Self::stop`], parameterized on the grace period so tests can
     /// exercise the forced-abort fallback without a real multi-second wait.
-    fn stop_with_grace_period(&self, grace_period: Duration) {
+    fn stop_with_grace_period(&self, grace_period: Duration) -> Result<StopOutcome, String> {
         // Take ownership of the shutdown token/task/runtime out of the mutex first,
         // so the bounded wait below never holds the lock — the daemon's own
         // completion handler (which runs when the task finishes) needs to acquire
         // this same mutex, and holding it here would deadlock that handler for the
         // entire wait.
-        let (shutdown, task, runtime) = match self.inner.lock() {
-            Ok(mut inner) => (inner.shutdown.take(), inner.task.take(), inner.runtime.take()),
-            Err(_) => return,
+        let (shutdown, task, runtime) = {
+            let mut inner = self.inner.lock().map_err(|_| "runtime mutex poisoned".to_owned())?;
+            (inner.shutdown.take(), inner.task.take(), inner.runtime.take())
         };
 
         if let Some(shutdown) = &shutdown {
             shutdown.request_shutdown();
         }
 
-        if let (Some(task), Some(runtime)) = (task, runtime.as_ref()) {
-            let abort_handle = task.abort_handle();
-            // `tokio::time::timeout` must be constructed inside the runtime's async
-            // context (it registers with the timer driver immediately) — wrap it in
-            // an async block rather than constructing it as a `block_on` argument,
-            // which would evaluate it before the runtime context is entered.
-            let outcome =
-                runtime.block_on(async move { tokio::time::timeout(grace_period, task).await });
-            if outcome.is_err() {
-                tracing::warn!(
+        let (Some(task), Some(runtime)) = (task, runtime) else {
+            // Nothing was running: a duplicate/no-op stop must not overwrite
+            // whatever state (including a previous forced-abort diagnostic) is
+            // already there.
+            return Ok(StopOutcome::NotRunning);
+        };
+
+        let abort_handle = task.abort_handle();
+        // `tokio::time::timeout` must be constructed inside the runtime's async
+        // context (it registers with the timer driver immediately) — wrap it in
+        // an async block rather than constructing it as a `block_on` argument,
+        // which would evaluate it before the runtime context is entered.
+        let outcome =
+            runtime.block_on(async move { tokio::time::timeout(grace_period, task).await });
+        // Dropping the runtime here is safe/fast: by this point the daemon task
+        // has either finished cooperatively, failed to join, or been force-aborted.
+        drop(runtime);
+
+        let stop_outcome = match outcome {
+            Ok(Ok(())) => StopOutcome::Graceful,
+            Ok(Err(join_error)) => {
+                tracing::error!(reason = %join_error, "runtime task join failed during stop");
+                StopOutcome::TaskJoinFailed { reason: join_error.to_string() }
+            }
+            Err(_elapsed) => {
+                tracing::error!(
                     grace_period = ?grace_period,
                     "runtime did not shut down cooperatively within the grace period; \
                      forcing abort (this is not a clean stop)"
                 );
                 abort_handle.abort();
+                StopOutcome::ForcedAbort { grace_period }
             }
-        }
-        // Dropping the runtime here (if present) is safe/fast: by this point the
-        // daemon task has either finished cooperatively or been force-aborted above.
-        drop(runtime);
+        };
 
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.status_rx = None;
-            inner.forward_config = Vec::new();
-            inner.state.state = AndroidRuntimeState::Stopped;
-            inner.state.mode = None;
-            inner.state.active = false;
-            // Clean stop: clear stale metadata so the UI shows no stale uptime, error,
-            // config path, or session/forward state after stopping.
-            inner.state.config_path = None;
-            inner.state.last_error = None;
-            reset_runtime_metadata(&mut inner.state);
-            inner.logs.push(AndroidLogEvent {
-                unix_ms: unix_ms(),
-                level: "info".to_owned(),
-                message: "runtime stopped".to_owned(),
-            });
+        let mut inner = self.inner.lock().map_err(|_| "runtime mutex poisoned".to_owned())?;
+        inner.status_rx = None;
+        inner.forward_config = Vec::new();
+        inner.state.active = false;
+        match &stop_outcome {
+            StopOutcome::Graceful => {
+                inner.state.state = AndroidRuntimeState::Stopped;
+                inner.state.mode = None;
+                // Clean stop: clear stale metadata so the UI shows no stale uptime,
+                // error, config path, or session/forward state after stopping.
+                inner.state.config_path = None;
+                inner.state.last_error = None;
+                reset_runtime_metadata(&mut inner.state);
+                inner.logs.push(AndroidLogEvent {
+                    unix_ms: unix_ms(),
+                    level: "info".to_owned(),
+                    message: "runtime stopped".to_owned(),
+                });
+            }
+            StopOutcome::ForcedAbort { grace_period } => {
+                let message = format!("runtime required forced abort after {grace_period:?}");
+                inner.state.state = AndroidRuntimeState::Error;
+                inner.state.last_error = Some(message.clone());
+                // Preserve config_path for diagnostics.
+                reset_runtime_metadata(&mut inner.state);
+                inner.logs.push(AndroidLogEvent {
+                    unix_ms: unix_ms(),
+                    level: "error".to_owned(),
+                    message,
+                });
+            }
+            StopOutcome::TaskJoinFailed { reason } => {
+                let message = format!("runtime task join failed: {reason}");
+                inner.state.state = AndroidRuntimeState::Error;
+                inner.state.last_error = Some(message.clone());
+                reset_runtime_metadata(&mut inner.state);
+                inner.logs.push(AndroidLogEvent {
+                    unix_ms: unix_ms(),
+                    level: "error".to_owned(),
+                    message,
+                });
+            }
+            StopOutcome::NotRunning => unreachable!("handled by the early return above"),
         }
+        Ok(stop_outcome)
     }
 
     pub fn status(&self) -> AndroidRuntimeStatus {

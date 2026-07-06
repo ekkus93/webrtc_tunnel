@@ -85,15 +85,15 @@ fn status_before_start_is_stopped() {
 #[test]
 fn stop_before_start_is_safe() {
     let controller = AndroidTunnelController::new();
-    controller.stop();
+    assert_eq!(controller.stop(), Ok(()));
     assert_eq!(controller.status().state, AndroidRuntimeState::Stopped);
 }
 
 #[test]
 fn double_stop_is_safe() {
     let controller = AndroidTunnelController::new();
-    controller.stop();
-    controller.stop();
+    assert_eq!(controller.stop(), Ok(()));
+    assert_eq!(controller.stop(), Ok(()));
     assert_eq!(controller.status().state, AndroidRuntimeState::Stopped);
 }
 
@@ -121,9 +121,10 @@ fn stop_requests_cooperative_shutdown_and_waits_for_task() {
         inner.state.active = true;
     }
 
-    controller.stop();
+    let result = controller.stop();
 
     assert!(completed.load(Ordering::SeqCst), "task should complete cooperatively, not be aborted");
+    assert_eq!(result, Ok(()), "a graceful stop must report success");
     assert_eq!(controller.status().state, AndroidRuntimeState::Stopped);
 }
 
@@ -146,13 +147,80 @@ fn stop_forces_abort_after_grace_period_when_task_ignores_shutdown() {
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let controller_for_thread = controller.clone();
     std::thread::spawn(move || {
-        controller_for_thread.stop_with_grace_period(Duration::from_millis(50));
-        let _ = done_tx.send(());
+        let result = controller_for_thread.stop_with_grace_period(Duration::from_millis(50));
+        let _ = done_tx.send(result);
     });
-    done_rx
+    let result = done_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("stop should force-abort and return instead of hanging on a wedged task");
-    assert_eq!(controller.status().state, AndroidRuntimeState::Stopped);
+
+    // A forced abort is not a clean stop: it must be visible as an error, both
+    // through the returned outcome and through the persisted runtime state —
+    // a forced abort must never be reported to Kotlin as a successful stop().
+    assert_eq!(result, Ok(StopOutcome::ForcedAbort { grace_period: Duration::from_millis(50) }));
+    let status = controller.status();
+    assert_eq!(status.state, AndroidRuntimeState::Error);
+    assert!(!status.active);
+    assert!(
+        status.last_error.as_deref().is_some_and(|message| message.contains("forced abort")),
+        "last_error should explain the forced abort, got {:?}",
+        status.last_error
+    );
+}
+
+#[test]
+fn stop_reports_task_join_failure_as_an_error() {
+    let controller = AndroidTunnelController::new();
+    let runtime = Runtime::new().expect("tokio runtime");
+    let shutdown = ShutdownToken::new();
+    // A task that panics immediately, before ever observing shutdown, must
+    // surface as a join failure rather than being silently treated as a clean
+    // stop just because the abort-after-timeout path wasn't taken.
+    let task = runtime.spawn(async { panic!("simulated wedged task panic") });
+    {
+        let mut inner = controller.inner.lock().expect("lock");
+        inner.task = Some(task);
+        inner.runtime = Some(runtime);
+        inner.shutdown = Some(shutdown);
+        inner.state.active = true;
+    }
+
+    let result = controller.stop();
+
+    assert!(
+        matches!(result, Err(ref message) if message.contains("task join failed")),
+        "expected a task-join-failure error, got {result:?}"
+    );
+    let status = controller.status();
+    assert_eq!(status.state, AndroidRuntimeState::Error);
+    assert!(!status.active);
+    assert!(status.last_error.is_some());
+}
+
+#[test]
+fn forced_abort_diagnostic_survives_a_subsequent_duplicate_stop() {
+    let controller = AndroidTunnelController::new();
+    let runtime = Runtime::new().expect("tokio runtime");
+    let shutdown = ShutdownToken::new();
+    let task = runtime.spawn(async { std::future::pending::<()>().await });
+    {
+        let mut inner = controller.inner.lock().expect("lock");
+        inner.task = Some(task);
+        inner.runtime = Some(runtime);
+        inner.shutdown = Some(shutdown);
+        inner.state.active = true;
+    }
+
+    let first = controller.stop_with_grace_period(Duration::from_millis(50));
+    assert_eq!(first, Ok(StopOutcome::ForcedAbort { grace_period: Duration::from_millis(50) }));
+    let error_after_first_stop = controller.status().last_error.clone();
+    assert!(error_after_first_stop.is_some());
+
+    // Nothing is running anymore, so this is a no-op duplicate stop — it must
+    // not silently clear the forced-abort diagnostic the first call recorded.
+    assert_eq!(controller.stop(), Ok(()));
+    assert_eq!(controller.status().last_error, error_after_first_stop);
+    assert_eq!(controller.status().state, AndroidRuntimeState::Error);
 }
 
 #[test]
@@ -186,8 +254,20 @@ fn reset_runtime_metadata_clears_measured_fields() {
 #[test]
 fn clean_stop_clears_uptime_session_and_error() {
     let controller = AndroidTunnelController::new();
+    let runtime = Runtime::new().expect("tokio runtime");
+    let shutdown = ShutdownToken::new();
+    // A task that finishes on its own the moment shutdown is requested — a real
+    // (if trivial) task/runtime pair is needed so stop() takes the Graceful
+    // path, not the no-op NotRunning path a bare state-field flag would hit.
+    let mut task_shutdown = shutdown.clone();
+    let task = runtime.spawn(async move {
+        task_shutdown.cancelled().await;
+    });
     {
         let mut inner = controller.inner.lock().expect("lock");
+        inner.task = Some(task);
+        inner.runtime = Some(runtime);
+        inner.shutdown = Some(shutdown);
         inner.state.state = AndroidRuntimeState::Running;
         inner.state.active = true;
         inner.state.mode = Some(AndroidTunnelMode::Offer);
@@ -197,7 +277,7 @@ fn clean_stop_clears_uptime_session_and_error() {
         inner.state.active_session_count = 2;
         inner.state.session_capacity = Some(16);
     }
-    controller.stop();
+    assert_eq!(controller.stop(), Ok(()));
     let status = controller.status();
     assert_eq!(status.state, AndroidRuntimeState::Stopped);
     assert!(!status.active);
