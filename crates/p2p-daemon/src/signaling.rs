@@ -23,10 +23,33 @@ use crate::messages::current_time_ms;
 use crate::status::{DaemonStatus, ForwardRuntimeStatus, StatusWriter};
 use crate::types::{
     ANSWER_SESSION_CAPACITY, ActiveSession, AnswerSessionEvent, AnswerSessionHandle,
-    AnswerStatusSnapshot, DAEMON_RUNTIME_RETRY_DELAY, DaemonSignalingTransport, OutgoingSignal,
-    PublishRequest, PublishedSignal, RuntimeContext, SessionStatusSnapshot, StatusSnapshot,
+    AnswerStatusSnapshot, DAEMON_RUNTIME_RETRY_DELAY, DaemonRuntimePhase, DaemonSignalingTransport,
+    OutgoingSignal, PublishRequest, PublishedSignal, RuntimeContext, SessionStatusSnapshot,
+    StatusSnapshot,
 };
+
+/// Ordinary (non-terminal) status is only truthful while the daemon is fully
+/// `Running`: before that, startup has not actually finished; after that, shutdown
+/// is already underway and must not resurrect a "serving"/"waiting" status.
+/// Terminal `Closed` writes intentionally bypass this gate (see
+/// `write_daemon_status_unchecked`/`write_answer_status_unchecked`).
+fn runtime_status_allowed(ctx: &RuntimeContext<'_>) -> bool {
+    matches!(ctx.runtime.phase, DaemonRuntimePhase::Running)
+}
+
 pub(crate) async fn write_daemon_status(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot) {
+    if !runtime_status_allowed(ctx) {
+        tracing::debug!(
+            phase = ?ctx.runtime.phase,
+            state = ?snapshot.current_state,
+            "suppressing nonterminal status outside Running phase",
+        );
+        return;
+    }
+    write_daemon_status_unchecked(ctx, snapshot).await;
+}
+
+async fn write_daemon_status_unchecked(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot) {
     // Pair the active session id with the real remote peer (the offer's configured
     // `[peer].remote_peer_id`). If the remote is somehow unknown (no `[peer]`), report
     // no session rather than fabricating a self-targeted one.
@@ -49,6 +72,18 @@ pub(crate) async fn write_daemon_status(ctx: &RuntimeContext<'_>, snapshot: Stat
 }
 
 pub(crate) async fn write_answer_status(ctx: &RuntimeContext<'_>, snapshot: AnswerStatusSnapshot) {
+    if !runtime_status_allowed(ctx) {
+        tracing::debug!(
+            phase = ?ctx.runtime.phase,
+            state = ?snapshot.current_state,
+            "suppressing nonterminal answer status outside Running phase",
+        );
+        return;
+    }
+    write_answer_status_unchecked(ctx, snapshot).await;
+}
+
+async fn write_answer_status_unchecked(ctx: &RuntimeContext<'_>, snapshot: AnswerStatusSnapshot) {
     write_status_or_log(
         ctx.status,
         DaemonStatus::with_sessions(
@@ -82,7 +117,7 @@ pub(crate) async fn write_answer_registry_status(
 /// hardcode `Serving` — the daemon is no longer serving anything.
 pub(crate) async fn write_answer_closed_status(ctx: &mut RuntimeContext<'_>) {
     ctx.runtime.mqtt_connected = false;
-    write_answer_status(
+    write_answer_status_unchecked(
         ctx,
         AnswerStatusSnapshot { current_state: DaemonState::Closed, sessions: Vec::new() },
     )
@@ -114,7 +149,7 @@ pub(crate) async fn write_offer_closed_status(ctx: &mut RuntimeContext<'_>) {
         .iter()
         .map(ForwardRuntimeStatus::stopped_preserving_error)
         .collect();
-    write_daemon_status(
+    write_daemon_status_unchecked(
         ctx,
         StatusSnapshot { active_session_id: None, current_state: DaemonState::Closed },
     )

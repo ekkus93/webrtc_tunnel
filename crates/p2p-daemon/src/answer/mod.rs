@@ -103,6 +103,11 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
     let mut sessions_by_id: HashMap<SessionId, AnswerSessionHandle> = HashMap::new();
     let mut session_by_peer: HashMap<PeerId, SessionId> = HashMap::new();
     let mut next_generation = 1_u64;
+
+    // Startup is only truthfully complete once the broker is subscribed and the
+    // required remote peers are authorized (both already validated above); only
+    // past this point may ordinary status writes report Serving.
+    ctx.runtime.phase = DaemonRuntimePhase::Running;
     write_answer_registry_status(&ctx, &sessions_by_id).await;
 
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
@@ -120,6 +125,7 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
                     "answer daemon shutdown requested; draining active sessions"
                 );
                 shutting_down = true;
+                ctx.runtime.phase = DaemonRuntimePhase::Draining;
             }
             payload = poll_idle_signal_payload(&mut ctx, &mut transport), if !shutting_down => {
                 let Some(payload) = payload else {
@@ -163,6 +169,7 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
         }
     }
 
+    ctx.runtime.phase = DaemonRuntimePhase::Closed;
     write_answer_closed_status(&mut ctx).await;
     Ok(())
 }

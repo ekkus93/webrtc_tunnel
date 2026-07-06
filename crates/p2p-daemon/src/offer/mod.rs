@@ -245,111 +245,158 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
         .ok_or_else(|| DaemonError::MissingAuthorizedPeer(remote_peer_id.to_string()))?;
     let mut probe_cooldown = ProbeFailureCooldown::new();
 
-    loop {
-        write_steady_state_status(&ctx).await;
-        tokio::select! {
-            _ = shutdown.cancelled() => {
-                tracing::info!("offer daemon shutdown requested");
-                break;
-            }
-            client = accept_runtime.accepted_clients.recv() => {
-                let client = client
-                    .ok_or_else(|| DaemonError::Logging("offer accept loop stopped".to_owned()))??;
-                // If the data plane recently failed its probe, refuse new clients during the
-                // cooldown instead of re-running negotiate+probe (which would hot-loop).
-                if let Some(remaining) = probe_cooldown.remaining(Instant::now()) {
-                    tracing::warn!(
-                        remote_peer_id = %remote.peer_id,
-                        cooldown_remaining = ?remaining,
-                        "data-plane probe recently failed; dropping local client during cooldown",
-                    );
-                    drop(client);
-                    continue;
+    // Startup is only truthfully complete once the broker is subscribed, the remote
+    // peer is authorized (both checked above), at least one listener is bound, and
+    // the accept runtime has started. Only past this point may ordinary status
+    // writes report a waiting/serving state.
+    ctx.runtime.phase = DaemonRuntimePhase::Running;
+
+    let run_result: Result<(), DaemonError> = async {
+        loop {
+            write_steady_state_status(&ctx).await;
+            tokio::select! {
+                biased;
+
+                _ = shutdown.cancelled() => {
+                    tracing::info!("offer daemon shutdown requested");
+                    break Ok(());
                 }
-                tracing::info!("accepted local client and entering busy offer session state");
-                let result =
-                    run_offer_session(
-                        &config,
-                        &codec,
-                        transport,
-                        &mut ctx,
-                        OfferSessionIo {
-                            client,
-                            accepted_clients: &mut accept_runtime.accepted_clients,
-                            remote: &remote,
-                            #[cfg(any(test, debug_assertions))]
-                            session_hook: session_hook.clone(),
-                        },
-                        shutdown.clone(),
-                    )
-                    .await;
-                if shutdown.is_shutdown_requested() {
-                    if let Err(error) = &result {
-                        tracing::warn!(
-                            reason = %error,
-                            "offer session ended with error during shutdown"
-                        );
+
+                client = accept_runtime.accepted_clients.recv() => {
+                    let Some(client) = client else {
+                        if shutdown.is_shutdown_requested() {
+                            break Ok(());
+                        }
+                        break Err(DaemonError::Logging(
+                            "all offer accept workers stopped unexpectedly".to_owned(),
+                        ));
+                    };
+
+                    let client = match client {
+                        Ok(client) => client,
+                        Err(error) => break Err(error.into()),
+                    };
+
+                    // Second admission gate: select readiness raced with shutdown, so
+                    // re-check now that we actually hold a client.
+                    if shutdown.is_shutdown_requested() {
+                        drop(client);
+                        break Ok(());
                     }
-                    break;
-                }
-                if cooldown::session_outcome_enters_cooldown(&result) {
-                    let wait = probe_cooldown.record_failure(Instant::now());
-                    tracing::warn!(
-                        remote_peer_id = %remote.peer_id,
-                        cooldown = ?wait,
-                        "entering data-plane probe-failure cooldown before accepting new clients",
-                    );
-                } else {
-                    probe_cooldown.reset();
-                }
-                recover_daemon_after_session(&ctx, result).await;
-                tracing::info!("offer daemon returned to waiting state");
-            }
-            payload = poll_idle_signal_payload(&mut ctx, transport) => {
-                let Some(payload) = payload else {
-                    continue;
-                };
 
-                tracing::debug!(
-                    payload_len = payload.len(),
-                    role = ?config.node.role,
-                    "received signaling payload while waiting for local client"
-                );
-
-                let decode_result =
-                    decode_idle_signaling_message(&codec, &payload, &mut replay_cache);
-                let (envelope, message, sender) = match decode_result {
-                    Ok(decoded) => decoded,
-                    Err(error) => {
-                        tracing::warn!(reason = %error, "rejecting signaling message");
+                    // If the data plane recently failed its probe, refuse new clients during the
+                    // cooldown instead of re-running negotiate+probe (which would hot-loop).
+                    if let Some(remaining) = probe_cooldown.remaining(Instant::now()) {
+                        tracing::warn!(
+                            remote_peer_id = %remote.peer_id,
+                            cooldown_remaining = ?remaining,
+                            "data-plane probe recently failed; dropping local client during cooldown",
+                        );
+                        drop(client);
                         continue;
                     }
-                };
-
-                tracing::debug!(
-                    session_id = %message.session_id,
-                    sender_peer_id = %sender.peer_id,
-                    sender_kid = %envelope.sender_kid,
-                    message_type = ?message.message_type,
-                    role = ?config.node.role,
-                    "decoded idle signaling message"
-                );
-
-                match &message.body {
-                    MessageBody::Hello(_) => {
-                        tracing::info!("received optional hello from {}", sender.peer_id);
+                    tracing::info!("accepted local client and entering busy offer session state");
+                    let result =
+                        run_offer_session(
+                            &config,
+                            &codec,
+                            transport,
+                            &mut ctx,
+                            OfferSessionIo {
+                                client,
+                                accepted_clients: &mut accept_runtime.accepted_clients,
+                                remote: &remote,
+                                #[cfg(any(test, debug_assertions))]
+                                session_hook: session_hook.clone(),
+                            },
+                            shutdown.clone(),
+                        )
+                        .await;
+                    if shutdown.is_shutdown_requested() {
+                        if let Err(error) = &result {
+                            tracing::warn!(
+                                reason = %error,
+                                "offer session ended with error during shutdown"
+                            );
+                        }
+                        break Ok(());
                     }
-                    _ => {
-                        tracing::warn!("ignoring unexpected idle message {:?}", message.message_type);
+                    if cooldown::session_outcome_enters_cooldown(&result) {
+                        let wait = probe_cooldown.record_failure(Instant::now());
+                        tracing::warn!(
+                            remote_peer_id = %remote.peer_id,
+                            cooldown = ?wait,
+                            "entering data-plane probe-failure cooldown before accepting new clients",
+                        );
+                    } else {
+                        probe_cooldown.reset();
+                    }
+                    recover_daemon_after_session(&ctx, result).await;
+                    tracing::info!("offer daemon returned to waiting state");
+                }
+
+                payload = poll_idle_signal_payload(&mut ctx, transport) => {
+                    if shutdown.is_shutdown_requested() {
+                        break Ok(());
+                    }
+
+                    let Some(payload) = payload else {
+                        continue;
+                    };
+
+                    tracing::debug!(
+                        payload_len = payload.len(),
+                        role = ?config.node.role,
+                        "received signaling payload while waiting for local client"
+                    );
+
+                    let decode_result =
+                        decode_idle_signaling_message(&codec, &payload, &mut replay_cache);
+                    let (envelope, message, sender) = match decode_result {
+                        Ok(decoded) => decoded,
+                        Err(error) => {
+                            tracing::warn!(reason = %error, "rejecting signaling message");
+                            continue;
+                        }
+                    };
+
+                    tracing::debug!(
+                        session_id = %message.session_id,
+                        sender_peer_id = %sender.peer_id,
+                        sender_kid = %envelope.sender_kid,
+                        message_type = ?message.message_type,
+                        role = ?config.node.role,
+                        "decoded idle signaling message"
+                    );
+
+                    match &message.body {
+                        MessageBody::Hello(_) => {
+                            tracing::info!("received optional hello from {}", sender.peer_id);
+                        }
+                        _ => {
+                            tracing::warn!("ignoring unexpected idle message {:?}", message.message_type);
+                        }
                     }
                 }
             }
         }
     }
+    .await;
+
+    // Every post-start exit — clean shutdown, an unexpected worker/channel failure,
+    // or a session error observed during shutdown — funnels through this single
+    // finalizer: enter Draining, stop/join the accept workers, enter Closed, and
+    // always attempt the terminal status write. No `?` between here and the
+    // function's return can bypass this.
+    ctx.runtime.phase = DaemonRuntimePhase::Draining;
+    shutdown.request_shutdown();
 
     join_offer_accept_tasks(accept_runtime.tasks).await;
+
+    ctx.runtime.phase = DaemonRuntimePhase::Closed;
     write_offer_closed_status(&mut ctx).await;
-    Ok(())
+
+    run_result
 }
 
 /// Owns every offer accept-loop task handle alongside the receiver they feed, so

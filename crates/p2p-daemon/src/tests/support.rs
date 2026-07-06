@@ -30,10 +30,10 @@ use tokio::time::{sleep, timeout};
 pub(crate) use crate::{
     ActiveBusyOfferAction, ActiveBusyOfferCache, ActiveBusyOfferKey, ActiveSession, AnswerDeps,
     AnswerSessionEvent, AnswerSessionHandle, AnswerSessionRegistry, BridgeSessionState,
-    DaemonError, DaemonRuntimeState, DaemonSignalingTransport, DaemonState, ForwardListenState,
-    IceConnectionState, OfferListener, OfferSessionPayloadOutcome, RuntimeContext,
-    SessionGeneration, SessionStatusSnapshot, ShutdownToken, StatusSnapshot, StatusWriter,
-    WebRtcPeer, apply_answer_overrides, apply_offer_overrides, apply_override_pairs,
+    DaemonError, DaemonRuntimePhase, DaemonRuntimeState, DaemonSignalingTransport, DaemonState,
+    ForwardListenState, IceConnectionState, OfferListener, OfferSessionPayloadOutcome,
+    RuntimeContext, SessionGeneration, SessionStatusSnapshot, ShutdownToken, StatusSnapshot,
+    StatusWriter, WebRtcPeer, apply_answer_overrides, apply_offer_overrides, apply_override_pairs,
     bind_offer_listeners, classify_active_busy_offer, compute_backoff_delay,
     decode_idle_signaling_message, duplicate_active_session_ack_message,
     handle_answer_daemon_payload, handle_answer_incoming_data_channel, handle_answer_session_event,
@@ -240,7 +240,12 @@ where
 }
 
 pub(super) fn connected_runtime() -> DaemonRuntimeState {
-    DaemonRuntimeState::new_connected()
+    // Most unit tests exercise status-writing/session behavior directly, not the
+    // P0-001 startup/drain phase gate itself, so default the test runtime straight
+    // to `Running` (as real startup does once subscribe/bind/accept all succeed).
+    let mut runtime = DaemonRuntimeState::new_connected();
+    runtime.phase = DaemonRuntimePhase::Running;
+    runtime
 }
 
 pub(super) fn test_session_status(

@@ -66,6 +66,19 @@ pub(crate) enum BridgeSessionState {
     Closed,
 }
 
+/// Where the daemon is in its own startup/shutdown lifecycle, independent of any
+/// per-session `DaemonState`. Normal (non-terminal) status writes are only truthful
+/// while `Running`: before that, startup hasn't actually finished (e.g. listeners
+/// not yet bound); after that, shutdown is already underway and the daemon must not
+/// resurrect an ordinary "serving"/"waiting" status on its way out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DaemonRuntimePhase {
+    Starting,
+    Running,
+    Draining,
+    Closed,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DaemonRuntimeState {
     pub(crate) mqtt_connected: bool,
@@ -73,6 +86,7 @@ pub(crate) struct DaemonRuntimeState {
     /// Per-forward runtime status (offer role). Populated after binding local
     /// listeners; included in every emitted `DaemonStatus`.
     pub(crate) forward_statuses: Vec<ForwardRuntimeStatus>,
+    pub(crate) phase: DaemonRuntimePhase,
 }
 
 impl DaemonRuntimeState {
@@ -81,6 +95,7 @@ impl DaemonRuntimeState {
             mqtt_connected: true,
             last_transport_failure_at_ms: None,
             forward_statuses: Vec::new(),
+            phase: DaemonRuntimePhase::Starting,
         }
     }
 }
