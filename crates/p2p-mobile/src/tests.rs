@@ -147,6 +147,16 @@ fn null_runtime_handle_returns_error_message_for_status_json() {
 }
 
 #[test]
+fn last_error_for_null_handle_reports_invalid_handle_not_unknown_error() {
+    // An invalid handle must surface its own specific reason, distinct from the
+    // "unknown error" sentinel reserved for a valid handle with nothing recorded
+    // yet (see last_error_path_reports_unknown_then_runtime_error above).
+    let last_error = super::last_error_for_handle(std::ptr::null_mut());
+    assert_ne!(last_error, "unknown error");
+    assert!(last_error.contains("runtime handle was null"), "got: {last_error}");
+}
+
+#[test]
 fn start_offer_with_null_config_path_records_specific_error() {
     // A pre-controller failure (null path) must still leave a specific, Kotlin-visible error,
     // not the generic "unknown error".

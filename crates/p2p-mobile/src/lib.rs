@@ -106,10 +106,13 @@ pub(crate) fn to_jstring(env: &mut JNIEnv<'_>, value: String) -> jstring {
 }
 
 pub(crate) fn last_error_for_handle(handle: *mut AndroidTunnelController) -> String {
-    with_controller(handle, |controller| controller.last_error())
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "unknown error".to_owned())
+    // An invalid handle (Err) must surface its own specific reason (e.g. "runtime
+    // handle was null"), not collapse into the same "unknown error" sentinel used
+    // for a valid handle with genuinely nothing recorded yet (Ok(None)).
+    match with_controller(handle, |controller| controller.last_error()) {
+        Ok(last_error) => last_error.unwrap_or_else(|| "unknown error".to_owned()),
+        Err(reason) => reason,
+    }
 }
 
 #[cfg(test)]
