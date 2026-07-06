@@ -830,11 +830,11 @@ Each must intentionally handle `Result`.
 
 ### Acceptance criteria
 
-- [ ] `pause()` never publishes Paused after stop failure.
-- [ ] `pauseForPolicy()` never publishes normal policy-paused state after stop failure.
-- [ ] `stopServiceWork()` never claims clean tunnel stop after failure.
-- [ ] Startup-cancellation stop failures are visible.
-- [ ] Tests cover all stop call sites.
+- [x] `pause()` never publishes Paused after stop failure.
+- [x] `pauseForPolicy()` never publishes normal policy-paused state after stop failure.
+- [x] `stopServiceWork()` never claims clean tunnel stop after failure.
+- [x] Startup-cancellation stop failures are visible.
+- [x] Tests cover all stop call sites.
 
 ---
 
