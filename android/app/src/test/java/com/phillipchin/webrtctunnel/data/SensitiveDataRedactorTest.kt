@@ -72,10 +72,24 @@ class SensitiveDataRedactorTest {
     }
 
     @Test
-    fun passwordFieldWithColonIsNotRedactedByThisRule() {
-        // Near miss: this rule requires a literal '=', not ':', so this shape is left alone.
-        val input = "password: hunter2"
-        assertEquals(input, SensitiveDataRedactor.redactText(input))
+    fun redactsPasswordFieldColonVariant() {
+        val output = SensitiveDataRedactor.redactText("password: hunter2")
+        assertEquals("password=***REDACTED***", output)
+        assertFalse(output.contains("hunter2"))
+    }
+
+    @Test
+    fun redactsPasswordFieldSpacedEqualsVariant() {
+        val output = SensitiveDataRedactor.redactText("password = hunter2")
+        assertEquals("password=***REDACTED***", output)
+        assertFalse(output.contains("hunter2"))
+    }
+
+    @Test
+    fun redactsPasswordFieldSpacedColonVariant() {
+        val output = SensitiveDataRedactor.redactText("password : hunter2")
+        assertEquals("password=***REDACTED***", output)
+        assertFalse(output.contains("hunter2"))
     }
 
     // --- token ---
@@ -106,6 +120,13 @@ class SensitiveDataRedactorTest {
         assertEquals("api_key=***REDACTED***", SensitiveDataRedactor.redactText("api-key=sk_live_12345"))
     }
 
+    @Test
+    fun redactsApiKeyFieldSpaceAndColonVariant() {
+        val output = SensitiveDataRedactor.redactText("api key: sk_live_123")
+        assertEquals("api_key=***REDACTED***", output)
+        assertFalse(output.contains("sk_live_123"))
+    }
+
     // --- mqtt(s) credentials ---
 
     @Test
@@ -117,13 +138,12 @@ class SensitiveDataRedactorTest {
     }
 
     @Test
-    fun mqttSchemeCredentialsAreRedactedButSchemeIsNormalizedToMqtts() {
-        // Known quirk, not a secret leak: the replacement literal is always "mqtts://...", so a
-        // plain (non-TLS) mqtt:// URL's scheme is rewritten to mqtts:// in the redacted text —
-        // pinning down the actual current behavior rather than assuming.
+    fun mqttSchemeCredentialsAreRedactedAndOriginalSchemeIsPreserved() {
+        // The original scheme must be preserved: rewriting a plain mqtt:// URL to mqtts://
+        // would misrepresent whether the connection was actually TLS-protected.
         val input = "mqtt://alice:s3cr3t@broker.example.com:1883"
         val output = SensitiveDataRedactor.redactText(input)
-        assertEquals("mqtts://***REDACTED***:***REDACTED***@broker.example.com:1883", output)
+        assertEquals("mqtt://***REDACTED***:***REDACTED***@broker.example.com:1883", output)
         assertFalse(output.contains("s3cr3t"))
     }
 
@@ -192,11 +212,17 @@ class SensitiveDataRedactorTest {
     }
 
     @Test
-    fun kexSecretWithSpaceIsNotRedactedByThisRule() {
-        // Near miss: unlike decrypted_payload/forwarded_data, this rule has no separator
-        // group, so "kex secret" (space instead of underscore) is left alone.
-        val input = "kex secret=deadbeef"
-        assertEquals(input, SensitiveDataRedactor.redactText(input))
+    fun redactsKexSecretSpaceVariant() {
+        val output = SensitiveDataRedactor.redactText("kex secret = deadbeef")
+        assertEquals("kex_secret=***REDACTED***", output)
+        assertFalse(output.contains("deadbeef"))
+    }
+
+    @Test
+    fun redactsKexSecretColonVariant() {
+        val output = SensitiveDataRedactor.redactText("kex_secret: deadbeef")
+        assertEquals("kex_secret=***REDACTED***", output)
+        assertFalse(output.contains("deadbeef"))
     }
 
     // --- signing_key ---
@@ -204,6 +230,13 @@ class SensitiveDataRedactorTest {
     @Test
     fun redactsSigningKeyLine() {
         assertEquals("signing_key=***REDACTED***", SensitiveDataRedactor.redactText("signing_key=deadbeef"))
+    }
+
+    @Test
+    fun redactsSigningKeySpaceAndColonVariant() {
+        val output = SensitiveDataRedactor.redactText("signing key: deadbeef")
+        assertEquals("signing_key=***REDACTED***", output)
+        assertFalse(output.contains("deadbeef"))
     }
 
     // --- identity path (broad, intentionally over-inclusive) ---

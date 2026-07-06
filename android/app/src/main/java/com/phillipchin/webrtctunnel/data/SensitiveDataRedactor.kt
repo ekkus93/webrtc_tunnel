@@ -13,17 +13,19 @@ object SensitiveDataRedactor {
                 Regex("""(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"""),
                 "***REDACTED_PRIVATE_KEY_BLOCK***",
             )
-            .replace(Regex("""(?i)\bpassword[^,\s]*\s*=\s*\S+"""), "password=***REDACTED***")
-            .replace(Regex("""(?i)\btoken[^,\s]*\s*=\s*\S+"""), "token=***REDACTED***")
+            .replace(Regex("""(?i)\bpassword[^,\s]*\s*[:=]\s*\S+"""), "password=***REDACTED***")
+            .replace(Regex("""(?i)\btoken[^,\s]*\s*[:=]\s*\S+"""), "token=***REDACTED***")
             .replace(Regex("""(?i)\bbearer\s+[A-Za-z0-9\-\._~\+/]+=*"""), "Bearer ***REDACTED***")
-            .replace(Regex("""(?i)\bapi[_-]?key[^,\s]*\s*=\s*\S+"""), "api_key=***REDACTED***")
-            .replace(Regex("""(?i)\bmqtts?://([^:@/\s]+):([^@/\s]+)@"""), "mqtts://***REDACTED***:***REDACTED***@")
+            .replace(Regex("""(?i)\bapi[_ -]?key[^,\s]*\s*[:=]\s*\S+"""), "api_key=***REDACTED***")
+            .replace(
+                Regex("""(?i)\b(mqtts?)://([^:@/\s]+):([^@/\s]+)@"""),
+            ) { match -> "${match.groupValues[1]}://***REDACTED***:***REDACTED***@" }
             .replace(Regex("""(?is)\bsdp\s*[:=]\s*.*?(?:\r?\n\r?\n|$)"""), "sdp=***REDACTED***\n")
             .replace(Regex("""(?im)\bcandidate\s*[:=]\s*.*$"""), "candidate=***REDACTED***")
             .replace(Regex("""(?im)\bdecrypted[_\s-]?payload\s*[:=]\s*.*$"""), "decrypted_payload=***REDACTED***")
             .replace(Regex("""(?im)\bforwarded[_\s-]?data\s*[:=]\s*.*$"""), "forwarded_data=***REDACTED***")
-            .replace(Regex("""(?im)\bkex_secret\s*=\s*.*$"""), "kex_secret=***REDACTED***")
-            .replace(Regex("""(?im)\bsigning_key\s*=\s*.*$"""), "signing_key=***REDACTED***")
+            .replace(Regex("""(?im)\bkex[_ -]?secret\s*[:=]\s*.*$"""), "kex_secret=***REDACTED***")
+            .replace(Regex("""(?im)\bsigning[_ -]?key\s*[:=]\s*.*$"""), "signing_key=***REDACTED***")
             .replace(Regex("""(?im)(/[^/\s]+/)*identity(\.toml|\.enc)?"""), "***REDACTED_IDENTITY_PATH***")
     }
 
