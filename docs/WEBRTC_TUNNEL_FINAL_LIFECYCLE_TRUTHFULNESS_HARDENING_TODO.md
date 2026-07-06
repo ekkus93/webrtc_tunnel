@@ -1570,27 +1570,27 @@ fix(status): make atomic temp paths unique per write
 
 ## Offer runtime
 
-- [ ] Active-session worker death is daemon-fatal.
-- [ ] Two-forward test proves surviving worker cannot mask failure.
-- [ ] Infrastructure failures skip ordinary cooldown/recovery.
-- [ ] Monitor join failure returns `Err`.
-- [ ] No fallible immutable setup bypasses finalizer after worker start.
-- [ ] No steady-state write occurs after shutdown request.
+- [x] Active-session worker death is daemon-fatal.
+- [x] Two-forward test proves surviving worker cannot mask failure.
+- [x] Infrastructure failures skip ordinary cooldown/recovery.
+- [x] Monitor join failure returns `Err`.
+- [x] No fallible immutable setup bypasses finalizer after worker start.
+- [x] No steady-state write occurs after shutdown request.
 
 ## Answer runtime
 
-- [ ] Normal completion uses stable generation+peer fallback.
-- [ ] Completion-before-Replaced race is deterministic and fixed.
-- [ ] Late replacement event cannot recreate completed state.
-- [ ] Payload ready/shutdown race cannot admit new work.
-- [ ] Real spawned answer task panic is supervised end-to-end.
+- [x] Normal completion uses stable generation+peer fallback.
+- [x] Completion-before-Replaced race is deterministic and fixed.
+- [x] Late replacement event cannot recreate completed state.
+- [x] Payload ready/shutdown race cannot admit new work.
+- [x] Real spawned answer task panic is supervised end-to-end.
 
 ## Android
 
-- [ ] `pause()` preserves stop failure.
-- [ ] `pauseForPolicy()` preserves stop failure.
-- [ ] `stopServiceWork()` does not claim clean stop after failure.
-- [ ] Startup cancellation checks stop result.
+- [x] `pause()` preserves stop failure.
+- [x] `pauseForPolicy()` preserves stop failure.
+- [x] `stopServiceWork()` does not claim clean stop after failure.
+- [x] Startup cancellation checks stop result.
 - [ ] Setup delete failure is not reported as success.
 - [ ] Corrupt forwards storage is not treated as empty.
 
@@ -1609,19 +1609,19 @@ fix(status): make atomic temp paths unique per write
 
 ## Tests
 
-- [ ] Shutdown status boundary is exact action boundary.
+- [x] Shutdown status boundary is exact action boundary.
 - [ ] Publish barrier failures are loud.
 - [ ] Signal-test children are always reaped.
-- [ ] Required task-panic test uses a real spawned task.
+- [x] Required task-panic test uses a real spawned task.
 - [ ] Status atomic-write test covers concurrent writers.
 
 ## Quality gates
 
-- [ ] `cargo fmt --all --check` passes.
-- [ ] Debug/all-target/all-feature Clippy passes with warnings denied.
-- [ ] Release/all-feature Clippy passes with warnings denied.
-- [ ] Workspace tests pass.
-- [ ] Android assemble + unit tests pass.
+- [x] `cargo fmt --all --check` passes.
+- [x] Debug/all-target/all-feature Clippy passes with warnings denied.
+- [x] Release/all-feature Clippy passes with warnings denied.
+- [x] Workspace tests pass.
+- [x] Android assemble + unit tests pass.
 - [ ] systemd validation passes.
 - [ ] launchd validation passes on macOS.
 - [ ] Debian package smoke tests pass.
