@@ -285,6 +285,15 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     let (listeners, forward_statuses) = bind_offer_listeners(&config).await?;
     ctx.runtime.forward_statuses = forward_statuses;
     write_steady_state_status(&ctx).await;
+
+    // Every fallible, immutable config/peer lookup happens before the accept runtime
+    // starts, so no `?` after this point can bypass the post-worker-start finalizer.
+    let remote_peer_id = offer_remote_peer_id(&config)?;
+    let remote = authorized_keys
+        .get_by_peer_id(&remote_peer_id)
+        .cloned()
+        .ok_or_else(|| DaemonError::MissingAuthorizedPeer(remote_peer_id.to_string()))?;
+
     let (mut accept_runtime, worker_abort_handles) =
         spawn_offer_accept_loops(listeners, shutdown.clone());
     #[cfg(any(test, debug_assertions))]
@@ -294,11 +303,6 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     #[cfg(not(any(test, debug_assertions)))]
     let _ = worker_abort_handles;
     let mut replay_cache = p2p_signaling::ReplayCache::new(config.security.replay_cache_size);
-    let remote_peer_id = offer_remote_peer_id(&config)?;
-    let remote = authorized_keys
-        .get_by_peer_id(&remote_peer_id)
-        .cloned()
-        .ok_or_else(|| DaemonError::MissingAuthorizedPeer(remote_peer_id.to_string()))?;
     let mut probe_cooldown = ProbeFailureCooldown::new();
 
     // Startup is only truthfully complete once the broker is subscribed, the remote
