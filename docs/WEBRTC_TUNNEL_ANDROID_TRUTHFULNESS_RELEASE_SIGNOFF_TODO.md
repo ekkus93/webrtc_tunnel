@@ -1578,15 +1578,106 @@ Fix only the last category.
 
 ### Required completion note
 
-List every retained ignored/default behavior with rationale.
+Ran both required `rg` searches against `android/app/src/main/java/com/phillipchin/webrtctunnel`
+and `crates/p2p-daemon/src`. Classified every production-code match (test-only matches — e.g.
+`#[cfg(test)]` helpers, and the many `let _ = tokio::fs::remove_file(...)`/`remove_dir_all(...)`
+best-effort cleanup lines inside `#[tokio::test]` bodies across `crates/p2p-daemon/src/tests/*`
+and `status.rs`'s own test module — are expected teardown, not reviewed line-by-line here).
+
+**One dangerous hidden failure found and fixed** (not previously covered by P1-001 through
+P1-006): `SetupSaveController.resolveSaveIdentity()`
+(`android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveController.kt`).
+`resolveStoredIdentity()`'s `runCatching { ... }.getOrNull()` collapsed "no stored identity" and
+"stored identity present but unreadable/invalid" into the same `null`, and the caller then always
+reported `"Missing encrypted identity"` — telling a user whose identity exists but is corrupted
+that it had vanished. This is the exact same class of bug P1-001 fixed for
+`ForwardsViewModel`/`ImportExportService`, just in the setup-wizard save path instead of the
+config-validation path (flagged for review here by name during P1-001, not fixed then since it's
+a different call site/symptom). Fixed by checking `hasEncryptedIdentity()` first (the step
+navigation gate in `SetupStepValidation.kt` already did this correctly — only the final-save path
+had the bug) and giving the present-but-unreadable case its own distinct message. Test added:
+`SetupViewModelTest.saveReportsStoredIdentityUnreadableDistinctlyFromMissing`. Regression-strength
+verified (revert → new test fails at the "must not claim missing" assertion, other 31 tests in
+the class still pass → restore → passes). Full gates rerun — all green.
+
+**Retained ignored/default behaviors, with rationale** (classified, not fixed — none are
+"dangerous hidden failure"):
+
+- `crates/p2p-daemon/src/messages.rs:31`, `crates/p2p-daemon/src/busy.rs:92` —
+  `OuterEnvelope::decode(payload).ok()?` inside narrow heuristic detectors (duplicate-ack
+  detection, busy-offer replay classification). A decode failure just means "this payload isn't
+  a match for this specific heuristic"; the real, primary decode path elsewhere already
+  propagates failures loudly. **Safe explicit default.**
+- `crates/p2p-daemon/src/signaling.rs:453` — `let _ = request.result.send(result);`. Already
+  documented inline: the transport failure is logged before this line; a failed send here only
+  means the caller stopped waiting for the reply. **Expected teardown.**
+- `crates/p2p-daemon/src/shutdown.rs:31` — `let _ = self.sender.send(true);`. Already documented
+  inline and provably safe: every `ShutdownToken` clone keeps its own receiver alive, so this
+  send can never actually fail. **Safe explicit default.**
+- `crates/p2p-daemon/src/process_signal.rs` (`let _ = child.kill()/wait()`,
+  `remove_file(ready_path/result_path)`) — best-effort process/file cleanup after a signal
+  test-harness process has already been handled; failure here has no correctness impact on the
+  daemon itself. **Best-effort and logged is not needed since these are cleanup-only, not
+  observable by any caller.**
+- `crates/p2p-daemon/src/offer/mod.rs`, `crates/p2p-daemon/src/answer/mod.rs`,
+  `crates/p2p-daemon/src/offer/session/*.rs` (`test_hooks.unwrap_or_default()`,
+  `let _ = hook.send(...)`) — test-observability-only seams (`#[cfg(any(test,
+  debug_assertions))]` structures); a dropped receiver just means no test is currently watching
+  this hook. **Safe explicit default**, not part of the production control path.
+- `android/app/.../RustTunnelBridge.kt` (`runCatching { System.loadLibrary(...) }`,
+  `runCatching { check(...) }` in `startOffer`/`startAnswer`/`stop`) — each explicitly converts a
+  JNI failure into the function's own declared `Result<Unit>`, retaining the native error
+  message as the exception cause. **Failure propagated** (already correct contract).
+- `android/app/.../data/ConfigRepository.kt` (`loadSetupInputResult()`,
+  `debugAndroidIceModeOverrideOrNull()`) — the former already distinguishes missing-file
+  (success) from corrupt (failure) via `Result`, matching the `loadForwardsResult()` pattern
+  from P1-002. The latter is a `BuildConfig.DEBUG`-gated dev/test-only `getprop` override reading
+  a system property via a subprocess; any failure to read it just means "no override, use the
+  real user preference" — its own doc comment already states this. **Safe explicit default.**
+- `android/app/.../viewmodel/SetupViewModel.kt` (`loadStoredSetupInput()`'s
+  `loadSetupInputResult().getOrNull() ?: return`) — already has an inline rationale comment: a
+  corrupt draft yields "don't prefill" rather than silently resetting the user's saved values to
+  blanks. No destructive action follows (the corrupt file is left on disk untouched, and normal
+  save later overwrites it with fresh valid content); this is a UX-discoverability gap (the user
+  isn't told *why* the wizard didn't prefill) rather than a correctness bug. **Safe explicit
+  default** — reviewed and retained as-is; a follow-up could surface a visible message here, but
+  that is UX polish, not a truthfulness/safety defect, so it is out of scope for this hardening
+  pass.
+- `android/app/.../viewmodel/SettingsViewModel.kt`, `LogsViewModel.kt`,
+  `ImportExportViewModel.kt`, `SetupIdentityController.kt`, `SetupSaveController.kt` (all other
+  `runCatching`/`.getOrElse`/`.fold` sites not already covered above or by P1-001 through
+  P1-006) — every one already routes through `.fold`/`.onSuccess`/`.onFailure` into a
+  user-visible `errorMessage`/`resultMessage`/`brokerTestMessage`/diagnostics-marker field;
+  several have inline comments explicitly stating "never a bare empty string/`{}`, which would be
+  indistinguishable from success." **Failure propagated.**
+- `android/app/.../security/IdentityRepository.kt` (`readPrivateIdentityFile`,
+  `appendAuthorizedPublicIdentity`, `exportPrivateIdentity`, `exportPublicIdentity`) — each
+  already has a `Result<T>` return type and every caller consumes it via `.getOrThrow()`/
+  `.getOrElse`/`.fold`. `readPublicIdentity()` returning `""` when the public-identity file is
+  absent is a legitimate, non-sensitive "not yet set up" default (the public identity is not
+  secret and this is the normal pre-setup state). **Failure propagated / safe explicit default.**
 
 ### Acceptance criteria
 
-- [ ] No identity failure downgrades validation.
-- [ ] No forwards storage failure becomes empty/success.
-- [ ] No lifecycle failure is overwritten by stale status.
-- [ ] No required test depends on thread-unsafe fake state.
-- [ ] No broad hidden fallback added.
+- [x] No identity failure downgrades validation. Confirmed for the P1-001 sites (unchanged since
+      that fix) and additionally fixed here for `SetupSaveController.resolveSaveIdentity()`
+      (the one remaining site this audit surfaced).
+- [x] No forwards storage failure becomes empty/success. Confirmed: `loadForwardsResult()`
+      (P1-002/P1-003) and every `ForwardsRepository`/`ForwardsViewModel` caller already routes
+      failures through `Result`/`ValidationResult`, never silently substituting an empty list as
+      if it were a successful load.
+- [x] No lifecycle failure is overwritten by stale status. Confirmed via P1-004
+      (`pausedByPolicy` visibility) and P1-005 (`lastCleanupError` sticky history) — a later
+      successful stop can truthfully report `Stopped`, but never erases the record that an
+      earlier attempt failed.
+- [x] No required test depends on thread-unsafe fake state. Confirmed: `FailableRecordingBridge`
+      (P0-002) and `RecordingBridge` (P1-001, extended with call counters) both use
+      `AtomicInteger`/`AtomicBoolean`/`AtomicReference` throughout; no plain `var` fields remain
+      in either fake that a concurrently-running test/production coroutine could race on.
+- [x] No broad hidden fallback added. Every fix in this hardening round (P0-001 through P1-007)
+      either surfaces a specific, distinguishing error message or fails loudly (`saveError`/
+      `ValidationResult(false, ...)`/`Result.failure`); none introduced a new silent default,
+      broad `catch (e: Exception) { }`, or blanket suppression.
 
 ---
 
