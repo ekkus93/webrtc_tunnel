@@ -9,6 +9,8 @@
 #[path = "two_node_daemon/harness/mod.rs"]
 mod harness;
 
+#[path = "two_node_daemon/answer_drain_publish_barrier_tests.rs"]
+mod answer_drain_publish_barrier_tests;
 #[path = "two_node_daemon/basics_tests.rs"]
 mod basics_tests;
 #[path = "two_node_daemon/isolation_tests.rs"]

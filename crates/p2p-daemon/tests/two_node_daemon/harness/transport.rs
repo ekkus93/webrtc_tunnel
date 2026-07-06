@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use p2p_daemon::DaemonSignalingTransport;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
 #[derive(Clone, Default)]
@@ -75,6 +75,40 @@ pub(crate) struct TransportFaults {
     dropped_deliveries: HashMap<RouteKey, usize>,
     duplicate_deliveries: HashMap<RouteKey, usize>,
     delayed_deliveries_ms: HashMap<RouteKey, u64>,
+    publish_barriers: HashMap<RouteKey, PublishBarrier>,
+}
+
+/// A one-shot barrier that pauses a route's next `publish_signal` call mid-flight:
+/// the transport signals `entered` once it has been reached, then awaits
+/// `release` before actually delivering — so a test can deterministically prove a
+/// publish is in flight (rather than guessing with a sleep) before continuing.
+struct PublishBarrier {
+    entered_tx: oneshot::Sender<()>,
+    release_rx: oneshot::Receiver<()>,
+}
+
+/// Handed to the test by [`TransportFaultControl::block_next_publish`]: awaited to
+/// learn the publish has actually reached the transport and is now blocked.
+pub(crate) struct PublishBarrierEntered {
+    entered_rx: oneshot::Receiver<()>,
+}
+
+impl PublishBarrierEntered {
+    pub(crate) async fn wait(self) {
+        self.entered_rx.await.expect("publish barrier sender should not be dropped before entry");
+    }
+}
+
+/// Handed to the test by [`TransportFaultControl::block_next_publish`]: called to
+/// let the blocked publish proceed.
+pub(crate) struct PublishBarrierRelease {
+    release_tx: oneshot::Sender<()>,
+}
+
+impl PublishBarrierRelease {
+    pub(crate) fn release(self) {
+        let _ = self.release_tx.send(());
+    }
 }
 
 #[derive(Clone, Default)]
@@ -84,6 +118,24 @@ pub(crate) struct TransportFaultControl {
 }
 
 impl TransportFaultControl {
+    /// Blocks the next `publish_signal` call on this route mid-flight. Returns a
+    /// waiter (resolves once the publish is actually in flight) and a releaser
+    /// (lets it proceed) so a test can prove a publish is blocked before doing
+    /// anything else, instead of racing a sleep against it.
+    pub(crate) fn block_next_publish(
+        &self,
+        from_peer_id: &str,
+        to_peer_id: &str,
+    ) -> (PublishBarrierEntered, PublishBarrierRelease) {
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        self.faults.lock().expect("fault mutex should lock").publish_barriers.insert(
+            RouteKey::new(from_peer_id, to_peer_id),
+            PublishBarrier { entered_tx, release_rx },
+        );
+        (PublishBarrierEntered { entered_rx }, PublishBarrierRelease { release_tx })
+    }
+
     pub(crate) fn fail_next_publish(&self, from_peer_id: &str, to_peer_id: &str, count: usize) {
         self.faults
             .lock()
@@ -184,6 +236,16 @@ impl DaemonSignalingTransport for InMemoryTransport {
                 ))
             })?;
         let route_key = RouteKey::new(self.peer_id.clone(), peer_id.to_string());
+        let barrier = self
+            .faults
+            .lock()
+            .expect("fault mutex should lock")
+            .publish_barriers
+            .remove(&route_key);
+        if let Some(barrier) = barrier {
+            let _ = barrier.entered_tx.send(());
+            let _ = barrier.release_rx.await;
+        }
         let (fail_publish, drop_delivery, duplicate_count, delay_ms) = {
             let mut faults = self.faults.lock().expect("fault mutex should lock");
             let fail_publish = decrement_fault(&mut faults.publish_failures, &route_key);
