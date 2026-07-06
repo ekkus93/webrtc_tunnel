@@ -1305,10 +1305,10 @@ Keep the second worker alive and assert finalization stops it.
 
 ### Acceptance criteria
 
-- [ ] Worker fault hook exposes forward ID.
-- [ ] Test does not depend on vector order.
-- [ ] Production worker behavior is unchanged.
-- [ ] Two-forward fatal-failure regression still passes.
+- [x] Worker fault hook exposes forward ID.
+- [x] Test does not depend on vector order.
+- [x] Production worker behavior is unchanged.
+- [x] Two-forward fatal-failure regression still passes.
 
 ---
 
