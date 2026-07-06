@@ -1271,10 +1271,10 @@ Prefer removing it if no valid caller remains.
 
 ### Acceptance criteria
 
-- [ ] Corrupt JSON is reported as storage/config error.
-- [ ] Permission/read failure is reported as storage/config error.
-- [ ] Real empty list still produces no-forwards validation.
-- [ ] No correctness-sensitive caller uses lossy fallback.
+- [x] Corrupt JSON is reported as storage/config error.
+- [x] Permission/read failure is reported as storage/config error.
+- [x] Real empty list still produces no-forwards validation.
+- [x] No correctness-sensitive caller uses lossy fallback.
 
 ---
 
@@ -1591,8 +1591,8 @@ fix(status): make atomic temp paths unique per write
 - [x] `pauseForPolicy()` preserves stop failure.
 - [x] `stopServiceWork()` does not claim clean stop after failure.
 - [x] Startup cancellation checks stop result.
-- [ ] Setup delete failure is not reported as success.
-- [ ] Corrupt forwards storage is not treated as empty.
+- [x] Setup delete failure is not reported as success.
+- [x] Corrupt forwards storage is not treated as empty.
 
 ## macOS
 
