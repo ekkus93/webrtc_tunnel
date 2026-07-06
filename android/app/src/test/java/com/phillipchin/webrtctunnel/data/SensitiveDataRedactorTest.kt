@@ -92,11 +92,35 @@ class SensitiveDataRedactorTest {
         assertFalse(output.contains("hunter2"))
     }
 
+    @Test
+    fun redactsQuotedMultiWordPasswordCompletely() {
+        // Regression test: a value-only regex like `\S+` stops at the first space,
+        // leaving the rest of a quoted multi-word secret unredacted.
+        val input = "password: \"alpha secret sentinel\" and more text follows"
+        val output = SensitiveDataRedactor.redactText(input)
+        assertTrue(output.contains("***REDACTED***"))
+        assertFalse(output.contains("alpha"))
+        assertFalse(output.contains("secret"))
+        assertFalse(output.contains("sentinel"))
+        assertTrue(output.contains("and more text follows"))
+    }
+
     // --- token ---
 
     @Test
     fun redactsTokenField() {
         assertEquals("token=***REDACTED***", SensitiveDataRedactor.redactText("token=abc.def.ghi"))
+    }
+
+    @Test
+    fun redactsQuotedMultiWordTokenCompletely() {
+        val input = "token='beta secret sentinel' and more text follows"
+        val output = SensitiveDataRedactor.redactText(input)
+        assertTrue(output.contains("***REDACTED***"))
+        assertFalse(output.contains("beta"))
+        assertFalse(output.contains("secret"))
+        assertFalse(output.contains("sentinel"))
+        assertTrue(output.contains("and more text follows"))
     }
 
     // --- bearer ---
@@ -125,6 +149,27 @@ class SensitiveDataRedactorTest {
         val output = SensitiveDataRedactor.redactText("api key: sk_live_123")
         assertEquals("api_key=***REDACTED***", output)
         assertFalse(output.contains("sk_live_123"))
+    }
+
+    @Test
+    fun redactsQuotedMultiWordApiKeyCompletely() {
+        val input = "api key: \"gamma secret sentinel\" and more text follows"
+        val output = SensitiveDataRedactor.redactText(input)
+        assertTrue(output.contains("***REDACTED***"))
+        assertFalse(output.contains("gamma"))
+        assertFalse(output.contains("secret"))
+        assertFalse(output.contains("sentinel"))
+        assertTrue(output.contains("and more text follows"))
+    }
+
+    @Test
+    fun redactingQuotedMultiWordSecretsIsIdempotent() {
+        val input =
+            "password: \"alpha secret sentinel\" token='beta secret sentinel' " +
+                "api key: \"gamma secret sentinel\""
+        val once = SensitiveDataRedactor.redactText(input)
+        val twice = SensitiveDataRedactor.redactText(once)
+        assertEquals(once, twice)
     }
 
     // --- mqtt(s) credentials ---

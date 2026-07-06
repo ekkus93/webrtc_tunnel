@@ -5,6 +5,16 @@ import com.phillipchin.webrtctunnel.model.TunnelError
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 
 object SensitiveDataRedactor {
+    // Matches a known secret field name followed by its value, whether that value
+    // is double-quoted, single-quoted, or a bare unquoted token — a value-only
+    // regex like `\S+` stops at the first space, leaving the rest of a quoted
+    // multi-word secret (e.g. `password: "alpha secret sentinel"`) unredacted.
+    private val secretFieldRegex =
+        Regex(
+            """(?im)\b(password(?:[_ -][\w-]+)?|token(?:[_ -][\w-]+)?|api[_ -]?key|""" +
+                """kex[_ -]?secret|signing[_ -]?key)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^,\s]+)""",
+        )
+
     fun redactText(input: String): String {
         return input
             .replace(Regex("""(?im)^\s*sign\.private\s*=\s*".*"$"""), "sign.private = \"***REDACTED***\"")
@@ -13,10 +23,8 @@ object SensitiveDataRedactor {
                 Regex("""(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"""),
                 "***REDACTED_PRIVATE_KEY_BLOCK***",
             )
-            .replace(Regex("""(?i)\bpassword[^,\s]*\s*[:=]\s*\S+"""), "password=***REDACTED***")
-            .replace(Regex("""(?i)\btoken[^,\s]*\s*[:=]\s*\S+"""), "token=***REDACTED***")
+            .replace(secretFieldRegex) { match -> "${canonicalSecretFieldName(match.groupValues[1])}=***REDACTED***" }
             .replace(Regex("""(?i)\bbearer\s+[A-Za-z0-9\-\._~\+/]+=*"""), "Bearer ***REDACTED***")
-            .replace(Regex("""(?i)\bapi[_ -]?key[^,\s]*\s*[:=]\s*\S+"""), "api_key=***REDACTED***")
             .replace(
                 Regex("""(?i)\b(mqtts?)://([^:@/\s]+):([^@/\s]+)@"""),
             ) { match -> "${match.groupValues[1]}://***REDACTED***:***REDACTED***@" }
@@ -24,9 +32,22 @@ object SensitiveDataRedactor {
             .replace(Regex("""(?im)\bcandidate\s*[:=]\s*.*$"""), "candidate=***REDACTED***")
             .replace(Regex("""(?im)\bdecrypted[_\s-]?payload\s*[:=]\s*.*$"""), "decrypted_payload=***REDACTED***")
             .replace(Regex("""(?im)\bforwarded[_\s-]?data\s*[:=]\s*.*$"""), "forwarded_data=***REDACTED***")
-            .replace(Regex("""(?im)\bkex[_ -]?secret\s*[:=]\s*.*$"""), "kex_secret=***REDACTED***")
-            .replace(Regex("""(?im)\bsigning[_ -]?key\s*[:=]\s*.*$"""), "signing_key=***REDACTED***")
             .replace(Regex("""(?im)(/[^/\s]+/)*identity(\.toml|\.enc)?"""), "***REDACTED_IDENTITY_PATH***")
+    }
+
+    // The regex's field-name group captures whatever variant actually matched (e.g.
+    // "password_file", "api-key", "kex secret"); normalize to a fixed canonical name
+    // per family rather than leaking the matched variant into the replacement.
+    private fun canonicalSecretFieldName(matchedFieldName: String): String {
+        val field = matchedFieldName.lowercase()
+        return when {
+            field.startsWith("password") -> "password"
+            field.startsWith("token") -> "token"
+            field.startsWith("api") -> "api_key"
+            field.startsWith("kex") -> "kex_secret"
+            field.startsWith("signing") -> "signing_key"
+            else -> field
+        }
     }
 
     fun redactLogEvent(event: LogEvent): LogEvent = event.copy(message = redactText(event.message))
