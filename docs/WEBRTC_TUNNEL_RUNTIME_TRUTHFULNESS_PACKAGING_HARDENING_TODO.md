@@ -2141,11 +2141,11 @@ Delete/invert tests that currently assert a secret remains unredacted.
 
 ### Acceptance criteria
 
-- [ ] Colon variants redacted.
-- [ ] Space/hyphen/underscore variants redacted.
-- [ ] MQTT and MQTTS schemes preserved.
-- [ ] Redaction remains idempotent.
-- [ ] No test documents a known secret leak as acceptable behavior.
+- [x] Colon variants redacted.
+- [x] Space/hyphen/underscore variants redacted.
+- [x] MQTT and MQTTS schemes preserved.
+- [x] Redaction remains idempotent.
+- [x] No test documents a known secret leak as acceptable behavior.
 
 ---
 
