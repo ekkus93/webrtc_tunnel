@@ -56,7 +56,10 @@ class TunnelForegroundService
         private var startupJob: Job? = null
         private var statusPollJob: Job? = null
         private var lastMode: TunnelMode = TunnelMode.Offer
-        private var pausedByPolicy: Boolean = false
+
+        // internal (not private): P0-004's Robolectric test reads this directly rather
+        // than through any new public accessor, matching the "no public mutator" rule.
+        internal var pausedByPolicy: Boolean = false
         private var allowMeteredForCurrentRun: Boolean = false
         private var lifecycleGeneration: Long = 0
         private val lifecycleMutex = Mutex()
@@ -65,7 +68,9 @@ class TunnelForegroundService
         private val reporter = StatusReporter()
 
         // Offer start/pause/stop state machine; accesses the shared lifecycle fields directly.
-        private val offer = OfferCoordinator()
+        // internal (not private): P0-004's Robolectric test drives pauseForPolicy() through
+        // this real path rather than a synthetic test-only wrapper function.
+        internal val offer = OfferCoordinator()
 
         override fun onCreate() {
             super.onCreate()
@@ -446,7 +451,6 @@ class TunnelForegroundService
             suspend fun pauseForPolicy(reason: String) {
                 lifecycleMutex.withLock {
                     lifecycleGeneration += 1
-                    val previousPausedByPolicy = pausedByPolicy
                     reporter.stopStatusPolling()
                     cancelStartupJobLocked()
                     withContext(ioDispatcher) { repository.stop() }
@@ -457,10 +461,11 @@ class TunnelForegroundService
                                 reporter.publishStatus(reason)
                             },
                             onFailure = {
-                                // Leave pausedByPolicy as it was: the tunnel did not stop
-                                // cleanly, so this must not be reported as the normal
-                                // policy-paused state, and a retry path stays open.
-                                pausedByPolicy = previousPausedByPolicy
+                                // The tunnel did not stop cleanly, so this must never be
+                                // reported as the normal policy-paused state. Force false
+                                // unconditionally rather than restoring a stale prior
+                                // value, so a retry/reevaluation path stays open.
+                                pausedByPolicy = false
                                 reporter.publishError(
                                     message = it.message ?: "Failed stopping tunnel after policy block",
                                     code = "stop_failed",
