@@ -2346,10 +2346,10 @@ Add a short audit comment or commit notes listing intentionally ignored categori
 
 ### Acceptance criteria
 
-- [ ] Teardown publish failures are logged.
-- [ ] Peer close failures are logged where currently silent.
-- [ ] Intentional cancellation is not noisy.
-- [ ] Remaining ignored results have an explicit justification.
+- [x] Teardown publish failures are logged.
+- [x] Peer close failures are logged where currently silent.
+- [x] Intentional cancellation is not noisy.
+- [x] Remaining ignored results have an explicit justification.
 
 ---
 
