@@ -2065,11 +2065,11 @@ for peer_id in config.required_authorized_peer_ids()? {
 
 ### Acceptance criteria
 
-- [ ] Offer missing remote authorized key fails `check-config`.
-- [ ] Answer missing allowed peer fails `check-config`.
-- [ ] Valid config passes.
-- [ ] Daemon and CLI use the same required-peer enumeration logic.
-- [ ] `p2pctl` does not depend on the full WebRTC daemon solely for validation.
+- [x] Offer missing remote authorized key fails `check-config`.
+- [x] Answer missing allowed peer fails `check-config`.
+- [x] Valid config passes.
+- [x] Daemon and CLI use the same required-peer enumeration logic.
+- [x] `p2pctl` does not depend on the full WebRTC daemon solely for validation.
 
 ---
 
