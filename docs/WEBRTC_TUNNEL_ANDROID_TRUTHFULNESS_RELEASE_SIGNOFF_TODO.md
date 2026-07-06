@@ -1178,10 +1178,50 @@ for permission denied.
 
 ### Acceptance criteria
 
-- [ ] Read failure not called corruption.
-- [ ] Parse failure explicitly identified.
-- [ ] Write failure explicitly identified.
-- [ ] Tests assert distinctions.
+- [x] Read failure not called corruption. Added `ForwardsReadException`; `readAndDecodeForwards()`
+      wraps `forwardsFile.readText()`'s `IOException` in it specifically, and
+      `describeForwardsFailure()` (`ForwardsConfigStore.kt`) reports it as "Unable to read saved
+      forwards; check storage permissions." — never "corrupt".
+- [x] Parse failure explicitly identified. `ForwardsParseException` wraps
+      `Json.decodeFromString`'s `SerializationException` specifically (narrower than the
+      `IOException` catch used for read/write, per "do not catch broad `Throwable` around
+      decoding unless intentional"); this is the only case `describeForwardsFailure()` still
+      calls "corrupt", since it is the one actually-corrupt-content case.
+- [x] Write failure explicitly identified. `ForwardsWriteException` wraps `saveForwards()`'s
+      `IOException` (temp-file creation, write, or atomic move); reported as "Unable to save
+      forwards; check available storage."
+      Deviation from the TODO's suggested files: kept `ForwardsConfigException`/subtypes/
+      `describeForwardsFailure()` in `ForwardsConfigStore.kt` (not a separate file) since both
+      consumers (`ForwardsConfigStore` itself and `ForwardsRepository`) are in the same package
+      and the TODO's own file list already named both files as in-scope for this task.
+      Detekt's `TooGenericExceptionCaught` rejected the first draft's `catch (error: Throwable)`
+      in both `readAndDecodeForwards()` and `saveForwards()`; narrowed both to `catch (error:
+      IOException)`, which the regression tests confirmed is exactly what real failures throw
+      (`File.createTempFile`/`readText`/`Files.move` all throw `IOException` subtypes) — no
+      suppression needed.
+      `ForwardsRepository.kt`'s three hardcoded "Saved forwards file is corrupt." /
+      "...cannot save" messages now route through `describeForwardsFailure()` (or, for the
+      `!hasValidBaseline` case, reuse the already-computed `_loadError.value`) instead of
+      assuming every failure is corruption.
+- [x] Tests assert distinctions. New tests:
+      `ForwardsConfigStoreTest.malformedJsonIsParseFailureNotReadFailure`,
+      `ForwardsConfigStoreTest.unreadableFileIsReadFailureNotParseFailure`,
+      `ForwardsConfigStoreTest.saveForwardsWrapsUnderlyingFailureAsForwardsWriteException`
+      (plus the existing `loadForwardsResultReturnsFailureWithoutThrowingWhenSeedWriteFails` now
+      additionally asserts `is ForwardsWriteException`), and
+      `ForwardsRepositoryTest.loadErrorDistinguishesParseFailureFromReadFailure` (asserts the two
+      surfaced messages actually differ, and only the parse one contains "corrupt").
+      Regression-strength verified two ways: (1) fully reverting the source changes makes the
+      test file fail to *compile* (`Unresolved reference 'ForwardsReadException'` etc.) — proof
+      the tests are load-bearing on the new types existing at all; (2) a targeted partial revert
+      that kept the types but collapsed `readAndDecodeForwards()` back to a single
+      `ForwardsParseException` catch-all (no distinct read path) made exactly
+      `unreadableFileIsReadFailureNotParseFailure` and
+      `loadErrorDistinguishesParseFailureFromReadFailure` fail (`AssertionError`), while the
+      other 17 tests in the same two classes still passed — a clean differential proof that
+      these two tests specifically pin the read/parse distinction, not something unrelated.
+      Restored the real fix, reran: all pass. Full local gates rerun after restoring
+      (`./gradlew testDebugUnitTest`, `assembleDebug testDebugUnitTest`, `check`) — all green.
 
 ---
 
