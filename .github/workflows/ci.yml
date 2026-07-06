@@ -78,6 +78,31 @@ jobs:
         if: runner.os == 'macOS'
         run: scripts/check-launchd-plists.sh
 
+      - name: Install mosquitto (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mosquitto
+
+      - name: Install mosquitto (macOS)
+        if: runner.os == 'macOS'
+        run: brew install mosquitto
+
+      - name: Build offer/answer/p2pctl binaries for the signal lifecycle test
+        run: cargo build -p p2p-offer -p p2p-answer -p p2pctl
+
+      # Required, not a self-skipping best-effort check: a real mosquitto broker
+      # is provisioned above on every OS in the matrix (native process, not
+      # Docker, which GitHub's macOS runners do not provide), so this test must
+      # not silently skip here the way it may in an unprovisioned local
+      # checkout.
+      - name: Run required real-process signal lifecycle test
+        env:
+          P2P_REQUIRE_SIGNAL_TEST: "1"
+          P2P_OFFER_BIN: ${{ github.workspace }}/target/debug/p2p-offer
+          P2P_ANSWER_BIN: ${{ github.workspace }}/target/debug/p2p-answer
+        run: cargo test -p p2p-daemon --test process_signal_shutdown -- --nocapture
+
   android:
     name: Android
     runs-on: ubuntu-latest
