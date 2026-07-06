@@ -1068,9 +1068,9 @@ Assert:
 
 ### Acceptance criteria
 
-- [ ] Error path always returns valid JSON.
-- [ ] Error text remains redacted.
-- [ ] Quotes/backslashes/newlines are escaped correctly.
+- [x] Error path always returns valid JSON.
+- [x] Error text remains redacted.
+- [x] Quotes/backslashes/newlines are escaped correctly.
 
 ---
 
