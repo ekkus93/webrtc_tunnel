@@ -467,13 +467,31 @@ Document that verification in commit notes or the TODO completion note.
 
 ### Acceptance criteria
 
-- [ ] Production latest-state watch API remains unchanged.
-- [ ] Test-only audit recorder stores every status write without coalescing.
-- [ ] Audit mutex failure is loud.
-- [ ] Offer lifecycle test uses exact request boundary plus audit log.
-- [ ] Illegal post-request ordinary state fails deterministically.
-- [ ] Final Closed is still observed.
-- [ ] Test fails when the token-aware gate is temporarily removed.
+- [x] Production latest-state watch API remains unchanged.
+- [x] Test-only audit recorder stores every status write without coalescing.
+- [x] Audit mutex failure is loud.
+- [x] Offer lifecycle test uses exact request boundary plus audit log.
+- [x] Illegal post-request ordinary state fails deterministically.
+- [x] Final Closed is still observed.
+- [x] Test fails when the token-aware gate is temporarily removed (see note below).
+
+**Regression-strength verification note**: reverting *only* `runtime_status_allowed`'s
+shared-token check (back to a phase-only `matches!(ctx.runtime.phase, Running)`) does
+**not**, by itself, make `offer_admits_no_ordinary_write_when_shutdown_lands_between_session_outcome_and_loop_top`
+fail. The offer run loop has an independent, pre-existing local check —
+`if shutdown.is_shutdown_requested() { break Ok(()); }` immediately before the
+`write_steady_state_status` call at the loop top (`offer/mod.rs`, predates P0-001) —
+that closes the exact same race window on its own. The test only fails when *both*
+the P0-001 gate fix and that local check are reverted together (verified directly:
+reverting both causes the test to fail with `WaitingForLocalClient` observed after
+the shutdown boundary; restoring either one alone makes it pass). The two dedicated
+unit tests added in P0-001 (`crates/p2p-daemon/src/tests/runtime_phase.rs`) exercise
+`runtime_status_allowed`/`normal_status_allowed` directly against `RuntimeContext`,
+bypassing the loop's local checks entirely, and are the tests that isolate and prove
+the P0-001 gate fix specifically — those fail on a gate-only revert. This integration
+test's proof is broader (no illegal state escapes the full daemon, via either
+defense), which is what it was built to guarantee at the P0-002 stage; it is not a
+narrow proof of the P0-001 gate function in isolation.
 
 ---
 
