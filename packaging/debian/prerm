@@ -1,11 +1,16 @@
 #!/bin/sh
 # prerm for p2ptunnel: stop the services cleanly (SIGTERM via systemctl stop,
 # which the daemons handle as a graceful shutdown — see docs/SYSTEMD.md)
-# before the package's files are removed, on both plain removal and upgrade.
+# before the package's files are removed.
+#
+# Deliberately NOT on upgrade: stopping here would take the tunnel down for
+# the whole duration of the upgrade, when postinst's try-restart already
+# brings a previously-active service back up on the new binary afterward.
+# Stopping is only correct when the package is actually going away.
 set -e
 
 case "$1" in
-  remove|upgrade|deconfigure)
+  remove|deconfigure)
     if [ -d /run/systemd/system ]; then
       for unit in p2p-offer.service p2p-answer.service; do
         if systemctl is-active --quiet "$unit" 2>/dev/null; then

@@ -1,10 +1,13 @@
 #!/bin/sh
 # postrm for p2ptunnel.
 #
-# On ordinary removal ("remove"), this script does nothing: config
-# (/etc/p2ptunnel), state (/var/lib/p2ptunnel-*), logs (/var/log/p2ptunnel-*),
-# and the service account are all left in place, so a later reinstall picks
-# up the existing config/identity untouched.
+# On ordinary removal ("remove"), config (/etc/p2ptunnel), state
+# (/var/lib/p2ptunnel-*), logs (/var/log/p2ptunnel-*), and the service account
+# are all left in place, so a later reinstall picks up the existing
+# config/identity untouched. The package's own files (including the unit
+# files under /lib/systemd/system/) are already gone by the time postrm runs,
+# though, so systemd's unit cache still needs a daemon-reload or it keeps
+# stale in-memory unit state around.
 #
 # Only "purge" removes the directories this package created (including any
 # private identity files under /etc/p2ptunnel/*), matching dpkg's own
@@ -15,6 +18,11 @@
 set -e
 
 case "$1" in
+  remove)
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload
+    fi
+    ;;
   purge)
     for role in offer answer; do
       rm -rf "/etc/p2ptunnel/$role"

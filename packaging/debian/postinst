@@ -37,6 +37,17 @@ case "$1" in
 
     if [ -d /run/systemd/system ]; then
       systemctl daemon-reload
+
+      # Bring a service that was active before this upgrade back up on the new
+      # binary. try-restart only affects units that are already active, so a
+      # first install (nothing active yet) never gets auto-started here. A
+      # restart failure is not swallowed: with `set -e` active and no `|| true`,
+      # it fails this script (and therefore the upgrade) visibly.
+      for unit in p2p-offer.service p2p-answer.service; do
+        if systemctl is-active --quiet "$unit" 2>/dev/null; then
+          systemctl try-restart "$unit"
+        fi
+      done
     fi
 
     echo "p2ptunnel installed. This package does not create a default config."
