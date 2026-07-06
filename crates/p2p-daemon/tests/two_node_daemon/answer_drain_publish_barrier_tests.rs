@@ -11,6 +11,7 @@ use p2p_crypto::generate_identity;
 use p2p_daemon::{
     ShutdownToken, run_answer_daemon_with_transport_and_shutdown, run_offer_daemon_with_transport,
 };
+use p2p_signaling::{ReplayCache, SignalCodec};
 use tokio::time::timeout;
 
 use crate::harness::*;
@@ -36,6 +37,7 @@ async fn answer_drain_completes_while_a_session_publish_is_in_flight() {
     let offer_transport = mesh.add_transport("offer-home");
     let answer_transport = mesh.add_transport("answer-office");
     let control = mesh.control();
+    let trace = mesh.trace();
 
     let offer_task = tokio::spawn(run_offer_daemon_with_transport(
         offer_config,
@@ -55,8 +57,7 @@ async fn answer_drain_completes_while_a_session_publish_is_in_flight() {
     // The offer only starts a session once a local client connects; the target
     // side of the tunnel is never accepted and the tunnel never needs to fully
     // open — we only need the answer session registered (initial ack + SDP
-    // answer already published) so its task is alive and gathering/publishing
-    // ICE candidates on its own.
+    // answer already published).
     let _client = connect_with_retry(offer_port).await;
     wait_for_status_matching(
         &answer_status_path,
@@ -65,16 +66,34 @@ async fn answer_drain_completes_while_a_session_publish_is_in_flight() {
     )
     .await;
 
-    // The *next* answer publish will be a session-task-originated one (an ICE
-    // candidate), reaching the transport via the same
-    // AnswerSessionEvent::Publish -> outer-loop -> transport.publish_signal path
-    // any in-session signaling action (ack, candidate, close) always takes.
+    // Find an already-processed offer -> answer message that requires an ack
+    // (Offer/IceCandidate, not Hello) so replaying it deterministically triggers
+    // exactly one fresh session-task-originated re-ack publish, reaching the
+    // transport via the same AnswerSessionEvent::Publish -> outer-loop ->
+    // transport.publish_signal path any in-session signaling action takes. This
+    // is deterministic regardless of platform/network ICE-gathering timing,
+    // unlike waiting for a real ICE candidate to be gathered and published.
+    let offer_public_keys = authorized_keys_for(&offer_identity);
+    let decode_codec = SignalCodec::new(&answer_identity.identity, &offer_public_keys, 120, 300);
+    let mut inspect_replay_cache = ReplayCache::new(64);
+    let replayable_payload = trace
+        .payloads_for("answer-office")
+        .into_iter()
+        .find(|payload| {
+            decode_codec
+                .decode(payload, &mut inspect_replay_cache, None)
+                .is_ok_and(|(_, message, _)| message.message_type.requires_ack())
+        })
+        .expect("offer should have sent at least one ack-requiring message to the answer by now");
+
     let (barrier_entered, barrier_release) =
         control.block_next_publish("answer-office", "offer-home");
 
+    control.inject_payload("answer-office", replayable_payload);
+
     timeout(Duration::from_secs(10), barrier_entered.wait())
         .await
-        .expect("a session-originated publish should reach the transport in time");
+        .expect("the duplicate message's re-ack publish should reach the transport in time");
 
     answer_shutdown.request_shutdown();
 
