@@ -164,6 +164,55 @@ async fn status_write_failure_is_recoverable() {
 }
 
 #[tokio::test]
+async fn terminal_offer_status_write_failure_is_returned_not_swallowed() {
+    let blocking_file = std::env::temp_dir()
+        .join(format!("p2ptunnel-status-blocker-offer-{}", SessionId::random()));
+    tokio::fs::write(&blocking_file, b"occupied".as_slice())
+        .await
+        .expect("blocking file should exist");
+
+    let mut config = sample_config();
+    config.health.write_status_file = true;
+    config.health.status_file = blocking_file.join("status.json");
+    let writer = StatusWriter::new(&config);
+    let mut runtime = connected_runtime();
+    let mut ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
+
+    let result = write_offer_closed_status(&mut ctx).await;
+
+    assert!(
+        result.is_err(),
+        "unlike ordinary status writes, the terminal Closed write must surface failure"
+    );
+    let _ = tokio::fs::remove_file(&blocking_file).await;
+}
+
+#[tokio::test]
+async fn terminal_answer_status_write_failure_is_returned_not_swallowed() {
+    let blocking_file = std::env::temp_dir()
+        .join(format!("p2ptunnel-status-blocker-answer-{}", SessionId::random()));
+    tokio::fs::write(&blocking_file, b"occupied".as_slice())
+        .await
+        .expect("blocking file should exist");
+
+    let mut config = sample_config();
+    config.node.role = NodeRole::Answer;
+    config.health.write_status_file = true;
+    config.health.status_file = blocking_file.join("status.json");
+    let writer = StatusWriter::new(&config);
+    let mut runtime = connected_runtime();
+    let mut ctx = RuntimeContext { config: &config, status: &writer, runtime: &mut runtime };
+
+    let result = write_answer_closed_status(&mut ctx).await;
+
+    assert!(
+        result.is_err(),
+        "unlike ordinary status writes, the terminal Closed write must surface failure"
+    );
+    let _ = tokio::fs::remove_file(&blocking_file).await;
+}
+
+#[tokio::test]
 async fn transport_failure_updates_status_to_disconnected_before_retry() {
     let mut config = sample_config();
     config.node.role = NodeRole::Answer;

@@ -208,11 +208,16 @@ pub async fn run_answer_daemon_with_transport_and_shutdown<T: DaemonSignalingTra
     }
 
     ctx.runtime.phase = DaemonRuntimePhase::Closed;
-    write_answer_closed_status(&mut ctx).await;
+    let closed_result = write_answer_closed_status(&mut ctx).await;
 
     match primary_error {
-        Some(error) => Err(error),
-        None => Ok(()),
+        Some(error) => {
+            if let Err(close_error) = closed_result {
+                tracing::error!(reason = %close_error, "answer terminal status also failed");
+            }
+            Err(error)
+        }
+        None => closed_result,
     }
 }
 

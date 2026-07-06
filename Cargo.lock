@@ -1763,6 +1763,7 @@ dependencies = [
 name = "p2p-daemon"
 version = "0.3.2"
 dependencies = [
+ "futures-util",
  "p2p-core",
  "p2p-crypto",
  "p2p-signaling",

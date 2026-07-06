@@ -45,7 +45,8 @@ pub(crate) use crate::{
     run_answer_daemon_with_transport_and_shutdown, run_offer_daemon_with_transport_and_shutdown,
     run_offer_daemon_with_transport_and_test_hook, should_ack_idle_offer,
     should_attempt_offer_reconnect, should_continue_reconnect_attempt, spawn_offer_accept_loop,
-    steady_state_for_role, write_answer_registry_status, write_steady_state_status,
+    steady_state_for_role, write_answer_closed_status, write_answer_registry_status,
+    write_offer_closed_status, write_steady_state_status,
 };
 
 pub(super) type PublishedSignals = std::sync::Arc<Mutex<Vec<(PeerId, Vec<u8>)>>>;

@@ -1,10 +1,46 @@
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use p2p_core::{AppConfig, DaemonState, NodeRole, PeerId, SessionId};
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
 
 use crate::DaemonError;
+
+/// Replaces `path`'s contents atomically: writes to a same-directory temporary
+/// file, flushes it, then renames it over `path`. A reader can therefore only
+/// ever see the previous complete content or the new complete content — never a
+/// partially-written file — even under concurrent writer/reader stress. Staying
+/// in the same directory keeps the rename on one filesystem (required for
+/// `rename` to be atomic on Linux/macOS).
+async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    tokio::fs::create_dir_all(parent).await?;
+
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("status.json");
+    let temp_path = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
+
+    let write_result = async {
+        let mut file = tokio::fs::File::create(&temp_path).await?;
+        file.write_all(bytes).await?;
+        file.flush().await?;
+        drop(file);
+        tokio::fs::rename(&temp_path, path).await
+    }
+    .await;
+
+    if write_result.is_err()
+        && let Err(cleanup_error) = tokio::fs::remove_file(&temp_path).await
+        && cleanup_error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            reason = %cleanup_error,
+            path = %temp_path.display(),
+            "failed to remove status temporary file",
+        );
+    }
+
+    write_result
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DaemonStatus {
@@ -207,12 +243,9 @@ impl StatusWriter {
         if !self.enabled {
             return Ok(());
         }
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_vec_pretty(&status)
             .map_err(|error| DaemonError::Logging(error.to_string()))?;
-        tokio::fs::write(&self.path, json).await?;
+        write_atomic(&self.path, &json).await?;
         Ok(())
     }
 }
@@ -225,6 +258,7 @@ mod tests {
 
     use super::{
         DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
+        write_atomic,
     };
 
     #[test]
@@ -579,5 +613,76 @@ mod tests {
         assert_eq!(json["mqtt_connected"], false);
         assert_eq!(json["active_session_count"], 1);
         assert_eq!(json["sessions"][0]["configured_forward_ids"][0], "ssh");
+    }
+
+    #[tokio::test]
+    async fn write_atomic_creates_parent_directories_and_replaces_content() {
+        let dir = std::env::temp_dir().join(format!("p2ptunnel-atomic-{}", std::process::id()));
+        let path = dir.join("nested").join("status.json");
+
+        write_atomic(&path, b"first").await.expect("first write should succeed");
+        assert_eq!(tokio::fs::read(&path).await.expect("read first"), b"first");
+
+        write_atomic(&path, b"second-and-longer").await.expect("second write should succeed");
+        assert_eq!(tokio::fs::read(&path).await.expect("read second"), b"second-and-longer");
+
+        // No leftover temp file from either write.
+        let mut entries = tokio::fs::read_dir(&dir.join("nested")).await.expect("read dir");
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.expect("dir entry") {
+            names.push(entry.file_name());
+        }
+        assert_eq!(names, vec![std::ffi::OsString::from("status.json")]);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn write_atomic_fails_when_parent_cannot_be_created() {
+        let blocking_file =
+            std::env::temp_dir().join(format!("p2ptunnel-atomic-blocker-{}", std::process::id()));
+        tokio::fs::write(&blocking_file, b"occupied").await.expect("blocking file should exist");
+        let path = blocking_file.join("status.json");
+
+        let result = write_atomic(&path, b"unused").await;
+
+        assert!(result.is_err(), "cannot create a directory where a file already exists");
+        let _ = tokio::fs::remove_file(&blocking_file).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_writes_and_reads_never_observe_partial_json() {
+        let path = std::env::temp_dir()
+            .join(format!("p2ptunnel-atomic-stress-{}.json", std::process::id()));
+        write_atomic(&path, b"{\"seq\":0}").await.expect("seed write should succeed");
+
+        let writer_path = path.clone();
+        let writer = tokio::spawn(async move {
+            for seq in 1..200_u32 {
+                let body = format!("{{\"seq\":{seq}}}");
+                write_atomic(&writer_path, body.as_bytes()).await.expect("write should succeed");
+            }
+        });
+
+        let reader_path = path.clone();
+        let reader = tokio::spawn(async move {
+            for _ in 0..400 {
+                if let Ok(bytes) = tokio::fs::read(&reader_path).await {
+                    let parsed: serde_json::Value =
+                        serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                            panic!(
+                                "reader observed invalid/partial JSON: {error} (bytes: {:?})",
+                                String::from_utf8_lossy(&bytes)
+                            )
+                        });
+                    assert!(parsed["seq"].is_u64());
+                }
+            }
+        });
+
+        let (writer_result, reader_result) = tokio::join!(writer, reader);
+        writer_result.expect("writer task should not panic");
+        reader_result.expect("reader task should not panic");
+        let _ = tokio::fs::remove_file(&path).await;
     }
 }

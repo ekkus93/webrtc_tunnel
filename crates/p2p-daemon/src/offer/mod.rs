@@ -467,9 +467,27 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     join_offer_accept_tasks(accept_runtime.monitors).await;
 
     ctx.runtime.phase = DaemonRuntimePhase::Closed;
-    write_offer_closed_status(&mut ctx).await;
+    let closed_result = write_offer_closed_status(&mut ctx).await;
 
-    run_result
+    merge_offer_run_and_cleanup_results(run_result, closed_result)
+}
+
+/// Preserves the primary run-loop error (if any) as the daemon's final result;
+/// a terminal-status write failure is only surfaced when the run loop itself
+/// otherwise succeeded, and is logged (not silently dropped) when it doesn't.
+fn merge_offer_run_and_cleanup_results(
+    run_result: Result<(), DaemonError>,
+    closed_result: Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    match run_result {
+        Err(primary) => {
+            if let Err(error) = closed_result {
+                tracing::error!(reason = %error, "offer terminal status also failed");
+            }
+            Err(primary)
+        }
+        Ok(()) => closed_result,
+    }
 }
 
 /// Owns every offer accept-loop task handle alongside the receiver they feed, so

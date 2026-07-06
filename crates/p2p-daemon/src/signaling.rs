@@ -49,26 +49,26 @@ pub(crate) async fn write_daemon_status(ctx: &RuntimeContext<'_>, snapshot: Stat
     write_daemon_status_unchecked(ctx, snapshot).await;
 }
 
-async fn write_daemon_status_unchecked(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot) {
-    // Pair the active session id with the real remote peer (the offer's configured
-    // `[peer].remote_peer_id`). If the remote is somehow unknown (no `[peer]`), report
-    // no session rather than fabricating a self-targeted one.
+/// Pair the active session id with the real remote peer (the offer's configured
+/// `[peer].remote_peer_id`). If the remote is somehow unknown (no `[peer]`), report
+/// no session rather than fabricating a self-targeted one.
+fn build_daemon_status(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot) -> DaemonStatus {
     let active_session = snapshot
         .active_session_id
         .and_then(|id| ctx.config.peer.as_ref().map(|peer| (id, peer.remote_peer_id.clone())));
-    write_status_or_log(
-        ctx.status,
-        DaemonStatus::new(
-            ctx.config.node.peer_id.clone(),
-            ctx.config.node.role.clone(),
-            ctx.runtime.mqtt_connected,
-            active_session,
-            snapshot.current_state,
-            ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
-        )
-        .with_forward_statuses(ctx.runtime.forward_statuses.clone()),
+    DaemonStatus::new(
+        ctx.config.node.peer_id.clone(),
+        ctx.config.node.role.clone(),
+        ctx.runtime.mqtt_connected,
+        active_session,
+        snapshot.current_state,
+        ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
     )
-    .await;
+    .with_forward_statuses(ctx.runtime.forward_statuses.clone())
+}
+
+async fn write_daemon_status_unchecked(ctx: &RuntimeContext<'_>, snapshot: StatusSnapshot) {
+    write_status_or_log(ctx.status, build_daemon_status(ctx, snapshot)).await;
 }
 
 pub(crate) async fn write_answer_status(ctx: &RuntimeContext<'_>, snapshot: AnswerStatusSnapshot) {
@@ -83,21 +83,21 @@ pub(crate) async fn write_answer_status(ctx: &RuntimeContext<'_>, snapshot: Answ
     write_answer_status_unchecked(ctx, snapshot).await;
 }
 
-async fn write_answer_status_unchecked(ctx: &RuntimeContext<'_>, snapshot: AnswerStatusSnapshot) {
-    write_status_or_log(
-        ctx.status,
-        DaemonStatus::with_sessions(
-            ctx.config.node.peer_id.clone(),
-            ctx.config.node.role.clone(),
-            ctx.runtime.mqtt_connected,
-            snapshot.current_state,
-            ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
-            ANSWER_SESSION_CAPACITY,
-            snapshot.sessions.iter().map(SessionStatusSnapshot::to_status).collect(),
-        )
-        .with_forward_statuses(ctx.runtime.forward_statuses.clone()),
+fn build_answer_status(ctx: &RuntimeContext<'_>, snapshot: AnswerStatusSnapshot) -> DaemonStatus {
+    DaemonStatus::with_sessions(
+        ctx.config.node.peer_id.clone(),
+        ctx.config.node.role.clone(),
+        ctx.runtime.mqtt_connected,
+        snapshot.current_state,
+        ctx.config.forwards.iter().map(|forward| forward.id.clone()).collect(),
+        ANSWER_SESSION_CAPACITY,
+        snapshot.sessions.iter().map(SessionStatusSnapshot::to_status).collect(),
     )
-    .await;
+    .with_forward_statuses(ctx.runtime.forward_statuses.clone())
+}
+
+async fn write_answer_status_unchecked(ctx: &RuntimeContext<'_>, snapshot: AnswerStatusSnapshot) {
+    write_status_or_log(ctx.status, build_answer_status(ctx, snapshot)).await;
 }
 
 pub(crate) async fn write_answer_registry_status(
@@ -115,13 +115,19 @@ pub(crate) async fn write_answer_registry_status(
 /// Truthful terminal answer status: the session registry has fully drained and the
 /// daemon is about to return. Unlike [`write_answer_registry_status`], this does not
 /// hardcode `Serving` — the daemon is no longer serving anything.
-pub(crate) async fn write_answer_closed_status(ctx: &mut RuntimeContext<'_>) {
+///
+/// Unlike ordinary status writes (best-effort, logged on failure), this is strict:
+/// the daemon's caller must know whether the terminal state was actually
+/// persisted, so a write failure here is returned rather than swallowed.
+pub(crate) async fn write_answer_closed_status(
+    ctx: &mut RuntimeContext<'_>,
+) -> Result<(), DaemonError> {
     ctx.runtime.mqtt_connected = false;
-    write_answer_status_unchecked(
+    let status = build_answer_status(
         ctx,
         AnswerStatusSnapshot { current_state: DaemonState::Closed, sessions: Vec::new() },
-    )
-    .await;
+    );
+    ctx.status.write(status).await
 }
 
 pub(crate) async fn write_steady_state_status(ctx: &RuntimeContext<'_>) {
@@ -141,7 +147,13 @@ pub(crate) async fn write_steady_state_status(ctx: &RuntimeContext<'_>) {
 /// rather than erased, since `Stopped` answers "is this running now?" while
 /// `last_error` answers "what most recently went wrong?" — shutting down doesn't
 /// change the answer to the second question.
-pub(crate) async fn write_offer_closed_status(ctx: &mut RuntimeContext<'_>) {
+///
+/// Unlike ordinary status writes (best-effort, logged on failure), this is strict:
+/// the daemon's caller must know whether the terminal state was actually
+/// persisted, so a write failure here is returned rather than swallowed.
+pub(crate) async fn write_offer_closed_status(
+    ctx: &mut RuntimeContext<'_>,
+) -> Result<(), DaemonError> {
     ctx.runtime.mqtt_connected = false;
     ctx.runtime.forward_statuses = ctx
         .runtime
@@ -149,11 +161,11 @@ pub(crate) async fn write_offer_closed_status(ctx: &mut RuntimeContext<'_>) {
         .iter()
         .map(ForwardRuntimeStatus::stopped_preserving_error)
         .collect();
-    write_daemon_status_unchecked(
+    let status = build_daemon_status(
         ctx,
         StatusSnapshot { active_session_id: None, current_state: DaemonState::Closed },
-    )
-    .await;
+    );
+    ctx.status.write(status).await
 }
 
 pub(crate) async fn recover_daemon_after_session(
