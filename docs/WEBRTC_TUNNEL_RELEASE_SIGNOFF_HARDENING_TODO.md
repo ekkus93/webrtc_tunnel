@@ -1613,48 +1613,60 @@ Do not make one giant commit.
 
 ## Runtime truthfulness
 
-- [ ] `DaemonRuntimeState` observes the shared shutdown token.
-- [ ] Ordinary status requires `Running` and uncancelled token.
-- [ ] Offer and answer use the daemon's real shared token.
-- [ ] Terminal `Closed` remains allowed after cancellation.
+- [x] `DaemonRuntimeState` observes the shared shutdown token.
+- [x] Ordinary status requires `Running` and uncancelled token.
+- [x] Offer and answer use the daemon's real shared token.
+- [x] Terminal `Closed` remains allowed after cancellation.
 
 ## Test trust
 
-- [ ] Shutdown-boundary test uses non-coalescing audit recorder.
-- [ ] Audit contains every write in order.
-- [ ] Exact boundary is captured immediately before token request.
-- [ ] Test fails when token-aware status gating is removed.
+- [x] Shutdown-boundary test uses non-coalescing audit recorder.
+- [x] Audit contains every write in order.
+- [x] Exact boundary is captured immediately before token request.
+- [ ] Test fails when token-aware status gating is removed — true for the
+      dedicated `runtime_phase.rs` unit tests (isolate the gate directly);
+      the broader integration test only fails when that gate *and* a
+      pre-existing, independent local shutdown check are both reverted
+      together (documented in P0-002/P0-005 above).
 
 ## Android
 
-- [ ] Failed policy stop forces `pausedByPolicy = false`.
-- [ ] Every service `repository.stop()` result is handled.
-- [ ] Four critical stop-failure scenarios run under `testDebugUnitTest`.
-- [ ] Focused test class is explicitly invoked in CI.
-- [ ] Instrumentation tests are supplemental, not sole proof.
+- [x] Failed policy stop forces `pausedByPolicy = false`.
+- [x] Every service `repository.stop()` result is handled.
+- [x] Four critical stop-failure scenarios run under `testDebugUnitTest`.
+- [x] Focused test class is explicitly invoked in CI (wired in
+      `.github/workflows/ci.yml`; not yet observed on a real run — see
+      Quality gates below).
+- [x] Instrumentation tests are supplemental, not sole proof.
 
 ## Storage
 
-- [ ] Lossy `ForwardsConfigStore.loadForwards()` removed.
-- [ ] Silent `ForwardsConfigStore.deleteForward()` removed.
-- [ ] Tests use result-bearing APIs.
+- [x] Lossy `ForwardsConfigStore.loadForwards()` removed.
+- [x] Silent `ForwardsConfigStore.deleteForward()` removed.
+- [x] Tests use result-bearing APIs.
 
 ## Test maintenance
 
-- [ ] Worker failure test selects by forward ID.
-- [ ] No vector-order dependency remains.
-- [ ] Audit-log unit tests document watch-vs-audit semantics.
+- [x] Worker failure test selects by forward ID.
+- [x] No vector-order dependency remains.
+- [x] Audit-log unit tests document watch-vs-audit semantics.
 
 ## Quality gates
 
-- [ ] `cargo fmt --all --check` passes.
-- [ ] Debug/all-target/all-feature Clippy passes with warnings denied.
-- [ ] Release/all-feature Clippy passes with warnings denied.
-- [ ] Workspace tests pass.
-- [ ] Focused foreground-service Robolectric class executes and passes.
-- [ ] Android assemble + unit tests pass.
-- [ ] systemd validation passes.
-- [ ] launchd plist validation passes or is reported `NOT RUN` with exact reason.
-- [ ] Debian package smoke test passes.
-- [ ] macOS install-layout test passes on macOS or is reported `NOT RUN` with exact reason.
-- [ ] Real CI executes the new focused Android test step.
+- [x] `cargo fmt --all --check` passes.
+- [x] Debug/all-target/all-feature Clippy passes with warnings denied.
+- [x] Release/all-feature Clippy passes with warnings denied.
+- [x] Workspace tests pass.
+- [x] Focused foreground-service Robolectric class executes and passes.
+- [x] Android assemble + unit tests pass.
+- [x] systemd validation passes.
+- [x] launchd plist validation reported `NOT RUN` with exact reason (not
+      running on macOS in this environment); structural coverage via
+      `cargo test -p p2p-daemon --test launchd_plist_tests` passed.
+- [x] Debian package smoke test passes.
+- [x] macOS install-layout test reported `NOT RUN` with exact reason (this
+      environment is Linux, not macOS).
+- [ ] Real CI executes the new focused Android test step — **NOT RUN**: not
+      pushed to a remote in this session (commit/push discipline requires
+      explicit user request). The step is wired and its exact command was
+      verified locally.
