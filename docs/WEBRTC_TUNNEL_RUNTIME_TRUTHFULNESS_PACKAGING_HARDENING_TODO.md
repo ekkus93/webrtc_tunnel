@@ -1435,12 +1435,12 @@ Keep current data-preservation policy unless separately changed:
 
 ### Acceptance criteria
 
-- [ ] `prerm upgrade` does not stop the running tunnel.
-- [ ] Active services are restarted after upgrade/configure.
-- [ ] Inactive services are not auto-started by upgrade.
-- [ ] Remove triggers daemon-reload.
-- [ ] Restart failure is visible.
-- [ ] Upgrade lifecycle has an automated package test.
+- [x] `prerm upgrade` does not stop the running tunnel.
+- [x] Active services are restarted after upgrade/configure.
+- [x] Inactive services are not auto-started by upgrade.
+- [x] Remove triggers daemon-reload.
+- [x] Restart failure is visible.
+- [ ] Upgrade lifecycle has an automated package test. (deferred to P1-011, a dedicated packaging smoke test task; verified manually this pass with stubbed systemctl/getent/addgroup/adduser)
 
 ---
 
