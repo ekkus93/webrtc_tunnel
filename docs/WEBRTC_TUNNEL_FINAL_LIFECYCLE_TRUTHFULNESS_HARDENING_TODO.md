@@ -1159,10 +1159,10 @@ Use async equivalent where appropriate.
 
 ### Acceptance criteria
 
-- [ ] Ready-marker timeout kills/reaps child.
-- [ ] Signal-delivery failure kills/reaps child.
-- [ ] Process-exit timeout kills/reaps child.
-- [ ] Successful test does not double-kill/reap.
+- [x] Ready-marker timeout kills/reaps child.
+- [x] Signal-delivery failure kills/reaps child.
+- [x] Process-exit timeout kills/reaps child.
+- [x] Successful test does not double-kill/reap.
 
 ---
 
@@ -1611,7 +1611,7 @@ fix(status): make atomic temp paths unique per write
 
 - [x] Shutdown status boundary is exact action boundary.
 - [x] Publish barrier failures are loud.
-- [ ] Signal-test children are always reaped.
+- [x] Signal-test children are always reaped.
 - [x] Required task-panic test uses a real spawned task.
 - [ ] Status atomic-write test covers concurrent writers.
 
