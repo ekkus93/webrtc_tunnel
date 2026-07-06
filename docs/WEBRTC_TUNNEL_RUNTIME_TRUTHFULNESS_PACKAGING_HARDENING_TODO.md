@@ -1562,11 +1562,11 @@ If only one-role install is desired later, add an explicit role option. Do not i
 
 ### Acceptance criteria
 
-- [ ] `--enable` refuses missing config.
-- [ ] `--enable` refuses unreadable config/identity/authorized_keys.
-- [ ] Validation runs as `_p2ptunnel`, not root.
-- [ ] Both configs validate before either bootstrap occurs.
-- [ ] No invalid-config relaunch loop is created by the installer.
+- [x] `--enable` refuses missing config.
+- [x] `--enable` refuses unreadable config/identity/authorized_keys.
+- [x] Validation runs as `_p2ptunnel`, not root.
+- [x] Both configs validate before either bootstrap occurs.
+- [x] No invalid-config relaunch loop is created by the installer.
 
 ---
 
@@ -2684,15 +2684,15 @@ chore(ci): apply least-privilege permissions
 
 ## Services and packages
 
-- [ ] Premature `Type=notify` support removed.
-- [ ] Baseline `Type=simple` units remain.
-- [ ] Debian package units use `/usr/bin`.
-- [ ] Build script verifies staged unit executable paths.
-- [ ] Active Debian services restart after upgrade.
-- [ ] Remove runs daemon-reload.
-- [ ] macOS user and group both checked.
-- [ ] macOS config dirs are readable by `_p2ptunnel`.
-- [ ] `--enable` validates both roles as `_p2ptunnel` before bootstrap.
+- [x] Premature `Type=notify` support removed.
+- [x] Baseline `Type=simple` units remain.
+- [x] Debian package units use `/usr/bin`.
+- [x] Build script verifies staged unit executable paths.
+- [x] Active Debian services restart after upgrade.
+- [x] Remove runs daemon-reload.
+- [x] macOS user and group both checked.
+- [x] macOS config dirs are readable by `_p2ptunnel`.
+- [x] `--enable` validates both roles as `_p2ptunnel` before bootstrap.
 
 ## Android and diagnostics
 
