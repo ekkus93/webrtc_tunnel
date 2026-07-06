@@ -969,10 +969,53 @@ and then choose weaker validation.
 
 ### Acceptance criteria
 
-- [ ] Identity failure cannot downgrade validation.
-- [ ] Absence remains distinct from unreadable.
-- [ ] Failure is visible to caller/UI.
-- [ ] Plaintext identity is wiped where practical.
+- [x] Identity failure cannot downgrade validation. Fixed in both real call sites:
+      `ForwardsViewModel.regenerateActiveConfig()` (`android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ForwardsViewModel.kt`)
+      and `ImportExportService.importConfigContent()`
+      (`android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportService.kt`) — note the
+      TODO's listed paths (`service.../data...`) were stale; the actual files live under
+      `viewmodel/` and `security/IdentityRepository.kt`, confirmed via `find`/`rg` before editing.
+      Both now call `identityRepository.hasEncryptedIdentity()` first and only fall back to
+      identity-less validation when it is `false`.
+- [x] Absence remains distinct from unreadable. `hasEncryptedIdentity() == false` → identity-less
+      validation (unchanged). `hasEncryptedIdentity() == true` but
+      `readPrivateIdentityPlaintext()` throws (I/O read failure or `IdentityCrypto.decrypt`
+      failure — the same code path handles both, since both are opaque causes of "present but
+      unreadable" from the caller's point of view) → the read failure is re-thrown with a
+      distinguishing message and never reaches the identity-less branch.
+- [x] Failure is visible to caller/UI. `ForwardsViewModel`: `regenerateActiveConfig()` returns
+      `ValidationResult(false, "Identity exists but could not be loaded: <cause>")`, which
+      `saveForward`/`deleteForward` already surface via `report(...)` (the app-wide snackbar) and
+      roll back the pending change. `ImportExportService`: the failure propagates as a thrown
+      exception through `ImportExportViewModel`'s existing `runCatching { block() }` +
+      `resultMessage` reporting path — no new plumbing needed, it was already truthful for other
+      exceptions, just previously unreachable for this one because of the `getOrNull()` downgrade.
+- [x] Plaintext identity is wiped where practical. Both sites keep the existing
+      `identity?.fill(0)` wipe in a `finally` block that runs regardless of validation
+      success/failure; ForwardsViewModel's identity resolution was moved inside the same
+      `runCatching`/`try`/`finally` as the validation call so the wipe still covers every exit path.
+      No wipe is attempted when the read itself failed (there is no plaintext buffer to wipe in
+      that case).
+- Tests added (all 4 required scenarios, across both call sites — 6 new tests total, reusing
+  the existing `RecordingBridge` fake extended with `validateConfigCalls`/
+  `validateConfigWithIdentityCalls` counters to prove which native entry point was actually used,
+  not just that the (identical) canned `ValidationResult` came back):
+  - `ForwardsViewModelTest.forwardsViewModelSaveUsesIdentityLessValidationWhenNoIdentity`
+  - `ForwardsViewModelTest.forwardsViewModelSaveUsesIdentityAwareValidationWhenIdentityReadable`
+  - `ForwardsViewModelTest.forwardsViewModelSaveReportsVisibleFailureWhenIdentityPresentButUnreadable`
+  - `ImportExportViewModelTest.importExportViewModelUsesIdentityLessValidationWhenNoIdentity`
+  - `ImportExportViewModelTest.importExportViewModelUsesIdentityAwareValidationWhenIdentityReadable`
+  - `ImportExportViewModelTest.importExportViewModelSurfacesVisibleFailureWhenIdentityPresentButUnreadable`
+  Regression-strength verified: reverted both fixes (`git stash`) and confirmed exactly the two
+  "present but unreadable" tests fail (`TimeoutCancellationException` /
+  `AssertionError` respectively) while the other 4 identity tests still pass — proving the new
+  tests specifically pin the downgrade bug, not some unrelated breakage. Restored the fix,
+  reran: all pass. Full local gates rerun after restoring
+  (`./gradlew testDebugUnitTest`, `assembleDebug testDebugUnitTest`, `check`) — all green.
+  One detekt `ReturnCount` finding surfaced from the first draft (3 explicit `return`s in
+  `regenerateActiveConfig`, limit 2); fixed by restructuring the identity read to live inside
+  the existing `runCatching` block (throwing instead of an early `return`) rather than
+  suppressing the rule.
 
 ---
 
