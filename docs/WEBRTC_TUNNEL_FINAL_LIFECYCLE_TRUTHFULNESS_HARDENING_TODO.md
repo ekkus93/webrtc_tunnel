@@ -1326,10 +1326,10 @@ Also assert no temp files remain after successful completion.
 
 ### Acceptance criteria
 
-- [ ] Concurrent same-process writes never share a temp path.
-- [ ] Readers never observe malformed JSON.
-- [ ] Temp files are cleaned on failure.
-- [ ] No stale temp files remain after success.
+- [x] Concurrent same-process writes never share a temp path.
+- [x] Readers never observe malformed JSON.
+- [x] Temp files are cleaned on failure.
+- [x] No stale temp files remain after success.
 
 ---
 
@@ -1613,7 +1613,7 @@ fix(status): make atomic temp paths unique per write
 - [x] Publish barrier failures are loud.
 - [x] Signal-test children are always reaped.
 - [x] Required task-panic test uses a real spawned task.
-- [ ] Status atomic-write test covers concurrent writers.
+- [x] Status atomic-write test covers concurrent writers.
 
 ## Quality gates
 
