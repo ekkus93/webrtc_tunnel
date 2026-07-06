@@ -1396,9 +1396,43 @@ earlier cleanup error remains in logs/diagnostics
 
 ### Acceptance criteria
 
-- [ ] Later success does not erase history.
-- [ ] Final state remains truthful.
-- [ ] No duplicate misleading clean-stop narrative.
+- [x] Later success does not erase history. Added `TunnelStatus.lastCleanupError: TunnelError?`
+      (`model/Models.kt`), distinct from the existing `lastError` (which every status
+      refresh/transition legitimately overwrites). `TunnelRepository.setLocalError()` — the one
+      choke point every `TunnelForegroundService` stop/cleanup failure already routes through
+      via `StatusReporter.publishError()` — now also sets `lastCleanupError` whenever
+      `code == "stop_failed"` (the code every one of the 6 stop-failure call sites in
+      `TunnelForegroundService.kt` already uses), and every other status-mutating function
+      (`refreshStatus()`'s `previous.copy(...)`/`toTunnelStatus()`, `setPolicyBlocked()`,
+      `updateNetworkStatus()`, `updateSessionMeteredAllowance()`) uses `.copy(...)` without
+      naming `lastCleanupError`, so it survives untouched across every subsequent transition,
+      including a later successful stop's `refreshStatus()` call. No new call sites needed in
+      `TunnelForegroundService.kt` itself — reusing the existing single choke point avoids
+      duplicating "is this a cleanup failure" logic at 6 places.
+- [x] Final state remains truthful. Unchanged: a later successful stop still truthfully reports
+      `ServiceState.Stopped`/`lastError = null` for the *current* attempt; only the sticky
+      `lastCleanupError` field persists as separate historical context, so the current-state
+      truthfulness this TODO's earlier P0 items established is not weakened.
+- [x] No duplicate misleading clean-stop narrative. A diagnostics consumer reading
+      `TunnelStatus` after a later successful retry sees both `serviceState == Stopped` (true
+      for now) and a non-null `lastCleanupError` (an earlier cleanup attempt failed) — the full,
+      honest picture, rather than only the clean-looking current state with no trace an earlier
+      attempt failed.
+- Test added: `TunnelForegroundServiceStopFailureTest.laterSuccessfulStopDoesNotEraseEarlierCleanupFailureHistory`
+  — forces a first stop failure (asserts `lastCleanupError != null` immediately), then a second
+  start+stop that succeeds (asserts final `serviceState == Stopped`), then asserts
+  `lastCleanupError` is *still* non-null. Regression-strength verified: reverted only
+  `TunnelRepository.kt`'s change (keeping the new model field, so it still compiles) — the new
+  test failed at the first assertion (`lastCleanupError` never got set), while the other 8
+  tests in the same class still passed. Restored the fix, reran: passes. Full local gates rerun
+  after restoring (`./gradlew testDebugUnitTest`, `assembleDebug testDebugUnitTest check`) — all
+  green.
+  Deviation from the TODO's suggested `logger.warn("...retry succeeded...")` one-shot log: not
+  added, since correctly firing it exactly once (not on every subsequent successful poll, since
+  `lastCleanupError` is deliberately never auto-cleared) would need additional transition-
+  tracking state not otherwise needed, and it isn't covered by any of the three acceptance
+  criteria above — kept the change to the minimal persisted-field mechanism that actually
+  satisfies them.
 
 ---
 
