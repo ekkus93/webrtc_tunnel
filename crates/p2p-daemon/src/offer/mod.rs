@@ -63,6 +63,11 @@ struct OfferDaemonTestHooks {
     /// ordinary session outcome can bring the loop back to top more than once
     /// before a test gets a chance to land shutdown in the gap.
     loop_top_barrier: Option<OfferLoopTopBarrier>,
+    /// Non-coalescing audit recorder (see [`StatusAuditLog`]) attached to the
+    /// daemon's `StatusWriter` when present, so a test can prove an exact
+    /// shutdown boundary instead of relying on a `watch` stream that can
+    /// coalesce away an illegal intermediate write (P0-002).
+    status_audit: Option<StatusAuditLog>,
 }
 
 /// A repeatable rendezvous at the top of the offer run loop (see
@@ -287,6 +292,7 @@ pub async fn run_offer_daemon_with_transport_and_test_hook_and_shutdown<
             session_hook,
             worker_fault_hook: None,
             loop_top_barrier: None,
+            status_audit: None,
         }),
         None,
         shutdown,
@@ -319,8 +325,44 @@ pub async fn run_offer_daemon_with_loop_top_barrier_and_shutdown<T: DaemonSignal
             session_hook: None,
             worker_fault_hook: None,
             loop_top_barrier: Some(loop_top_barrier),
+            status_audit: None,
         }),
         Some(status_sink),
+        shutdown,
+    )
+    .await
+}
+
+/// Combines the [`OfferLoopTopBarrier`] test hook with a [`StatusAuditLog`], so a
+/// test can force `shutdown.request_shutdown()` into the exact race window (as
+/// with [`run_offer_daemon_with_loop_top_barrier_and_shutdown`]) while recording
+/// every status write attempt without `watch`-channel coalescing — the only
+/// trustworthy way to prove no illegal intermediate state was ever emitted after
+/// the shutdown boundary (P0-002).
+#[cfg(any(test, debug_assertions))]
+pub async fn run_offer_daemon_with_loop_top_barrier_and_status_audit_and_shutdown<
+    T: DaemonSignalingTransport,
+>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    mut transport: T,
+    loop_top_barrier: OfferLoopTopBarrier,
+    status_audit: StatusAuditLog,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
+    run_offer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        &mut transport,
+        Some(OfferDaemonTestHooks {
+            session_hook: None,
+            worker_fault_hook: None,
+            loop_top_barrier: Some(loop_top_barrier),
+            status_audit: Some(status_audit),
+        }),
+        None,
         shutdown,
     )
     .await
@@ -376,6 +418,7 @@ pub async fn run_offer_daemon_with_worker_fault_hook_and_shutdown<T: DaemonSigna
             session_hook: None,
             worker_fault_hook: Some(worker_fault_hook),
             loop_top_barrier: None,
+            status_audit: None,
         }),
         None,
         shutdown,
@@ -394,8 +437,12 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
     #[cfg(any(test, debug_assertions))]
-    let OfferDaemonTestHooks { session_hook, worker_fault_hook, mut loop_top_barrier } =
-        test_hooks.unwrap_or_default();
+    let OfferDaemonTestHooks {
+        session_hook,
+        worker_fault_hook,
+        mut loop_top_barrier,
+        status_audit,
+    } = test_hooks.unwrap_or_default();
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let codec = SignalCodec::new(
         &local_identity,
@@ -405,6 +452,14 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     );
     transport.subscribe_own_topic().await?;
 
+    #[cfg(any(test, debug_assertions))]
+    let status = match (status_sink, status_audit) {
+        (Some(sink), Some(audit)) => StatusWriter::with_sink_and_audit(&config, sink, audit),
+        (Some(sink), None) => StatusWriter::with_sink(&config, sink),
+        (None, Some(audit)) => StatusWriter::with_audit(&config, audit),
+        (None, None) => StatusWriter::new(&config),
+    };
+    #[cfg(not(any(test, debug_assertions)))]
     let status = match status_sink {
         Some(sink) => StatusWriter::with_sink(&config, sink),
         None => StatusWriter::new(&config),

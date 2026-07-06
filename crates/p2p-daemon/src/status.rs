@@ -13,6 +13,39 @@ use crate::DaemonError;
 /// for all of them.
 static STATUS_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// A non-coalescing, append-only record of every status write *attempt* (before
+/// any optional file I/O). A `watch::Sender<DaemonStatus>` is deliberately
+/// latest-value-only for its real (Android/UI) consumers — that's correct for
+/// them, but it means a test that only samples the `watch` receiver can never
+/// prove an illegal intermediate state was *not* emitted, only that the final
+/// observed value doesn't happen to be it. This gives a regression test an exact,
+/// trustworthy shutdown boundary: `let boundary = audit.len(); shutdown.request_shutdown();
+/// ...; assert none of audit.snapshot()[boundary..] is illegal`.
+#[cfg(any(test, debug_assertions))]
+#[derive(Clone, Default)]
+pub struct StatusAuditLog {
+    events: std::sync::Arc<std::sync::Mutex<Vec<DaemonStatus>>>,
+}
+
+#[cfg(any(test, debug_assertions))]
+impl StatusAuditLog {
+    pub fn len(&self) -> usize {
+        self.events.lock().expect("status audit log mutex poisoned").len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.lock().expect("status audit log mutex poisoned").is_empty()
+    }
+
+    pub fn snapshot(&self) -> Vec<DaemonStatus> {
+        self.events.lock().expect("status audit log mutex poisoned").clone()
+    }
+
+    fn record(&self, status: DaemonStatus) {
+        self.events.lock().expect("status audit log mutex poisoned").push(status);
+    }
+}
+
 /// Replaces `path`'s contents atomically: writes to a same-directory temporary
 /// file, flushes it, then renames it over `path`. A reader can therefore only
 /// ever see the previous complete content or the new complete content — never a
@@ -227,6 +260,10 @@ pub struct StatusWriter {
     /// is how the Android runtime observes real daemon status; the desktop CLI
     /// leaves it `None` and is unaffected.
     sink: Option<tokio::sync::watch::Sender<DaemonStatus>>,
+    /// Optional non-coalescing test/debug audit recorder — see [`StatusAuditLog`].
+    /// Always `None` in ordinary production use.
+    #[cfg(any(test, debug_assertions))]
+    audit: Option<StatusAuditLog>,
 }
 
 impl StatusWriter {
@@ -235,6 +272,8 @@ impl StatusWriter {
             enabled: config.health.write_status_file,
             path: config.health.status_file.clone(),
             sink: None,
+            #[cfg(any(test, debug_assertions))]
+            audit: None,
         }
     }
 
@@ -243,10 +282,47 @@ impl StatusWriter {
             enabled: config.health.write_status_file,
             path: config.health.status_file.clone(),
             sink: Some(sink),
+            #[cfg(any(test, debug_assertions))]
+            audit: None,
+        }
+    }
+
+    /// Test/debug-only: records every write attempt to `audit` in addition to the
+    /// usual file/sink behavior. See [`StatusAuditLog`].
+    #[cfg(any(test, debug_assertions))]
+    pub fn with_audit(config: &AppConfig, audit: StatusAuditLog) -> Self {
+        Self {
+            enabled: config.health.write_status_file,
+            path: config.health.status_file.clone(),
+            sink: None,
+            audit: Some(audit),
+        }
+    }
+
+    /// Test/debug-only: both a latest-state `watch` sink and a non-coalescing
+    /// audit recorder, for tests that need to assert on both.
+    #[cfg(any(test, debug_assertions))]
+    pub fn with_sink_and_audit(
+        config: &AppConfig,
+        sink: tokio::sync::watch::Sender<DaemonStatus>,
+        audit: StatusAuditLog,
+    ) -> Self {
+        Self {
+            enabled: config.health.write_status_file,
+            path: config.health.status_file.clone(),
+            sink: Some(sink),
+            audit: Some(audit),
         }
     }
 
     pub async fn write(&self, status: DaemonStatus) -> Result<(), DaemonError> {
+        // Record every attempted write before anything else, so the audit log is
+        // a complete history regardless of whether the sink/file steps below
+        // succeed, get skipped (disabled), or coalesce.
+        #[cfg(any(test, debug_assertions))]
+        if let Some(audit) = &self.audit {
+            audit.record(status.clone());
+        }
         // Broadcast to the sink first so observers see updates even when status-file
         // writing is disabled. A closed receiver is not an error for the daemon.
         if let Some(sink) = &self.sink {
@@ -348,7 +424,8 @@ mod tests {
         );
         let (tx, rx) = tokio::sync::watch::channel(seed);
         // File writing disabled: the sink must still receive updates.
-        let writer = StatusWriter { enabled: false, path: PathBuf::new(), sink: Some(tx) };
+        let writer =
+            StatusWriter { enabled: false, path: PathBuf::new(), sink: Some(tx), audit: None };
         let updated = DaemonStatus::new(
             "offer-home".parse().expect("peer id"),
             NodeRole::Offer,
@@ -365,7 +442,8 @@ mod tests {
     async fn writes_status_json_without_secrets() {
         let temp_path =
             std::env::temp_dir().join(format!("p2ptunnel-status-{}.json", std::process::id()));
-        let writer = StatusWriter { enabled: true, path: temp_path.clone(), sink: None };
+        let writer =
+            StatusWriter { enabled: true, path: temp_path.clone(), sink: None, audit: None };
         writer
             .write(DaemonStatus::new(
                 "offer-home".parse().expect("peer id"),
@@ -401,7 +479,8 @@ mod tests {
     async fn writes_multi_session_status_json() {
         let temp_path = std::env::temp_dir()
             .join(format!("p2ptunnel-status-multi-{}.json", std::process::id()));
-        let writer = StatusWriter { enabled: true, path: temp_path.clone(), sink: None };
+        let writer =
+            StatusWriter { enabled: true, path: temp_path.clone(), sink: None, audit: None };
         writer
             .write(DaemonStatus::with_sessions(
                 "answer-office".parse().expect("peer id"),
@@ -436,7 +515,8 @@ mod tests {
     async fn writes_multi_session_aggregate_without_single_active_session_id() {
         let temp_path = std::env::temp_dir()
             .join(format!("p2ptunnel-status-aggregate-{}.json", std::process::id()));
-        let writer = StatusWriter { enabled: true, path: temp_path.clone(), sink: None };
+        let writer =
+            StatusWriter { enabled: true, path: temp_path.clone(), sink: None, audit: None };
         writer
             .write(DaemonStatus::with_sessions(
                 "answer-office".parse().expect("peer id"),

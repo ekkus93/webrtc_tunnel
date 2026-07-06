@@ -67,11 +67,14 @@ pub use offer::{
     OfferLoopTopBarrier, OfferLoopTopBarrierEntered, OfferLoopTopBarrierRelease,
     OfferSessionTestEvent, OfferSessionTestHandle,
     run_offer_daemon_with_loop_top_barrier_and_shutdown,
+    run_offer_daemon_with_loop_top_barrier_and_status_audit_and_shutdown,
     run_offer_daemon_with_transport_and_status_and_shutdown,
     run_offer_daemon_with_transport_and_test_hook,
     run_offer_daemon_with_transport_and_test_hook_and_shutdown,
     run_offer_daemon_with_worker_fault_hook_and_shutdown,
 };
+#[cfg(any(test, debug_assertions))]
+pub use status::StatusAuditLog;
 
 // Crate-internal symbols surfaced at the root so the unit-test module reaches them
 // via `super::` without depending on each submodule's path. Glob re-exports keep
