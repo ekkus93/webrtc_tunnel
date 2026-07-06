@@ -967,13 +967,15 @@ $ rg -n 'repository\.stop\(\)' android/app/src/main/java/com/phillipchin/webrtct
    `TunnelForegroundServiceInstrumentationTest.stopDuringPendingStartWithFailingCleanupStopPublishesError`.
 3. **Line 385 — `runOfferStart` supersedence cleanup** (a newer start superseded
    this one after its native start already completed). Success/failure handling
-   identical in shape to line 376. Covering test: **gap** — reproducing this
-   deterministically needs a second blocking hook (pause the *second*,
-   superseding start after the first's native call already returned) that the
-   current `RecordingBridge` fake doesn't have; the single-shot
-   `blockNextStartOffer()` hook can't isolate it cleanly from the cancellation
-   path at line 376. Deferred to P0-003's "Required test 4", which already
-   plans this exact hook shape under Robolectric.
+   identical in shape to line 376, and shares the same `NonCancellable` fix
+   found and applied in P0-003 (both branches had the identical
+   prompt-cancellation bug). Covering test: still a **gap** — no test isolates
+   *this specific branch* (as opposed to the cancellation-catch at line 376);
+   reproducing it deterministically needs a second blocking hook (pause the
+   *second*, superseding start after the first's native call already returned)
+   that the current fakes don't have. The branch is exercised by inspection and
+   shares its fix's verification with line 376's test, but remains untested in
+   isolation.
 4. **Line 436 — `pause()`.** Success: publishes the paused status. Failure:
    publishes `stop_failed` error. Covering test:
    `TunnelForegroundServiceInstrumentationTest.pauseWithFailingStopPublishesErrorNotPaused`
