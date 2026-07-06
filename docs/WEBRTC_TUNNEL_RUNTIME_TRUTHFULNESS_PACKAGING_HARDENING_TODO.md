@@ -970,10 +970,10 @@ Do not leave an undocumented dead feature.
 
 ### Acceptance criteria
 
-- [ ] No `READY=1` is sent before daemon readiness.
-- [ ] No supported unit uses `Type=notify` without a genuine readiness source.
-- [ ] Default/manual/Docker/launchd behavior is unchanged.
-- [ ] `cargo clippy --all-features` no longer carries a misleading optional readiness feature.
+- [x] No `READY=1` is sent before daemon readiness.
+- [x] No supported unit uses `Type=notify` without a genuine readiness source.
+- [x] Default/manual/Docker/launchd behavior is unchanged.
+- [x] `cargo clippy --all-features` no longer carries a misleading optional readiness feature.
 
 ---
 
