@@ -1231,11 +1231,15 @@ The removed `ForwardsConfigStore` methods must not remain.
 
 ### Acceptance criteria
 
-- [ ] Lossy `ForwardsConfigStore.loadForwards()` removed.
-- [ ] Silent `ForwardsConfigStore.deleteForward()` removed.
-- [ ] Tests use result-bearing reads.
-- [ ] Corrupt storage remains explicit failure.
-- [ ] Repository/controller delete failure coverage remains intact.
+- [x] Lossy `ForwardsConfigStore.loadForwards()` removed.
+- [x] Silent `ForwardsConfigStore.deleteForward()` removed.
+- [x] Tests use result-bearing reads.
+- [x] Corrupt storage remains explicit failure.
+- [x] Repository/controller delete failure coverage remains intact — added
+      `ForwardsRepositoryTest.deleteBlockedWhenStartupBaselineIsCorrupt`,
+      mirroring the existing `upsert` coverage for the same shared `mutate()`
+      guard, since the store-level delete-on-corrupt test was removed along
+      with `deleteForward()`.
 
 ---
 
