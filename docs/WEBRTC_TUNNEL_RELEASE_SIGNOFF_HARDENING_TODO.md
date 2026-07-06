@@ -1093,13 +1093,61 @@ NOT RUN: exact reason
 
 ### Acceptance criteria
 
-- [ ] All locally available Rust gates pass.
-- [ ] Focused non-coalescing shutdown-status test passes.
-- [ ] Focused Robolectric service truthfulness class executes and passes.
-- [ ] Full Android assemble + unit tests pass.
-- [ ] Service/package regression checks pass.
-- [ ] Real CI executes the focused Android class.
-- [ ] No unavailable check is reported as PASS.
+- [x] All locally available Rust gates pass.
+- [x] Focused non-coalescing shutdown-status test passes.
+- [x] Focused Robolectric service truthfulness class executes and passes.
+- [x] Full Android assemble + unit tests pass.
+- [x] Service/package regression checks pass.
+- [ ] Real CI executes the focused Android class — **NOT RUN**: not pushed to a
+      remote in this session (commit/push discipline requires explicit user
+      request; CI cannot be observed without pushing). The step is wired in
+      `.github/workflows/ci.yml` and its exact command was run locally
+      (reported PASS below) — that is the strongest verification available
+      without pushing.
+- [x] No unavailable check is reported as PASS.
+
+### P0-006 gate report
+
+```text
+PASS: cargo fmt --all --check
+PASS: cargo clippy --workspace --all-targets --all-features -- -D warnings
+PASS: cargo clippy --workspace --release --all-features -- -D warnings
+PASS: cargo test --workspace --all-targets --all-features (includes the
+      docker-backed real_broker_tunnel E2E test — Docker was available)
+PASS: cargo test -p p2p-daemon offer_steady_state_write_is_suppressed_when_running_but_shared_token_already_requested
+PASS: cargo test -p p2p-daemon answer_registry_write_is_suppressed_when_running_but_shared_token_already_requested
+PASS: cargo test -p p2p-daemon --test two_node_daemon offer_admits_no_ordinary_write_when_shutdown_lands_between_session_outcome_and_loop_top
+PASS: cd android && ./gradlew --no-daemon testDebugUnitTest --tests '*TunnelForegroundServiceStopFailureTest'
+      (5 tests executed, not 0 — re-run 3x fresh with --rerun-tasks to rule
+      out flakiness after catching and fixing one real flake, see below)
+PASS: cd android && ./gradlew --no-daemon assembleDebug testDebugUnitTest
+PASS: cd android && ./gradlew detekt ktlintCheck lintDebug
+PASS: scripts/check-systemd-units.sh
+NOT RUN (expected): scripts/check-launchd-plists.sh — self-reports SKIP,
+      not running on macOS; structural coverage comes from
+      cargo test -p p2p-daemon --test launchd_plist_tests (part of the
+      workspace test run above, which passed)
+PASS: scripts/test-debian-package.sh (Docker-backed maintainer-script
+      lifecycle scenarios all passed)
+PASS: bash -n scripts/*.sh
+PASS: sh -n packaging/debian/postinst packaging/debian/prerm packaging/debian/postrm
+NOT RUN: scripts/test-launchd-install-layout.sh (macOS-only CI step; this
+      environment is Linux)
+NOT RUN: real CI workflow observation (not pushed this session)
+```
+
+**Flake caught and fixed during this gate run**: the first version of
+`TunnelForegroundServiceStopFailureTest`'s pause/stopServiceWork tests used
+`Dispatchers.Unconfined` (matching this project's `inlineTestDispatchers()`
+convention elsewhere) on the theory that it would run every suspend call
+synchronously. It doesn't: `onStartCommand`'s `serviceScope.launch { ... }`
+returns as soon as the coroutine hits its first suspension, and `Unconfined`
+has no event loop to keep pumping the rest of that work — unlike
+`runBlocking`, which is what makes `inlineTestDispatchers()` safe elsewhere in
+this codebase. This showed up as an intermittent single-test failure only
+under the full P0-006 sweep, not in earlier isolated runs. Fixed by switching
+to real `Dispatchers.IO` (matching the already-reliable startup-cancellation
+test) and confirmed via 3 fresh (`--rerun-tasks`) runs with no failures.
 
 ---
 
