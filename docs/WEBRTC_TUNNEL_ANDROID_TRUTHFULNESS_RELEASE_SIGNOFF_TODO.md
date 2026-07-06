@@ -476,12 +476,13 @@ repository.state == Error
 
 ### Acceptance criteria
 
-- [ ] Generic next-stop proof removed from this scenario.
-- [ ] Exact cleanup branch is observed.
-- [ ] Exact cleanup stop is the failing call.
-- [ ] Branch-specific error is asserted.
-- [ ] Test fails if cancellation cleanup stop is removed.
-- [ ] Test fails if `NonCancellable` is removed.
+- [x] Generic next-stop proof removed from this scenario — replaced with an
+      explicit `ServiceTestEvent.StartupCancellationCleanupStopEntered` wait.
+- [x] Exact cleanup branch is observed.
+- [x] Exact cleanup stop is the failing call.
+- [x] Branch-specific error is asserted.
+- [x] Test fails if cancellation cleanup stop is removed — verified directly.
+- [x] Test fails if `NonCancellable` is removed — verified directly.
 
 ---
 
