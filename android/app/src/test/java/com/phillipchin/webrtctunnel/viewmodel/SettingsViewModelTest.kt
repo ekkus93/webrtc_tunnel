@@ -6,11 +6,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 class SettingsViewModelTest : AppViewModelTestBase() {
@@ -78,6 +80,60 @@ class SettingsViewModelTest : AppViewModelTestBase() {
         assertTrue(state.publicIdentityLoadError?.isNotBlank() == true)
         assertEquals(null, state.publicIdentity)
     }
+
+    @Test
+    fun statusJsonReturnsParseableJsonForTheDefaultStatus() {
+        val viewModel = SettingsViewModel(deps)
+        val json = viewModel.statusJson()
+        assertTrue(json.startsWith("{"))
+        assertFalse(json.contains("status_json_error"))
+    }
+
+    @Test
+    fun redactedConfigReportsAnExplicitMarkerWhenNoConfigFileExistsYet() =
+        runBlocking {
+            File(configRepository.configPath).delete()
+            val viewModel = SettingsViewModel(deps)
+            val redacted = viewModel.redactedConfig()
+            assertEquals("(no config file present)", redacted)
+        }
+
+    @Test
+    fun redactedConfigReturnsRedactedContentWhenTheFileExists() =
+        runBlocking {
+            val file = File(configRepository.configPath)
+            file.parentFile?.mkdirs()
+            file.writeText("password=hunter2\nbroker_url=mqtts://example.com:8883")
+            val viewModel = SettingsViewModel(deps)
+            val redacted = viewModel.redactedConfig()
+            assertTrue(redacted.contains("password=***REDACTED***"))
+            assertFalse(redacted.contains("hunter2"))
+        }
+
+    @Test
+    fun redactedConfigReportsAnExplicitErrorWhenTheConfigPathCannotBeRead() =
+        runBlocking {
+            // A directory at the config path makes `readText()` fail deterministically
+            // (IsADirectoryException), distinguishing this from the "missing" case above
+            // without relying on filesystem permission behavior.
+            val file = File(configRepository.configPath)
+            file.delete()
+            file.mkdirs()
+            val viewModel = SettingsViewModel(deps)
+            val redacted = viewModel.redactedConfig()
+            assertTrue(redacted.startsWith("(config read/redaction failed:"))
+        }
+
+    @Test
+    fun diagnosticsShareIntentPayloadDistinguishesMissingConfigFromStatus() =
+        runBlocking {
+            File(configRepository.configPath).delete()
+            val viewModel = SettingsViewModel(deps)
+            val intent = viewModel.diagnosticsShareIntent()
+            val payload = intent.getStringExtra(android.content.Intent.EXTRA_TEXT)
+            assertTrue(payload?.contains("status_json={") == true)
+            assertTrue(payload?.contains("config_redacted=(no config file present)") == true)
+        }
 
     private fun awaitSettingsState(
         viewModel: SettingsViewModel,

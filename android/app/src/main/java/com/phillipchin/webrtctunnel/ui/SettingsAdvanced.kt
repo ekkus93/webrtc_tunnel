@@ -58,7 +58,7 @@ internal fun SettingsAdvancedSection(
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Copy status JSON") }
             AppOutlinedButton(
-                onClick = { scope.launch { clipboard.setText(AnnotatedString(vm.redactedConfigOrEmpty())) } },
+                onClick = { scope.launch { clipboard.setText(AnnotatedString(vm.redactedConfig())) } },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Copy redacted config") }
         }

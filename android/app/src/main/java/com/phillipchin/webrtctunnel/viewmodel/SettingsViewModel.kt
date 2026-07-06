@@ -91,18 +91,35 @@ class SettingsViewModel(
         }
     }
 
+    /** Real status JSON on success, or a JSON object carrying a redacted error message —
+     * never a bare `"{}"`, which would be indistinguishable from a legitimately idle/empty
+     * status. Used for both the "copy status JSON" clipboard action and diagnostics share. */
     fun statusJson(): String =
         runCatching {
             Json.encodeToString(SensitiveDataRedactor.redactStatus(deps.tunnelRepository.status.value))
-        }.getOrDefault("{}")
+        }.fold(
+            onSuccess = { it },
+            onFailure = { error ->
+                "{\"status_json_error\":\"" +
+                    SensitiveDataRedactor.redactText(error.message ?: "unknown status serialization failure") +
+                    "\"}"
+            },
+        )
 
-    suspend fun redactedConfigOrEmpty(): String =
+    /** Redacted config file contents, or an explicit marker distinguishing "no config file
+     * yet" (expected before setup completes) from "config file present but unreadable/failed
+     * to redact" — never a bare empty string for either case. Used for both the "copy redacted
+     * config" clipboard action and diagnostics share. */
+    suspend fun redactedConfig(): String =
         withContext(deps.dispatchers.io) {
-            runCatching {
-                val configPath = deps.configRepository.configPath
-                val raw = File(configPath).takeIf { it.exists() }?.readText() ?: return@runCatching ""
-                SensitiveDataRedactor.redactText(raw)
-            }.getOrDefault("")
+            val file = File(deps.configRepository.configPath)
+            if (!file.exists()) return@withContext "(no config file present)"
+            runCatching { SensitiveDataRedactor.redactText(file.readText()) }
+                .getOrElse { error ->
+                    "(config read/redaction failed: " +
+                        SensitiveDataRedactor.redactText(error.message ?: "unknown error") +
+                        ")"
+                }
         }
 
     fun resetConfiguration() {
@@ -120,12 +137,10 @@ class SettingsViewModel(
     }
 
     suspend fun diagnosticsShareIntent(): Intent {
-        val statusJson = statusJson()
-        val redactedConfig = redactedConfigOrEmpty()
         val payload =
             buildString {
-                appendLine("status_json=$statusJson")
-                appendLine("config_redacted=$redactedConfig")
+                appendLine("status_json=${statusJson()}")
+                appendLine("config_redacted=${redactedConfig()}")
             }
         return Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
