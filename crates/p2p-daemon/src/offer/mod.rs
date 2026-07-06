@@ -496,29 +496,43 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     ctx.runtime.phase = DaemonRuntimePhase::Draining;
     shutdown.request_shutdown();
 
-    join_offer_accept_tasks(accept_runtime.monitors).await;
+    let cleanup_result = stop_and_join_offer_accept_runtime(accept_runtime.monitors).await;
 
     ctx.runtime.phase = DaemonRuntimePhase::Closed;
     let closed_result = write_offer_closed_status(&mut ctx).await;
 
-    merge_offer_run_and_cleanup_results(run_result, closed_result)
+    merge_offer_run_and_cleanup_results(run_result, cleanup_result, closed_result)
 }
 
-/// Preserves the primary run-loop error (if any) as the daemon's final result;
-/// a terminal-status write failure is only surfaced when the run loop itself
-/// otherwise succeeded, and is logged (not silently dropped) when it doesn't.
+/// Preserves the primary run-loop error (if any) as the daemon's final result; a
+/// monitor-cleanup failure is only surfaced when the run loop itself otherwise
+/// succeeded, and a terminal-status write failure only when both the run loop and
+/// cleanup otherwise succeeded. Every error not returned is still logged (not
+/// silently dropped) as secondary context.
 fn merge_offer_run_and_cleanup_results(
     run_result: Result<(), DaemonError>,
+    cleanup_result: Result<(), DaemonError>,
     closed_result: Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
     match run_result {
         Err(primary) => {
+            if let Err(error) = cleanup_result {
+                tracing::error!(reason = %error, "offer accept-worker cleanup also failed");
+            }
             if let Err(error) = closed_result {
                 tracing::error!(reason = %error, "offer terminal status also failed");
             }
             Err(primary)
         }
-        Ok(()) => closed_result,
+        Ok(()) => match cleanup_result {
+            Err(primary) => {
+                if let Err(error) = closed_result {
+                    tracing::error!(reason = %error, "offer terminal status also failed");
+                }
+                Err(primary)
+            }
+            Ok(()) => closed_result,
+        },
     }
 }
 
@@ -533,7 +547,14 @@ struct OfferAcceptRuntime {
     /// worker holding a bound listener died silently, but nothing else would ever
     /// notice, leaving status falsely `Listening`/`WaitingForLocalClient`.
     worker_exits: mpsc::UnboundedReceiver<OfferAcceptTaskExit>,
-    monitors: Vec<tokio::task::JoinHandle<()>>,
+    monitors: Vec<OfferAcceptMonitor>,
+}
+
+/// One accept-loop task's monitor, identified by forward id so an unexpected join
+/// failure during cleanup can name which forward's worker it was.
+struct OfferAcceptMonitor {
+    forward_id: String,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 /// Why an offer accept-loop task returned normally (i.e. did not panic).
@@ -554,13 +575,34 @@ pub(crate) struct OfferAcceptTaskExit {
     pub(crate) outcome: Result<OfferAcceptLoopExitReason, String>,
 }
 
-/// Await every offer accept-loop monitor task and log (rather than silently discard)
-/// any monitor that failed to join, per the spec's "no quiet listener-task loss" rule.
-async fn join_offer_accept_tasks(monitors: Vec<tokio::task::JoinHandle<()>>) {
+/// Await every offer accept-loop monitor task. An unexpected `JoinError` (panic —
+/// the monitor tasks themselves never return early any other way) is a cleanup
+/// error, not a warning-and-succeed: silently swallowing it would mean a lost
+/// listener task is never actually reported anywhere. The first such failure is
+/// returned; any further ones are logged as secondary context.
+async fn stop_and_join_offer_accept_runtime(
+    monitors: Vec<OfferAcceptMonitor>,
+) -> Result<(), DaemonError> {
+    let mut primary_cleanup_error: Option<DaemonError> = None;
+
     for monitor in monitors {
-        if let Err(error) = monitor.await {
-            tracing::warn!(reason = %error, "offer accept worker monitor failed while stopping");
+        if let Err(error) = monitor.handle.await {
+            let failure = DaemonError::OfferAcceptMonitorJoinFailed {
+                forward_id: monitor.forward_id,
+                reason: error.to_string(),
+            };
+
+            if primary_cleanup_error.is_none() {
+                primary_cleanup_error = Some(failure);
+            } else {
+                tracing::error!(reason = %failure, "additional offer monitor cleanup failure");
+            }
         }
+    }
+
+    match primary_cleanup_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -680,12 +722,13 @@ fn spawn_offer_accept_loops(
     let mut abort_handles = Vec::with_capacity(listeners.len());
     for listener in listeners {
         let forward_id = listener.forward_id().to_owned();
+        let monitor_forward_id = forward_id.clone();
         let tx = tx.clone();
         let task_shutdown = shutdown.clone();
         let exit_tx = exit_tx.clone();
         let worker = tokio::spawn(run_offer_accept_loop(listener, tx, task_shutdown));
         abort_handles.push(worker.abort_handle());
-        monitors.push(tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let outcome = match worker.await {
                 Ok(reason) => Ok(reason),
                 Err(error) => Err(error.to_string()),
@@ -699,9 +742,74 @@ fn spawn_offer_accept_loops(
                     "offer accept worker exit could not be delivered to supervisor",
                 );
             }
-        }));
+        });
+        monitors.push(OfferAcceptMonitor { forward_id: monitor_forward_id, handle });
     }
     drop(tx);
     drop(exit_tx);
     (OfferAcceptRuntime { accepted_clients: rx, worker_exits: exit_rx, monitors }, abort_handles)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_and_join_reports_ok_when_every_monitor_joins_cleanly() {
+        let monitors = vec![
+            OfferAcceptMonitor { forward_id: "a".to_owned(), handle: tokio::spawn(async {}) },
+            OfferAcceptMonitor { forward_id: "b".to_owned(), handle: tokio::spawn(async {}) },
+        ];
+
+        stop_and_join_offer_accept_runtime(monitors)
+            .await
+            .expect("every monitor joining cleanly must not be an error");
+    }
+
+    #[tokio::test]
+    async fn stop_and_join_returns_monitor_join_failure_instead_of_warning_and_success() {
+        let panicking = tokio::spawn(async { panic!("simulated monitor panic") });
+        // Give the panic a chance to actually land before we join it, so this isn't
+        // relying on join() itself racing the panic.
+        while !panicking.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let monitors = vec![OfferAcceptMonitor { forward_id: "ssh".to_owned(), handle: panicking }];
+
+        let result = stop_and_join_offer_accept_runtime(monitors).await;
+        match result {
+            Err(DaemonError::OfferAcceptMonitorJoinFailed { forward_id, reason }) => {
+                assert_eq!(forward_id, "ssh");
+                assert!(reason.contains("simulated monitor panic"), "reason was: {reason}");
+            }
+            other => panic!(
+                "a panicked monitor must surface as OfferAcceptMonitorJoinFailed, not a \
+                 warning-and-success, got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_and_join_reports_the_first_failure_and_still_joins_the_rest() {
+        let panicking = tokio::spawn(async { panic!("first monitor panic") });
+        while !panicking.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let also_panicking = tokio::spawn(async { panic!("second monitor panic") });
+        while !also_panicking.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let monitors = vec![
+            OfferAcceptMonitor { forward_id: "first".to_owned(), handle: panicking },
+            OfferAcceptMonitor { forward_id: "second".to_owned(), handle: also_panicking },
+        ];
+
+        let result = stop_and_join_offer_accept_runtime(monitors).await;
+        match result {
+            Err(DaemonError::OfferAcceptMonitorJoinFailed { forward_id, .. }) => {
+                assert_eq!(forward_id, "first", "the first failure encountered must be primary");
+            }
+            other => panic!("expected the first monitor's join failure, got {other:?}"),
+        }
+    }
 }
