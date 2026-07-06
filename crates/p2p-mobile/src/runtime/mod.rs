@@ -19,7 +19,7 @@ mod types;
 mod validate;
 
 use log_bridge::install_tracing_once;
-use state::{RuntimeInner, record_start_error, reset_runtime_metadata, unix_ms};
+use state::{RuntimeInner, push_log, record_start_error, reset_runtime_metadata, unix_ms};
 
 // Used by the C-ABI layer to timestamp a synthetic log event when `recent_logs`
 // cannot be read due to mutex poison.
@@ -142,7 +142,8 @@ impl AndroidTunnelController {
         // level is fixed for the process lifetime — set `logging.level = "debug"` and
         // `logging.redact_candidates = false` before the first start to capture ICE
         // candidate details for diagnosis.
-        install_tracing_once(inner.logs.clone(), &config.logging.level);
+        install_tracing_once(inner.logs.clone(), &config.logging.level)
+            .map_err(|error| record_start_error(&mut inner, error))?;
 
         let runtime =
             Runtime::new().map_err(|error| record_start_error(&mut inner, error.to_string()))?;
@@ -194,11 +195,14 @@ impl AndroidTunnelController {
                             inner.state.config_path = None;
                             inner.state.last_error = None;
                             reset_runtime_metadata(&mut inner.state);
-                            inner.logs.push(AndroidLogEvent {
-                                unix_ms: unix_ms(),
-                                level: "info".to_owned(),
-                                message: "runtime completed".to_owned(),
-                            });
+                            push_log(
+                                &inner.logs,
+                                AndroidLogEvent {
+                                    unix_ms: unix_ms(),
+                                    level: "info".to_owned(),
+                                    message: "runtime completed".to_owned(),
+                                },
+                            );
                         }
                         Err(error) => {
                             inner.state.state = AndroidRuntimeState::Error;
@@ -206,11 +210,14 @@ impl AndroidTunnelController {
                             inner.state.active = false;
                             // Preserve config_path for diagnostics; clear uptime/measured fields.
                             reset_runtime_metadata(&mut inner.state);
-                            inner.logs.push(AndroidLogEvent {
-                                unix_ms: unix_ms(),
-                                level: "error".to_owned(),
-                                message: error.to_string(),
-                            });
+                            push_log(
+                                &inner.logs,
+                                AndroidLogEvent {
+                                    unix_ms: unix_ms(),
+                                    level: "error".to_owned(),
+                                    message: error.to_string(),
+                                },
+                            );
                         }
                     }
                     inner.task = None;
@@ -248,11 +255,14 @@ impl AndroidTunnelController {
                     .map(|offer| (forward.id.clone(), offer.listen_host.clone(), offer.listen_port))
             })
             .collect();
-        inner.logs.push(AndroidLogEvent {
-            unix_ms: unix_ms(),
-            level: "info".to_owned(),
-            message: "runtime started".to_owned(),
-        });
+        push_log(
+            &inner.logs,
+            AndroidLogEvent {
+                unix_ms: unix_ms(),
+                level: "info".to_owned(),
+                message: "runtime started".to_owned(),
+            },
+        );
         Ok(())
     }
 
@@ -337,11 +347,14 @@ impl AndroidTunnelController {
                 inner.state.config_path = None;
                 inner.state.last_error = None;
                 reset_runtime_metadata(&mut inner.state);
-                inner.logs.push(AndroidLogEvent {
-                    unix_ms: unix_ms(),
-                    level: "info".to_owned(),
-                    message: "runtime stopped".to_owned(),
-                });
+                push_log(
+                    &inner.logs,
+                    AndroidLogEvent {
+                        unix_ms: unix_ms(),
+                        level: "info".to_owned(),
+                        message: "runtime stopped".to_owned(),
+                    },
+                );
             }
             StopOutcome::ForcedAbort { grace_period } => {
                 let message = format!("runtime required forced abort after {grace_period:?}");
@@ -349,22 +362,20 @@ impl AndroidTunnelController {
                 inner.state.last_error = Some(message.clone());
                 // Preserve config_path for diagnostics.
                 reset_runtime_metadata(&mut inner.state);
-                inner.logs.push(AndroidLogEvent {
-                    unix_ms: unix_ms(),
-                    level: "error".to_owned(),
-                    message,
-                });
+                push_log(
+                    &inner.logs,
+                    AndroidLogEvent { unix_ms: unix_ms(), level: "error".to_owned(), message },
+                );
             }
             StopOutcome::TaskJoinFailed { reason } => {
                 let message = format!("runtime task join failed: {reason}");
                 inner.state.state = AndroidRuntimeState::Error;
                 inner.state.last_error = Some(message.clone());
                 reset_runtime_metadata(&mut inner.state);
-                inner.logs.push(AndroidLogEvent {
-                    unix_ms: unix_ms(),
-                    level: "error".to_owned(),
-                    message,
-                });
+                push_log(
+                    &inner.logs,
+                    AndroidLogEvent { unix_ms: unix_ms(), level: "error".to_owned(), message },
+                );
             }
             StopOutcome::NotRunning => unreachable!("handled by the early return above"),
         }
@@ -389,10 +400,8 @@ impl AndroidTunnelController {
     }
 
     pub fn recent_logs(&self, max_events: usize) -> Result<Vec<AndroidLogEvent>, String> {
-        self.inner
-            .lock()
-            .map(|inner| inner.logs.recent(max_events))
-            .map_err(|_| "runtime mutex poisoned".to_owned())
+        let inner = self.inner.lock().map_err(|_| "runtime mutex poisoned".to_owned())?;
+        inner.logs.recent(max_events)
     }
 
     pub fn last_error(&self) -> Option<String> {

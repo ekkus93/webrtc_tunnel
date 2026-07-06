@@ -14,7 +14,7 @@
 //! only includes an address when `logging.redact_candidates = false`.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
@@ -36,38 +36,42 @@ pub(crate) struct LogBuffer {
 
 impl LogBuffer {
     /// Append an event, evicting the oldest once the cap is exceeded.
-    pub(crate) fn push(&self, event: AndroidLogEvent) {
-        if let Ok(mut events) = self.events.lock() {
-            events.push_back(event);
-            while events.len() > MAX_LOG_EVENTS {
-                events.pop_front();
-            }
+    pub(crate) fn push(&self, event: AndroidLogEvent) -> Result<(), String> {
+        let mut events = self.events.lock().map_err(|_| "log buffer mutex poisoned".to_owned())?;
+        events.push_back(event);
+        while events.len() > MAX_LOG_EVENTS {
+            events.pop_front();
         }
+        Ok(())
     }
 
     /// Most-recent-first, up to `max_events` (always at least 1).
-    pub(crate) fn recent(&self, max_events: usize) -> Vec<AndroidLogEvent> {
+    pub(crate) fn recent(&self, max_events: usize) -> Result<Vec<AndroidLogEvent>, String> {
         let max_events = max_events.max(1);
         self.events
             .lock()
             .map(|events| events.iter().rev().take(max_events).cloned().collect())
-            .unwrap_or_default()
+            .map_err(|_| "log buffer mutex poisoned".to_owned())
     }
 }
 
-static INSTALL: Once = Once::new();
+static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
 /// Install the global `tracing` subscriber exactly once, routing events at or above
-/// `level` into `buffer`. Later calls are no-ops, matching the once-per-process
-/// nature of the global default subscriber; in production there is a single runtime
-/// controller, so its buffer is the one that receives events.
-pub(crate) fn install_tracing_once(buffer: LogBuffer, level: &str) {
-    INSTALL.call_once(|| {
-        let layer = AndroidLogLayer { buffer }.with_filter(level_filter(level));
-        // Best-effort: if a global subscriber was somehow already set, diagnostics
-        // are lost but the tunnel must still start.
-        let _ = tracing_subscriber::registry().with(layer).try_init();
-    });
+/// `level` into `buffer`. Later calls are no-ops that return the first call's result,
+/// matching the once-per-process nature of the global default subscriber; in
+/// production there is a single runtime controller, so its buffer is the one that
+/// receives events.
+pub(crate) fn install_tracing_once(buffer: LogBuffer, level: &str) -> Result<(), String> {
+    INSTALL_RESULT
+        .get_or_init(|| {
+            let layer = AndroidLogLayer { buffer }.with_filter(level_filter(level));
+            tracing_subscriber::registry()
+                .with(layer)
+                .try_init()
+                .map_err(|error| format!("failed to install Android tracing bridge: {error}"))
+        })
+        .clone()
 }
 
 fn level_filter(level: &str) -> LevelFilter {
@@ -89,11 +93,18 @@ impl<S: Subscriber> Layer<S> for AndroidLogLayer {
         let metadata = event.metadata();
         let mut visitor = MessageVisitor::new(metadata.target());
         event.record(&mut visitor);
-        self.buffer.push(AndroidLogEvent {
+        let result = self.buffer.push(AndroidLogEvent {
             unix_ms: unix_ms(),
             level: level_str(*metadata.level()).to_owned(),
             message: visitor.finish(),
         });
+        // Deliberately not `tracing::error!` here: this runs inside the installed
+        // subscriber's own event handler, and the buffer's mutex being poisoned means
+        // a re-entrant tracing call would just hit this same failure again. Write
+        // directly to stderr instead so the failure is still visible somewhere.
+        if let Err(reason) = result {
+            eprintln!("android log buffer mutex poisoned, dropping tracing event: {reason}");
+        }
     }
 }
 
@@ -155,19 +166,45 @@ mod tests {
     fn log_buffer_caps_and_returns_most_recent_first() {
         let buffer = LogBuffer::default();
         for i in 0..(MAX_LOG_EVENTS + 5) {
-            buffer.push(AndroidLogEvent {
-                unix_ms: i as u64,
-                level: "info".to_owned(),
-                message: format!("event {i}"),
-            });
+            buffer
+                .push(AndroidLogEvent {
+                    unix_ms: i as u64,
+                    level: "info".to_owned(),
+                    message: format!("event {i}"),
+                })
+                .expect("buffer mutex is not poisoned");
         }
-        let recent = buffer.recent(3);
+        let recent = buffer.recent(3).expect("buffer mutex is not poisoned");
         assert_eq!(recent.len(), 3);
         // Newest first.
         assert_eq!(recent[0].message, format!("event {}", MAX_LOG_EVENTS + 4));
         // Oldest events were evicted, so the buffer never exceeds the cap.
-        let all = buffer.recent(usize::MAX);
+        let all = buffer.recent(usize::MAX).expect("buffer mutex is not poisoned");
         assert_eq!(all.len(), MAX_LOG_EVENTS);
+    }
+
+    #[test]
+    fn log_buffer_reports_poison_instead_of_dropping_or_defaulting() {
+        let buffer = LogBuffer::default();
+        let inner = Arc::clone(&buffer.events);
+        let result = std::thread::spawn(move || {
+            let _guard = inner.lock().expect("mutex is not yet poisoned");
+            panic!("deliberately poisoning the log buffer mutex for a test");
+        })
+        .join();
+        assert!(result.is_err(), "spawned thread should have panicked");
+
+        assert_eq!(
+            buffer
+                .push(AndroidLogEvent {
+                    unix_ms: 0,
+                    level: "info".to_owned(),
+                    message: "should not be silently dropped".to_owned(),
+                })
+                .expect_err("mutex is poisoned"),
+            "log buffer mutex poisoned"
+        );
+        assert_eq!(buffer.recent(10).expect_err("mutex is poisoned"), "log buffer mutex poisoned");
     }
 
     #[test]
@@ -186,7 +223,7 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(target: "ice", state = "connected", "ICE connection state changed");
         });
-        let recent = buffer.recent(10);
+        let recent = buffer.recent(10).expect("buffer mutex is not poisoned");
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].level, "info");
         assert!(

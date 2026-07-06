@@ -94,12 +94,21 @@ pub(crate) fn record_start_error(inner: &mut RuntimeInner, message: String) -> S
     inner.state.state = AndroidRuntimeState::Error;
     inner.state.active = false;
     inner.state.last_error = Some(message.clone());
-    inner.logs.push(AndroidLogEvent {
-        unix_ms: unix_ms(),
-        level: "error".to_owned(),
-        message: message.clone(),
-    });
+    push_log(
+        &inner.logs,
+        AndroidLogEvent { unix_ms: unix_ms(), level: "error".to_owned(), message: message.clone() },
+    );
     message
+}
+
+/// Append `event` to `logs`, surfacing (rather than silently discarding) a poisoned
+/// log-buffer mutex. The lifecycle event this accompanies is already recorded in
+/// `RuntimeInner::state.last_error`/`status()`, so a lost log entry here is a
+/// secondary diagnostics-only failure, not the primary one.
+pub(crate) fn push_log(logs: &LogBuffer, event: AndroidLogEvent) {
+    if let Err(reason) = logs.push(event) {
+        tracing::error!(%reason, "failed to append to the Android log buffer");
+    }
 }
 
 pub(crate) fn unix_ms() -> u64 {
