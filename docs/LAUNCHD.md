@@ -30,11 +30,13 @@ match — `launchd` does not perform a `PATH` lookup, so the path must be exact.
 
 ## 2. Service account prerequisite
 
-The baseline plists run as a dedicated unprivileged account, `_p2ptunnel`.
-Creating this account safely (correct UID/GID allocation) is currently an
-administrator prerequisite; a tested repository helper for this does not yet
-exist (see the P1 packaging follow-up). Do not remove `UserName` from the
-plist to make it "just work" as root.
+The baseline plists run as a dedicated unprivileged account, `_p2ptunnel`,
+which needs both a user record *and* a matching primary group (a user record
+with a missing/broken primary group is still unusable). Creating these
+safely (correct UID/GID allocation) is currently an administrator
+prerequisite; a tested repository helper for this does not yet exist (see
+the P1 packaging follow-up). Do not remove `UserName` from the plist to make
+it "just work" as root.
 
 ## 3. Create directories and permissions
 
@@ -44,11 +46,18 @@ plist to make it "just work" as root.
 /Library/Logs/P2PTunnel/
 ```
 
-- `config.toml` / `identity` / `authorized_keys`: owned by root/admin,
-  readable by `_p2ptunnel` as required (identity files should not be
-  world-readable).
-- `state/` and the log directory: writable by `_p2ptunnel`.
+- The role config directories: `root:_p2ptunnel`, `0750` — owned by
+  root/admin, but group-readable by `_p2ptunnel` so the service can actually
+  traverse them (a `wheel`-group directory would leave `_p2ptunnel` with no
+  access at all, since it is not a member of `wheel`).
+- `config.toml` / `identity` / `authorized_keys`: readable by `_p2ptunnel`
+  as required (identity files should not be world-readable).
+- The log directory: `_p2ptunnel:_p2ptunnel`, `0750`, writable by
+  `_p2ptunnel`.
 - The plist files themselves: `root:wheel`, not group/world-writable.
+- `scripts/install-launchd-services.sh` validates — not just assumes — that
+  an already-existing directory from a prior install is still traversable
+  by `_p2ptunnel` before proceeding.
 
 ## 4. Validate configuration before (re)loading
 

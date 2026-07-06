@@ -62,17 +62,22 @@ after install, and does **not** load (bootstrap) the `LaunchDaemons`.
 ## Installer script behavior
 
 - **preinstall**: refuses to proceed unless the `_p2ptunnel` service account
-  already exists. Creating that account safely (correct, non-colliding
-  UID/GID allocation via `sysadminctl`/`dscl`) is treated as an
-  administrator prerequisite here, for the same reason
+  *and* group already exist (checked separately — a user record with a
+  missing/broken primary group is still unusable). Creating them safely
+  (correct, non-colliding UID/GID allocation via `sysadminctl`/`dscl`) is
+  treated as an administrator prerequisite here, for the same reason
   `scripts/install-launchd-services.sh` treats it that way: getting this
   wrong is a real security footgun, and there is no way to verify
   auto-creation logic without a real macOS host to test it against.
 - **postinstall**: idempotently creates
-  `/Library/Application Support/P2PTunnel/{offer,answer}` and
-  `/Library/Logs/P2PTunnel` if they don't already exist (never touches an
-  existing config directory's contents), then prints next steps. Does not
-  create config/identity/authorized_keys and does not bootstrap the
+  `/Library/Application Support/P2PTunnel/{offer,answer}` (`root:_p2ptunnel`,
+  `0750`, so the service account can actually read them via group
+  membership) and `/Library/Logs/P2PTunnel` (`_p2ptunnel:_p2ptunnel`, `0750`)
+  if they don't already exist; if they do already exist, validates the
+  service account can still traverse them rather than assuming a directory
+  left over from an earlier install is still usable. Never touches an
+  existing config directory's contents. Does not create
+  config/identity/authorized_keys and does not bootstrap the
   `LaunchDaemons`.
 
 ## Known limitations / explicitly deferred

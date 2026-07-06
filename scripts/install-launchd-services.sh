@@ -42,21 +42,38 @@ if ! dscl . -read "/Users/$SERVICE_USER" >/dev/null 2>&1; then
 allocation) is currently an administrator prerequisite — see docs/LAUNCHD.md step 2. This \
 script does not create it for you."
 fi
+if ! dscl . -read "/Groups/$SERVICE_USER" >/dev/null 2>&1; then
+  fail "service group '$SERVICE_USER' does not exist. The user check above passing is not \
+enough — a user record with a broken/missing primary group is still unusable. See \
+docs/LAUNCHD.md step 2."
+fi
+
+# For an already-existing directory, don't just print "leaving as-is" — actually
+# confirm the service account can still traverse/read it. A directory left over
+# from a previous install (or hand-created with the wrong owner/group) would
+# otherwise silently fail at runtime instead of at install time.
+require_service_traverse() {
+  path="$1"
+  sudo -u "$SERVICE_USER" test -x "$path" \
+    || fail "service account $SERVICE_USER cannot traverse existing directory '$path'"
+}
 
 for role in offer answer; do
   dir="$APP_SUPPORT_ROOT/$role"
   if [ -d "$dir" ]; then
-    log "config directory '$dir' already exists; leaving its contents untouched"
+    log "config directory '$dir' already exists; validating it is still service-readable"
+    require_service_traverse "$dir"
   else
     log "creating '$dir'"
-    install -d -m 0750 -o root -g wheel "$dir"
+    install -d -m 0750 -o root -g "$SERVICE_USER" "$dir"
   fi
 done
 if [ -d "$LOG_DIR" ]; then
-  log "log directory '$LOG_DIR' already exists; leaving it as-is"
+  log "log directory '$LOG_DIR' already exists; validating it is still service-writable"
+  require_service_traverse "$LOG_DIR"
 else
   log "creating '$LOG_DIR'"
-  install -d -m 0755 -o "$SERVICE_USER" -g wheel "$LOG_DIR"
+  install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$LOG_DIR"
 fi
 
 log "NOTE: this script does not create config.toml, identity, or authorized_keys —"

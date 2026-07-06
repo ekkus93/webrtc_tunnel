@@ -13,15 +13,25 @@ SERVICE_USER="_p2ptunnel"
 APP_SUPPORT_ROOT="/Library/Application Support/P2PTunnel"
 LOG_DIR="/Library/Logs/P2PTunnel"
 
+require_service_traverse() {
+  path="$1"
+  sudo -u "$SERVICE_USER" test -x "$path" \
+    || { echo "p2ptunnel installer: service account $SERVICE_USER cannot traverse existing directory '$path'" >&2; exit 1; }
+}
+
 for role in offer answer; do
   dir="$APP_SUPPORT_ROOT/$role"
-  if [ ! -d "$dir" ]; then
-    install -d -m 0750 -o root -g wheel "$dir"
+  if [ -d "$dir" ]; then
+    require_service_traverse "$dir"
+  else
+    install -d -m 0750 -o root -g "$SERVICE_USER" "$dir"
   fi
 done
 
-if [ ! -d "$LOG_DIR" ]; then
-  install -d -m 0755 -o "$SERVICE_USER" -g wheel "$LOG_DIR"
+if [ -d "$LOG_DIR" ]; then
+  require_service_traverse "$LOG_DIR"
+else
+  install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$LOG_DIR"
 fi
 
 cat <<EOF

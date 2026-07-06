@@ -23,4 +23,16 @@ EOF
   exit 1
 fi
 
+if ! dscl . -read "/Groups/$SERVICE_USER" >/dev/null 2>&1; then
+  cat >&2 <<EOF
+p2ptunnel installer: required service group '$SERVICE_USER' does not exist.
+
+The user account check above passing is not enough — a user record with a
+broken/missing primary group is still unusable. Create the group first (see
+docs/MACOS_PACKAGING.md and docs/LAUNCHD.md for the exact steps), then re-run
+this installer.
+EOF
+  exit 1
+fi
+
 exit 0
