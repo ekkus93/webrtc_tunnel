@@ -499,9 +499,9 @@ Use a barrier/event hook; do not use a sleep.
 
 ### Acceptance criteria
 
-- [ ] No new session admitted after shutdown request.
-- [ ] Existing sessions still drain.
-- [ ] Payload race test is deterministic.
+- [x] No new session admitted after shutdown request.
+- [x] Existing sessions still drain.
+- [x] Payload race test is deterministic.
 
 ---
 
