@@ -191,12 +191,12 @@ Offer must not enter `Running` or write waiting state until:
 
 ### Acceptance criteria
 
-- [ ] `DaemonRuntimePhase` exists.
-- [ ] Normal status helpers do not write in `Starting`, `Draining`, or `Closed`.
-- [ ] Offer does not write `WaitingForLocalClient` before listener startup is complete.
-- [ ] Answer does not write `Serving` before startup is complete.
-- [ ] Publish/transport helpers during drain do not resurrect ordinary runtime states.
-- [ ] Focused tests prove status remains non-normal from shutdown request through final `Closed`.
+- [x] `DaemonRuntimePhase` exists.
+- [x] Normal status helpers do not write in `Starting`, `Draining`, or `Closed`.
+- [x] Offer does not write `WaitingForLocalClient` before listener startup is complete.
+- [x] Answer does not write `Serving` before startup is complete.
+- [x] Publish/transport helpers during drain do not resurrect ordinary runtime states.
+- [x] Focused tests prove status remains non-normal from shutdown request through final `Closed`.
 
 ---
 
@@ -324,13 +324,13 @@ A small equivalent helper is fine. Preserve the primary runtime error.
 
 ### Acceptance criteria
 
-- [ ] `accepted_clients.recv() == None` during requested shutdown exits cleanly.
-- [ ] Unexpected receiver close is an error.
-- [ ] No post-start `?` can bypass the finalizer.
-- [ ] Shutdown is checked before waiting and after work becomes ready.
-- [ ] Listener shutdown/join is attempted on every post-start exit.
-- [ ] Strict terminal `Closed` write is attempted on every post-start exit.
-- [ ] Primary error is preserved if cleanup also fails.
+- [x] `accepted_clients.recv() == None` during requested shutdown exits cleanly.
+- [x] Unexpected receiver close is an error.
+- [x] No post-start `?` can bypass the finalizer.
+- [x] Shutdown is checked before waiting and after work becomes ready.
+- [x] Listener shutdown/join is attempted on every post-start exit.
+- [x] Strict terminal `Closed` write is attempted on every post-start exit.
+- [x] Primary error is preserved if cleanup also fails. (No P0-002-era secondary error source yet exists — join_offer_accept_tasks logs but doesn't return Result; the actual merge-with-precedence helper lands in P0-006, once the terminal writer becomes Result-returning.)
 
 ---
 
