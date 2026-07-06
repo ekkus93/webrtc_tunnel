@@ -51,13 +51,24 @@ pub enum OfferSessionTestEvent {
     ReconnectBackoffStarted { session_id: p2p_core::SessionId, delay: std::time::Duration },
 }
 
+/// Identifies an accept worker's [`tokio::task::AbortHandle`] by its forward ID
+/// (rather than by its position in a `Vec`), so a test with more than one
+/// forward can select the worker it means to fault without depending on
+/// listener/spawn order (P1-002).
+#[cfg(any(test, debug_assertions))]
+#[derive(Debug)]
+pub struct OfferAcceptWorkerTestHandle {
+    pub forward_id: String,
+    pub abort_handle: tokio::task::AbortHandle,
+}
+
 /// Bundles the offer daemon's test-only observation hooks so `run_offer_daemon_inner`
 /// stays under Clippy's argument-count lint as test seams accumulate.
 #[cfg(any(test, debug_assertions))]
 #[derive(Default)]
 struct OfferDaemonTestHooks {
     session_hook: Option<mpsc::UnboundedSender<OfferSessionTestHandle>>,
-    worker_fault_hook: Option<mpsc::UnboundedSender<Vec<tokio::task::AbortHandle>>>,
+    worker_fault_hook: Option<mpsc::UnboundedSender<Vec<OfferAcceptWorkerTestHandle>>>,
     /// Fires at the very top of the run loop, before the P0-005 shutdown gate and
     /// the ordinary steady-state write, every iteration (not just once) — an
     /// ordinary session outcome can bring the loop back to top more than once
@@ -406,7 +417,7 @@ pub async fn run_offer_daemon_with_worker_fault_hook_and_shutdown<T: DaemonSigna
     local_identity: IdentityFile,
     authorized_keys: AuthorizedKeys,
     mut transport: T,
-    worker_fault_hook: mpsc::UnboundedSender<Vec<tokio::task::AbortHandle>>,
+    worker_fault_hook: mpsc::UnboundedSender<Vec<OfferAcceptWorkerTestHandle>>,
     shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
     run_offer_daemon_inner(
@@ -902,19 +913,20 @@ async fn run_offer_accept_loop(
 }
 
 /// Spawns the accept-loop workers and their independent completion monitors.
-/// Also returns each worker's [`tokio::task::AbortHandle`] (decoupled from the
-/// `JoinHandle` the monitor awaits) so `#[cfg(any(test, debug_assertions))]` test
-/// hooks can deterministically force one worker to fail — aborting a task and a
-/// genuine panic are indistinguishable to the monitor, both surface as `Err` on
+/// Also returns each worker's [`OfferAcceptWorkerTestHandle`] (its forward ID
+/// paired with an `AbortHandle` decoupled from the `JoinHandle` the monitor
+/// awaits) so `#[cfg(any(test, debug_assertions))]` test hooks can
+/// deterministically force one worker to fail — aborting a task and a genuine
+/// panic are indistinguishable to the monitor, both surface as `Err` on
 /// `worker.await`, so this exercises the exact same fatal-supervision path.
 fn spawn_offer_accept_loops(
     listeners: Vec<OfferListener>,
     shutdown: ShutdownToken,
-) -> (OfferAcceptRuntime, Vec<tokio::task::AbortHandle>) {
+) -> (OfferAcceptRuntime, Vec<OfferAcceptWorkerTestHandle>) {
     let (tx, rx) = mpsc::channel(64);
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let mut monitors = Vec::with_capacity(listeners.len());
-    let mut abort_handles = Vec::with_capacity(listeners.len());
+    let mut worker_test_handles = Vec::with_capacity(listeners.len());
     for listener in listeners {
         let forward_id = listener.forward_id().to_owned();
         let monitor_forward_id = forward_id.clone();
@@ -922,7 +934,10 @@ fn spawn_offer_accept_loops(
         let task_shutdown = shutdown.clone();
         let exit_tx = exit_tx.clone();
         let worker = tokio::spawn(run_offer_accept_loop(listener, tx, task_shutdown));
-        abort_handles.push(worker.abort_handle());
+        worker_test_handles.push(OfferAcceptWorkerTestHandle {
+            forward_id: forward_id.clone(),
+            abort_handle: worker.abort_handle(),
+        });
         let handle = tokio::spawn(async move {
             let outcome = match worker.await {
                 Ok(reason) => Ok(reason),
@@ -942,7 +957,10 @@ fn spawn_offer_accept_loops(
     }
     drop(tx);
     drop(exit_tx);
-    (OfferAcceptRuntime { accepted_clients: rx, worker_exits: exit_rx, monitors }, abort_handles)
+    (
+        OfferAcceptRuntime { accepted_clients: rx, worker_exits: exit_rx, monitors },
+        worker_test_handles,
+    )
 }
 
 #[cfg(test)]

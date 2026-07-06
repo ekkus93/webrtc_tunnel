@@ -11,7 +11,7 @@ use std::time::Duration;
 use p2p_core::NodeRole;
 use p2p_crypto::generate_identity;
 use p2p_daemon::{
-    ShutdownToken, run_answer_daemon_with_transport,
+    OfferAcceptWorkerTestHandle, ShutdownToken, run_answer_daemon_with_transport,
     run_offer_daemon_with_worker_fault_hook_and_shutdown,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -48,12 +48,13 @@ async fn offer_idle_accept_worker_failure_is_daemon_fatal() {
 
     wait_for_status(&offer_status_path, "waiting_for_local_client").await;
 
-    let abort_handles = timeout(Duration::from_secs(5), fault_rx.recv())
-        .await
-        .expect("worker fault hook should fire once the accept runtime starts")
-        .expect("worker fault hook channel should stay open");
-    assert_eq!(abort_handles.len(), 1, "single-forward config should spawn exactly one worker");
-    abort_handles[0].abort();
+    let worker_handles: Vec<OfferAcceptWorkerTestHandle> =
+        timeout(Duration::from_secs(5), fault_rx.recv())
+            .await
+            .expect("worker fault hook should fire once the accept runtime starts")
+            .expect("worker fault hook channel should stay open");
+    assert_eq!(worker_handles.len(), 1, "single-forward config should spawn exactly one worker");
+    worker_handles[0].abort_handle.abort();
 
     let result = timeout(Duration::from_secs(5), offer_task)
         .await
@@ -117,11 +118,12 @@ async fn offer_active_session_accept_worker_failure_is_daemon_fatal() {
         answer_transport,
     ));
 
-    let abort_handles = timeout(Duration::from_secs(5), fault_rx.recv())
-        .await
-        .expect("worker fault hook should fire once the accept runtime starts")
-        .expect("worker fault hook channel should stay open");
-    assert_eq!(abort_handles.len(), 1, "single-forward config should spawn exactly one worker");
+    let worker_handles: Vec<OfferAcceptWorkerTestHandle> =
+        timeout(Duration::from_secs(5), fault_rx.recv())
+            .await
+            .expect("worker fault hook should fire once the accept runtime starts")
+            .expect("worker fault hook channel should stay open");
+    assert_eq!(worker_handles.len(), 1, "single-forward config should spawn exactly one worker");
 
     let mut client = connect_with_retry(offer_port).await;
     client.write_all(b"ping").await.expect("client should write request bytes");
@@ -141,7 +143,7 @@ async fn offer_active_session_accept_worker_failure_is_daemon_fatal() {
     // The worker died while a session is actively bridging, not while idle — proves
     // supervision reaches the session-level select loop too (`OfferSessionIo`'s own
     // `worker_exits` branch), not just the outer idle-daemon loop.
-    abort_handles[0].abort();
+    worker_handles[0].abort_handle.abort();
 
     let result = timeout(Duration::from_secs(5), offer_task)
         .await
@@ -225,16 +227,25 @@ async fn offer_active_session_second_worker_alive_cannot_mask_first_workers_deat
         answer_transport,
     ));
 
-    let abort_handles = timeout(Duration::from_secs(5), fault_rx.recv())
-        .await
-        .expect("worker fault hook should fire once the accept runtime starts")
-        .expect("worker fault hook channel should stay open");
-    assert_eq!(abort_handles.len(), 2, "two-forward config should spawn exactly two workers");
-    // `bind_offer_listeners`/`spawn_offer_accept_loops` both iterate `config.forwards`
-    // in declaration order, so index 0 is "ssh" (the forward the active session
-    // below uses) and index 1 is "web" (the bystander that must survive).
-    let ssh_worker = &abort_handles[0];
-    let web_worker = &abort_handles[1];
+    let worker_handles: Vec<OfferAcceptWorkerTestHandle> =
+        timeout(Duration::from_secs(5), fault_rx.recv())
+            .await
+            .expect("worker fault hook should fire once the accept runtime starts")
+            .expect("worker fault hook channel should stay open");
+    assert_eq!(worker_handles.len(), 2, "two-forward config should spawn exactly two workers");
+    // Selected by forward ID rather than spawn order (P1-002), so this test does not
+    // depend on `bind_offer_listeners`/`spawn_offer_accept_loops` iterating
+    // `config.forwards` in any particular order.
+    let ssh_worker = &worker_handles
+        .iter()
+        .find(|worker| worker.forward_id == "ssh")
+        .expect("ssh worker test handle")
+        .abort_handle;
+    let web_worker = &worker_handles
+        .iter()
+        .find(|worker| worker.forward_id == "web")
+        .expect("web worker test handle")
+        .abort_handle;
     assert!(!ssh_worker.is_finished(), "ssh worker should still be alive before the fault");
     assert!(!web_worker.is_finished(), "web worker should still be alive before the fault");
 

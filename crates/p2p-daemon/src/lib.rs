@@ -64,8 +64,8 @@ pub use answer::{
 };
 #[cfg(any(test, debug_assertions))]
 pub use offer::{
-    OfferLoopTopBarrier, OfferLoopTopBarrierEntered, OfferLoopTopBarrierRelease,
-    OfferSessionTestEvent, OfferSessionTestHandle,
+    OfferAcceptWorkerTestHandle, OfferLoopTopBarrier, OfferLoopTopBarrierEntered,
+    OfferLoopTopBarrierRelease, OfferSessionTestEvent, OfferSessionTestHandle,
     run_offer_daemon_with_loop_top_barrier_and_shutdown,
     run_offer_daemon_with_loop_top_barrier_and_status_audit_and_shutdown,
     run_offer_daemon_with_transport_and_status_and_shutdown,
