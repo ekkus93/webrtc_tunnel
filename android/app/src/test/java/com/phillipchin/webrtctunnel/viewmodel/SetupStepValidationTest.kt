@@ -81,6 +81,22 @@ class SetupStepValidationTest : AppViewModelTestBase() {
     }
 
     @Test
+    fun forwardsStepReportsStorageErrorForUnreadableFileInsteadOfNoForwards() {
+        val file = File(app.filesDir, "forwards.json")
+        file.writeText("[]")
+        file.setReadable(false)
+        try {
+            val message = validateStep(deps, SetupStep.Forwards, SetupWizardState())
+
+            assertTrue(message != null)
+            assertTrue(message != "Enable at least one forward")
+            assertTrue(message!!.contains("Unable to read forwards configuration"))
+        } finally {
+            file.setReadable(true)
+        }
+    }
+
+    @Test
     fun forwardsStepStillReportsNoForwardsForARealEmptyList() {
         deps.forwardsStore.saveForwards(emptyList())
 
