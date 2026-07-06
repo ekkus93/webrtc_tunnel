@@ -17,6 +17,7 @@ import kotlinx.serialization.json.Json
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -84,15 +85,26 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
 /**
  * Minimal native-bridge fake: only `stop()` is exercised (with an injectable one-shot
  * failure); every other call just reports an idle/stopped state.
+ *
+ * Required tests now drive this fake with real `Dispatchers.IO` concurrently with the
+ * Robolectric test thread, so every field here is a thread-safe primitive rather than
+ * a plain `var` (P0-002) — a plain field would be a required test relying on
+ * accidental JVM visibility, which the release-signoff hardening pass forbids.
  */
 class FailableRecordingBridge : TunnelNativeBridge {
-    var startOfferCalls = 0
-    var stopCalls = 0
-    private var failNextStop = false
-    private var blockStartOffer = false
-    private var startOfferEntered = CountDownLatch(0)
-    private var startOfferRelease = CountDownLatch(0)
-    var state: ServiceState = ServiceState.Stopped
+    private val startOfferCallsAtomic = AtomicInteger(0)
+    private val stopCallsAtomic = AtomicInteger(0)
+    private val failNextStopAtomic = AtomicBoolean(false)
+    private val blockStartOfferAtomic = AtomicBoolean(false)
+    private val startOfferEntered = AtomicReference(CountDownLatch(0))
+    private val startOfferRelease = AtomicReference(CountDownLatch(0))
+    private val stateRef = AtomicReference(ServiceState.Stopped)
+
+    val startOfferCalls: Int get() = startOfferCallsAtomic.get()
+    val stopCalls: Int get() = stopCallsAtomic.get()
+    var state: ServiceState
+        get() = stateRef.get()
+        set(value) = stateRef.set(value)
 
     // P0-001: deterministic barrier for a status refresh blocked mid-read, built with
     // thread-safe primitives from the start since it's exercised by a real
@@ -103,20 +115,21 @@ class FailableRecordingBridge : TunnelNativeBridge {
 
     /** The next (and only the next) `stop()` call fails instead of succeeding. */
     fun failNextStop() {
-        failNextStop = true
+        failNextStopAtomic.set(true)
     }
 
     /** The next `startOffer()` call blocks until [releaseBlockedStartOffer] is called. */
     fun blockNextStartOffer() {
-        blockStartOffer = true
-        startOfferEntered = CountDownLatch(1)
-        startOfferRelease = CountDownLatch(1)
+        startOfferEntered.set(CountDownLatch(1))
+        startOfferRelease.set(CountDownLatch(1))
+        blockStartOfferAtomic.set(true)
     }
 
-    fun awaitStartOfferEntered(timeoutMs: Long): Boolean = startOfferEntered.await(timeoutMs, TimeUnit.MILLISECONDS)
+    fun awaitStartOfferEntered(timeoutMs: Long): Boolean =
+        startOfferEntered.get().await(timeoutMs, TimeUnit.MILLISECONDS)
 
     fun releaseBlockedStartOffer() {
-        startOfferRelease.countDown()
+        startOfferRelease.get().countDown()
     }
 
     /**
@@ -142,11 +155,10 @@ class FailableRecordingBridge : TunnelNativeBridge {
         configPath: String,
         identityBytes: ByteArray?,
     ): Result<Unit> {
-        startOfferCalls += 1
-        if (blockStartOffer) {
-            blockStartOffer = false
-            startOfferEntered.countDown()
-            startOfferRelease.await(5, TimeUnit.SECONDS)
+        startOfferCallsAtomic.incrementAndGet()
+        if (blockStartOfferAtomic.compareAndSet(true, false)) {
+            startOfferEntered.get().countDown()
+            startOfferRelease.get().await(5, TimeUnit.SECONDS)
         }
         state = ServiceState.Connected
         return Result.success(Unit)
@@ -158,9 +170,8 @@ class FailableRecordingBridge : TunnelNativeBridge {
     }
 
     override fun stop(): Result<Unit> {
-        stopCalls += 1
-        if (failNextStop) {
-            failNextStop = false
+        stopCallsAtomic.incrementAndGet()
+        if (failNextStopAtomic.compareAndSet(true, false)) {
             return Result.failure(RuntimeException("injected stop failure"))
         }
         state = ServiceState.Stopped
