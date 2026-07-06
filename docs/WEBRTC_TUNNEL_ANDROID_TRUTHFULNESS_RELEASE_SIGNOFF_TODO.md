@@ -1396,19 +1396,20 @@ Run focused new status test by exact name.
 
 ## Android
 
-Run focused classes:
+Run the focused class (kept as a single consolidated class rather than split
+into three — see the P0-003/P0-004 responses; the filter below discovers and
+runs every required scenario: pause, service-stop, policy-pause, stale-status-
+poll, startup-cancellation-cleanup, and startup-supersedence-cleanup):
 
 ```bash
 cd android
 
 ./gradlew --no-daemon testDebugUnitTest \
-  --tests '*TunnelForegroundServiceStopFailureTest' \
-  --tests '*TunnelForegroundServiceStartupCancellationStopFailureTest' \
-  --tests '*TunnelForegroundServiceStartupSupersedenceStopFailureTest' \
+  --tests 'com.phillipchin.webrtctunnel.TunnelForegroundServiceStopFailureTest' \
   --rerun-tasks
 ```
 
-Run each three times if concurrency-sensitive.
+Run three times if concurrency-sensitive.
 
 Then:
 
