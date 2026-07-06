@@ -2486,9 +2486,14 @@ docs/MACOS_PACKAGING.md
 
 ### Acceptance criteria
 
-- [ ] No docs claim false readiness.
-- [ ] No docs tell users to create `root:wheel 0750` config dirs for `_p2ptunnel` service.
-- [ ] Package paths match package files.
+- [x] No docs claim false readiness. (SYSTEMD.md already documents the removal accurately.)
+- [x] No docs tell users to create `root:wheel 0750` config dirs for `_p2ptunnel` service.
+      (LAUNCHD.md's `root:wheel` mention is for the plist files themselves, a separate,
+      correct convention — config dirs are documented as `root:_p2ptunnel 0750`.)
+- [x] Package paths match package files. (DEBIAN_PACKAGING.md's "What it installs" already
+      matched build-deb.sh/packaging/debian/*; updated its maintainer-script section, which
+      had gone stale after P0-013, to match current postinst/prerm/postrm behavior. Added a
+      package-vs-manual /usr/bin-vs-/usr/local/bin cross-reference to SYSTEMD.md.)
 
 ---
 
