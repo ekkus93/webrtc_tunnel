@@ -217,13 +217,13 @@ Closed                → suppressed
 
 ### Acceptance criteria
 
-- [ ] Runtime state can hold a clone of the shared shutdown token.
-- [ ] Existing `new_connected()` remains available for ordinary tests/helpers.
-- [ ] Offer production runtime uses the daemon's shared token.
-- [ ] Answer production runtime uses the daemon's shared token.
-- [ ] Ordinary status gate checks phase and actual token request.
-- [ ] Terminal Closed writers remain unaffected.
-- [ ] Test proves token request suppresses ordinary status before phase changes.
+- [x] Runtime state can hold a clone of the shared shutdown token.
+- [x] Existing `new_connected()` remains available for ordinary tests/helpers.
+- [x] Offer production runtime uses the daemon's shared token.
+- [x] Answer production runtime uses the daemon's shared token.
+- [x] Ordinary status gate checks phase and actual token request.
+- [x] Terminal Closed writers remain unaffected.
+- [x] Test proves token request suppresses ordinary status before phase changes.
 
 ---
 
