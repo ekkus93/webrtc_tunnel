@@ -14,6 +14,8 @@ import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * A `test`-only-scoped Application/bridge fake for
@@ -82,8 +84,12 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
  * failure); every other call just reports an idle/stopped state.
  */
 class FailableRecordingBridge : TunnelNativeBridge {
+    var startOfferCalls = 0
     var stopCalls = 0
     private var failNextStop = false
+    private var blockStartOffer = false
+    private var startOfferEntered = CountDownLatch(0)
+    private var startOfferRelease = CountDownLatch(0)
     var state: ServiceState = ServiceState.Stopped
 
     /** The next (and only the next) `stop()` call fails instead of succeeding. */
@@ -91,10 +97,29 @@ class FailableRecordingBridge : TunnelNativeBridge {
         failNextStop = true
     }
 
+    /** The next `startOffer()` call blocks until [releaseBlockedStartOffer] is called. */
+    fun blockNextStartOffer() {
+        blockStartOffer = true
+        startOfferEntered = CountDownLatch(1)
+        startOfferRelease = CountDownLatch(1)
+    }
+
+    fun awaitStartOfferEntered(timeoutMs: Long): Boolean = startOfferEntered.await(timeoutMs, TimeUnit.MILLISECONDS)
+
+    fun releaseBlockedStartOffer() {
+        startOfferRelease.countDown()
+    }
+
     override fun startOffer(
         configPath: String,
         identityBytes: ByteArray?,
     ): Result<Unit> {
+        startOfferCalls += 1
+        if (blockStartOffer) {
+            blockStartOffer = false
+            startOfferEntered.countDown()
+            startOfferRelease.await(5, TimeUnit.SECONDS)
+        }
         state = ServiceState.Connected
         return Result.success(Unit)
     }

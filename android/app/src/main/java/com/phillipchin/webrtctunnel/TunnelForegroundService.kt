@@ -24,6 +24,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -373,7 +374,12 @@ class TunnelForegroundService
                                 repository.start(TunnelMode.Offer, configRepository.configPath, identity)
                             }
                         } catch (_: CancellationException) {
-                            withContext(ioDispatcher) { repository.stop() }.onFailure {
+                            // This coroutine's own Job is already cancelled at this point, so a
+                            // plain `withContext(ioDispatcher) { ... }` would rethrow immediately
+                            // without ever running the block ("prompt cancellation") — the native
+                            // tunnel would be silently left running behind a "cancelled" startup.
+                            // NonCancellable lets this cleanup actually execute.
+                            withContext(NonCancellable + ioDispatcher) { repository.stop() }.onFailure {
                                 reporter.publishError(
                                     message = it.message ?: "Unable to stop tunnel after startup was cancelled",
                                     code = "stop_failed",
@@ -382,7 +388,10 @@ class TunnelForegroundService
                             return
                         }
                     if (!isCurrentGeneration(startGeneration)) {
-                        withContext(ioDispatcher) { repository.stop() }.onFailure {
+                        // Same "prompt cancellation" hazard as above: a newer start may have
+                        // cancelled this job's generation (or the job itself) by the time the
+                        // native start call returns, so this cleanup also needs NonCancellable.
+                        withContext(NonCancellable + ioDispatcher) { repository.stop() }.onFailure {
                             reporter.publishError(
                                 message = it.message ?: "Unable to stop tunnel after a newer start superseded it",
                                 code = "stop_failed",
