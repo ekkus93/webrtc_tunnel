@@ -1067,10 +1067,28 @@ call does not throw
 
 ### Acceptance criteria
 
-- [ ] Missing-file seed write failure is inside Result.
-- [ ] Read failure is inside Result.
-- [ ] Parse failure is inside Result.
-- [ ] No expected storage failure escapes as throw.
+- [x] Missing-file seed write failure is inside Result. `loadForwardsResult()`'s missing-file
+      branch is now wrapped in its own `runCatching { defaultForwards(); saveForwards(defaults);
+      defaults }`, so a `saveForwards()` write failure (e.g. `File.createTempFile`/`Files.move`
+      throwing) returns `Result.failure` instead of propagating past the function's declared
+      `Result` contract.
+- [x] Read failure is inside Result. Unchanged behavior, still covered: `forwardsFile.readText()`
+      throwing (e.g. permission denied) is inside the existing-file branch's `runCatching`.
+- [x] Parse failure is inside Result. Unchanged behavior, still covered: `Json.decodeFromString`
+      throwing on corrupt JSON is inside the same `runCatching` as the read.
+- [x] No expected storage failure escapes as throw. Both branches of `loadForwardsResult()` are
+      now fully wrapped; kept two separate `runCatching` blocks (one per branch) rather than a
+      single combined one, so the existing distinct log messages ("Failed to seed default
+      forwards.json" vs. "forwards.json is corrupt; keeping existing forwards instead of
+      erasing") are preserved instead of being merged into a less specific single message.
+- Test added: `ForwardsConfigStoreTest.loadForwardsResultReturnsFailureWithoutThrowingWhenSeedWriteFails`
+  — makes `context.filesDir` read-only (`File.setReadOnly()`) before the missing-file seed path
+  runs, forcing `saveForwards()`'s temp-file creation to throw `IOException`, and asserts
+  `loadForwardsResult()` returns `Result.failure` rather than letting the exception escape.
+  Regression-strength verified: reverted the fix (`git stash`), reran the focused test — it
+  failed with an uncaught `java.io.IOException` (the other 8 tests in the same class still
+  passed), confirming the test specifically pins this bug. Restored the fix, reran: passes.
+  Full local gates rerun after restoring (`./gradlew testDebugUnitTest`, `check`) — all green.
 
 ---
 
