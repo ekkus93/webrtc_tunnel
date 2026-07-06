@@ -409,6 +409,30 @@ impl AppConfig {
         Ok(())
     }
 
+    /// The remote peer IDs this config requires an `authorized_keys` entry for, given its
+    /// role: the offer role's single `[peer].remote_peer_id`, or the union of every
+    /// answer forward's `allow_remote_peers`. Shared by the daemon's own preflight
+    /// (`validate_config_authorized_peers`) and `p2pctl check-config`, so both report the
+    /// same authorization requirement instead of drifting apart.
+    pub fn required_authorized_peer_ids(&self) -> Result<Vec<&PeerId>, ConfigError> {
+        match self.node.role {
+            NodeRole::Offer => {
+                let peer = self.peer.as_ref().ok_or_else(|| {
+                    ConfigError::InvalidConfig(
+                        "[peer].remote_peer_id must be set for offer role".to_owned(),
+                    )
+                })?;
+                Ok(vec![&peer.remote_peer_id])
+            }
+            NodeRole::Answer => Ok(self
+                .forwards
+                .iter()
+                .filter_map(|forward| forward.answer.as_ref())
+                .flat_map(|answer| answer.allow_remote_peers.iter())
+                .collect()),
+        }
+    }
+
     pub fn ensure_runtime_dirs(&self) -> Result<(), ConfigError> {
         fs::create_dir_all(&self.paths.state_dir)
             .map_err(|error| ConfigError::io_path(&self.paths.state_dir, error))?;

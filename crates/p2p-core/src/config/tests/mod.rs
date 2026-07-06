@@ -8,3 +8,4 @@ mod support;
 mod data_plane;
 mod forwards;
 mod loading;
+mod required_authorized_peers;

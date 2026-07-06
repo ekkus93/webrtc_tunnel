@@ -144,6 +144,22 @@ fn check_config(path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(path)?;
     let identity = IdentityFile::from_file(&config.paths.identity)?;
     config.validate_identity_peer(&identity.peer_id)?;
+
+    // Match the daemon's own authorization preflight (`validate_config_authorized_peers`)
+    // instead of only checking the identity: a config can be well-formed and still fail
+    // to actually start if a required remote peer has no `authorized_keys` entry.
+    let authorized_keys = AuthorizedKeys::from_file(&config.paths.authorized_keys)?;
+    for peer_id in config.required_authorized_peer_ids()? {
+        if authorized_keys.get_by_peer_id(peer_id).is_none() {
+            return Err(format!(
+                "required peer '{}' is missing from {}",
+                peer_id,
+                config.paths.authorized_keys.display(),
+            )
+            .into());
+        }
+    }
+
     println!("config ok for peer_id={}", config.node.peer_id);
     Ok(())
 }
@@ -480,7 +496,10 @@ mod tests {
     /// A minimal but fully valid on-disk config + identity, mirroring the fixture shape
     /// used by `crates/p2p-core/tests/config_parsing.rs` (not importable across crates,
     /// so reproduced here at the minimum size `check_config` actually exercises).
-    fn write_valid_config_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+    fn write_valid_config_fixture(
+        dir: &std::path::Path,
+        authorize_remote_peer: bool,
+    ) -> std::path::PathBuf {
         std::fs::create_dir_all(dir.join("state/log")).expect("state dir");
         let generated = generate_identity("answer-office").expect("identity");
         let identity_path = dir.join("identity");
@@ -488,7 +507,14 @@ mod tests {
         #[cfg(unix)]
         std::fs::set_permissions(&identity_path, std::fs::Permissions::from_mode(0o600))
             .expect("identity perms");
-        std::fs::write(dir.join("authorized_keys"), "").expect("authorized_keys");
+        let authorized_keys_content = if authorize_remote_peer {
+            let offer_home = generate_identity("offer-home").expect("identity");
+            format!("{}\n", offer_home.public_identity.render())
+        } else {
+            String::new()
+        };
+        std::fs::write(dir.join("authorized_keys"), authorized_keys_content)
+            .expect("authorized_keys");
         std::fs::write(dir.join("mqtt_password"), "secret").expect("password");
         std::fs::write(
             dir.join("ca.crt"),
@@ -603,9 +629,172 @@ status_file = "{status_file}"
     #[test]
     fn check_config_succeeds_for_a_valid_config() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let config_path = write_valid_config_fixture(temp_dir.path());
+        let config_path = write_valid_config_fixture(temp_dir.path(), true);
 
         check_config(Some(&config_path)).expect("valid config should check out");
+    }
+
+    #[test]
+    fn check_config_fails_when_answer_role_is_missing_an_allowed_peer_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = write_valid_config_fixture(temp_dir.path(), false);
+
+        let error = check_config(Some(&config_path))
+            .expect_err("missing allowed peer's authorized key must fail check-config");
+        assert!(error.to_string().contains("offer-home"), "got: {error}");
+    }
+
+    #[test]
+    fn check_config_fails_when_offer_role_is_missing_the_remote_peers_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = write_valid_offer_config_fixture(temp_dir.path(), false);
+
+        let error = check_config(Some(&config_path))
+            .expect_err("missing remote peer's authorized key must fail check-config");
+        assert!(error.to_string().contains("answer-office"), "got: {error}");
+    }
+
+    #[test]
+    fn check_config_succeeds_for_a_valid_offer_config() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = write_valid_offer_config_fixture(temp_dir.path(), true);
+
+        check_config(Some(&config_path)).expect("valid offer config should check out");
+    }
+
+    /// Mirrors [`write_valid_config_fixture`] but for the offer role, so the offer-side
+    /// `[peer].remote_peer_id` authorization requirement can be tested independently of
+    /// the answer role's `allow_remote_peers`.
+    fn write_valid_offer_config_fixture(
+        dir: &std::path::Path,
+        authorize_remote_peer: bool,
+    ) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir.join("state/log")).expect("state dir");
+        let generated = generate_identity("offer-home").expect("identity");
+        let identity_path = dir.join("identity");
+        std::fs::write(&identity_path, generated.identity.render_toml()).expect("identity");
+        #[cfg(unix)]
+        std::fs::set_permissions(&identity_path, std::fs::Permissions::from_mode(0o600))
+            .expect("identity perms");
+        let authorized_keys_content = if authorize_remote_peer {
+            let answer_office = generate_identity("answer-office").expect("identity");
+            format!("{}\n", answer_office.public_identity.render())
+        } else {
+            String::new()
+        };
+        std::fs::write(dir.join("authorized_keys"), authorized_keys_content)
+            .expect("authorized_keys");
+        std::fs::write(dir.join("mqtt_password"), "secret").expect("password");
+        std::fs::write(
+            dir.join("ca.crt"),
+            "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n",
+        )
+        .expect("ca cert");
+
+        let config_path = dir.join("config.toml");
+        let config = format!(
+            r#"format = "p2ptunnel-config-v3"
+
+[node]
+peer_id = "offer-home"
+role = "offer"
+
+[peer]
+remote_peer_id = "answer-office"
+
+[paths]
+identity = "{identity}"
+authorized_keys = "{authorized_keys}"
+state_dir = "{state_dir}"
+log_dir = "{log_dir}"
+
+[broker]
+url = "mqtts://mqtt.example.com:8883"
+client_id = "offer-home"
+topic_prefix = "p2ptunnel"
+username = "offer-home"
+password_file = "{password_file}"
+qos = 1
+keepalive_secs = 30
+clean_session = false
+connect_timeout_secs = 5
+session_expiry_secs = 0
+
+[broker.tls]
+ca_file = "{ca_file}"
+client_cert_file = ""
+client_key_file = ""
+insecure_skip_verify = false
+
+[webrtc]
+stun_urls = ["stun:stun.l.google.com:19302"]
+enable_trickle_ice = true
+enable_ice_restart = true
+
+[tunnel]
+read_chunk_size = 16384
+local_eof_grace_ms = 250
+remote_eof_grace_ms = 250
+
+[[forwards]]
+id = "ssh"
+
+[forwards.offer]
+listen_host = "127.0.0.1"
+listen_port = 2222
+
+[reconnect]
+enable_auto_reconnect = true
+strategy = "ice_then_renegotiate"
+ice_restart_timeout_secs = 8
+renegotiate_timeout_secs = 20
+backoff_initial_ms = 1000
+backoff_max_ms = 30000
+backoff_multiplier = 2.0
+jitter_ratio = 0.20
+max_attempts = 0
+hold_local_client_during_reconnect = false
+local_client_hold_secs = 0
+
+[security]
+require_mqtt_tls = true
+require_message_encryption = true
+require_message_signatures = true
+require_authorized_keys = true
+max_clock_skew_secs = 120
+max_message_age_secs = 300
+replay_cache_size = 10000
+reject_unknown_config_keys = true
+refuse_world_readable_identity = true
+refuse_world_writable_paths = true
+
+[logging]
+level = "info"
+format = "text"
+file_logging = true
+stdout_logging = true
+log_file = "{log_file}"
+redact_secrets = true
+redact_sdp = true
+redact_candidates = true
+log_rotation = "none"
+
+[health]
+status_socket = ""
+write_status_file = true
+status_file = "{status_file}"
+"#,
+            identity = identity_path.display(),
+            authorized_keys = dir.join("authorized_keys").display(),
+            state_dir = dir.join("state").display(),
+            log_dir = dir.join("state/log").display(),
+            password_file = dir.join("mqtt_password").display(),
+            ca_file = dir.join("ca.crt").display(),
+            log_file = dir.join("state/log/p2ptunnel.log").display(),
+            status_file = dir.join("state/status.json").display(),
+        );
+        std::fs::write(&config_path, config).expect("write config");
+        config_path
     }
 
     #[test]

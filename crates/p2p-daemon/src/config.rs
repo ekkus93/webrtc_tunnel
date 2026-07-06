@@ -66,23 +66,9 @@ pub(crate) fn validate_config_authorized_peers(
     config: &AppConfig,
     authorized_keys: &AuthorizedKeys,
 ) -> Result<(), DaemonError> {
-    match config.node.role {
-        NodeRole::Offer => {
-            let remote_peer_id = offer_remote_peer_id(config)?;
-            if authorized_keys.get_by_peer_id(&remote_peer_id).is_none() {
-                return Err(DaemonError::MissingAuthorizedPeer(remote_peer_id.to_string()));
-            }
-        }
-        NodeRole::Answer => {
-            for forward in &config.forwards {
-                if let Some(answer) = &forward.answer {
-                    for peer_id in &answer.allow_remote_peers {
-                        if authorized_keys.get_by_peer_id(peer_id).is_none() {
-                            return Err(DaemonError::MissingAuthorizedPeer(peer_id.to_string()));
-                        }
-                    }
-                }
-            }
+    for peer_id in config.required_authorized_peer_ids()? {
+        if authorized_keys.get_by_peer_id(peer_id).is_none() {
+            return Err(DaemonError::MissingAuthorizedPeer(peer_id.to_string()));
         }
     }
     Ok(())
