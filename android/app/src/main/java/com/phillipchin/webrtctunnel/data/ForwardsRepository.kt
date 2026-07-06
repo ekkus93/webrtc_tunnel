@@ -30,7 +30,7 @@ class ForwardsRepository(
     val forwards: StateFlow<List<ForwardConfig>> = _forwards.asStateFlow()
 
     private val _loadError =
-        MutableStateFlow(if (initial.isFailure) "Saved forwards file is corrupt." else null)
+        MutableStateFlow(initial.exceptionOrNull()?.let { describeForwardsFailure(it) })
     val loadError: StateFlow<String?> = _loadError.asStateFlow()
 
     private var hasValidBaseline = initial.isSuccess
@@ -46,7 +46,7 @@ class ForwardsRepository(
                         _loadError.value = null
                         hasValidBaseline = true
                     }
-                    .onFailure { _loadError.value = "Saved forwards file is corrupt." }
+                    .onFailure { _loadError.value = describeForwardsFailure(it) }
                 // onFailure keeps the existing in-memory list and baseline state.
             }
         }
@@ -75,7 +75,10 @@ class ForwardsRepository(
         mutex.withLock {
             withContext(dispatchers.io) {
                 if (!hasValidBaseline) {
-                    return@withContext ValidationResult(false, "Saved forwards file is corrupt; cannot save")
+                    return@withContext ValidationResult(
+                        false,
+                        _loadError.value ?: "Saved forwards file is corrupt; cannot save",
+                    )
                 }
                 val updated = transform(_forwards.value)
                 val error = store.validateForwards(updated)
@@ -87,7 +90,7 @@ class ForwardsRepository(
                         _forwards.value = updated
                         ValidationResult(true, null)
                     },
-                    onFailure = { ValidationResult(false, it.message ?: "Failed to save forwards") },
+                    onFailure = { ValidationResult(false, describeForwardsFailure(it)) },
                 )
             }
         }

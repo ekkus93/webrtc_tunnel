@@ -101,6 +101,31 @@ class ForwardsRepositoryTest {
         }
 
     @Test
+    fun loadErrorDistinguishesParseFailureFromReadFailure() =
+        runBlocking {
+            file.writeText("{ corrupt json")
+            val parseFailureRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+            val parseMessage = parseFailureRepo.loadError.value
+
+            file.delete()
+            file.writeText("[]")
+            assertTrue(file.setReadable(false))
+            try {
+                val readFailureRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+                val readMessage = readFailureRepo.loadError.value
+
+                // Both must be reported, but with distinct wording — a caller must not have
+                // to guess "corrupt" for a permission problem, or vice versa (P1-003).
+                assertTrue(parseMessage != null && readMessage != null)
+                assertFalse(parseMessage == readMessage)
+                assertTrue(parseMessage?.contains("corrupt") == true)
+                assertFalse(readMessage?.contains("corrupt") == true)
+            } finally {
+                file.setReadable(true)
+            }
+        }
+
+    @Test
     fun refreshKeepsPriorListWhenFileIsCorrupt() =
         runBlocking {
             repo.save(listOf(forward("keep", 2222)))

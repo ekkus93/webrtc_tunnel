@@ -59,6 +59,28 @@ class ForwardsConfigStoreTest {
     }
 
     @Test
+    fun malformedJsonIsParseFailureNotReadFailure() {
+        file.writeText("{ this is not valid json")
+        val error = store.loadForwardsResult().exceptionOrNull()
+        assertTrue(error is ForwardsParseException)
+    }
+
+    @Test
+    fun unreadableFileIsReadFailureNotParseFailure() {
+        file.writeText("[]")
+        // Force forwardsFile.readText() itself to fail, as opposed to decoding failing on
+        // malformed content, so the two distinct failure modes are provably distinguished
+        // (P1-003) rather than both being reported as "corrupt".
+        assertTrue(file.setReadable(false))
+        try {
+            val error = store.loadForwardsResult().exceptionOrNull()
+            assertTrue(error is ForwardsReadException)
+        } finally {
+            file.setReadable(true)
+        }
+    }
+
+    @Test
     fun loadForwardsResultReturnsFailureWithoutThrowingWhenSeedWriteFails() {
         file.delete()
         // Force the missing-file default-seeding write inside loadForwardsResult() to fail,
@@ -68,6 +90,18 @@ class ForwardsConfigStoreTest {
         try {
             val result = store.loadForwardsResult()
             assertTrue(result.isFailure)
+            assertTrue(result.exceptionOrNull() is ForwardsWriteException)
+        } finally {
+            context.filesDir.setWritable(true)
+        }
+    }
+
+    @Test
+    fun saveForwardsWrapsUnderlyingFailureAsForwardsWriteException() {
+        assertTrue(context.filesDir.setReadOnly())
+        try {
+            val error = runCatching { store.saveForwards(listOf(forward("a", 1111))) }.exceptionOrNull()
+            assertTrue(error is ForwardsWriteException)
         } finally {
             context.filesDir.setWritable(true)
         }
