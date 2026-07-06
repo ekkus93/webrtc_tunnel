@@ -21,6 +21,8 @@ mod basics_tests;
 mod isolation_tests;
 #[path = "two_node_daemon/lifecycle_regression_tests.rs"]
 mod lifecycle_regression_tests;
+#[path = "two_node_daemon/offer_loop_top_shutdown_gate_tests.rs"]
+mod offer_loop_top_shutdown_gate_tests;
 #[path = "two_node_daemon/recovery_tests.rs"]
 mod recovery_tests;
 #[path = "two_node_daemon/shutdown_tests.rs"]

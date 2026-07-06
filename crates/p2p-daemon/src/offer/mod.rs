@@ -58,6 +58,72 @@ pub enum OfferSessionTestEvent {
 struct OfferDaemonTestHooks {
     session_hook: Option<mpsc::UnboundedSender<OfferSessionTestHandle>>,
     worker_fault_hook: Option<mpsc::UnboundedSender<Vec<tokio::task::AbortHandle>>>,
+    /// Fires at the very top of the run loop, before the P0-005 shutdown gate and
+    /// the ordinary steady-state write, every iteration (not just once) — an
+    /// ordinary session outcome can bring the loop back to top more than once
+    /// before a test gets a chance to land shutdown in the gap.
+    loop_top_barrier: Option<OfferLoopTopBarrier>,
+}
+
+/// A repeatable rendezvous at the top of the offer run loop (see
+/// [`OfferDaemonTestHooks::loop_top_barrier`]), letting a test force
+/// `shutdown.request_shutdown()` to land in the exact window between an ordinary
+/// session outcome bringing the loop back to its top and the next steady-state
+/// write, instead of racing real scheduler timing (P0-005/P0-010). A broken
+/// channel on either side is a test-harness bug, not something to continue past
+/// silently — see P1-004.
+#[cfg(any(test, debug_assertions))]
+pub struct OfferLoopTopBarrier {
+    entered_tx: mpsc::Sender<()>,
+    release_rx: mpsc::Receiver<()>,
+}
+
+#[cfg(any(test, debug_assertions))]
+impl OfferLoopTopBarrier {
+    pub fn new() -> (Self, OfferLoopTopBarrierEntered, OfferLoopTopBarrierRelease) {
+        let (entered_tx, entered_rx) = mpsc::channel(1);
+        let (release_tx, release_rx) = mpsc::channel(1);
+        (
+            Self { entered_tx, release_rx },
+            OfferLoopTopBarrierEntered { entered_rx },
+            OfferLoopTopBarrierRelease { release_tx },
+        )
+    }
+
+    async fn enter_and_wait_for_release(&mut self) {
+        self.entered_tx.send(()).await.expect("offer loop-top barrier observer must remain alive");
+        self.release_rx
+            .recv()
+            .await
+            .expect("offer loop-top barrier release sender must remain alive");
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+pub struct OfferLoopTopBarrierEntered {
+    entered_rx: mpsc::Receiver<()>,
+}
+
+#[cfg(any(test, debug_assertions))]
+impl OfferLoopTopBarrierEntered {
+    pub async fn wait(&mut self) {
+        self.entered_rx
+            .recv()
+            .await
+            .expect("offer loop-top barrier must not be dropped before entering");
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+pub struct OfferLoopTopBarrierRelease {
+    release_tx: mpsc::Sender<()>,
+}
+
+#[cfg(any(test, debug_assertions))]
+impl OfferLoopTopBarrierRelease {
+    pub async fn release(&self) {
+        self.release_tx.send(()).await.expect("offer loop-top barrier observer must remain alive");
+    }
 }
 
 pub async fn run_offer_daemon(
@@ -217,8 +283,71 @@ pub async fn run_offer_daemon_with_transport_and_test_hook_and_shutdown<
         local_identity,
         authorized_keys,
         &mut transport,
-        Some(OfferDaemonTestHooks { session_hook, worker_fault_hook: None }),
+        Some(OfferDaemonTestHooks {
+            session_hook,
+            worker_fault_hook: None,
+            loop_top_barrier: None,
+        }),
         None,
+        shutdown,
+    )
+    .await
+}
+
+/// Combines a test transport with the [`OfferLoopTopBarrier`] test hook and the
+/// live `DaemonStatus` sink, so a test can deterministically force
+/// `shutdown.request_shutdown()` to land in the exact window between an ordinary
+/// session outcome returning the run loop to its top and the next steady-state
+/// write, while observing every status transition to prove none escapes
+/// (P0-005/P0-010).
+#[cfg(any(test, debug_assertions))]
+pub async fn run_offer_daemon_with_loop_top_barrier_and_shutdown<T: DaemonSignalingTransport>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    mut transport: T,
+    loop_top_barrier: OfferLoopTopBarrier,
+    status_sink: tokio::sync::watch::Sender<DaemonStatus>,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
+    run_offer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        &mut transport,
+        Some(OfferDaemonTestHooks {
+            session_hook: None,
+            worker_fault_hook: None,
+            loop_top_barrier: Some(loop_top_barrier),
+        }),
+        Some(status_sink),
+        shutdown,
+    )
+    .await
+}
+
+/// Combines a test transport with the live `DaemonStatus` sink (see
+/// [`run_offer_daemon_with_status_and_shutdown`]), so a lifecycle test can observe
+/// every status transition — not just periodic file-poll samples — against an
+/// in-memory transport instead of a real broker connection (P0-010).
+#[cfg(any(test, debug_assertions))]
+pub async fn run_offer_daemon_with_transport_and_status_and_shutdown<
+    T: DaemonSignalingTransport,
+>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    mut transport: T,
+    status_sink: tokio::sync::watch::Sender<DaemonStatus>,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
+    run_offer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        &mut transport,
+        None,
+        Some(status_sink),
         shutdown,
     )
     .await
@@ -246,6 +375,7 @@ pub async fn run_offer_daemon_with_worker_fault_hook_and_shutdown<T: DaemonSigna
         Some(OfferDaemonTestHooks {
             session_hook: None,
             worker_fault_hook: Some(worker_fault_hook),
+            loop_top_barrier: None,
         }),
         None,
         shutdown,
@@ -264,7 +394,8 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
     #[cfg(any(test, debug_assertions))]
-    let OfferDaemonTestHooks { session_hook, worker_fault_hook } = test_hooks.unwrap_or_default();
+    let OfferDaemonTestHooks { session_hook, worker_fault_hook, mut loop_top_barrier } =
+        test_hooks.unwrap_or_default();
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let codec = SignalCodec::new(
         &local_identity,
@@ -313,6 +444,15 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
 
     let run_result: Result<(), DaemonError> = async {
         loop {
+            #[cfg(any(test, debug_assertions))]
+            if let Some(barrier) = loop_top_barrier.as_mut() {
+                barrier.enter_and_wait_for_release().await;
+            }
+
+            if shutdown.is_shutdown_requested() {
+                break Ok(());
+            }
+
             write_steady_state_status(&ctx).await;
             tokio::select! {
                 biased;

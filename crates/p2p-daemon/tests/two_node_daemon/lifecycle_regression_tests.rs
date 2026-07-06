@@ -1,11 +1,15 @@
 //! P0-016: deterministic regression coverage for the offer channel-close/shutdown
 //! race and for "no ordinary status write survives a shutdown request."
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use p2p_core::NodeRole;
+use p2p_core::{DaemonState, NodeRole};
 use p2p_crypto::generate_identity;
-use p2p_daemon::{ShutdownToken, run_offer_daemon_with_transport_and_shutdown};
+use p2p_daemon::{
+    DaemonStatus, ShutdownToken, run_offer_daemon_with_transport_and_shutdown,
+    run_offer_daemon_with_transport_and_status_and_shutdown,
+};
 use tokio::time::timeout;
 
 use crate::harness::*;
@@ -69,12 +73,14 @@ async fn offer_idle_shutdown_is_race_free_under_repeated_iterations() {
     }
 }
 
-/// Polls the offer status file at a tight interval spanning the shutdown request,
-/// proving the daemon runtime-phase gate (P0-001) holds under a real running
-/// daemon: once shutdown is requested, the only states ever observed are the
-/// last pre-shutdown state (untouched, because ordinary writes are now
-/// suppressed while Draining) and the terminal `closed` — never a resurrected
-/// `waiting_for_local_client`/`serving`/`negotiating`/`tunnel_open`.
+/// Observes every live status transition (via the `watch`-backed status sink, not
+/// file polling) spanning the shutdown request, proving the daemon runtime-phase
+/// gate (P0-001) and the top-of-loop shutdown gate (P0-005) both hold under a real
+/// running daemon: the boundary is the exact program-order moment
+/// `shutdown.request_shutdown()` is called (P0-010), not an inferred "last
+/// waiting_for_local_client" sample from noisy polling — so nothing that happens
+/// to land between that call and the terminal `closed` write can silently escape
+/// the check.
 #[tokio::test]
 async fn offer_no_normal_status_write_survives_shutdown_request() {
     let offer_identity = generate_identity("offer-home").expect("offer identity should build");
@@ -89,35 +95,45 @@ async fn offer_no_normal_status_write_survives_shutdown_request() {
         sample_config(NodeRole::Offer, offer_status_path.clone(), offer_port, target_port);
     let (offer_transport, _answer_transport, _trace) = transport_pair(0, 0);
 
+    let (status_tx, mut status_rx) = tokio::sync::watch::channel(DaemonStatus {
+        peer_id: offer_identity.identity.peer_id.clone(),
+        role: NodeRole::Offer,
+        mqtt_connected: false,
+        active_session_id: None,
+        current_state: DaemonState::WaitingForLocalClient,
+        active_session_count: 0,
+        session_capacity: 1,
+        sessions: Vec::new(),
+        configured_forwards: Vec::new(),
+        forwards: Vec::new(),
+    });
+    let observed = Arc::new(Mutex::new(Vec::<DaemonStatus>::new()));
+    let observer_events = observed.clone();
+    let observer = tokio::spawn(async move {
+        loop {
+            if status_rx.changed().await.is_err() {
+                return;
+            }
+            observer_events.lock().expect("observed status lock").push(status_rx.borrow().clone());
+        }
+    });
+
     let offer_shutdown = ShutdownToken::new();
-    let offer_task = tokio::spawn(run_offer_daemon_with_transport_and_shutdown(
+    let offer_task = tokio::spawn(run_offer_daemon_with_transport_and_status_and_shutdown(
         offer_config,
         clone_identity(&offer_identity.identity),
         offer_keys,
         offer_transport,
+        status_tx,
         offer_shutdown.clone(),
     ));
 
     wait_for_status(&offer_status_path, "waiting_for_local_client").await;
 
-    let poll_path = offer_status_path.clone();
-    let samples = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
-    let samples_writer = samples.clone();
-    let poller = tokio::spawn(async move {
-        loop {
-            if let Ok(content) = tokio::fs::read_to_string(&poll_path).await
-                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
-                && let Some(state) = json["current_state"].as_str()
-            {
-                let mut samples = samples_writer.lock().await;
-                if samples.last().map(String::as_str) != Some(state) {
-                    samples.push(state.to_owned());
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    });
-
+    // Captured synchronously, in the same task, immediately before the shutdown
+    // request that follows on the next line: this is the exact boundary, not an
+    // inference from a later sample.
+    let boundary = observed.lock().expect("observed status lock").len();
     offer_shutdown.request_shutdown();
 
     let result = timeout(Duration::from_secs(5), offer_task)
@@ -126,42 +142,45 @@ async fn offer_no_normal_status_write_survives_shutdown_request() {
         .expect("offer daemon task should not panic");
     assert!(result.is_ok(), "graceful offer shutdown should return Ok, got {result:?}");
 
-    // The terminal write already landed on disk before `offer_task` joined above;
-    // wait (bounded, but generously so this doesn't flake under CI/parallel-test
-    // scheduling contention) for the poller to actually get scheduled and observe
-    // it, rather than assuming a fixed short sleep is always enough CPU time.
+    // The terminal write already landed before `offer_task` joined above; wait
+    // (bounded, but generously so this doesn't flake under CI/parallel-test
+    // scheduling contention) for the observer to actually get scheduled and see it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if samples.lock().await.last().map(String::as_str) == Some("closed") {
+        if observed.lock().expect("observed status lock").last().map(|status| status.current_state)
+            == Some(DaemonState::Closed)
+        {
             break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "poller never observed the terminal closed status in time"
+            "observer never saw the terminal closed status in time"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    poller.abort();
-    let _ = poller.await;
+    observer.abort();
+    let _ = observer.await;
 
-    let samples = samples.lock().await;
-    assert_eq!(
-        samples.last().map(String::as_str),
-        Some("closed"),
-        "final observed state should be closed, got {samples:?}"
-    );
-    // Every transition after the last waiting_for_local_client sample must go
-    // straight to closed — no serving/negotiating/tunnel_open resurrection.
-    let last_waiting_index = samples
-        .iter()
-        .rposition(|state| state == "waiting_for_local_client")
-        .expect("waiting_for_local_client should have been observed at least once");
-    for state in &samples[last_waiting_index + 1..] {
-        assert_eq!(
-            state, "closed",
-            "no ordinary status write should survive the shutdown request, saw {samples:?}"
+    let events = observed.lock().expect("observed status lock").clone();
+    for status in &events[boundary..] {
+        assert!(
+            !matches!(
+                status.current_state,
+                DaemonState::WaitingForLocalClient
+                    | DaemonState::Serving
+                    | DaemonState::Negotiating
+                    | DaemonState::TunnelOpen
+            ),
+            "normal state emitted after the shutdown boundary: {:?} in {:?}",
+            status.current_state,
+            &events[boundary..],
         );
     }
+    assert_eq!(
+        events.last().map(|status| status.current_state),
+        Some(DaemonState::Closed),
+        "final observed state should be closed, got {events:?}"
+    );
 
     let _ = tokio::fs::remove_file(&offer_status_path).await;
 }
