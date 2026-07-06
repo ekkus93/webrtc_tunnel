@@ -15,6 +15,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.TimeUnit
 
+/**
+ * Critical stop-failure truthfulness is also covered by Robolectric unit tests
+ * (`TunnelForegroundServiceStopFailureTest`) that run in required CI via
+ * `testDebugUnitTest`. These instrumentation tests remain supplemental Android
+ * framework integration coverage — required CI does not execute `androidTest`.
+ */
 @RunWith(AndroidJUnit4::class)
 class TunnelForegroundServiceInstrumentationTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()

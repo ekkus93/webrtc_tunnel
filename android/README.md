@@ -82,7 +82,14 @@ adb install -r -d app/build/outputs/apk/debug/app-debug.apk
 ./gradlew connectedDebugAndroidTest
 ```
 
-All three commands should pass before merging any Android change.
+All three commands should pass before merging any Android change. Required CI
+only runs `testDebugUnitTest` (via Robolectric) — it does not run
+`connectedDebugAndroidTest`, since that needs a device/emulator CI does not
+provision. Critical truthfulness behavior (e.g. `TunnelForegroundService`
+stop-failure handling) therefore has Robolectric coverage under `src/test` as
+the source of required-CI proof; the `androidTest` instrumentation suite
+remains supplemental platform-integration coverage on top of that, not a
+substitute for it.
 
 ## Architecture
 
