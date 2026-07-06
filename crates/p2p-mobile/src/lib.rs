@@ -62,15 +62,30 @@ where
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(())) => 0,
         Ok(Err(message)) => {
-            let _ = with_controller(handle, |controller| controller.record_bridge_error(message));
+            record_or_log_bridge_error(handle, message);
             -1
         }
         Err(_) => {
-            let _ = with_controller(handle, |controller| {
-                controller
-                    .record_bridge_error("panic while handling Android bridge call".to_owned())
-            });
+            record_or_log_bridge_error(
+                handle,
+                "panic while handling Android bridge call".to_owned(),
+            );
             -2
+        }
+    }
+}
+
+/// Record `message` as the controller's `last_error`. If the handle is invalid or the
+/// controller's state mutex is poisoned, the failure to record is logged rather than
+/// silently discarded, so a lost primary error is at least visible in the app's log feed.
+fn record_or_log_bridge_error(handle: *mut AndroidTunnelController, message: String) {
+    match with_controller(handle, |controller| controller.record_bridge_error(message.clone())) {
+        Ok(Ok(())) => {}
+        Ok(Err(reason)) => {
+            tracing::error!(%reason, %message, "failed to record bridge error: state mutex poisoned");
+        }
+        Err(reason) => {
+            tracing::error!(%reason, %message, "failed to record bridge error: invalid handle");
         }
     }
 }

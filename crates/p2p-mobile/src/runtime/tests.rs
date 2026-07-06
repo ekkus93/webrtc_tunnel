@@ -226,9 +226,36 @@ fn forced_abort_diagnostic_survives_a_subsequent_duplicate_stop() {
 #[test]
 fn recent_logs_json_shape_is_stable() {
     let controller = AndroidTunnelController::new();
-    let logs = controller.recent_logs(10);
+    let logs = controller.recent_logs(10).expect("state mutex is not poisoned");
     assert!(logs.is_empty());
     let _ = generate_identity("android-test").expect("identity");
+}
+
+#[test]
+fn recent_logs_reports_explicit_error_when_state_mutex_is_poisoned() {
+    let controller = AndroidTunnelController::new();
+    controller.poison_state_mutex_for_test();
+    assert_eq!(
+        controller.recent_logs(10).expect_err("mutex is poisoned"),
+        "runtime mutex poisoned"
+    );
+}
+
+#[test]
+fn last_error_reports_poison_instead_of_none_when_state_mutex_is_poisoned() {
+    let controller = AndroidTunnelController::new();
+    controller.poison_state_mutex_for_test();
+    assert_eq!(controller.last_error(), Some("runtime mutex poisoned".to_owned()));
+}
+
+#[test]
+fn record_bridge_error_reports_explicit_error_when_state_mutex_is_poisoned() {
+    let controller = AndroidTunnelController::new();
+    controller.poison_state_mutex_for_test();
+    assert_eq!(
+        controller.record_bridge_error("some error".to_owned()),
+        Err("runtime mutex poisoned".to_owned())
+    );
 }
 
 #[test]

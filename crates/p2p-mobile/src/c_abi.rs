@@ -15,6 +15,7 @@ use super::{
     AndroidTunnelController, IdentityValidationResult, catch_api_recording, catch_api_string,
     with_controller,
 };
+use crate::runtime::AndroidLogEvent;
 #[unsafe(no_mangle)]
 pub extern "C" fn p2ptunnel_create_runtime() -> *mut AndroidTunnelController {
     Box::into_raw(Box::new(AndroidTunnelController::new()))
@@ -153,8 +154,18 @@ pub unsafe extern "C" fn p2ptunnel_recent_logs_json(
 ) -> *mut c_char {
     catch_api_string(|| {
         with_controller(handle, |controller| {
-            serde_json::to_string(&controller.recent_logs(max_events))
-                .map_err(|error| error.to_string())
+            // Preserve the JSON-array surface Kotlin expects even on mutex poison: a
+            // synthetic error entry, not an empty/absent log list, so the failure is
+            // still visible in the app's log feed rather than silently swallowed.
+            let events = match controller.recent_logs(max_events) {
+                Ok(events) => events,
+                Err(reason) => vec![AndroidLogEvent {
+                    unix_ms: crate::runtime::bridge_unix_ms(),
+                    level: "error".to_owned(),
+                    message: format!("failed to read recent logs: {reason}"),
+                }],
+            };
+            serde_json::to_string(&events).map_err(|error| error.to_string())
         })?
     })
 }

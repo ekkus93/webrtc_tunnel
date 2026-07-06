@@ -21,6 +21,10 @@ mod validate;
 use log_bridge::install_tracing_once;
 use state::{RuntimeInner, record_start_error, reset_runtime_metadata, unix_ms};
 
+// Used by the C-ABI layer to timestamp a synthetic log event when `recent_logs`
+// cannot be read due to mutex poison.
+pub(crate) use state::unix_ms as bridge_unix_ms;
+
 pub use types::{
     AndroidForwardRuntimeStatus, AndroidIceInfo, AndroidLogEvent, AndroidRuntimeState,
     AndroidRuntimeStatus, AndroidTunnelMode, AndroidValidationResult,
@@ -180,35 +184,47 @@ impl AndroidTunnelController {
                     .await
                 }
             };
-            if let Ok(mut inner) = log_state.lock() {
-                match result {
-                    Ok(()) => {
-                        inner.state.state = AndroidRuntimeState::Stopped;
-                        inner.state.mode = None;
-                        inner.state.active = false;
-                        inner.state.config_path = None;
-                        inner.state.last_error = None;
-                        reset_runtime_metadata(&mut inner.state);
-                        inner.logs.push(AndroidLogEvent {
-                            unix_ms: unix_ms(),
-                            level: "info".to_owned(),
-                            message: "runtime completed".to_owned(),
-                        });
+            match log_state.lock() {
+                Ok(mut inner) => {
+                    match result {
+                        Ok(()) => {
+                            inner.state.state = AndroidRuntimeState::Stopped;
+                            inner.state.mode = None;
+                            inner.state.active = false;
+                            inner.state.config_path = None;
+                            inner.state.last_error = None;
+                            reset_runtime_metadata(&mut inner.state);
+                            inner.logs.push(AndroidLogEvent {
+                                unix_ms: unix_ms(),
+                                level: "info".to_owned(),
+                                message: "runtime completed".to_owned(),
+                            });
+                        }
+                        Err(error) => {
+                            inner.state.state = AndroidRuntimeState::Error;
+                            inner.state.last_error = Some(error.to_string());
+                            inner.state.active = false;
+                            // Preserve config_path for diagnostics; clear uptime/measured fields.
+                            reset_runtime_metadata(&mut inner.state);
+                            inner.logs.push(AndroidLogEvent {
+                                unix_ms: unix_ms(),
+                                level: "error".to_owned(),
+                                message: error.to_string(),
+                            });
+                        }
                     }
-                    Err(error) => {
-                        inner.state.state = AndroidRuntimeState::Error;
-                        inner.state.last_error = Some(error.to_string());
-                        inner.state.active = false;
-                        // Preserve config_path for diagnostics; clear uptime/measured fields.
-                        reset_runtime_metadata(&mut inner.state);
-                        inner.logs.push(AndroidLogEvent {
-                            unix_ms: unix_ms(),
-                            level: "error".to_owned(),
-                            message: error.to_string(),
-                        });
-                    }
+                    inner.task = None;
                 }
-                inner.task = None;
+                // The state mutex is poisoned, so it cannot be updated here; log through
+                // `tracing` instead, which routes into `LogBuffer`'s own independent mutex
+                // rather than this one, so the completion is still Kotlin-visible.
+                Err(_) => {
+                    tracing::error!(
+                        ?result,
+                        "runtime completion callback observed a poisoned state mutex; \
+                         runtime state was not updated"
+                    );
+                }
             }
         });
 
@@ -372,22 +388,42 @@ impl AndroidTunnelController {
         })
     }
 
-    pub fn recent_logs(&self, max_events: usize) -> Vec<AndroidLogEvent> {
-        self.inner.lock().map(|inner| inner.logs.recent(max_events)).unwrap_or_default()
+    pub fn recent_logs(&self, max_events: usize) -> Result<Vec<AndroidLogEvent>, String> {
+        self.inner
+            .lock()
+            .map(|inner| inner.logs.recent(max_events))
+            .map_err(|_| "runtime mutex poisoned".to_owned())
     }
 
     pub fn last_error(&self) -> Option<String> {
-        self.inner.lock().ok().and_then(|inner| inner.state.last_error.clone())
+        match self.inner.lock() {
+            Ok(inner) => inner.state.last_error.clone(),
+            Err(_) => Some("runtime mutex poisoned".to_owned()),
+        }
     }
 
     /// Record a failure that happened at the JNI/C-ABI boundary, before the controller could
     /// run (e.g. a null/invalid config path or non-UTF-8 identity). Stores only `last_error`
     /// so `last_error()` surfaces the real cause to Kotlin instead of "unknown error"; the
     /// runtime state is left untouched because nothing actually started.
-    pub fn record_bridge_error(&self, message: String) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.state.last_error = Some(message);
-        }
+    pub fn record_bridge_error(&self, message: String) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|_| "runtime mutex poisoned".to_owned())?;
+        inner.state.last_error = Some(message);
+        Ok(())
+    }
+
+    /// Test-only seam: poisons the state mutex by panicking while holding the lock on
+    /// another thread, so poison-path behavior (here and in the FFI layer) can be
+    /// exercised deterministically.
+    #[cfg(test)]
+    pub(crate) fn poison_state_mutex_for_test(&self) {
+        let inner = Arc::clone(&self.inner);
+        let result = std::thread::spawn(move || {
+            let _guard = inner.lock().expect("mutex is not yet poisoned");
+            panic!("deliberately poisoning the state mutex for a test");
+        })
+        .join();
+        assert!(result.is_err(), "spawned thread should have panicked");
     }
 }
 

@@ -53,6 +53,21 @@ fn recent_logs_json_is_stable_and_side_effect_free() {
 }
 
 #[test]
+fn recent_logs_json_surfaces_a_synthetic_error_entry_when_state_mutex_is_poisoned() {
+    let handle = p2ptunnel_create_runtime();
+    super::with_controller(handle, |controller| controller.poison_state_mutex_for_test())
+        .expect("controller present");
+    let raw = unsafe { p2ptunnel_recent_logs_json(handle, 4) };
+    let parsed: Value = serde_json::from_str(&read_and_free(raw)).expect("logs json");
+    let events = parsed.as_array().expect("logs json is an array");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].get("level").and_then(Value::as_str), Some("error"));
+    let message = events[0].get("message").and_then(Value::as_str).expect("message field");
+    assert!(message.contains("runtime mutex poisoned"), "got: {message}");
+    unsafe { p2ptunnel_destroy_runtime(handle) };
+}
+
+#[test]
 fn generate_identity_returns_expected_json_fields() {
     let peer_id = CString::new("android-test").expect("peer id cstring");
     let raw = unsafe { p2ptunnel_generate_identity(peer_id.as_ptr()) };
@@ -158,7 +173,9 @@ fn record_bridge_error_surfaces_via_last_error() {
     // The recorder the JNI marshalling paths use must make the message retrievable.
     let handle = p2ptunnel_create_runtime();
     super::with_controller(handle, |controller| {
-        controller.record_bridge_error("marshalling boom".to_owned());
+        controller
+            .record_bridge_error("marshalling boom".to_owned())
+            .expect("state mutex is not poisoned");
     })
     .expect("controller present");
     assert_eq!(super::last_error_for_handle(handle), "marshalling boom");

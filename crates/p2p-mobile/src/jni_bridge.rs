@@ -16,11 +16,20 @@ use super::{AndroidTunnelController, last_error_for_handle, to_jstring, with_con
 
 /// Record a JNI-marshalling failure (which happens before the controller can run) on the
 /// handle's `last_error`, so Kotlin's `nativeLastError()` surfaces the real cause instead of
-/// the generic "unknown error".
+/// the generic "unknown error". If recording itself fails (invalid handle or a poisoned
+/// state mutex), that failure is logged rather than silently discarded.
 fn record_marshalling_error(handle: jlong, message: String) {
-    let _ = with_controller(handle as *mut AndroidTunnelController, |controller| {
-        controller.record_bridge_error(message)
-    });
+    match with_controller(handle as *mut AndroidTunnelController, |controller| {
+        controller.record_bridge_error(message.clone())
+    }) {
+        Ok(Ok(())) => {}
+        Ok(Err(reason)) => {
+            tracing::error!(%reason, %message, "failed to record marshalling error: state mutex poisoned");
+        }
+        Err(reason) => {
+            tracing::error!(%reason, %message, "failed to record marshalling error: invalid handle");
+        }
+    }
 }
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_phillipchin_webrtctunnel_NativeControlLib_nativeCreateRuntime(
