@@ -48,6 +48,12 @@ pub(crate) struct AnswerDaemonTestHooks {
     /// force `shutdown.request_shutdown()` to land in that exact window instead
     /// of racing real time against the scheduler (P0-006).
     pub(crate) payload_admission_barrier: Option<PayloadAdmissionBarrier>,
+    /// Armed onto the next admitted session's spawned task, letting a test make a
+    /// *real* `run_answer_session_task` panic on command so the full
+    /// panic -> `JoinError` -> registry cleanup -> drain -> terminal-status chain
+    /// can be proven end-to-end instead of fabricating an `AnswerTaskCompletion`
+    /// directly (P0-009).
+    pub(crate) session_panic_trigger: Option<AnswerSessionPanicArm>,
 }
 
 /// A repeatable rendezvous: the daemon loop calls
@@ -118,6 +124,37 @@ impl PayloadAdmissionBarrierRelease {
             .await
             .expect("payload admission barrier observer must remain alive");
     }
+}
+
+/// Test-held half of the P0-009 real-panic proof: call [`Self::fire`] to make the
+/// session that armed the matching [`AnswerSessionPanicArm`] panic inside its own
+/// real, spawned `run_answer_session_task`, at the next opportunity in its select
+/// loop. A broken channel is a test-harness bug, not something to continue past
+/// silently — see P1-004.
+///
+/// Not `#[cfg]`-gated (unlike the other test hooks in this file): `tokio::select!`
+/// does not support per-branch `cfg` attributes, so the session task's select loop
+/// carries this branch unconditionally, disabled via `Option::is_some()` the same
+/// way the existing `bridge_result` branch is — dead weight in release builds, not
+/// a functional difference.
+pub struct AnswerSessionPanicTrigger {
+    fire_tx: tokio::sync::oneshot::Sender<()>,
+}
+
+impl AnswerSessionPanicTrigger {
+    pub fn new() -> (Self, AnswerSessionPanicArm) {
+        let (fire_tx, fire_rx) = tokio::sync::oneshot::channel();
+        (Self { fire_tx }, AnswerSessionPanicArm { fire_rx })
+    }
+
+    pub fn fire(self) {
+        self.fire_tx.send(()).expect("answer session panic arm must remain alive");
+    }
+}
+
+/// Daemon-held half of the P0-009 real-panic proof; see [`AnswerSessionPanicTrigger`].
+pub struct AnswerSessionPanicArm {
+    fire_rx: tokio::sync::oneshot::Receiver<()>,
 }
 
 pub async fn run_answer_daemon(
@@ -202,7 +239,39 @@ pub async fn run_answer_daemon_with_payload_admission_barrier_and_shutdown<
         local_identity,
         authorized_keys,
         transport,
-        Some(AnswerDaemonTestHooks { payload_admission_barrier: Some(payload_admission_barrier) }),
+        Some(AnswerDaemonTestHooks {
+            payload_admission_barrier: Some(payload_admission_barrier),
+            session_panic_trigger: None,
+        }),
+        shutdown,
+    )
+    .await
+}
+
+/// Like [`run_answer_daemon_with_transport_and_shutdown`], but also accepts an
+/// [`AnswerSessionPanicArm`] that arms the *next* admitted session's real spawned
+/// task to panic on command, so a test can prove the full panic -> `JoinError` ->
+/// registry cleanup -> drain -> terminal-status chain end-to-end (P0-009).
+#[cfg(any(test, debug_assertions))]
+pub async fn run_answer_daemon_with_session_panic_trigger_and_shutdown<
+    T: DaemonSignalingTransport,
+>(
+    config: AppConfig,
+    local_identity: IdentityFile,
+    authorized_keys: AuthorizedKeys,
+    transport: T,
+    session_panic_trigger: AnswerSessionPanicArm,
+    shutdown: ShutdownToken,
+) -> Result<(), DaemonError> {
+    run_answer_daemon_inner(
+        config,
+        local_identity,
+        authorized_keys,
+        transport,
+        Some(AnswerDaemonTestHooks {
+            payload_admission_barrier: None,
+            session_panic_trigger: Some(session_panic_trigger),
+        }),
         shutdown,
     )
     .await
@@ -218,7 +287,8 @@ async fn run_answer_daemon_inner<T: DaemonSignalingTransport>(
     mut shutdown: ShutdownToken,
 ) -> Result<(), DaemonError> {
     #[cfg(any(test, debug_assertions))]
-    let AnswerDaemonTestHooks { mut payload_admission_barrier } = test_hooks.unwrap_or_default();
+    let AnswerDaemonTestHooks { mut payload_admission_barrier, mut session_panic_trigger } =
+        test_hooks.unwrap_or_default();
     validate_config_authorized_peers(&config, &authorized_keys)?;
     let config = Arc::new(config);
     let local_identity = Arc::new(local_identity);
@@ -316,6 +386,7 @@ async fn run_answer_daemon_inner<T: DaemonSignalingTransport>(
                         session_by_peer: &mut session_by_peer,
                         session_completions: &mut session_completions,
                         next_generation: &mut next_generation,
+                        session_panic_trigger: &mut session_panic_trigger,
                     },
                     payload,
                 )
@@ -510,6 +581,10 @@ pub(crate) struct AnswerSessionRegistry<'a> {
     pub(crate) session_by_peer: &'a mut HashMap<PeerId, SessionId>,
     pub(crate) session_completions: &'a mut AnswerSessionCompletions,
     pub(crate) next_generation: &'a mut u64,
+    /// Taken (if present) by the next session admitted from an incoming offer and
+    /// handed to that session's real spawned task, so it can be made to panic on
+    /// command (P0-009).
+    pub(crate) session_panic_trigger: &'a mut Option<AnswerSessionPanicArm>,
 }
 
 pub(crate) struct IncomingOffer<'a> {
@@ -740,6 +815,7 @@ async fn start_answer_session_from_offer<T: DaemonSignalingTransport>(
     let status = SessionStatusSnapshot::from_session(config, &session, generation);
     let session_id = session.session_id;
     let remote_peer_id = session.remote_peer_id.clone();
+    let session_panic_trigger = registry.session_panic_trigger.take();
     let task = tokio::spawn(run_answer_session_task(
         AnswerSessionTaskDeps {
             config: Arc::clone(config),
@@ -751,6 +827,7 @@ async fn start_answer_session_from_offer<T: DaemonSignalingTransport>(
         generation,
         session,
         shutdown.clone(),
+        session_panic_trigger,
     ));
     let completion_remote_peer_id = remote_peer_id.clone();
     registry.session_completions.push(Box::pin(async move {

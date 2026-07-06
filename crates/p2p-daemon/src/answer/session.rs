@@ -22,7 +22,9 @@ use crate::messages::*;
 use crate::signaling::*;
 use crate::types::*;
 
+use super::AnswerSessionPanicArm;
 use super::IncomingOffer;
+
 pub(crate) async fn handle_answer_session_message(
     message: &InnerMessage,
     session: &mut ActiveSession,
@@ -54,10 +56,17 @@ pub(crate) async fn run_answer_session_task(
     generation: SessionGeneration,
     mut session: ActiveSession,
     shutdown: ShutdownToken,
+    panic_arm: Option<AnswerSessionPanicArm>,
 ) -> AnswerSessionTaskResult {
-    let result =
-        run_answer_session_task_inner(&deps, &mut inbound, generation, &mut session, shutdown)
-            .await;
+    let result = run_answer_session_task_inner(
+        &deps,
+        &mut inbound,
+        generation,
+        &mut session,
+        shutdown,
+        panic_arm,
+    )
+    .await;
     if let Err(error) = &result {
         tracing::warn!(
             reason = %error,
@@ -76,6 +85,7 @@ async fn run_answer_session_task_inner(
     generation: SessionGeneration,
     session: &mut ActiveSession,
     mut shutdown: ShutdownToken,
+    mut panic_arm: Option<AnswerSessionPanicArm>,
 ) -> Result<(), DaemonError> {
     let AnswerSessionTaskDeps { config, local_identity, authorized_keys, event_tx } = deps;
     let codec = SignalCodec::new(
@@ -96,6 +106,16 @@ async fn run_answer_session_task_inner(
                     "answer session shutdown requested"
                 );
                 return Ok(());
+            }
+            _ = async {
+                let arm = panic_arm.as_mut().expect("guarded by if");
+                (&mut arm.fire_rx).await
+            }, if panic_arm.is_some() => {
+                panic!(
+                    "test-injected answer session panic (P0-009): proving a real spawned \
+                     session task panic propagates through JoinHandle -> registry cleanup \
+                     -> drain -> terminal status"
+                );
             }
             _ = tick.tick() => {
                 retry_pending_answer_session_acks(config, event_tx, generation, session).await?;

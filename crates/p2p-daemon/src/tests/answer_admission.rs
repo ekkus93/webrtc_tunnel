@@ -78,6 +78,7 @@ async fn answer_daemon_admits_unknown_authenticated_offer() {
             session_by_peer: &mut session_by_peer,
             session_completions: &mut session_completions,
             next_generation: &mut next_generation,
+            session_panic_trigger: &mut None,
         },
         payload,
     )
@@ -175,6 +176,7 @@ async fn answer_daemon_rejects_sender_session_owner_mismatch() {
             session_by_peer: &mut session_by_peer,
             session_completions: &mut session_completions,
             next_generation: &mut next_generation,
+            session_panic_trigger: &mut None,
         },
         payload,
     )
@@ -275,6 +277,7 @@ async fn duplicate_signal_for_one_session_does_not_route_to_another_session() {
                 session_by_peer: &mut session_by_peer,
                 session_completions: &mut session_completions,
                 next_generation: &mut next_generation,
+                session_panic_trigger: &mut None,
             },
             payload.clone(),
         )

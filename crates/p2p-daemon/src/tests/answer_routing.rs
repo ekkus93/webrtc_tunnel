@@ -103,6 +103,7 @@ async fn answer_daemon_routes_only_authenticated_sender_and_session() {
             session_by_peer: &mut session_by_peer,
             session_completions: &mut session_completions,
             next_generation: &mut next_generation,
+            session_panic_trigger: &mut None,
         },
         payload,
     )
@@ -198,6 +199,7 @@ async fn forged_outer_sender_kid_is_not_routed_to_matching_peer_session() {
             session_by_peer: &mut session_by_peer,
             session_completions: &mut session_completions,
             next_generation: &mut next_generation,
+            session_panic_trigger: &mut None,
         },
         forged_payload,
     )
@@ -268,6 +270,7 @@ async fn answer_daemon_ignores_unknown_authenticated_non_offer() {
             session_by_peer: &mut session_by_peer,
             session_completions: &mut session_completions,
             next_generation: &mut next_generation,
+            session_panic_trigger: &mut None,
         },
         payload,
     )
@@ -350,6 +353,7 @@ async fn answer_daemon_does_not_peer_fallback_route_unknown_non_offer() {
             session_by_peer: &mut session_by_peer,
             session_completions: &mut session_completions,
             next_generation: &mut next_generation,
+            session_panic_trigger: &mut None,
         },
         payload,
     )
@@ -501,6 +505,7 @@ async fn answer_daemon_unknown_same_peer_offer_enters_session_policy() {
             session_by_peer: &mut session_by_peer,
             session_completions: &mut session_completions,
             next_generation: &mut next_generation,
+            session_panic_trigger: &mut None,
         },
         payload,
     )

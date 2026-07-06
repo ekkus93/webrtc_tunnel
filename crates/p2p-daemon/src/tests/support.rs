@@ -463,6 +463,7 @@ impl AnswerRoutingFixture {
                 session_by_peer: &mut self.session_by_peer,
                 session_completions: &mut self.session_completions,
                 next_generation: &mut self.next_generation,
+                session_panic_trigger: &mut None,
             },
             payload,
         )
