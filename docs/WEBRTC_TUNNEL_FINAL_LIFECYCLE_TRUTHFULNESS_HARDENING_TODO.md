@@ -1415,9 +1415,9 @@ bridge error recording failed
 
 ### Acceptance criteria
 
-- [ ] No touched path discards a known specific error for `unknown error`.
-- [ ] Existing ABI shape remains compatible.
-- [ ] Tests assert specific error text where deterministic.
+- [x] No touched path discards a known specific error for `unknown error`.
+- [x] Existing ABI shape remains compatible.
+- [x] Tests assert specific error text where deterministic.
 
 ---
 
@@ -1596,15 +1596,15 @@ fix(status): make atomic temp paths unique per write
 
 ## macOS
 
-- [ ] Existing log directory is writable by `_p2ptunnel`.
-- [ ] Traversable but non-writable directory fails validation.
-- [ ] Smoke test detects the permission regression.
+- [x] Existing log directory is writable by `_p2ptunnel`.
+- [x] Traversable but non-writable directory fails validation.
+- [x] Smoke test detects the permission regression (implemented; NOT RUN in this Linux sandbox — see P1-001).
 
 ## Diagnostics
 
-- [ ] Quoted multi-word secrets are fully removed.
-- [ ] Diagnostic error path always returns valid JSON.
-- [ ] Error details remain redacted.
+- [x] Quoted multi-word secrets are fully removed.
+- [x] Diagnostic error path always returns valid JSON.
+- [x] Error details remain redacted.
 - [x] Reset failure reason is preserved in diagnostics/logs.
 
 ## Tests
