@@ -53,17 +53,21 @@ class ForwardsConfigStore(private val context: Context) {
      * returned; on corrupt JSON the error is logged and surfaced so callers can keep
      * their existing in-memory list rather than silently erasing it.
      */
-    fun loadForwardsResult(): Result<List<ForwardConfig>> {
+    fun loadForwardsResult(): Result<List<ForwardConfig>> =
         if (!forwardsFile.exists()) {
-            val defaults = defaultForwards()
-            saveForwards(defaults)
-            return Result.success(defaults)
-        }
-        return runCatching { Json.decodeFromString<List<ForwardConfig>>(forwardsFile.readText()) }
-            .onFailure { error ->
-                Log.w(TAG, "forwards.json is corrupt; keeping existing forwards instead of erasing", error)
+            runCatching {
+                val defaults = defaultForwards()
+                saveForwards(defaults)
+                defaults
+            }.onFailure { error ->
+                Log.w(TAG, "Failed to seed default forwards.json", error)
             }
-    }
+        } else {
+            runCatching { Json.decodeFromString<List<ForwardConfig>>(forwardsFile.readText()) }
+                .onFailure { error ->
+                    Log.w(TAG, "forwards.json is corrupt; keeping existing forwards instead of erasing", error)
+                }
+        }
 
     /**
      * Atomically replace forwards.json: write a temp file in the same directory and

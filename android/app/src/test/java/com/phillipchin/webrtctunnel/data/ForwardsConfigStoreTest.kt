@@ -59,6 +59,21 @@ class ForwardsConfigStoreTest {
     }
 
     @Test
+    fun loadForwardsResultReturnsFailureWithoutThrowingWhenSeedWriteFails() {
+        file.delete()
+        // Force the missing-file default-seeding write inside loadForwardsResult() to fail,
+        // by making its target directory read-only, instead of throwing past the Result
+        // contract (P1-002).
+        assertTrue(context.filesDir.setReadOnly())
+        try {
+            val result = store.loadForwardsResult()
+            assertTrue(result.isFailure)
+        } finally {
+            context.filesDir.setWritable(true)
+        }
+    }
+
+    @Test
     fun saveLeavesNoTempFilesBehind() {
         store.saveForwards(listOf(forward("a", 1111)))
         val temps = context.filesDir.listFiles { f -> f.name.startsWith("forwards") && f.name.endsWith(".tmp") }
