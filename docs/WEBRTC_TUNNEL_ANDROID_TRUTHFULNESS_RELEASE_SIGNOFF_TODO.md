@@ -1284,10 +1284,49 @@ Do not expose a public mutator.
 
 ### Acceptance criteria
 
-- [ ] No plain Boolean shared across coroutine threads.
-- [ ] Failed stop forces false.
-- [ ] Successful stop sets true only after success.
-- [ ] Policy observers see latest value deterministically.
+- [x] No plain Boolean shared across coroutine threads. `pausedByPolicy` is now
+      `internal val pausedByPolicy = AtomicBoolean(false)`; every read/write site converted to
+      `.get()`/`.set(...)` — the network-policy monitor callback (`onCreate`), the status-poll
+      loop (`StatusReporter.startStatusPolling()`), `onDestroy()`, and every `OfferCoordinator`
+      lifecycle function (`startOffer`'s success branch, `allowMeteredForSessionAndStart`,
+      `pause`, `pauseForPolicy`, `stopServiceWork`). Kept the field `internal` (not a new
+      `isPausedByPolicyForTest()` wrapper) matching this file's established P0-004 pattern of
+      widening field visibility instead of adding member functions, since this class has
+      repeatedly hit detekt's `TooManyFunctions` threshold (11) whenever a new method is added —
+      the field itself is not a "public mutator" (still `internal`, and the TODO's own
+      alternative already just exposes a read; direct field access here exposes the same
+      surface a wrapper would, sans the extra method).
+- [x] Failed stop forces false. Unchanged behavior (already correct before this task, now just
+      atomic): `pauseForPolicy`'s `onFailure` branch unconditionally calls
+      `pausedByPolicy.set(false)`. Covered by the pre-existing
+      `failedPolicyStopForcesPausedByPolicyFalseEvenFromStaleTruePrecondition` test (updated to
+      `.get()`).
+- [x] Successful stop sets true only after success. Unchanged behavior: `pausedByPolicy.set(true)`
+      only happens inside `pauseForPolicy`'s `onSuccess` branch. Same pre-existing test covers
+      this (the "first policy pause" / "retry policy pause" assertions).
+- [x] Policy observers see latest value deterministically. New test
+      `autoResumeOnUnmeteredSeesLatestPausedByPolicyAcrossThreads`
+      (`TunnelForegroundServiceStopFailureTest.kt`): pauses via `pauseForPolicy()` on the JUnit
+      test thread (this service test runs with real `Dispatchers.IO` for both `ioDispatcher` and
+      `defaultDispatcher`, so `serviceScope`-launched coroutines genuinely run on a different JVM
+      thread), then re-triggers the real `ConnectivityManager.NetworkCallback` registered by
+      `NetworkPolicyManager.monitor()` (via Robolectric's `ShadowConnectivityManager
+      .getNetworkCallbacks()` + `ShadowNetwork.newInstance(...)`, since the flow's only other
+      emission already happened once during `onCreate()` before this test ever paused and can't
+      be un-observed) to make the `onCreate()` auto-resume check in `networkMonitorJob` run again
+      on that other thread — proving it observes the `pausedByPolicy` write made from the test
+      thread (asserts `pausedByPolicy.get()` flips back to `false` and `offer.resume()` actually
+      re-starts the tunnel, `bridge.startOfferCalls >= 2`). This single test covers both the
+      "cross-thread write/read visibility" and "auto-resume path sees latest value" required
+      tests, since they are the same scenario here.
+      Regression-strength verified: reverting `TunnelForegroundService.kt`'s `AtomicBoolean`
+      change back to a plain `var Boolean` makes the test file fail to *compile*
+      (`Unresolved reference 'get'` at all 4 call sites) rather than merely fail at runtime —
+      genuine memory-visibility races are not reliably reproducible as a flake-free JVM unit
+      test, so a compile-time dependency on the atomic type is the honest, deterministic proof
+      available here. Restored the fix, reran 3x back-to-back (no flakiness): all pass.
+      Full local gates rerun after restoring (`./gradlew testDebugUnitTest`,
+      `assembleDebug testDebugUnitTest check`) — all green.
 
 ---
 
