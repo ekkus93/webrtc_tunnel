@@ -156,7 +156,7 @@ Parse-tested sample configs are maintained in `docs/examples/offer-config.toml` 
 - `[node]`: local `peer_id` and role (`offer` or `answer`)
 - `[paths]`: identity, authorized keys, and local runtime file paths such as the state and log directories
 - `[broker]`: the MQTT server connection settings, including broker URL, topic prefix, optional credentials, and TLS requirements
-- `[webrtc]`: STUN URLs, trickle ICE, ICE restart, and the optional ICE candidate-gathering controls `android_ice_mode` (`auto`/`native`/`vnet`/`vnet_mux`) and `advertised_local_ipv4`
+- `[webrtc]`: STUN URLs, trickle ICE, ICE restart, and the optional ICE candidate-gathering controls `android_ice_mode` (`auto`/`native`/`vnet`/`vnet_mux`), `advertised_local_ipv4`, and `ice_checking_timeout_ms` (total ICE checking timeout before the agent declares a session failed; 10000–120000 ms, default 10000)
 - `[peer]`: offer-side remote answer peer
 - `[tunnel]`: shared tunnel read/EOF behavior plus the data-plane probe (`data_plane_probe_timeout_ms`) and mid-session heartbeat (`data_plane_heartbeat_interval_ms`, `data_plane_heartbeat_max_misses`)
 - `[[forwards]]`: one logical forward per local listener/answer target mapping
