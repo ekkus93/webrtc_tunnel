@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use p2p_core::{AppConfig, DaemonState, NodeRole, PeerId, SessionId};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::DaemonError;
@@ -42,7 +42,7 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     write_result
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaemonStatus {
     pub peer_id: PeerId,
     pub role: NodeRole,
@@ -58,7 +58,7 @@ pub struct DaemonStatus {
 }
 
 /// Runtime state of a single configured forward's local listener (offer role).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForwardListenState {
     /// Local TCP listener is actually bound and accepting connections.
@@ -73,7 +73,7 @@ pub enum ForwardListenState {
 /// Per-forward runtime status surfaced to clients (e.g. the Android UI). Only the
 /// offer role binds local listeners, so this reflects the offer side; it never
 /// carries secret material.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ForwardRuntimeStatus {
     pub id: String,
     pub listen_state: ForwardListenState,
@@ -114,7 +114,7 @@ impl ForwardRuntimeStatus {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionStatus {
     pub session_id: String,
     pub remote_peer_id: PeerId,

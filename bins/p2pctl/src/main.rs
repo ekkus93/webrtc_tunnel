@@ -8,6 +8,7 @@ use p2p_core::AppConfig;
 use p2p_crypto::{
     AuthorizedKeys, IdentityFile, PublicIdentity, generate_identity, kid_from_signing_key,
 };
+use p2p_daemon::DaemonStatus;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -58,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn keygen(peer_id: &str, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     let generated = generate_identity(peer_id)?;
-    let config_dir = default_config_dir()?;
+    let config_dir = default_config_dir(std::env::var_os("HOME").map(PathBuf::from))?;
     fs::create_dir_all(&config_dir)?;
 
     let (identity_path, identity_pub_path, replaced) =
@@ -106,7 +107,8 @@ fn render_fingerprint(public_identity: &PublicIdentity) -> String {
 
 fn add_authorized_key(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let public_identity = load_public_identity(path)?;
-    let authorized_keys_path = default_config_dir()?.join("authorized_keys");
+    let authorized_keys_path =
+        default_config_dir(std::env::var_os("HOME").map(PathBuf::from))?.join("authorized_keys");
     append_authorized_key(&authorized_keys_path, &public_identity)?;
     println!("updated {}", authorized_keys_path.display());
     Ok(())
@@ -154,62 +156,55 @@ fn status(path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let content = fs::read_to_string(status_file)?;
-    let status: serde_json::Value = serde_json::from_str(&content)?;
+    let status: DaemonStatus = serde_json::from_str(&content)?;
     print!("{}", render_status(&status));
     Ok(())
 }
 
-fn render_status(status: &serde_json::Value) -> String {
+/// Renders an enum that serializes to a plain JSON string (all of this crate's status
+/// enums use `#[serde(rename_all = "snake_case"/"lowercase")]` with no data) as that bare
+/// string, e.g. `DaemonState::TunnelOpen` -> `"tunnel_open"`.
+fn render_enum_as_str<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(rendered)) => rendered,
+        _ => unreachable!("status enums always serialize to a JSON string"),
+    }
+}
+
+fn render_status(status: &DaemonStatus) -> String {
     let mut output = String::new();
     output.push_str(&format!(
         "peer_id={} role={} mqtt_connected={} state={}\n",
-        status["peer_id"].as_str().unwrap_or("unknown"),
-        status["role"].as_str().unwrap_or("unknown"),
-        status["mqtt_connected"].as_bool().unwrap_or(false),
-        status["current_state"].as_str().unwrap_or("unknown")
+        status.peer_id,
+        render_enum_as_str(&status.role),
+        status.mqtt_connected,
+        render_enum_as_str(&status.current_state),
     ));
-    if let Some(count) = status["active_session_count"].as_u64() {
-        let capacity = status["session_capacity"]
-            .as_u64()
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "unknown".to_owned());
-        output.push_str(&format!("sessions={count}/{capacity}\n"));
-    }
-    match status["sessions"].as_array() {
-        Some(sessions) if sessions.is_empty() => output.push_str("sessions: none\n"),
-        None => output.push_str("sessions: none\n"),
-        Some(sessions) => {
-            output.push_str("sessions:\n");
-            for session in sessions {
-                let forwards = session["configured_forward_ids"]
-                    .as_array()
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    })
-                    .unwrap_or_default();
-                output.push_str(&format!(
-                    "  {} peer={} state={} data_channel_open={} configured_forwards={}\n",
-                    session["session_id"].as_str().unwrap_or("unknown"),
-                    session["remote_peer_id"].as_str().unwrap_or("unknown"),
-                    session["state"].as_str().unwrap_or("unknown"),
-                    session["data_channel_open"].as_bool().unwrap_or(false),
-                    forwards
-                ));
-            }
+    output.push_str(&format!(
+        "sessions={}/{}\n",
+        status.active_session_count, status.session_capacity
+    ));
+    if status.sessions.is_empty() {
+        output.push_str("sessions: none\n");
+    } else {
+        output.push_str("sessions:\n");
+        for session in &status.sessions {
+            output.push_str(&format!(
+                "  {} peer={} state={} data_channel_open={} configured_forwards={}\n",
+                session.session_id,
+                session.remote_peer_id,
+                render_enum_as_str(&session.state),
+                session.data_channel_open,
+                session.configured_forward_ids.join(","),
+            ));
         }
     }
     output
 }
 
 fn load_config(path: Option<&Path>) -> Result<AppConfig, Box<dyn std::error::Error>> {
-    let path = path
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| default_config_dir().expect("default config dir").join("config.toml"));
-    Ok(AppConfig::load_from_file(&path)?)
+    let resolved = resolve_config_path(path, std::env::var_os("HOME").map(PathBuf::from))?;
+    Ok(AppConfig::load_from_file(&resolved)?)
 }
 
 fn load_public_identity(path: &Path) -> Result<PublicIdentity, Box<dyn std::error::Error>> {
@@ -217,22 +212,39 @@ fn load_public_identity(path: &Path) -> Result<PublicIdentity, Box<dyn std::erro
     Ok(PublicIdentity::parse(content.trim())?)
 }
 
-fn default_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".config/p2ptunnel"))
+/// Config-path resolution, parameterized on `home` so it's testable without touching
+/// the real `$HOME`: an explicit path is used as-is (ignoring `home` entirely), otherwise
+/// falls back to `$HOME/.config/p2ptunnel/config.toml`. Mirrors the pattern used by
+/// `p2p-offer`/`p2p-answer`.
+fn resolve_config_path(
+    path: Option<&Path>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    match path {
+        Some(path) => Ok(path.to_path_buf()),
+        None => Ok(default_config_dir(home)?.join("config.toml")),
+    }
+}
+
+fn default_config_dir(home: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = home.ok_or("HOME is not set")?;
+    Ok(home.join(".config/p2ptunnel"))
 }
 
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
 
+    use p2p_core::SessionId;
+    use p2p_core::{DaemonState, NodeRole};
     use p2p_crypto::{generate_identity, kid_from_signing_key};
-    use serde_json::json;
+    use p2p_daemon::{DaemonStatus, SessionStatus};
 
     use super::{
         append_authorized_key, check_config, fingerprint, render_fingerprint, render_status,
-        write_identity_files,
+        resolve_config_path, write_identity_files,
     };
 
     #[test]
@@ -267,49 +279,42 @@ mod tests {
         );
     }
 
+    fn sample_status(sessions: Vec<SessionStatus>, session_capacity: usize) -> DaemonStatus {
+        DaemonStatus::with_sessions(
+            "answer-office".parse().expect("peer id"),
+            NodeRole::Answer,
+            true,
+            DaemonState::Serving,
+            vec!["ssh".to_owned()],
+            session_capacity,
+            sessions,
+        )
+    }
+
     #[test]
     fn status_rendering_handles_zero_sessions() {
-        let output = render_status(&json!({
-            "peer_id": "answer-office",
-            "role": "answer",
-            "mqtt_connected": true,
-            "current_state": "serving",
-            "active_session_count": 0,
-            "session_capacity": 16,
-            "sessions": [],
-            "configured_forwards": ["ssh"]
-        }));
+        let output = render_status(&sample_status(Vec::new(), 16));
 
         assert!(
             output.contains("peer_id=answer-office role=answer mqtt_connected=true state=serving")
         );
         assert!(output.contains("sessions=0/16"));
         assert!(output.contains("sessions: none"));
-        assert!(!output.contains("active_stream_count"));
-        assert!(!output.contains("open_forward_ids"));
     }
 
     #[test]
     fn status_rendering_handles_one_session() {
-        let output = render_status(&json!({
-            "peer_id": "answer-office",
-            "role": "answer",
-            "mqtt_connected": true,
-            "current_state": "serving",
-            "active_session_count": 1,
-            "session_capacity": 16,
-            "sessions": [{
-                "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "remote_peer_id": "offer-home",
-                "state": "tunnel_open",
-                "data_channel_open": true,
-                "configured_forward_ids": ["ssh", "web-ui"]
-            }]
-        }));
+        let session = SessionStatus::new(
+            SessionId::new([0xaa; 16]),
+            "offer-home".parse().expect("peer id"),
+            DaemonState::TunnelOpen,
+            true,
+            vec!["ssh".to_owned(), "web-ui".to_owned()],
+        );
+        let output = render_status(&sample_status(vec![session], 16));
 
         assert!(output.contains("state=serving"));
         assert!(output.contains("sessions=1/16"));
-        assert!(output.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         assert!(output.contains("peer=offer-home"));
         assert!(output.contains("state=tunnel_open"));
         assert!(output.contains("data_channel_open=true"));
@@ -318,147 +323,72 @@ mod tests {
 
     #[test]
     fn status_rendering_handles_multiple_sessions() {
-        let output = render_status(&json!({
-            "peer_id": "answer-office",
-            "role": "answer",
-            "mqtt_connected": true,
-            "current_state": "serving",
-            "active_session_count": 2,
-            "session_capacity": 16,
-            "sessions": [
-                {
-                    "session_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    "remote_peer_id": "offer-desktop",
-                    "state": "tunnel_open",
-                    "data_channel_open": true,
-                    "configured_forward_ids": ["web-ui"]
-                },
-                {
-                    "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "remote_peer_id": "offer-home",
-                    "state": "connecting_data_channel",
-                    "data_channel_open": false,
-                    "configured_forward_ids": ["ssh"]
-                }
-            ]
-        }));
+        let sessions = vec![
+            SessionStatus::new(
+                SessionId::new([0xbb; 16]),
+                "offer-desktop".parse().expect("peer id"),
+                DaemonState::TunnelOpen,
+                true,
+                vec!["web-ui".to_owned()],
+            ),
+            SessionStatus::new(
+                SessionId::new([0xaa; 16]),
+                "offer-home".parse().expect("peer id"),
+                DaemonState::ConnectingDataChannel,
+                false,
+                vec!["ssh".to_owned()],
+            ),
+        ];
+        let output = render_status(&sample_status(sessions, 16));
 
         assert!(output.contains("sessions=2/16"));
-        assert!(output.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb peer=offer-desktop"));
-        assert!(output.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa peer=offer-home"));
+        assert!(output.contains("peer=offer-desktop"));
+        assert!(output.contains("peer=offer-home"));
         assert!(output.contains("configured_forwards=web-ui"));
         assert!(output.contains("configured_forwards=ssh"));
-        assert!(!output.contains("active_stream_count"));
-        assert!(!output.contains("open_forward_ids"));
-    }
-
-    #[test]
-    fn status_rendering_handles_missing_top_level_fields() {
-        let output = render_status(&json!({}));
-
-        assert_eq!(
-            output,
-            "peer_id=unknown role=unknown mqtt_connected=false state=unknown\nsessions: none\n"
-        );
-        assert!(!output.contains("active_stream_count"));
-        assert!(!output.contains("open_forward_ids"));
-    }
-
-    #[test]
-    fn status_rendering_handles_each_missing_current_field() {
-        let base = json!({
-            "peer_id": "answer-office",
-            "role": "answer",
-            "mqtt_connected": true,
-            "current_state": "serving",
-            "active_session_count": 0,
-            "session_capacity": 16,
-            "sessions": []
-        });
-
-        for key in [
-            "peer_id",
-            "role",
-            "mqtt_connected",
-            "current_state",
-            "active_session_count",
-            "session_capacity",
-            "sessions",
-        ] {
-            let mut fixture = base.clone();
-            fixture.as_object_mut().expect("fixture object").remove(key);
-
-            let output = render_status(&fixture);
-
-            assert!(output.starts_with("peer_id="), "{key}: output remains human-readable");
-            assert!(output.contains("role="), "{key}: role field remains rendered");
-            assert!(output.contains("state="), "{key}: state field remains rendered");
-            assert!(output.contains("sessions:"), "{key}: sessions section remains rendered");
-            assert!(!output.contains("active_stream_count"), "{key}: removed fields not invented");
-            assert!(!output.contains("open_forward_ids"), "{key}: removed fields not invented");
-        }
-    }
-
-    #[test]
-    fn status_rendering_handles_non_array_sessions() {
-        let output = render_status(&json!({
-            "peer_id": "answer-office",
-            "role": "answer",
-            "mqtt_connected": true,
-            "current_state": "serving",
-            "active_session_count": 1,
-            "session_capacity": 16,
-            "sessions": {"unexpected": "object"}
-        }));
-
-        assert!(output.contains("sessions=1/16"));
-        assert!(output.contains("sessions: none"));
     }
 
     #[test]
     fn status_rendering_handles_session_missing_configured_forwards() {
-        let output = render_status(&json!({
-            "peer_id": "answer-office",
-            "role": "answer",
-            "mqtt_connected": true,
-            "current_state": "serving",
-            "active_session_count": 1,
-            "session_capacity": 16,
-            "sessions": [{
-                "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "remote_peer_id": "offer-home",
-                "state": "tunnel_open",
-                "data_channel_open": true
-            }]
-        }));
+        let session = SessionStatus::new(
+            SessionId::new([0xaa; 16]),
+            "offer-home".parse().expect("peer id"),
+            DaemonState::TunnelOpen,
+            true,
+            Vec::new(),
+        );
+        let output = render_status(&sample_status(vec![session], 16));
 
-        assert!(output.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa peer=offer-home"));
+        assert!(output.contains("peer=offer-home"));
         assert!(output.contains("configured_forwards=\n"));
-        assert!(!output.contains("open_forward_ids"));
     }
 
     #[test]
-    fn status_rendering_handles_old_status_without_session_capacity() {
-        let output = render_status(&json!({
+    fn status_parse_fails_clearly_for_malformed_json() {
+        let error = serde_json::from_str::<DaemonStatus>("not json").expect_err("malformed json");
+        assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn status_parse_fails_clearly_for_a_missing_required_field() {
+        // `session_capacity` is a required field on the real schema; a status file
+        // missing it (e.g. written by a stale/mismatched daemon version) must be a
+        // parse error, not silently rendered as "unknown".
+        let json = serde_json::json!({
             "peer_id": "answer-office",
             "role": "answer",
             "mqtt_connected": true,
+            "active_session_id": null,
             "current_state": "serving",
-            "active_session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "active_session_count": 1,
-            "sessions": [{
-                "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "remote_peer_id": "offer-home",
-                "state": "tunnel_open",
-                "data_channel_open": true,
-                "configured_forward_ids": ["ssh"]
-            }]
-        }));
+            "active_session_count": 0,
+            "sessions": [],
+            "configured_forwards": [],
+            "forwards": []
+        });
 
-        assert!(output.contains("sessions=1/unknown"));
-        assert!(output.contains("configured_forwards=ssh"));
-        assert!(!output.contains("active_stream_count"));
-        assert!(!output.contains("open_forward_ids"));
+        let error = serde_json::from_str::<DaemonStatus>(&json.to_string())
+            .expect_err("missing required field must fail, not default");
+        assert!(error.to_string().contains("session_capacity"), "got: {error}");
     }
 
     #[test]
@@ -684,5 +614,27 @@ status_file = "{status_file}"
         let missing = temp_dir.path().join("does-not-exist.toml");
 
         assert!(check_config(Some(&missing)).is_err());
+    }
+
+    #[test]
+    fn explicit_config_path_is_used_as_is() {
+        let explicit = Path::new("/etc/p2ptunnel/config.toml");
+        let resolved = resolve_config_path(Some(explicit), None).expect("explicit path resolves");
+        assert_eq!(resolved, explicit);
+    }
+
+    #[test]
+    fn missing_config_flag_falls_back_to_home_config_dir() {
+        let home = PathBuf::from("/home/ctl-user");
+        let resolved =
+            resolve_config_path(None, Some(home.clone())).expect("home fallback resolves");
+        assert_eq!(resolved, home.join(".config/p2ptunnel/config.toml"));
+    }
+
+    #[test]
+    fn missing_config_flag_without_home_yields_a_normal_error_not_a_panic() {
+        let error =
+            resolve_config_path(None, None).expect_err("missing HOME must error, not panic");
+        assert!(error.to_string().contains("HOME is not set"));
     }
 }

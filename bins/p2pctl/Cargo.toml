@@ -9,6 +9,8 @@ rust-version.workspace = true
 clap.workspace = true
 p2p-core = { path = "../../crates/p2p-core" }
 p2p-crypto = { path = "../../crates/p2p-crypto" }
+p2p-daemon = { path = "../../crates/p2p-daemon" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

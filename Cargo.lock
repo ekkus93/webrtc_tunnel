@@ -1869,6 +1869,8 @@ dependencies = [
  "clap",
  "p2p-core",
  "p2p-crypto",
+ "p2p-daemon",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
