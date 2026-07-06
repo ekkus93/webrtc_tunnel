@@ -1622,7 +1622,7 @@ fix(status): make atomic temp paths unique per write
 - [x] Release/all-feature Clippy passes with warnings denied.
 - [x] Workspace tests pass.
 - [x] Android assemble + unit tests pass.
-- [ ] systemd validation passes.
-- [ ] launchd validation passes on macOS.
-- [ ] Debian package smoke tests pass.
-- [ ] macOS install-layout smoke tests pass.
+- [x] systemd validation passes.
+- [ ] launchd validation passes on macOS (NOT RUN: Darwin-only, this sandbox is Linux).
+- [x] Debian package smoke tests pass.
+- [ ] macOS install-layout smoke tests pass (NOT RUN: Darwin-only, this sandbox is Linux).
