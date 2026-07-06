@@ -107,7 +107,7 @@ pub(crate) struct PublishBarrierRelease {
 
 impl PublishBarrierRelease {
     pub(crate) fn release(self) {
-        let _ = self.release_tx.send(());
+        self.release_tx.send(()).expect("publish barrier observer must remain alive");
     }
 }
 
@@ -243,8 +243,8 @@ impl DaemonSignalingTransport for InMemoryTransport {
             .publish_barriers
             .remove(&route_key);
         if let Some(barrier) = barrier {
-            let _ = barrier.entered_tx.send(());
-            let _ = barrier.release_rx.await;
+            barrier.entered_tx.send(()).expect("publish barrier observer must remain alive");
+            barrier.release_rx.await.expect("publish barrier release sender must remain alive");
         }
         let (fail_publish, drop_delivery, duplicate_count, delay_ms) = {
             let mut faults = self.faults.lock().expect("fault mutex should lock");
