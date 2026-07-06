@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.phillipchin.webrtctunnel.model.ServiceState
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -38,7 +39,7 @@ import java.util.concurrent.TimeUnit
 class TunnelForegroundServiceStopFailureTest {
     private val controller =
         ServiceController.of(
-            TunnelForegroundService(ioDispatcher = Dispatchers.IO, defaultDispatcher = Dispatchers.IO),
+            realIoTunnelForegroundService(),
             Intent(ApplicationProvider.getApplicationContext(), TunnelForegroundService::class.java),
         )
     private lateinit var service: TunnelForegroundService
@@ -150,3 +151,12 @@ class TunnelForegroundServiceStopFailureTest {
         assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error })
     }
 }
+
+/**
+ * The `Dispatchers.IO` default keeps the only direct reference inside a
+ * parameter default (DI), satisfying `InjectDispatcher` — see this
+ * project's `inlineTestDispatchers()`/`realIoTestDispatchers()` convention
+ * in `AppViewModelTestBase.kt`.
+ */
+private fun realIoTunnelForegroundService(dispatcher: CoroutineDispatcher = Dispatchers.IO): TunnelForegroundService =
+    TunnelForegroundService(ioDispatcher = dispatcher, defaultDispatcher = dispatcher)
