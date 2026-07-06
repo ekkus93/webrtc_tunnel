@@ -439,9 +439,9 @@ shutdown token requested
 
 ### Acceptance criteria
 
-- [ ] No ordinary steady-state write occurs after token is already requested.
-- [ ] Existing `Running` phase behavior remains unchanged before shutdown.
-- [ ] Regression test uses exact shutdown boundary, not state-sequence inference.
+- [x] No ordinary steady-state write occurs after token is already requested.
+- [x] Existing `Running` phase behavior remains unchanged before shutdown.
+- [x] Regression test uses exact shutdown boundary, not state-sequence inference.
 
 ---
 
@@ -714,9 +714,9 @@ Use current synchronization primitives rather than `std::sync::Mutex` if async t
 
 ### Acceptance criteria
 
-- [ ] Boundary is the exact shutdown request action.
-- [ ] Illegal state after shutdown makes test fail.
-- [ ] Test fails if P0-005 gate is removed.
+- [x] Boundary is the exact shutdown request action.
+- [x] Illegal state after shutdown makes test fail.
+- [x] Test fails if P0-005 gate is removed.
 
 ---
 
