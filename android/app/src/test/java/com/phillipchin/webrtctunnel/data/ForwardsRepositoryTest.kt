@@ -62,6 +62,20 @@ class ForwardsRepositoryTest {
         }
 
     @Test
+    fun deleteBlockedWhenStartupBaselineIsCorrupt() =
+        runBlocking {
+            file.writeText("{ corrupt json")
+            val corruptRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+
+            val result = corruptRepo.delete("anything")
+
+            assertFalse(result.valid)
+            // A corrupt forwards file must never be overwritten by a delete that dropped
+            // the (unparseable) entries — the user's file is preserved for repair.
+            assertTrue(file.readText().contains("corrupt"))
+        }
+
+    @Test
     fun upsertAfterDiskCorruptionPreservesInMemoryList() =
         runBlocking {
             repo.save(listOf(forward("keep", 1111)))

@@ -330,7 +330,7 @@ class ConfigRepositoryTest {
                 ),
             )
         forwardsStore.saveForwards(forwards)
-        assertEquals(forwards, forwardsStore.loadForwards())
+        assertEquals(forwards, forwardsStore.loadForwardsResult().getOrThrow())
     }
 
     @Test

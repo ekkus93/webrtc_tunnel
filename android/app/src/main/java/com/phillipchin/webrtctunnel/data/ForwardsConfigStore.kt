@@ -65,10 +65,6 @@ class ForwardsConfigStore(private val context: Context) {
             }
     }
 
-    /** Read-only convenience for display paths. Mutation paths must use
-     * [loadForwardsResult] (or [ForwardsRepository]) so corruption is never treated as empty. */
-    fun loadForwards(): List<ForwardConfig> = loadForwardsResult().getOrElse { emptyList() }
-
     /**
      * Atomically replace forwards.json: write a temp file in the same directory and
      * move it into place (atomic when the filesystem supports it, replace otherwise).
@@ -117,13 +113,6 @@ class ForwardsConfigStore(private val context: Context) {
             saveForwards(updated)
             ValidationResult(true, null)
         }
-    }
-
-    /** Disk-based delete used by the setup wizard. Corrupt-safe: a corrupt file is left
-     * untouched rather than overwritten with a list that dropped the corrupt entries. */
-    fun deleteForward(forwardId: String) {
-        val existing = loadForwardsResult().getOrNull() ?: return
-        saveForwards(existing.filterNot { it.id == forwardId })
     }
 
     fun validateForwards(forwards: List<ForwardConfig>): String? {

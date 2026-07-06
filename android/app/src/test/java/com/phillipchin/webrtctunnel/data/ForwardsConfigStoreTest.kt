@@ -33,13 +33,13 @@ class ForwardsConfigStoreTest {
     fun saveAndLoadRoundTrip() {
         val list = listOf(forward("a", 1111), forward("b", 2222))
         store.saveForwards(list)
-        assertEquals(list, store.loadForwards())
+        assertEquals(list, store.loadForwardsResult().getOrThrow())
     }
 
     @Test
     fun loadSeedsDefaultsWhenMissing() {
         file.delete()
-        assertTrue(store.loadForwards().isNotEmpty())
+        assertTrue(store.loadForwardsResult().getOrThrow().isNotEmpty())
     }
 
     @Test
@@ -48,15 +48,14 @@ class ForwardsConfigStoreTest {
         // configs (`ssh`, `web-ui`); a non-matching id (e.g. "llama") makes a clean install
         // fail with `unknown_forward` against a docs-configured answer.
         file.delete()
-        val remoteIds = store.loadForwards().map { it.remoteForwardId }.toSet()
+        val remoteIds = store.loadForwardsResult().getOrThrow().map { it.remoteForwardId }.toSet()
         assertEquals(setOf("ssh", "web-ui"), remoteIds)
     }
 
     @Test
-    fun corruptJsonIsFailureAndDoesNotThrowFromLoadForwards() {
+    fun corruptJsonIsFailure() {
         file.writeText("{ this is not valid json")
         assertTrue(store.loadForwardsResult().isFailure)
-        assertTrue(store.loadForwards().isEmpty())
     }
 
     @Test
@@ -75,19 +74,10 @@ class ForwardsConfigStoreTest {
     }
 
     @Test
-    fun deleteOnCorruptFileLeavesItUntouched() {
-        // A corrupt forwards file must never be overwritten by a delete that dropped the
-        // (unparseable) entries — the user's file is preserved for repair.
-        file.writeText("{ corrupt json")
-        store.deleteForward("anything")
-        assertTrue(file.readText().contains("corrupt"))
-    }
-
-    @Test
     fun saveReplacesExistingFileContents() {
         store.saveForwards(listOf(forward("a", 1111)))
         store.saveForwards(listOf(forward("b", 2222)))
-        val loaded = store.loadForwards()
+        val loaded = store.loadForwardsResult().getOrThrow()
         assertEquals(1, loaded.size)
         assertEquals("b", loaded.first().id)
     }
