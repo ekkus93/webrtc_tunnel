@@ -1271,12 +1271,12 @@ for the primary required assertion.
 
 ### Acceptance criteria
 
-- [ ] Offer SIGTERM real process test is required.
-- [ ] Answer SIGTERM real process test is required.
-- [ ] At least one role SIGINT real process test is required.
-- [ ] Required CI job builds exact binaries first.
-- [ ] Missing prerequisite fails the required job.
-- [ ] No signal test sends a signal to the test runner.
+- [x] Offer SIGTERM real process test is required.
+- [x] Answer SIGTERM real process test is required.
+- [x] At least one role SIGINT real process test is required.
+- [x] Required CI job builds exact binaries first.
+- [x] Missing prerequisite fails the required job.
+- [x] No signal test sends a signal to the test runner.
 
 ---
 
