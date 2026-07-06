@@ -105,6 +105,31 @@ class TunnelForegroundServiceInstrumentationTest {
     }
 
     @Test
+    fun stopDuringPendingStartWithFailingCleanupStopPublishesError() {
+        TestTunnelHooks.bridge.blockNextStartOffer()
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
+        assertTrue(TestTunnelHooks.bridge.awaitStartOfferEntered(10_000))
+        context.startService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP),
+        )
+        // stopServiceWork()'s own stop() call (unblocked) lands first; only after that do
+        // we arm the failure, so it lands on the startup-cancellation cleanup's own
+        // repository.stop() call (P0-005) once the blocked start is released.
+        assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
+        TestTunnelHooks.bridge.failNextStop()
+        TestTunnelHooks.bridge.releaseBlockedStartOffer()
+        assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 2 })
+        assertTrue(
+            waitForCondition(timeoutMs = 5_000) {
+                (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState ==
+                    com.phillipchin.webrtctunnel.model.ServiceState.Error
+            },
+        )
+    }
+
+    @Test
     fun stopBeforeNativeStartSkipsNativeStartCall() {
         TestTunnelHooks.bridge.blockNextValidation()
         context.startForegroundService(
