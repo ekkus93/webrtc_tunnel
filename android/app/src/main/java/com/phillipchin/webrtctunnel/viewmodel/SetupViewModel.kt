@@ -214,10 +214,22 @@ private fun loadStoredSetupInput(
     deps: AppDependencies,
     access: WizardStateAccess,
 ) {
-    // A corrupt draft yields null here (not reset defaults), so the wizard simply does not
-    // prefill rather than silently overwriting the user's saved values with blanks.
-    val saved = deps.configRepository.loadSetupInputResult().getOrNull() ?: return
-    if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
-        access.applyState(access.state().copy(input = saved))
-    }
+    deps.configRepository.loadSetupInputResult().fold(
+        onSuccess = { saved ->
+            if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
+                access.applyState(access.state().copy(input = saved))
+            }
+        },
+        onFailure = {
+            // A corrupt draft must be visible, not silently treated as "no saved draft" —
+            // that would let the user unknowingly overwrite it with a blank one (P1-004).
+            // The file itself is left untouched; no content from it is included here.
+            access.applyState(
+                access.state().copy(
+                    errorMessage =
+                        "Saved setup could not be loaded. The existing saved draft was left untouched.",
+                ),
+            )
+        },
+    )
 }

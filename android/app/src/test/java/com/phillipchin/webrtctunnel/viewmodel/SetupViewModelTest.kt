@@ -7,6 +7,7 @@ import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.NetworkType
+import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
@@ -318,6 +319,60 @@ class SetupViewModelTest : AppViewModelTestBase() {
         viewModel.goNext()
         assertEquals(SetupStep.Review, viewModel.state.value.currentStep)
         assertEquals(null, viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun missingSetupInputFileLeavesNoErrorAndDefaultInput() {
+        val setupInputFile = File(app.filesDir, "setup_input.json")
+        assertTrue(!setupInputFile.exists())
+
+        val viewModel = SetupViewModel(deps)
+
+        assertEquals(null, viewModel.state.value.errorMessage)
+        assertEquals(SetupConfigInput().brokerHost, viewModel.state.value.input.brokerHost)
+        assertEquals("", viewModel.state.value.input.remotePeerId)
+    }
+
+    @Test
+    fun validSetupInputFilePrefillsInputWithoutError() {
+        val setupInputFile = File(app.filesDir, "setup_input.json")
+        deps.configRepository.saveSetupInput(
+            SetupConfigInput(brokerHost = "saved-broker.local", remotePeerId = "saved-remote-peer"),
+        )
+        assertTrue(setupInputFile.exists())
+
+        val viewModel = SetupViewModel(deps)
+
+        assertEquals(null, viewModel.state.value.errorMessage)
+        assertEquals("saved-broker.local", viewModel.state.value.input.brokerHost)
+        assertEquals("saved-remote-peer", viewModel.state.value.input.remotePeerId)
+    }
+
+    @Test
+    fun corruptSetupInputFileShowsVisibleErrorAndDefaultInput() {
+        val setupInputFile = File(app.filesDir, "setup_input.json")
+        setupInputFile.parentFile?.mkdirs()
+        setupInputFile.writeText("{ corrupt json")
+
+        val viewModel = SetupViewModel(deps)
+
+        assertTrue(viewModel.state.value.errorMessage != null)
+        // Must not silently present a blank draft the user could then unknowingly save
+        // over the actual (corrupt) saved one.
+        assertEquals(SetupConfigInput().brokerHost, viewModel.state.value.input.brokerHost)
+        assertEquals("", viewModel.state.value.input.remotePeerId)
+    }
+
+    @Test
+    fun corruptSetupInputFileBytesAreUnchangedAfterViewModelInit() {
+        val setupInputFile = File(app.filesDir, "setup_input.json")
+        setupInputFile.parentFile?.mkdirs()
+        val corruptContent = "{ corrupt json"
+        setupInputFile.writeText(corruptContent)
+
+        SetupViewModel(deps)
+
+        assertEquals(corruptContent, setupInputFile.readText())
     }
 
     @Test
