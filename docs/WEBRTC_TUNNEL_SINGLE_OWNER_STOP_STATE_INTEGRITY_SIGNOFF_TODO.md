@@ -1582,13 +1582,56 @@ Fix the last two.
 
 ### Acceptance criteria
 
-- [ ] No competing service stop ownership remains.
-- [ ] No non-atomic repository state transition remains.
-- [ ] No rollback Result is ignored.
-- [ ] No required test silently continues after barrier timeout.
-- [ ] No production unbounded test queue remains.
-- [ ] No storage failure is rendered as empty success.
-- [ ] Retained defaults have explicit rationale.
+- [x] No competing service stop ownership remains. `rg -n 'repository\.stop\(\)|...'`
+      shows exactly 4 `repository.stop()` call sites (`onDestroy`, `pause`,
+      `pauseForPolicy`, `stopServiceWork`), each the sole owner under
+      `lifecycleMutex` after `lifecycleGeneration.incrementAndGet()` +
+      `cancelStartupJobAndJoinLocked()` (P0-001); the cancelled-startup coroutine itself
+      never independently calls `repository.stop()` (confirmed by reading
+      `runOfferStart()` — no `CancellationException` catch, no stop call).
+- [x] No non-atomic repository state transition remains. `rg -n '_status\.value\s*=|...'`
+      over `data/` returns only a comment referencing the old pattern; every real mutation
+      goes through `TunnelRepository.updateStatus{}`'s CAS retry loop (P0-002).
+- [x] No rollback Result is ignored. `ForwardsViewModel.rollbackAfterConfigSyncFailure()`
+      `.fold()`s the rollback `Result` (P0-004); `rg -n 'forwardsRepository\.save\('` shows
+      no other call site.
+- [x] No required test silently continues after barrier timeout. Every
+      `await(timeoutMs, TimeUnit...)` on a test barrier latch is either itself the return
+      value of an `awaitXEntered(): Boolean` helper whose every call site wraps it in
+      `assertTrue(...)` (checked all: `TunnelForegroundServiceStopFailureTest.kt`,
+      `TunnelRepositoryTest.kt`), or a `check(...) { "..." }` inside the fake that throws
+      loudly on timeout (P0-005). The one bare `Thread.sleep(10)` remaining
+      (`TunnelForegroundServiceStopFailureTest.kt`'s `waitForCondition` helper) is a
+      bounded poll-interval inside a loop that re-checks the real condition and returns it
+      for the caller to assert — not a fixed-sleep-then-assume-success proof.
+      Found and removed one piece of dead test code while auditing this category:
+      `AppViewModelTestBase.kt`'s `RecordingBridge.awaitValidateConfigEntered()` (added
+      during P0-004) had zero callers — `ForwardsViewModelTest.kt`'s actual test uses the
+      non-blocking `validateConfigEnteredNow()` + looper-pump pattern instead, because a
+      blocking wait can't observe entry while it also needs to be the thing pumping the
+      Robolectric main looper across the intervening real-dispatcher hop. Removed the
+      unused function; `./gradlew check` confirmed nothing referenced it.
+- [x] No production unbounded test queue remains. `rg -n
+      'TestEvent|TestHooks|Channel<.*Test|UNLIMITED' android/app/src/main` returns zero
+      matches (P0-006).
+- [x] No storage failure is rendered as empty success. `ForwardsRepository`/
+      `ForwardsConfigStore` distinguish read/parse/write failures and never overwrite a
+      corrupt file (pre-existing + P1-005); `ForwardsViewModel.loadError` and
+      `SetupViewModel`'s corrupt-draft `errorMessage` surface these instead of an empty
+      state (P1-002, P1-004).
+- [x] Retained defaults have explicit rationale.
+      `crates/p2p-mobile/src/runtime/mod.rs`'s `StopOutcome::NotRunning => Ok(())` is
+      retained as-is: the spec (§7) forbids redesigning the Rust daemon, and Android-side
+      verification (P0-003's `refreshStatusResult()` check against actual
+      `ServiceState.Stopped`) already prevents a `NotRunning`-masked stale/failed state
+      from being reported as a clean stop — covered by
+      `TunnelRepositoryTest.nativeStopSuccessAndRunningStatusReturnsFailure` /
+      `nativeStopSuccessAndErrorStatusReturnsFailure`. The many `let _ = ...`/best-effort
+      `.ok()` patterns found in `crates/p2p-daemon/src` and `crates/p2p-mobile/src` (test
+      teardown file cleanup, shutdown-signal sends, abort-handle drops) are all pre-existing
+      production Rust code untouched by this Android-scoped TODO and out of scope per spec
+      §7; none of them were introduced or modified by any task in this pass.
+      Full `./gradlew check` gate green after this audit's one dead-code removal.
 
 ---
 
