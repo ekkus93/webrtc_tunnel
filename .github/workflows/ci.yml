@@ -127,6 +127,15 @@ jobs:
 
       - name: Install Android SDK tools
         uses: android-actions/setup-android@v4
+        with:
+          # Skip the action's default "tools platform-tools" install: "tools" is the
+          # long-deprecated legacy SDK Tools bundle (includes the old standalone
+          # emulator) and its download from Google's CDN has been failing with
+          # "Error reading Zip content from a SeekableByteChannel" — a corrupted/
+          # truncated zip, not anything this workflow controls. Nothing here needs
+          # that package anyway; the next step explicitly installs platform-tools
+          # plus everything else actually required.
+          packages: ""
 
       - name: Install Android SDK components
         run: yes | sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"
