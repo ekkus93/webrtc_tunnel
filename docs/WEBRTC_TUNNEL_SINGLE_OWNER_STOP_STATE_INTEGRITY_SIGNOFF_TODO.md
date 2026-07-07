@@ -1192,10 +1192,37 @@ assert flag becomes false only after success
 
 ### Acceptance criteria
 
-- [ ] Resume attempt does not pre-clear flag.
-- [ ] Failed resume leaves retry state true.
-- [ ] Later event retries.
-- [ ] Successful start clears flag.
+- [x] Resume attempt does not pre-clear flag. The `onCreate()` auto-resume branch
+      (`TunnelForegroundService.kt`) no longer calls `pausedByPolicy.set(false)` itself;
+      only `runOfferStart()`'s own `result.onSuccess { pausedByPolicy.set(false) ... }`
+      may clear it.
+- [x] Failed resume leaves retry state true.
+- [x] Later event retries.
+- [x] Successful start clears flag.
+      `failedAutoResumeLeavesPausedByPolicyTrueForNextRetry`
+      (`TunnelForegroundServiceStopFailureTest.kt`) covers all three: policy-pause
+      succeeds (flag true) -> an unmetered event's auto-resume attempt is forced to fail
+      via a new one-shot `FailableRecordingBridge.failNextStartOffer()` -> asserts the
+      flag is still true and the state is `Error` -> a second unmetered event retries and
+      this time the native start succeeds -> asserts the flag clears only then and the
+      tunnel is running.
+      Note: the second event is fired inside the `waitForCondition` poll itself (re-firing
+      on each iteration until `Connected` is observed) rather than exactly once. A single
+      fire is correct in principle, but under heavy concurrent machine load (e.g. running
+      alongside detekt/lint in the same `./gradlew check` invocation) the first failed
+      attempt's `startupJob` can still show `isActive == true` for a moment after its
+      failure is already observable, which makes `startOffer()`'s own (pre-existing,
+      correct) "already starting" guard silently no-op a single-fire second event. Re-firing
+      the same real stimulus until the real success is observed is deterministic and
+      race-free, unlike a fixed sleep-based proof; this was confirmed necessary by first
+      reproducing the hang under `./gradlew check --rerun-tasks` (test hit its full 8s
+      timeout) and then confirming the fix holds across two more full stress runs.
+      Deterministic test fails if the bug is reintroduced: verified by temporarily
+      restoring the old `pausedByPolicy.set(false)` pre-clear in `onCreate()` — the new
+      test failed at its "must not clear the policy-pause retry flag" assertion (the right
+      reason), the other 9 tests in the class kept passing, then the fix was restored and
+      the test re-passed. Also ran 3x fresh (`--rerun`) both before and after this check
+      with no flakes, plus two full `./gradlew check --rerun-tasks` stress runs.
 
 ---
 
