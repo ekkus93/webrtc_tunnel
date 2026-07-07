@@ -1436,10 +1436,26 @@ Do not expose raw sensitive file content in the message.
 
 ### Acceptance criteria
 
-- [ ] Corrupt draft is visible.
-- [ ] No silent return.
-- [ ] File is untouched.
-- [ ] Missing file remains normal.
+- [x] Corrupt draft is visible. `loadStoredSetupInput()` (`SetupViewModel.kt`) now
+      `.fold()`s `loadSetupInputResult()` and sets `errorMessage` on failure instead of
+      silently returning.
+- [x] No silent return. The old `getOrNull() ?: return` is gone.
+- [x] File is untouched. `loadSetupInputResult()`/`loadStoredSetupInput()` only read; no
+      write path is reachable from this function.
+- [x] Missing file remains normal. `loadSetupInputResult()` treats a missing file as
+      `Result.success(SetupConfigInput())` (unchanged, pre-existing), which still hits the
+      `onSuccess` branch with blank `brokerHost`/`remotePeerId`, so no prefill and no error.
+      Four new tests in `SetupViewModelTest.kt`:
+      `missingSetupInputFileLeavesNoErrorAndDefaultInput`,
+      `validSetupInputFilePrefillsInputWithoutError`,
+      `corruptSetupInputFileShowsVisibleErrorAndDefaultInput`,
+      `corruptSetupInputFileBytesAreUnchangedAfterViewModelInit` — covering all four
+      required cases from the TODO's own list.
+      Verified by temporarily reverting `loadStoredSetupInput()` to the old
+      `getOrNull() ?: return` — `corruptSetupInputFileShowsVisibleErrorAndDefaultInput`
+      failed at the "errorMessage != null" assertion (the right reason), the other 34
+      tests in the class kept passing, then the fix was restored and all 35 re-passed.
+      Ran 3x fresh (`--rerun`) with no flakes, then the full `./gradlew check` gate.
 
 ---
 
