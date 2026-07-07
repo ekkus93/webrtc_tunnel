@@ -20,6 +20,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
+import java.io.File
 import java.net.ServerSocket
 
 @RunWith(RobolectricTestRunner::class)
@@ -206,6 +207,35 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
             "expected consistency-state wording in: $message",
             message.contains("remains saved") && message.contains("not activated"),
         )
+    }
+
+    @Test
+    fun loadErrorIsVisibleWhenSavedForwardsFileIsCorruptAndClearsOnSuccessfulRetry() {
+        val forwardsFile = File(app.filesDir, "forwards.json")
+        forwardsFile.writeText("{ corrupt json")
+        val corruptDeps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = { recordingBridge },
+                configRepository = configRepository,
+                networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                identityRepository = deps.identityRepository,
+                dispatchers = deps.dispatchers,
+            )
+        val vm = ForwardsViewModel(corruptDeps)
+
+        // A corrupt initial load must be visible on the ViewModel, not silently rendered
+        // as a legitimately empty forwards list (P1-002).
+        assertTrue(vm.loadError.value != null)
+        assertTrue(vm.forwards.value.isEmpty())
+        // The saved file must be left untouched, not overwritten with fresh defaults.
+        assertTrue(forwardsFile.readText().contains("corrupt"))
+
+        // Retry (vm.reload()) after fixing the file clears the error.
+        forwardsFile.writeText("[]")
+        vm.reload()
+        awaitCondition { vm.loadError.value == null }
+        assertTrue(vm.forwards.value.isEmpty())
     }
 
     @Test

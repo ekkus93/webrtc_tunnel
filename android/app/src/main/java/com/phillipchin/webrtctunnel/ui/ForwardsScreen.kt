@@ -52,6 +52,7 @@ fun ForwardsScreen(
     val forwards by vm.forwards.collectAsStateWithLifecycle()
     val status by vm.status.collectAsStateWithLifecycle()
     val isBusy by vm.isBusy.collectAsStateWithLifecycle()
+    val loadError by vm.loadError.collectAsStateWithLifecycle()
     var showAddDialog by remember { mutableStateOf(false) }
     LazyColumn(
         modifier =
@@ -68,12 +69,20 @@ fun ForwardsScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 SectionHeader("Forwards", "Manage local forwards")
-                IconButton(onClick = { showAddDialog = true }, enabled = !isBusy) {
+                IconButton(onClick = { showAddDialog = true }, enabled = !isBusy && loadError == null) {
                     Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.cd_add_forward))
                 }
             }
         }
-        if (forwards.isEmpty()) {
+        if (loadError != null) {
+            item {
+                ErrorResolutionCard(
+                    summary = loadError.orEmpty(),
+                    fix = "The saved forwards file was left untouched. Fix the problem and retry.",
+                    action = { AppOutlinedButton(onClick = vm::reload) { Text("Retry") } },
+                )
+            }
+        } else if (forwards.isEmpty()) {
             item { EmptyStateCard("No forwards configured. Tap + to add one.") }
         } else {
             items(forwards, key = { it.id }) { forward ->

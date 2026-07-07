@@ -29,6 +29,10 @@ class ForwardsViewModel(
 
     // Observe the shared single source of truth so edits made on any screen are reflected.
     val forwards: StateFlow<List<ForwardConfig>> = deps.forwardsRepository.forwards
+
+    // A corrupt/unreadable saved forwards file must be visible, not rendered as a
+    // legitimately empty list (P1-002).
+    val loadError: StateFlow<String?> = deps.forwardsRepository.loadError
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
     private val _isBusy = MutableStateFlow(false)
