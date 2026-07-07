@@ -19,7 +19,6 @@ import com.phillipchin.webrtctunnel.network.LocalAddressResolver
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.notification.NotificationController
 import com.phillipchin.webrtctunnel.security.IdentityRepository
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +26,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
@@ -40,34 +38,6 @@ import java.util.concurrent.atomic.AtomicLong
 
 // Control-flow signal: a startup attempt aborted after publishing its own error/state.
 private class StartupAborted : Exception()
-
-/**
- * Branch-keyed startup-cleanup events (P0-003/P0-004): a required test must prove
- * failure came from the *exact* cleanup branch under test, not merely that some
- * stop call somewhere eventually failed — a generic "fail the next stop call"
- * cannot distinguish this branch from the explicit-stop or supersedence-cleanup
- * branches when more than one stop call can occur in a scenario.
- */
-internal sealed interface ServiceTestEvent {
-    data object StartupCancellationCleanupStopEntered : ServiceTestEvent
-
-    data object StartupSupersedenceCleanupStopEntered : ServiceTestEvent
-}
-
-/**
- * P0-004 test-only barrier: pauses `runOfferStart` after a *successful* native
- * start but before the generation check that decides whether a newer start
- * superseded this one. No current production path can reach that check without
- * also cancelling `startupJob` (which routes through the cancellation-catch
- * branch instead, at an earlier point) — this hook exists purely to construct
- * the supersedence scenario deterministically under test so the branch's real
- * production check and `NonCancellable` cleanup can be proven, not to change
- * production behavior itself.
- */
-internal data class StartupTestHooks(
-    val afterNativeStartBeforeGenerationCheck: CompletableDeferred<Unit>? = null,
-    val releaseAfterNativeStart: CompletableDeferred<Unit>? = null,
-)
 
 class TunnelForegroundService
     @JvmOverloads
@@ -88,16 +58,6 @@ class TunnelForegroundService
         private var startupJob: Job? = null
         private var statusPollJob: Job? = null
         private var lastMode: TunnelMode = TunnelMode.Offer
-
-        // internal (not private): P0-003/P0-004's Robolectric tests wait for the exact
-        // startup-cleanup branch event before releasing an armed stop failure, instead
-        // of inferring which branch is about to run from stop-call counts alone.
-        // Unlimited capacity: a test-only channel with a single, always-draining
-        // reader per test method, so this never needs to apply backpressure.
-        internal val testEvents = Channel<ServiceTestEvent>(Channel.UNLIMITED)
-
-        // internal (not private): P0-004 test-only barrier, see StartupTestHooks.
-        internal var startupTestHooks: StartupTestHooks? = null
 
         // internal (not private): P0-001's Robolectric test captures this reference and
         // joins it directly, so it can deterministically wait for a specific stale poll
@@ -454,11 +414,6 @@ class TunnelForegroundService
                         withContext(ioDispatcher) {
                             repository.start(TunnelMode.Offer, configRepository.configPath, identity)
                         }
-                    // P0-004 test-only barrier: no-op in production (both fields null).
-                    startupTestHooks?.let { hooks ->
-                        hooks.afterNativeStartBeforeGenerationCheck?.complete(Unit)
-                        hooks.releaseAfterNativeStart?.await()
-                    }
                     if (!isCurrentGeneration(startGeneration)) {
                         // The lifecycle transition that advanced generation owns cleanup; no
                         // second, independent stop call here (P0-001).
