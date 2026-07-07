@@ -458,13 +458,34 @@ At least one new test must fail.
 
 ### Acceptance criteria
 
-- [ ] One atomic helper is used consistently.
-- [ ] No `_status.value = _status.value.copy(...)` remains.
-- [ ] Native reads happen outside atomic mutation.
-- [ ] Native snapshots merge against current state.
-- [ ] Cleanup history cannot be lost.
-- [ ] Network updates cannot be lost.
-- [ ] Focused concurrency tests are deterministic.
+- [x] One atomic helper is used consistently. Added `private inline fun updateStatus(transform:
+      (TunnelStatus) -> TunnelStatus): TunnelStatus` (compare-and-set retry loop); every mutator
+      (`refreshStatus()`, `recentLogs()`'s failure branch, `setPolicyBlocked()`, `setLocalError()`,
+      `updateNetworkStatus()`, `updateSessionMeteredAllowance()`) goes through it.
+- [x] No `_status.value = _status.value.copy(...)` remains. Confirmed via `rg -n
+      '_status\.value\s*=' TunnelRepository.kt` — only the explanatory comment above
+      `updateStatus` mentions the pattern by name; zero executable occurrences.
+- [x] Native reads happen outside atomic mutation. `refreshStatus()` now does
+      `bridge.getStatusJson()`/`Json.decodeFromString` once, before ever calling `updateStatus`;
+      only the merge decision (comparing against `current`) runs inside the retry loop.
+- [x] Native snapshots merge against current state. The merge closure receives `current`
+      (the value `updateStatus` re-reads on every retry attempt), not the pre-JNI-read
+      `previous` snapshot the old code used.
+- [x] Cleanup history cannot be lost. New `TunnelRepositoryTest.cleanupHistorySurvivesStaleRefreshCommit`.
+- [x] Network updates cannot be lost. New `TunnelRepositoryTest.networkStatusSurvivesStaleRefreshCommit`.
+- [x] Focused concurrency tests are deterministic. Both use a new blocking barrier added to
+      this test file's local `RecordingBridge` (`blockNextStatusJsonRead`/
+      `awaitStatusJsonReadEntered`/`releaseBlockedStatusJsonRead`, mirroring the established
+      `FailableRecordingBridge` pattern), with a real background `Thread` calling
+      `refreshStatus()` concurrently with the test thread's `setLocalError()`/
+      `updateNetworkStatus()` call — no `Thread.sleep`/polling involved; the sequencing is
+      enforced by the `CountDownLatch` barrier itself. Ran 3x fresh — stable.
+      Regression-strength verified: temporarily reverted `refreshStatus()` to the old
+      stale-snapshot pattern (capture `previous` before the blocking read, plain
+      `_status.value = ...` overwrite at the end) — both new tests failed reliably across 3
+      fresh runs, while every other test in the class still passed. Restored the fix, reran 3x
+      fresh: passes. Full gates rerun after restoring (`./gradlew assembleDebug
+      testDebugUnitTest check`) — all green.
 
 ---
 
