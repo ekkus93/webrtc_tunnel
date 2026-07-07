@@ -16,11 +16,25 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * P0-007: Deterministic lifecycle event recording for event-order proofs.
+ * Replaces elapsed-time absence checks (withTimeoutOrNull/Thread.sleep) with
+ * explicit event ordering that does not depend on timing.
+ */
+internal sealed interface FakeLifecycleEvent {
+    data object StatusReadEntered : FakeLifecycleEvent
+
+    data object StatusReadReleased : FakeLifecycleEvent
+
+    data class StopEntered(val call: Int) : FakeLifecycleEvent
+}
 
 /**
  * A `test`-only-scoped Application/bridge fake for
@@ -105,6 +119,12 @@ class FailableRecordingBridge : TunnelNativeBridge {
 
     val startOfferCalls: Int get() = startOfferCallsAtomic.get()
     val stopCalls: Int get() = stopCallsAtomic.get()
+
+    // P0-007: Thread-safe event list for deterministic lifecycle event ordering.
+    private val lifecycleEvents = CopyOnWriteArrayList<FakeLifecycleEvent>()
+
+    internal fun lifecycleEventsSnapshot(): List<FakeLifecycleEvent> = lifecycleEvents.toList()
+
     var state: ServiceState
         get() = stateRef.get()
         set(value) = stateRef.set(value)
@@ -207,6 +227,8 @@ class FailableRecordingBridge : TunnelNativeBridge {
         check(stopCallEvents.trySend(call).isSuccess) {
             "stop-call observer unexpectedly closed"
         }
+        // P0-007: Record the stop event for deterministic ordering proofs.
+        lifecycleEvents.add(FakeLifecycleEvent.StopEntered(call))
         if (failNextStopAtomic.compareAndSet(true, false)) {
             return Result.failure(RuntimeException("injected stop failure"))
         }
@@ -215,6 +237,8 @@ class FailableRecordingBridge : TunnelNativeBridge {
     }
 
     override fun getStatusJson(): String {
+        // P0-007: Record status read entry for deterministic ordering proofs.
+        lifecycleEvents.add(FakeLifecycleEvent.StatusReadEntered)
         // Snapshot before blocking: a real native read observes state as of when it
         // began, not as of when it happens to return after being delayed.
         val snapshotState = state
@@ -224,6 +248,8 @@ class FailableRecordingBridge : TunnelNativeBridge {
                 "blocked status JSON read was never released"
             }
         }
+        // P0-007: Record status read release for deterministic ordering proofs.
+        lifecycleEvents.add(FakeLifecycleEvent.StatusReadReleased)
         if (forceNextStatusJsonErrorAtomic.compareAndSet(true, false)) {
             return Json.encodeToString(
                 NativeRuntimeStatusDto(state = "error", mode = "offer", active = false),

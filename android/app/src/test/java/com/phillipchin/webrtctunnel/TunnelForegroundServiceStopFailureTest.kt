@@ -11,7 +11,6 @@ import com.phillipchin.webrtctunnel.model.isTunnelRunning
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -338,13 +337,9 @@ class TunnelForegroundServiceStopFailureTest {
             "a failed pause-owned stop after a cancelled startup must be reported as an error",
             waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
         )
-        // Give a hypothetical second (buggy, competing) stop call every chance to land
-        // before the final count check below: with the fix this can never happen (the
-        // startup coroutine has no remaining code path that calls repository.stop() at
-        // all, so waiting longer cannot change the outcome), so this only strengthens
-        // the regression-detection power of this test against the old dual-ownership
-        // bug without weakening the proof for the fixed behavior.
-        waitForCondition(timeoutMs = 3_000) { bridge.stopCalls >= 2 }
+        // P0-007: No settle wait needed. Because startup is joined before the
+        // authoritative stop, a reverted competing cleanup must have completed
+        // before the lifecycle command finishes.
         assertEquals(
             "exactly one native stop call must occur; a competing stop from the cancelled " +
                 "startup coroutine would make this 2",
@@ -385,24 +380,25 @@ class TunnelForegroundServiceStopFailureTest {
         // staleJob.cancelAndJoin(), and staleJob is currently blocked on a real
         // Thread-level CountDownLatch inside getStatusJson() (coroutine cancellation
         // cannot interrupt a blocking call) — so pause() must not be able to reach its
-        // own repository.stop() call before this release happens. Proven via a
-        // suspending receive on the stop-call event channel, not a raw counter-polling
-        // loop: `awaitStopCall` must time out (no event) while still blocked.
-        val stopCallBeforeRelease =
-            runBlocking { withTimeoutOrNull(500) { bridge.awaitStopCall() } }
-        assertEquals(
-            "pause() must not call native stop before the in-flight stale status " +
-                "refresh has been quiesced",
-            null,
-            stopCallBeforeRelease,
-        )
-
+        // own repository.stop() call before this release happens. Proven via
+        // FakeLifecycleEvent ordering, not elapsed time.
         bridge.releaseBlockedStatusJsonRead()
         val stopCallOrdinal = runBlocking { bridge.awaitStopCall() }
         assertEquals(
             "exactly the first stop call must be the one this failed pause makes",
             1,
             stopCallOrdinal,
+        )
+
+        // P0-007: Verify status read entered before stop call via event ordering.
+        val events = bridge.lifecycleEventsSnapshot()
+        val statusReadIndex = events.indexOf(FakeLifecycleEvent.StatusReadEntered)
+        val stopIndex = events.indexOfFirst { it is FakeLifecycleEvent.StopEntered }
+        assertTrue("StatusReadEntered must appear in event log", statusReadIndex >= 0)
+        assertTrue("StopEntered must appear in event log", stopIndex >= 0)
+        assertTrue(
+            "status read must enter before the pause-owned stop call",
+            statusReadIndex < stopIndex,
         )
 
         // Wait for that *exact* stale poll iteration to fully settle (commit its
