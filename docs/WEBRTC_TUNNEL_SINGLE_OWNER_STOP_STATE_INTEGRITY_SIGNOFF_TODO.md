@@ -1296,11 +1296,38 @@ Disable Add when load failed.
 
 ### Acceptance criteria
 
-- [ ] Initial load failure is visible.
-- [ ] Failure is not rendered as empty list success.
-- [ ] Saved file remains untouched.
-- [ ] Retry exists.
-- [ ] Add is disabled without a valid baseline.
+- [x] Initial load failure is visible. `ForwardsViewModel.loadError` now exposes
+      `deps.forwardsRepository.loadError` directly; `ForwardsScreen` collects it and
+      renders an `ErrorResolutionCard` when non-null.
+- [x] Failure is not rendered as empty list success. `ForwardsScreen`'s item list is
+      `if (loadError != null) ErrorResolutionCard else if (forwards.isEmpty()) EmptyStateCard
+      else <rows>` — the two states are mutually exclusive.
+- [x] Saved file remains untouched. Already guaranteed by
+      `ForwardsRepository`/`ForwardsConfigStore` (covered by
+      `ForwardsRepositoryTest.mutationBlockedWhenStartupBaselineIsCorrupt` etc. from an
+      earlier round); `vm.reload()` only calls `refresh()`, which never writes.
+- [x] Retry exists. `ErrorResolutionCard`'s `action` slot renders an `AppOutlinedButton`
+      wired to `vm::reload`, matching the existing `HomeCards.kt` error-card convention.
+- [x] Add is disabled without a valid baseline. The add `IconButton`'s `enabled` is now
+      `!isBusy && loadError == null`.
+      Test: `loadErrorIsVisibleWhenSavedForwardsFileIsCorruptAndClearsOnSuccessfulRetry`
+      (`ForwardsViewModelTest.kt`) seeds a corrupt `forwards.json`, constructs a fresh
+      `AppDependencies`/`ForwardsViewModel` over it, and asserts `vm.loadError.value != null`
+      while `vm.forwards.value` is empty and the on-disk file still contains the corrupt
+      marker; then fixes the file, calls `vm.reload()`, and asserts the error clears.
+      Verified by temporarily replacing `loadError`'s assignment with a constant
+      `MutableStateFlow(null)` — the test failed at the "load error visible" assertion
+      (the right reason), the other 9 tests in the class kept passing, then the fix was
+      restored and the test re-passed. Ran 3x fresh (`--rerun`) with no flakes, then the
+      full `./gradlew check` gate.
+      Note: this codebase has no Compose UI test harness for any screen (confirmed: the
+      only test touching `ui/` is `FlowScreensTest.kt`, which tests plain helper
+      functions, not rendered composables), so the specific pixel-level behaviors —
+      `ErrorResolutionCard` actually rendering, the Add button's `enabled` flag, the
+      mutual-exclusivity with `EmptyStateCard` — are not independently unit-testable here.
+      The `ForwardsViewModel.loadError` test above is the deepest layer this repo's
+      existing test infrastructure reaches; the screen-level wiring was verified by
+      reading `ForwardsScreen.kt`'s diff directly instead.
 
 ---
 
