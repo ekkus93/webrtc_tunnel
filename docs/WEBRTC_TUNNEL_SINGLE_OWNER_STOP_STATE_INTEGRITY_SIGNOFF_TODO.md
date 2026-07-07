@@ -1113,20 +1113,20 @@ Do not reuse workflow run `28825839747` as final proof.
 
 ```text
 final code commit SHA: f5b04a24bc027d3e251a89c520a8f46992e509d5
-workflow run: (pending push — filled in below once observed)
-Android focused test job: PASS (local) — see below
-Android full job: PASS (local) — see below
-Rust fmt/clippy job: PASS (local) — see below
-Linux workspace tests: PASS (local, this environment is Linux)
-macOS workspace tests: NOT RUN: this environment is Linux, no macOS runner available
-Linux signal lifecycle: NOT RUN locally: not separately exercised outside `cargo test --workspace`
-  (the required real-process signal lifecycle test is `crates/p2p-daemon/tests/real_broker_tunnel.rs`,
-  which auto-skips without Docker per this repo's CLAUDE.md; Docker was not confirmed present here)
-macOS signal lifecycle: NOT RUN: this environment is Linux
-Debian package smoke: PASS (local, scripts/test-debian-package.sh, Linux/Docker)
-launchd plist validation: SKIP (local, scripts/check-launchd-plists.sh reports
-  "not running on macOS; native plutil validation was not performed here" — expected on Linux)
-launchd install-layout smoke: NOT RUN: macOS-only script, this environment is Linux
+docs-only commit pushed/observed on top of it: 61e83dd8c6282f955d88c89dba5dc9809e29227b
+workflow run: https://github.com/ekkus93/webrtc_tunnel/actions/runs/28841060284 (conclusion: success, headSha: 61e83dd8c6282f955d88c89dba5dc9809e29227b)
+Android focused test job: PASS — CI "Android" job, step "Run foreground-service stop-failure truthfulness tests" + local (see below)
+Android full job: PASS — CI "Android" job, step "Build Android app and run unit tests" + local (see below)
+Rust fmt/clippy job: PASS — CI "Lint" job (fmt + clippy debug + clippy release) + local (see below)
+Linux workspace tests: PASS — CI "Test (ubuntu-latest)" job + local
+macOS workspace tests: PASS — CI "Test (macos-latest)" job
+Linux signal lifecycle: PASS — CI "Test (ubuntu-latest)" job, step "Run required real-process signal lifecycle test"
+macOS signal lifecycle: PASS — CI "Test (macos-latest)" job, step "Run required real-process signal lifecycle test"
+Debian package smoke: PASS — CI "Test (ubuntu-latest)" job, step "Debian package/install smoke test" + local
+launchd plist validation: PASS — CI "Test (macos-latest)" job, step "Validate launchd plists" (native plutil, real macOS runner);
+  local run was SKIP (this environment is Linux, expected/documented by the script itself)
+launchd install-layout smoke: PASS — CI "Test (macos-latest)" job, step "launchd install-layout smoke test"
+  (local run was NOT RUN: this environment is Linux)
 ```
 
 ### Local gate results (this environment, Linux)
@@ -1152,17 +1152,23 @@ scripts/test-launchd-install-layout.sh                              NOT RUN: mac
 ### Acceptance criteria
 
 - [x] All locally available gates are reported PASS/FAIL/NOT RUN honestly (see tables
-      above; the two macOS-only scripts are NOT RUN/SKIP here, truthfully, not silently
-      omitted or claimed as PASS).
-- [ ] Remote CI ran after all P0/P1 production changes. *(pending — push authorized by
-      the user; will be completed and this checkbox/section updated after observing the
-      real workflow run on commit `f5b04a24bc027d3e251a89c520a8f46992e509d5` or a later
-      docs-only commit on top of it.)*
-- [ ] Remote workflow SHA matches final implementation. *(pending, see above)*
-- [ ] No earlier workflow is reused as proof. Workflow run `28825839747` and
-      `28831787324` (used earlier in this session for the unrelated CI-fix commit
-      `8d75d51`) will **not** be reused; a fresh run on the SHA above (or a docs-only
-      commit atop it) is required.
+      above; the two macOS-only scripts were NOT RUN/SKIP locally, truthfully, not
+      silently omitted or claimed as PASS — real macOS coverage came from the CI
+      "Test (macos-latest)" job instead).
+- [x] Remote CI ran after all P0/P1 production changes. All P0-001..P0-006 and
+      P1-001..P1-006 code changes were committed (final code SHA
+      `f5b04a24bc027d3e251a89c520a8f46992e509d5`) before this task's push; the only
+      commit pushed on top was this docs-only P0-007 report.
+- [x] Remote workflow SHA matches final implementation. Workflow run `28841060284`'s
+      `headSha` is `61e83dd8c6282f955d88c89dba5dc9809e29227b`, a docs-only commit whose
+      parent is exactly `f5b04a24bc027d3e251a89c520a8f46992e509d5` — matching the spec's
+      "that exact SHA or a later docs-only commit whose parent is that exact code SHA"
+      rule. All 4 required jobs (`Test (ubuntu-latest)`, `Test (macos-latest)`,
+      `Android`, `Lint`) report `success`; the 5th (`Release artifacts`) is a
+      release-tag-only job that correctly did not run on a plain push.
+- [x] No earlier workflow is reused as proof. Neither `28825839747` nor `28831787324`
+      (both from earlier, unrelated work in this session) is cited as evidence anywhere
+      in this report; run `28841060284` is a fresh run triggered by this task's own push.
 
 ---
 
