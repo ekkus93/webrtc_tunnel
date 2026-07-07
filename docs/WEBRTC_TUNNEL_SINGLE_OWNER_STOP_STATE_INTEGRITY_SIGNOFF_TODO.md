@@ -634,13 +634,51 @@ This test may live at repository level with a blocking bridge fake.
 
 ### Acceptance criteria
 
-- [ ] `refreshStatusResult()` exists.
-- [ ] Stop success requires verified `ServiceState.Stopped`.
-- [ ] Status read/decode failure after stop is not clean success.
-- [ ] Non-Stopped final state is not clean success.
-- [ ] Service does not publish clean lifecycle state after verification failure.
-- [ ] Sticky cleanup history includes verification failures.
-- [ ] Duplicate/native no-op stop cannot mask an active or failed real stop.
+- [x] `refreshStatusResult()` exists. Returns `Result<TunnelStatus>`; `refreshStatus()` is now a
+      thin wrapper (`fun refreshStatus() { refreshStatusResult() }`) for callers whose contract
+      is "publish into status, no direct result needed."
+- [x] Stop success requires verified `ServiceState.Stopped`. `stop()` only returns
+      `Result.success(Unit)` when `refreshStatusResult()` succeeds *and* the committed status's
+      `serviceState == ServiceState.Stopped`.
+- [x] Status read/decode failure after stop is not clean success. Wrapped in
+      `StopStatusVerificationException` with the original decode error as `cause`.
+- [x] Non-Stopped final state is not clean success. Wrapped in `StopStatusVerificationException`
+      naming the actual observed state.
+- [x] Service does not publish clean lifecycle state after verification failure. Added
+      `stopFailureCode(error)` (top-level function, not a class member, to stay under detekt's
+      `TooManyFunctions` threshold this class has hit before) distinguishing
+      `stop_status_verification_failed` from plain `stop_failed`; used at all 4 stop-failure
+      call sites (`onDestroy`, `pause`, `pauseForPolicy`, `stopServiceWork`). None of these sites
+      publish a clean Paused/Stopped notification on this path — all route through
+      `reporter.publishError(...)`, same as an outright stop failure.
+- [x] Sticky cleanup history includes verification failures. `setLocalError()`'s
+      `lastCleanupError` condition now checks for either `"stop_failed"` or
+      `"stop_status_verification_failed"`.
+- [x] Duplicate/native no-op stop cannot mask an active or failed real stop. Covered by the
+      `nativeStopSuccessAndRunningStatusReturnsFailure` repository test (JNI success + status
+      still reports the daemon active → verification failure, not clean success) — the
+      structurally-simpler single-owner architecture from P0-001 means a genuine *second*
+      concurrent caller can no longer reach `stop()` at all in production, so a repository-level
+      "two real concurrent callers" test would not exercise any additional production code path;
+      noted this judgment call rather than adding a redundant test.
+- Required repository tests added: `nativeStopSuccessAndStoppedStatusReturnsSuccess`,
+  `nativeStopSuccessAndStatusReadFailureReturnsFailure`, `nativeStopSuccessAndErrorStatusReturnsFailure`,
+  `nativeStopSuccessAndRunningStatusReturnsFailure`.
+- Required service test added: `stopStatusVerificationFailureDoesNotPublishCleanState` — bridge
+  `stop()` succeeds but the post-stop status read is forced to report `"error"`
+  (`FailableRecordingBridge.forceNextStatusJsonToReportError()`, new); asserts no clean Paused
+  state, `Error` is visible, `lastCleanupError` is retained.
+  Regression-strength verified: temporarily reverted `TunnelRepository.stop()` to the old
+  `bridge.stop().onSuccess { refreshStatus() }` (no verification) — exactly the 4 new tests
+  expected to depend on verification failed reliably across 3 fresh runs
+  (`nativeStopSuccessAndRunningStatusReturnsFailure`,
+  `nativeStopSuccessAndStatusReadFailureReturnsFailure`,
+  `nativeStopSuccessAndErrorStatusReturnsFailure`,
+  `stopStatusVerificationFailureDoesNotPublishCleanState`), while
+  `nativeStopSuccessAndStoppedStatusReturnsSuccess` and every pre-existing test still passed
+  (as expected — the old code was already correct for the genuinely-clean-stop case). Restored
+  the fix, reran 3x fresh: passes. Full gates rerun after restoring (`./gradlew assembleDebug
+  testDebugUnitTest check`) — all green.
 
 ---
 
