@@ -122,8 +122,11 @@ class TunnelForegroundService
                         val policy = evaluatePolicy(prefs)
                         repository.updateNetworkStatus(policy)
                         if (policy.networkType == NetworkType.UnmeteredWifi) {
+                            // Do not pre-clear pausedByPolicy here: only runOfferStart()'s own
+                            // success path (via resume() -> startOffer()) may clear it, so a
+                            // failed resume attempt leaves the retry state true for the next
+                            // unmetered event to retry (P1-001).
                             if (pausedByPolicy.get() && prefs.resumeOnUnmetered) {
-                                pausedByPolicy.set(false)
                                 serviceScope.launch { offer.resume() }
                             }
                         } else if (!policy.tunnelAllowed) {

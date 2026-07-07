@@ -97,6 +97,7 @@ class FailableRecordingBridge : TunnelNativeBridge {
     private val startOfferCallsAtomic = AtomicInteger(0)
     private val stopCallsAtomic = AtomicInteger(0)
     private val failNextStopAtomic = AtomicBoolean(false)
+    private val failNextStartOfferAtomic = AtomicBoolean(false)
     private val blockStartOfferAtomic = AtomicBoolean(false)
     private val startOfferEntered = AtomicReference(CountDownLatch(0))
     private val startOfferRelease = AtomicReference(CountDownLatch(0))
@@ -129,6 +130,11 @@ class FailableRecordingBridge : TunnelNativeBridge {
     /** The next (and only the next) `stop()` call fails instead of succeeding. */
     fun failNextStop() {
         failNextStopAtomic.set(true)
+    }
+
+    /** The next (and only the next) `startOffer()` call fails instead of succeeding. */
+    fun failNextStartOffer() {
+        failNextStartOfferAtomic.set(true)
     }
 
     /** The next `startOffer()` call blocks until [releaseBlockedStartOffer] is called. */
@@ -183,6 +189,9 @@ class FailableRecordingBridge : TunnelNativeBridge {
             check(startOfferRelease.get().await(5, TimeUnit.SECONDS)) {
                 "blocked startOffer was never released"
             }
+        }
+        if (failNextStartOfferAtomic.compareAndSet(true, false)) {
+            return Result.failure(RuntimeException("injected start failure"))
         }
         state = ServiceState.Connected
         return Result.success(Unit)

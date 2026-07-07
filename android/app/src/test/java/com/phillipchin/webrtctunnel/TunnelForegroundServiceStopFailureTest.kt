@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ServiceState
+import com.phillipchin.webrtctunnel.model.isTunnelRunning
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -236,6 +237,73 @@ class TunnelForegroundServiceStopFailureTest {
             waitForCondition { !service.pausedByPolicy.get() },
         )
         assertTrue(waitForCondition { bridge.startOfferCalls >= 2 })
+    }
+
+    /**
+     * Regression test for P1-001: the auto-resume check used to clear `pausedByPolicy`
+     * before even attempting `resume()`, so a resume that then failed to start left the
+     * retry state permanently false — the tunnel would never auto-resume again on a
+     * later unmetered event, even though it was still genuinely policy-paused. Only
+     * `runOfferStart()`'s own success path may clear the flag now.
+     */
+    @Test
+    fun failedAutoResumeLeavesPausedByPolicyTrueForNextRetry() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        runBlocking {
+            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+        }
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        runBlocking { service.offer.pauseForPolicy("policy pause before failed auto-resume") }
+        assertTrue(service.pausedByPolicy.get())
+        assertEquals(ServiceState.PausedMeteredBlocked, deps.tunnelRepository.status.value.serviceState)
+
+        val connectivityManager =
+            ApplicationProvider.getApplicationContext<android.content.Context>()
+                .getSystemService(ConnectivityManager::class.java)
+        val shadowConnectivityManager = Shadows.shadowOf(connectivityManager)
+        val network = ShadowNetwork.newInstance(1)
+
+        // First unmetered event: resume is attempted but the native start fails.
+        bridge.failNextStartOffer()
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+
+        assertTrue(
+            "a failed resume attempt must be reported as an error",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        assertTrue(
+            "a failed resume attempt must not clear the policy-pause retry flag",
+            service.pausedByPolicy.get(),
+        )
+
+        // Second unmetered event: the flag is still true, so this retries, and this time
+        // the native start succeeds. startOffer() intentionally no-ops ("already starting")
+        // if the first attempt's startupJob has not yet fully wound down by the time this
+        // event lands — under heavy machine load that window can outlast a single fire, so
+        // keep re-firing the network event on every poll until the retry is actually
+        // observed, rather than assuming exactly one fire is enough.
+        assertTrue(
+            "second unmetered event never triggered a successful retry start",
+            waitForCondition {
+                if (bridge.state != ServiceState.Connected) {
+                    shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+                }
+                bridge.state == ServiceState.Connected
+            },
+        )
+        assertTrue(
+            "the retry flag must clear only once resume actually succeeds",
+            waitForCondition { !service.pausedByPolicy.get() },
+        )
+        assertTrue(
+            "a successful resume must leave the tunnel running, not paused/errored",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState.isTunnelRunning() },
+        )
     }
 
     /**
