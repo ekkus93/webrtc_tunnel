@@ -772,11 +772,34 @@ Result from rollback is not ignored
 
 ### Acceptance criteria
 
-- [ ] No rollback `Result` is ignored.
-- [ ] Save rollback failure is visible.
-- [ ] Delete rollback failure is visible.
-- [ ] Message explains consistency state.
-- [ ] Deterministic test fails if rollback result is ignored.
+- [x] No rollback `Result` is ignored. `rollbackAfterConfigSyncFailure()`
+      (`ForwardsViewModel.kt`) `.fold()`s `deps.forwardsRepository.save(before)`'s `Result`
+      instead of discarding it; both `saveForward()` and `deleteForward()` call this one
+      helper.
+- [x] Save rollback failure is visible.
+      `forwardsViewModelSaveSurfacesRollbackFailureWhenRollbackPersistenceFails`
+      (`ForwardsViewModelTest.kt`): saves a new forward with real IO dispatchers, blocks
+      validation mid-flight (new `RecordingBridge.blockNextValidateConfig()` barrier in
+      `AppViewModelTestBase.kt`, entered only after the mutation persist already
+      succeeded), makes `app.filesDir` unwritable so the rollback's real
+      `ForwardsConfigStore.saveForwards()` throws `ForwardsWriteException`, then releases
+      validation with an invalid result. Asserts the message contains the original
+      failure, "Rollback also failed", and the consistency wording.
+- [x] Delete rollback failure is visible.
+      `forwardsViewModelDeleteSurfacesRollbackFailureWhenRollbackPersistenceFails` is the
+      symmetric test for `deleteForward()` (deletes the seeded "ssh" forward), same
+      barrier/filesystem technique, same assertions.
+- [x] Message explains consistency state. Both tests assert the message contains
+      "remains saved" and "not activated" (from the helper's literal wording).
+- [x] Deterministic test fails if rollback result is ignored. Verified by temporarily
+      reverting the helper to `deps.forwardsRepository.save(before); return original`
+      (discarding the `Result`, matching the original bug) — both new tests failed at
+      their "expected rollback failure" assertion (the right reason), the other 6 tests
+      in the class kept passing, then the helper was restored and both tests re-passed.
+      Each new test also ran 3x fresh (`--rerun`) before and after this check with no
+      flakes. No production test hook was added; the rollback failure is produced by
+      making the real on-disk `forwards.json` directory unwritable for the duration of
+      the release, restored in a `finally` block.
 
 ---
 
