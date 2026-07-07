@@ -279,14 +279,56 @@ Restore fix before commit.
 
 ### Acceptance criteria
 
-- [ ] `lifecycleGeneration` is atomic.
-- [ ] Startup generation checks do not acquire `lifecycleMutex`.
-- [ ] Startup cancellation is joined before explicit native stop.
-- [ ] Cancelled startup does not independently call `repository.stop()`.
-- [ ] Post-start stale-generation path does not independently call `repository.stop()`.
-- [ ] Pause, policy pause, service stop, and onDestroy use the same ownership rule.
-- [ ] Regression test proves exactly one native stop.
-- [ ] Regression test fails when old competing cleanup is restored.
+- [x] `lifecycleGeneration` is atomic. `private val lifecycleGeneration = AtomicLong(0)` (no
+      longer `internal`/mutex-guarded — the only test that bumped it directly, the now-obsolete
+      supersedence test, is removed as part of this same task since its scenario can no longer
+      occur; see below).
+- [x] Startup generation checks do not acquire `lifecycleMutex`. `isCurrentGeneration()` is now a
+      plain (non-suspend) `lifecycleGeneration.get() == startGeneration`.
+- [x] Startup cancellation is joined before explicit native stop. New
+      `cancelStartupJobAndJoinLocked()` (`job?.cancelAndJoin()`) replaces the old fire-and-forget
+      `cancelStartupJobLocked()` in `pause()`, `pauseForPolicy()`, `stopServiceWork()`, and
+      `onDestroy()`; the required call order (cancel+join startup, then stop+join status poll,
+      then native stop) matches spec §2.3 exactly.
+- [x] Cancelled startup does not independently call `repository.stop()`. Removed the entire
+      `catch (_: CancellationException) { ... repository.stop() ... }` block from
+      `runOfferStart()`; cancellation now unwinds through the existing `finally { identity.fill(0) }`
+      with no stop call of its own.
+- [x] Post-start stale-generation path does not independently call `repository.stop()`. Collapsed
+      to a bare `if (!isCurrentGeneration(startGeneration)) { return }`, matching the pre-native-start
+      check's shape — no `NonCancellable`/stop cleanup remains there.
+- [x] Pause, policy pause, service stop, and onDestroy use the same ownership rule. All four now
+      do `lifecycleGeneration.incrementAndGet()` → `cancelStartupJobAndJoinLocked()` →
+      `reporter.stopStatusPollingAndJoin()` → the one `repository.stop()` call, in that order.
+- [x] Regression test proves exactly one native stop. New
+      `cancelledStartupAndExplicitPausePerformExactlyOneNativeStop`
+      (`TunnelForegroundServiceStopFailureTest.kt`): blocks native `startOffer()`, triggers
+      `ACTION_PAUSE` while it's still blocked, releases the block, and asserts `bridge.stopCalls
+      == 1` plus final state `Error`.
+- [x] Regression test fails when old competing cleanup is restored. Verified directly: temporarily
+      restored fire-and-forget cancel (no join) in `cancelStartupJobAndJoinLocked()` and re-added
+      the old `catch (CancellationException) { ... repository.stop() ... }` block. The new test
+      failed reliably across 3 fresh runs (`stopCalls == 2`, not 1) while the other 7 tests in the
+      class still passed. Note: the first version of this regression check (checking the count
+      immediately after the state reached `Error`) did *not* reliably catch the reverted bug — the
+      race between the two competing stop callers meant the assertion sometimes ran before the
+      second (buggy) call had landed. Strengthened it with a bounded settle wait
+      (`waitForCondition(timeoutMs = 3_000) { bridge.stopCalls >= 2 }`, result intentionally not
+      asserted) before the final count check: harmless for the fixed code (there is no second
+      caller left to wait for, so this can only time out doing nothing), but gives a real second
+      caller, if one existed, a generous window to manifest before the assertion. After adding
+      this, the regression check failed reliably on all 3 runs. Restored the fix, reran: passes
+      (fresh, `--rerun-tasks`, 3x). Full gates rerun after restoring
+      (`./gradlew assembleDebug testDebugUnitTest`, `detekt ktlintCheck lintDebug`, `check`) — all
+      green. (One ktlint violation surfaced from the shortened `isCurrentGeneration()` body —
+      fixed via `ktlintFormat`, not suppression.)
+      Also removed as part of this task (their production scenarios cease to exist once
+      `runOfferStart()` no longer calls `repository.stop()` anywhere): the old
+      `stopDuringPendingStartWithFailingCleanupStopPublishesError` test (replaced by the new
+      regression test above) and `startupSupersedenceCleanupStopFailurePublishesError` (deleted
+      outright — nothing remains to test once the supersedence branch is a bare `return`). The
+      `ServiceTestEvent`/`StartupTestHooks`/`testEvents` declarations themselves are left in place
+      for now, unused; P0-006 removes them formally with its own search-gate verification.
 
 ---
 
