@@ -5,18 +5,25 @@ import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.ListenState
 import com.phillipchin.webrtctunnel.model.NativeLogEventDto
 import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
+import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(RobolectricTestRunner::class)
 class TunnelRepositoryTest {
@@ -365,6 +372,71 @@ class TunnelRepositoryTest {
         assertTrue((repository.status.value.uptimeSeconds ?: -1L) >= 0L)
     }
 
+    /**
+     * Regression test for P0-002: `refreshStatus()` used to capture `previous = _status.value`
+     * once, before the (blocking) native read, then unconditionally overwrite `_status.value`
+     * with a value derived from that stale snapshot. A concurrent `setLocalError(...)` landing
+     * while the native read was still in flight would be silently lost the moment the stale
+     * refresh finally committed. The fix reads native status outside any atomic mutation and
+     * merges against the *current* value inside `updateStatus`'s retry loop, so a concurrent
+     * commit can never be overwritten by a stale one.
+     */
+    @Test
+    fun cleanupHistorySurvivesStaleRefreshCommit() {
+        bridge.statusPayload = statusJson("running", "offer")
+        bridge.blockNextStatusJsonRead()
+
+        val refreshThread = Thread { repository.refreshStatus() }
+        refreshThread.start()
+        assertTrue(
+            "refreshStatus() should have entered the blocked native read by now",
+            bridge.awaitStatusJsonReadEntered(5_000),
+        )
+
+        repository.setLocalError(code = "stop_failed", message = "cleanup-history-sentinel")
+
+        bridge.releaseBlockedStatusJsonRead()
+        refreshThread.join(5_000)
+        assertFalse("refreshStatus() should have finished by now", refreshThread.isAlive)
+
+        assertEquals(
+            "cleanup-history-sentinel",
+            repository.status.value.lastCleanupError?.message,
+        )
+    }
+
+    /** Same concern as [cleanupHistorySurvivesStaleRefreshCommit], for a concurrent
+     * `updateNetworkStatus(...)` instead of `setLocalError(...)`. */
+    @Test
+    fun networkStatusSurvivesStaleRefreshCommit() {
+        bridge.statusPayload = statusJson("running", "offer")
+        bridge.blockNextStatusJsonRead()
+
+        val refreshThread = Thread { repository.refreshStatus() }
+        refreshThread.start()
+        assertTrue(
+            "refreshStatus() should have entered the blocked native read by now",
+            bridge.awaitStatusJsonReadEntered(5_000),
+        )
+
+        val latestNetworkStatus =
+            NetworkStatus(
+                networkType = NetworkType.Cellular,
+                isMetered = true,
+                allowedByDefault = false,
+                allowedByUserPolicy = false,
+                tunnelAllowed = false,
+                blockReason = "network-status-sentinel",
+            )
+        repository.updateNetworkStatus(latestNetworkStatus)
+
+        bridge.releaseBlockedStatusJsonRead()
+        refreshThread.join(5_000)
+        assertFalse("refreshStatus() should have finished by now", refreshThread.isAlive)
+
+        assertEquals(latestNetworkStatus, repository.status.value.networkStatus)
+    }
+
     private fun statusJson(
         state: String,
         mode: String,
@@ -397,6 +469,28 @@ class TunnelRepositoryTest {
         val logsPayloads: ArrayDeque<String> = ArrayDeque()
         var validationResult: ValidationResult = ValidationResult(true, null)
 
+        // P0-002: deterministic barrier for a status read blocked mid-flight, exercised by
+        // a real background Thread concurrently with the test thread, so — like
+        // FailableRecordingBridge's equivalent — these specific fields are thread-safe
+        // primitives even though the rest of this fake's fields are plain (untouched by the
+        // new concurrency tests that use this barrier).
+        private val blockStatusJsonRead = AtomicBoolean(false)
+        private val statusJsonReadEntered = AtomicReference(CountDownLatch(0))
+        private val statusJsonReadRelease = AtomicReference(CountDownLatch(0))
+
+        fun blockNextStatusJsonRead() {
+            statusJsonReadEntered.set(CountDownLatch(1))
+            statusJsonReadRelease.set(CountDownLatch(1))
+            blockStatusJsonRead.set(true)
+        }
+
+        fun awaitStatusJsonReadEntered(timeoutMs: Long): Boolean =
+            statusJsonReadEntered.get().await(timeoutMs, TimeUnit.MILLISECONDS)
+
+        fun releaseBlockedStatusJsonRead() {
+            statusJsonReadRelease.get().countDown()
+        }
+
         override fun startOffer(
             configPath: String,
             identityBytes: ByteArray?,
@@ -418,7 +512,15 @@ class TunnelRepositoryTest {
                 ?: if (failStop) Result.failure(IllegalStateException("stop failed")) else Result.success(Unit)
         }
 
-        override fun getStatusJson(): String = statusPayloads.pollFirst() ?: statusPayload
+        override fun getStatusJson(): String {
+            if (blockStatusJsonRead.compareAndSet(true, false)) {
+                statusJsonReadEntered.get().countDown()
+                check(statusJsonReadRelease.get().await(5, TimeUnit.SECONDS)) {
+                    "blocked status JSON read was never released"
+                }
+            }
+            return statusPayloads.pollFirst() ?: statusPayload
+        }
 
         override fun getRecentLogsJson(maxEvents: Int): String = logsPayloads.pollFirst() ?: logsJson
 

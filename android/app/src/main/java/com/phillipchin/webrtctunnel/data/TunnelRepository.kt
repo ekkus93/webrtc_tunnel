@@ -36,6 +36,22 @@ class TunnelRepository(
         )
     val status: StateFlow<TunnelStatus> = _status.asStateFlow()
 
+    // The one atomic state-mutation primitive (P0-002): every mutator below goes through
+    // this compare-and-set loop instead of a plain `_status.value = _status.value.copy(...)`
+    // read-modify-write, which could lose a concurrent writer's update between the read and
+    // the write. `transform` receives the value current *at commit time*, not a snapshot
+    // captured before any expensive work (JNI/JSON decode) — callers must do that work first
+    // and pass only the resulting merge logic in here.
+    private inline fun updateStatus(transform: (TunnelStatus) -> TunnelStatus): TunnelStatus {
+        while (true) {
+            val current = _status.value
+            val next = transform(current)
+            if (_status.compareAndSet(current, next)) {
+                return next
+            }
+        }
+    }
+
     fun start(
         mode: TunnelMode,
         configPath: String,
@@ -53,37 +69,48 @@ class TunnelRepository(
     fun stop(): Result<Unit> = bridge.stop().onSuccess { refreshStatus() }
 
     fun refreshStatus() {
-        runCatching {
-            val previous = _status.value
-            val native = Json.decodeFromString<NativeRuntimeStatusDto>(bridge.getStatusJson())
-            val mapped = native.toTunnelStatus(previous)
+        // Expensive native/JSON work happens once, outside the atomic mutation (P0-002):
+        // only the merge decision (which depends on whatever the *latest* status turns out
+        // to be at commit time, not this stale-by-the-time-we-commit snapshot) runs inside
+        // updateStatus's retry loop.
+        val native =
+            runCatching {
+                Json.decodeFromString<NativeRuntimeStatusDto>(bridge.getStatusJson())
+            }.getOrElse { error ->
+                updateStatus { current ->
+                    current.copy(
+                        serviceState = ServiceState.Error,
+                        lastError =
+                            TunnelError(
+                                code = "status_decode_failed",
+                                message = "Native status decode failed",
+                                details =
+                                    SensitiveDataRedactor.redactText(
+                                        error.message ?: "unknown status decode error",
+                                    ),
+                            ),
+                    )
+                }
+                return
+            }
+        updateStatus { current ->
+            val mapped = native.toTunnelStatus(current)
             // A native status poll must never resurrect a policy-paused state
             // (PausedMeteredBlocked / NoNetwork) back to Connected: the daemon task
             // may still be reported active while network policy has blocked the tunnel.
             val resolved =
-                if (isPolicyPausedState(previous.serviceState) && native.active) {
+                if (isPolicyPausedState(current.serviceState) && native.active) {
                     mapped.copy(
-                        serviceState = previous.serviceState,
-                        networkStatus = previous.networkStatus,
+                        serviceState = current.serviceState,
+                        networkStatus = current.networkStatus,
                         mqttConnected = false,
                         activeSessionCount = 0,
-                        lastError = previous.lastError,
+                        lastError = current.lastError,
                     )
                 } else {
                     mapped
                 }
-            _status.value = SensitiveDataRedactor.redactStatus(resolved)
-        }.onFailure { error ->
-            _status.value =
-                _status.value.copy(
-                    serviceState = ServiceState.Error,
-                    lastError =
-                        TunnelError(
-                            code = "status_decode_failed",
-                            message = "Native status decode failed",
-                            details = SensitiveDataRedactor.redactText(error.message ?: "unknown status decode error"),
-                        ),
-                )
+            SensitiveDataRedactor.redactStatus(resolved)
         }
     }
 
@@ -100,8 +127,8 @@ class TunnelRepository(
                     )
                 }
         }.onFailure { error ->
-            _status.value =
-                _status.value.copy(
+            updateStatus { current ->
+                current.copy(
                     serviceState = ServiceState.Error,
                     lastError =
                         TunnelError(
@@ -110,6 +137,7 @@ class TunnelRepository(
                             details = SensitiveDataRedactor.redactText(error.message ?: "unknown log decode error"),
                         ),
                 )
+            }
         }.getOrElse {
             // Never return an empty list on failure — that reads as "no logs". Surface a
             // synthetic error log entry (in addition to the Error status set above) so the
@@ -126,18 +154,19 @@ class TunnelRepository(
 
     fun setPolicyBlocked(blockReason: String) {
         val redacted = SensitiveDataRedactor.redactText(blockReason)
-        _status.value =
-            _status.value.copy(
+        updateStatus { current ->
+            current.copy(
                 serviceState = ServiceState.PausedMeteredBlocked,
                 mqttConnected = false,
                 activeSessionCount = 0,
                 networkStatus =
-                    _status.value.networkStatus.copy(
+                    current.networkStatus.copy(
                         tunnelAllowed = false,
                         blockReason = redacted,
                     ),
                 lastError = null,
             )
+        }
     }
 
     fun setLocalError(
@@ -152,8 +181,8 @@ class TunnelRepository(
                 message = SensitiveDataRedactor.redactText(message),
                 details = details?.let(SensitiveDataRedactor::redactText),
             )
-        _status.value =
-            _status.value.copy(
+        updateStatus { current ->
+            current.copy(
                 serviceState = state,
                 mqttConnected = false,
                 activeSessionCount = 0,
@@ -162,16 +191,17 @@ class TunnelRepository(
                 // TunnelForegroundService uses; record it as sticky history (P1-005) rather
                 // than only in lastError, which a later successful stop's refreshStatus()
                 // would otherwise overwrite and silently erase.
-                lastCleanupError = if (code == "stop_failed") error else _status.value.lastCleanupError,
+                lastCleanupError = if (code == "stop_failed") error else current.lastCleanupError,
             )
+        }
     }
 
     fun updateNetworkStatus(networkStatus: NetworkStatus) {
-        _status.value = _status.value.copy(networkStatus = networkStatus)
+        updateStatus { current -> current.copy(networkStatus = networkStatus) }
     }
 
     fun updateSessionMeteredAllowance(allowForCurrentSession: Boolean) {
-        _status.value = _status.value.copy(allowMeteredForCurrentSession = allowForCurrentSession)
+        updateStatus { current -> current.copy(allowMeteredForCurrentSession = allowForCurrentSession) }
     }
 }
 
