@@ -9,6 +9,7 @@ import androidx.core.app.NotificationCompat
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.data.StopStatusVerificationException
 import com.phillipchin.webrtctunnel.data.TunnelRepository
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.NetworkType
@@ -38,6 +39,17 @@ import java.util.concurrent.atomic.AtomicLong
 
 // Control-flow signal: a startup attempt aborted after publishing its own error/state.
 private class StartupAborted : Exception()
+
+// Distinguishes an outright native stop failure from a stop that JNI reported as successful
+// but whose final state could not be verified as Stopped (P0-003), so TunnelRepository's
+// sticky lastCleanupError history can retain both categories. Top-level (not a class member)
+// so it doesn't count against this class's function budget for no behavioral reason.
+private fun stopFailureCode(error: Throwable): String =
+    if (error is StopStatusVerificationException) {
+        "stop_status_verification_failed"
+    } else {
+        "stop_failed"
+    }
 
 class TunnelForegroundService
     @JvmOverloads
@@ -190,7 +202,7 @@ class TunnelForegroundService
                         }.onFailure {
                             publishError(
                                 message = it.message ?: "Unable to stop tunnel",
-                                code = "stop_failed",
+                                code = stopFailureCode(it),
                             )
                         }
                         pausedByPolicy.set(false)
@@ -470,7 +482,7 @@ class TunnelForegroundService
                             onFailure = {
                                 reporter.publishError(
                                     message = it.message ?: "Unable to stop tunnel",
-                                    code = "stop_failed",
+                                    code = stopFailureCode(it),
                                 )
                             },
                         )
@@ -497,7 +509,7 @@ class TunnelForegroundService
                                 pausedByPolicy.set(false)
                                 reporter.publishError(
                                     message = it.message ?: "Failed stopping tunnel after policy block",
-                                    code = "stop_failed",
+                                    code = stopFailureCode(it),
                                 )
                             },
                         )
@@ -523,7 +535,7 @@ class TunnelForegroundService
                             // clean tunnel stop it didn't actually achieve.
                             reporter.publishError(
                                 message = it.message ?: "Unable to stop tunnel cleanly",
-                                code = "stop_failed",
+                                code = stopFailureCode(it),
                             )
                         },
                     )

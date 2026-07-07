@@ -20,6 +20,17 @@ import kotlinx.serialization.json.Json
 
 private const val MILLIS_PER_SECOND = 1000L
 
+/**
+ * Thrown (wrapped in a `Result.failure`) by [TunnelRepository.stop] when native JNI reports
+ * success but the final runtime state cannot be confirmed as [ServiceState.Stopped] — either
+ * because the post-stop status refresh itself failed, or because it succeeded but observed a
+ * non-`Stopped` state (P0-003).
+ */
+class StopStatusVerificationException(
+    message: String,
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
+
 class TunnelRepository(
     bridgeFactory: () -> TunnelNativeBridge = { RustTunnelBridge() },
 ) {
@@ -66,9 +77,53 @@ class TunnelRepository(
         return result
     }
 
-    fun stop(): Result<Unit> = bridge.stop().onSuccess { refreshStatus() }
+    /**
+     * Verified stop (P0-003): native JNI success alone is not sufficient proof of a clean
+     * stop — a duplicate/no-op ("not running") success could otherwise be reported while the
+     * real owner's stop is still in flight or has actually failed into `Error`. Success here
+     * requires [refreshStatusResult] to both succeed *and* observe [ServiceState.Stopped].
+     */
+    fun stop(): Result<Unit> =
+        bridge.stop().fold(
+            onFailure = { Result.failure(it) },
+            onSuccess = {
+                refreshStatusResult().fold(
+                    onFailure = { error ->
+                        Result.failure(
+                            StopStatusVerificationException(
+                                "Native stop returned success but final status could not be verified",
+                                error,
+                            ),
+                        )
+                    },
+                    onSuccess = { verifiedStatus ->
+                        if (verifiedStatus.serviceState == ServiceState.Stopped) {
+                            Result.success(Unit)
+                        } else {
+                            Result.failure(
+                                StopStatusVerificationException(
+                                    "Native stop returned success but final state was " +
+                                        "${verifiedStatus.serviceState}",
+                                ),
+                            )
+                        }
+                    },
+                )
+            },
+        )
 
     fun refreshStatus() {
+        refreshStatusResult()
+    }
+
+    /**
+     * Same native-status refresh as [refreshStatus], but returns the outcome instead of only
+     * publishing it into [status] — used by [stop] to verify the native runtime actually
+     * reached [ServiceState.Stopped] rather than trusting a bare JNI success code (P0-003).
+     * Callers that only need "publish error into status, no direct result needed" should keep
+     * using [refreshStatus] instead.
+     */
+    fun refreshStatusResult(): Result<TunnelStatus> {
         // Expensive native/JSON work happens once, outside the atomic mutation (P0-002):
         // only the merge decision (which depends on whatever the *latest* status turns out
         // to be at commit time, not this stale-by-the-time-we-commit snapshot) runs inside
@@ -91,27 +146,29 @@ class TunnelRepository(
                             ),
                     )
                 }
-                return
+                return Result.failure(error)
             }
-        updateStatus { current ->
-            val mapped = native.toTunnelStatus(current)
-            // A native status poll must never resurrect a policy-paused state
-            // (PausedMeteredBlocked / NoNetwork) back to Connected: the daemon task
-            // may still be reported active while network policy has blocked the tunnel.
-            val resolved =
-                if (isPolicyPausedState(current.serviceState) && native.active) {
-                    mapped.copy(
-                        serviceState = current.serviceState,
-                        networkStatus = current.networkStatus,
-                        mqttConnected = false,
-                        activeSessionCount = 0,
-                        lastError = current.lastError,
-                    )
-                } else {
-                    mapped
-                }
-            SensitiveDataRedactor.redactStatus(resolved)
-        }
+        val committed =
+            updateStatus { current ->
+                val mapped = native.toTunnelStatus(current)
+                // A native status poll must never resurrect a policy-paused state
+                // (PausedMeteredBlocked / NoNetwork) back to Connected: the daemon task
+                // may still be reported active while network policy has blocked the tunnel.
+                val resolved =
+                    if (isPolicyPausedState(current.serviceState) && native.active) {
+                        mapped.copy(
+                            serviceState = current.serviceState,
+                            networkStatus = current.networkStatus,
+                            mqttConnected = false,
+                            activeSessionCount = 0,
+                            lastError = current.lastError,
+                        )
+                    } else {
+                        mapped
+                    }
+                SensitiveDataRedactor.redactStatus(resolved)
+            }
+        return Result.success(committed)
     }
 
     fun recentLogs(maxEvents: Int): List<LogEvent> =
@@ -187,11 +244,17 @@ class TunnelRepository(
                 mqttConnected = false,
                 activeSessionCount = 0,
                 lastError = error,
-                // "stop_failed" is the code every tunnel-stop/cleanup failure site in
-                // TunnelForegroundService uses; record it as sticky history (P1-005) rather
-                // than only in lastError, which a later successful stop's refreshStatus()
-                // would otherwise overwrite and silently erase.
-                lastCleanupError = if (code == "stop_failed") error else current.lastCleanupError,
+                // "stop_failed"/"stop_status_verification_failed" are the codes every
+                // tunnel-stop/cleanup failure site in TunnelForegroundService uses (P0-003);
+                // record it as sticky history (P1-005) rather than only in lastError, which a
+                // later successful stop's refreshStatus() would otherwise overwrite and
+                // silently erase.
+                lastCleanupError =
+                    if (code == "stop_failed" || code == "stop_status_verification_failed") {
+                        error
+                    } else {
+                        current.lastCleanupError
+                    },
             )
         }
     }

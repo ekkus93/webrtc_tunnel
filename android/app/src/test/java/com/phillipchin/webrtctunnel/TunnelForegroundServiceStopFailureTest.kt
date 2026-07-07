@@ -109,6 +109,36 @@ class TunnelForegroundServiceStopFailureTest {
         assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error })
     }
 
+    /**
+     * Regression test for P0-003: native JNI `stop()` success alone must not be reported as
+     * a clean pause/stop — here the bridge's `stop()` call itself succeeds, but the
+     * subsequent status-verification read reports `"error"` instead of `"stopped"`. This must
+     * surface as a `stop_status_verification_failed` error, never a clean paused/stopped
+     * notification, and must be retained as sticky cleanup history.
+     */
+    @Test
+    fun stopStatusVerificationFailureDoesNotPublishCleanState() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        bridge.forceNextStatusJsonToReportError()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 2)
+
+        assertTrue(
+            "a native stop success whose final status could not be verified as Stopped must " +
+                "be reported as an error, never a clean paused state",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        assertTrue(
+            "the verification failure must be retained as sticky cleanup history",
+            waitForCondition { deps.tunnelRepository.status.value.lastCleanupError != null },
+        )
+        assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
+    }
+
     @Test
     fun laterSuccessfulStopDoesNotEraseEarlierCleanupFailureHistory() {
         val deps = (service.applicationContext as HasAppDependencies).deps

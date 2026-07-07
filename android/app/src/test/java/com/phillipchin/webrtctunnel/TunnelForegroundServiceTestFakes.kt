@@ -164,6 +164,15 @@ class FailableRecordingBridge : TunnelNativeBridge {
         statusJsonReadRelease.get().countDown()
     }
 
+    private val forceNextStatusJsonErrorAtomic = AtomicBoolean(false)
+
+    /** The next `getStatusJson()` call reports state `"error"` regardless of [state] —
+     * simulating a native stop that returned success but whose post-stop status read
+     * observes the runtime did not actually reach a clean stopped state (P0-003). */
+    fun forceNextStatusJsonToReportError() {
+        forceNextStatusJsonErrorAtomic.set(true)
+    }
+
     override fun startOffer(
         configPath: String,
         identityBytes: ByteArray?,
@@ -205,6 +214,11 @@ class FailableRecordingBridge : TunnelNativeBridge {
             check(statusJsonReadRelease.get().await(5, TimeUnit.SECONDS)) {
                 "blocked status JSON read was never released"
             }
+        }
+        if (forceNextStatusJsonErrorAtomic.compareAndSet(true, false)) {
+            return Json.encodeToString(
+                NativeRuntimeStatusDto(state = "error", mode = "offer", active = false),
+            )
         }
         return Json.encodeToString(
             NativeRuntimeStatusDto(

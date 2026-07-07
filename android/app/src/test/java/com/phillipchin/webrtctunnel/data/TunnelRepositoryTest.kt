@@ -66,6 +66,50 @@ class TunnelRepositoryTest {
         assertEquals(ServiceState.Stopped, repository.status.value.serviceState)
     }
 
+    // Required P0-003 tests: native JNI success alone must not be sufficient proof of a
+    // clean stop — only a verified final Stopped state counts.
+
+    @Test
+    fun nativeStopSuccessAndStoppedStatusReturnsSuccess() {
+        bridge.statusPayload = statusJson("stopped", "offer")
+        val result = repository.stop()
+        assertTrue(result.isSuccess)
+        assertEquals(ServiceState.Stopped, repository.status.value.serviceState)
+    }
+
+    @Test
+    fun nativeStopSuccessAndStatusReadFailureReturnsFailure() {
+        bridge.statusPayload = "{bad-json"
+        val result = repository.stop()
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is StopStatusVerificationException)
+        assertEquals(ServiceState.Error, repository.status.value.serviceState)
+    }
+
+    @Test
+    fun nativeStopSuccessAndErrorStatusReturnsFailure() {
+        bridge.statusPayload = statusJson("error", "offer")
+        val result = repository.stop()
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is StopStatusVerificationException)
+        assertEquals(ServiceState.Error, repository.status.value.serviceState)
+    }
+
+    @Test
+    fun nativeStopSuccessAndRunningStatusReturnsFailure() {
+        // bridge.stop() succeeds (default), but the post-stop status read still reports the
+        // daemon task as active — e.g. a duplicate/no-op ("not running") native success while
+        // the real owner's stop is still in flight. Must not be reported as clean.
+        bridge.statusPayload =
+            Json.encodeToString(
+                NativeRuntimeStatusDto(state = "running", mode = "offer", active = true, activeSessionCount = 1),
+            )
+        val result = repository.stop()
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is StopStatusVerificationException)
+        assertEquals(ServiceState.Connected, repository.status.value.serviceState)
+    }
+
     @Test
     fun refreshStatusSetsErrorStateOnInvalidJson() {
         bridge.statusPayload = "{bad-json"
