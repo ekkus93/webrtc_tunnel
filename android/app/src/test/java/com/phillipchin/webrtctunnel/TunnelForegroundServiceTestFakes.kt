@@ -11,7 +11,9 @@ import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.concurrent.CountDownLatch
@@ -113,6 +115,17 @@ class FailableRecordingBridge : TunnelNativeBridge {
     private val statusJsonReadEntered = AtomicReference(CountDownLatch(0))
     private val statusJsonReadRelease = AtomicReference(CountDownLatch(0))
 
+    // P0-005: lets a test wait for the exact moment a stop() call is entered, rather
+    // than inferring it happened from stopCalls reaching some count at some later,
+    // arbitrary point in time. Unbounded/unlimited: a test-only channel with a single,
+    // always-draining reader per test method, so this never needs to apply backpressure.
+    private val stopCallEvents = Channel<Int>(Channel.UNLIMITED)
+
+    /** Suspends until the next `stop()` call is entered, returning that call's 1-based
+     * ordinal. Fails loudly (via `withTimeout`) rather than silently continuing if no
+     * such call ever happens. */
+    suspend fun awaitStopCall(timeoutMs: Long = 10_000): Int = withTimeout(timeoutMs) { stopCallEvents.receive() }
+
     /** The next (and only the next) `stop()` call fails instead of succeeding. */
     fun failNextStop() {
         failNextStopAtomic.set(true)
@@ -158,7 +171,9 @@ class FailableRecordingBridge : TunnelNativeBridge {
         startOfferCallsAtomic.incrementAndGet()
         if (blockStartOfferAtomic.compareAndSet(true, false)) {
             startOfferEntered.get().countDown()
-            startOfferRelease.get().await(5, TimeUnit.SECONDS)
+            check(startOfferRelease.get().await(5, TimeUnit.SECONDS)) {
+                "blocked startOffer was never released"
+            }
         }
         state = ServiceState.Connected
         return Result.success(Unit)
@@ -170,7 +185,10 @@ class FailableRecordingBridge : TunnelNativeBridge {
     }
 
     override fun stop(): Result<Unit> {
-        stopCallsAtomic.incrementAndGet()
+        val call = stopCallsAtomic.incrementAndGet()
+        check(stopCallEvents.trySend(call).isSuccess) {
+            "stop-call observer unexpectedly closed"
+        }
         if (failNextStopAtomic.compareAndSet(true, false)) {
             return Result.failure(RuntimeException("injected stop failure"))
         }
@@ -184,7 +202,9 @@ class FailableRecordingBridge : TunnelNativeBridge {
         val snapshotState = state
         if (blockStatusJsonRead.compareAndSet(true, false)) {
             statusJsonReadEntered.get().countDown()
-            statusJsonReadRelease.get().await(5, TimeUnit.SECONDS)
+            check(statusJsonReadRelease.get().await(5, TimeUnit.SECONDS)) {
+                "blocked status JSON read was never released"
+            }
         }
         return Json.encodeToString(
             NativeRuntimeStatusDto(

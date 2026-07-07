@@ -9,6 +9,7 @@ import com.phillipchin.webrtctunnel.model.ServiceState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -281,26 +282,34 @@ class TunnelForegroundServiceStopFailureTest {
         bridge.failNextStop()
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 2)
 
-        // The core proof: pause() must not be able to even attempt the native stop
-        // while the stale refresh it depends on quiescing is still blocked. This is
-        // a positive assertion of absence within a generous bounded window, not a
-        // sleep used to synchronize correctness — without quiescing, nothing else
-        // holds pause() back, so this reliably distinguishes the two behaviors
-        // instead of racing the eventual final state (which either implementation
-        // can reach through incidental thread-scheduling timing, proving nothing).
-        assertFalse(
+        // Ordering proof (P0-005): pause()'s stopStatusPollingAndJoin() calls
+        // staleJob.cancelAndJoin(), and staleJob is currently blocked on a real
+        // Thread-level CountDownLatch inside getStatusJson() (coroutine cancellation
+        // cannot interrupt a blocking call) — so pause() must not be able to reach its
+        // own repository.stop() call before this release happens. Proven via a
+        // suspending receive on the stop-call event channel, not a raw counter-polling
+        // loop: `awaitStopCall` must time out (no event) while still blocked.
+        val stopCallBeforeRelease =
+            runBlocking { withTimeoutOrNull(500) { bridge.awaitStopCall() } }
+        assertEquals(
             "pause() must not call native stop before the in-flight stale status " +
                 "refresh has been quiesced",
-            waitForCondition(timeoutMs = 500) { bridge.stopCalls >= 1 },
+            null,
+            stopCallBeforeRelease,
         )
 
-        // Release the stale refresh so its blocked native read can finally return,
-        // and wait for that *exact* stale poll iteration to fully settle (commit its
-        // result or be discarded by cancellation) before checking the final state.
         bridge.releaseBlockedStatusJsonRead()
+        val stopCallOrdinal = runBlocking { bridge.awaitStopCall() }
+        assertEquals(
+            "exactly the first stop call must be the one this failed pause makes",
+            1,
+            stopCallOrdinal,
+        )
+
+        // Wait for that *exact* stale poll iteration to fully settle (commit its
+        // result or be discarded by cancellation) before checking the final state.
         runBlocking { staleJob?.join() }
 
-        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
         assertTrue(
             "a failed stop must be the final truth even though a status refresh was " +
                 "in flight when the stop was requested",
