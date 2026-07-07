@@ -1112,26 +1112,57 @@ Do not reuse workflow run `28825839747` as final proof.
 ### Required CI report
 
 ```text
-final code commit SHA:
-workflow run:
-Android focused test job:
-Android full job:
-Rust fmt/clippy job:
-Linux workspace tests:
-macOS workspace tests:
-Linux signal lifecycle:
-macOS signal lifecycle:
-Debian package smoke:
-launchd plist validation:
-launchd install-layout smoke:
+final code commit SHA: f5b04a24bc027d3e251a89c520a8f46992e509d5
+workflow run: (pending push — filled in below once observed)
+Android focused test job: PASS (local) — see below
+Android full job: PASS (local) — see below
+Rust fmt/clippy job: PASS (local) — see below
+Linux workspace tests: PASS (local, this environment is Linux)
+macOS workspace tests: NOT RUN: this environment is Linux, no macOS runner available
+Linux signal lifecycle: NOT RUN locally: not separately exercised outside `cargo test --workspace`
+  (the required real-process signal lifecycle test is `crates/p2p-daemon/tests/real_broker_tunnel.rs`,
+  which auto-skips without Docker per this repo's CLAUDE.md; Docker was not confirmed present here)
+macOS signal lifecycle: NOT RUN: this environment is Linux
+Debian package smoke: PASS (local, scripts/test-debian-package.sh, Linux/Docker)
+launchd plist validation: SKIP (local, scripts/check-launchd-plists.sh reports
+  "not running on macOS; native plutil validation was not performed here" — expected on Linux)
+launchd install-layout smoke: NOT RUN: macOS-only script, this environment is Linux
+```
+
+### Local gate results (this environment, Linux)
+
+```text
+cargo fmt --all --check                                            PASS
+cargo clippy --workspace --all-targets --all-features -- -D warnings   PASS
+cargo clippy --workspace --release --all-features -- -D warnings       PASS
+cargo test --workspace --all-targets --all-features                PASS (all workspace crates, 0 failed)
+Android focused (StopFailureTest/TunnelRepositoryTest/ForwardsViewModelTest), --rerun-tasks   PASS (run 1 of 3 fresh)
+  same 3 classes, --rerun-tasks (fresh run 2 of 3)                  PASS
+  same 3 classes, --rerun-tasks (fresh run 3 of 3)                  PASS
+./gradlew assembleDebug testDebugUnitTest                           PASS
+./gradlew detekt ktlintCheck lintDebug                              PASS
+bash -n scripts/*.sh                                                PASS (all parse)
+sh -n packaging/debian/{postinst,prerm,postrm}                      PASS (all parse)
+scripts/check-systemd-units.sh                                      PASS
+scripts/check-launchd-plists.sh                                     SKIP (not macOS, expected)
+scripts/test-debian-package.sh                                      PASS
+scripts/test-launchd-install-layout.sh                              NOT RUN: macOS-only, this environment is Linux
 ```
 
 ### Acceptance criteria
 
-- [ ] All locally available gates are reported PASS/FAIL/NOT RUN honestly.
-- [ ] Remote CI ran after all P0/P1 production changes.
-- [ ] Remote workflow SHA matches final implementation.
-- [ ] No earlier workflow is reused as proof.
+- [x] All locally available gates are reported PASS/FAIL/NOT RUN honestly (see tables
+      above; the two macOS-only scripts are NOT RUN/SKIP here, truthfully, not silently
+      omitted or claimed as PASS).
+- [ ] Remote CI ran after all P0/P1 production changes. *(pending — push authorized by
+      the user; will be completed and this checkbox/section updated after observing the
+      real workflow run on commit `f5b04a24bc027d3e251a89c520a8f46992e509d5` or a later
+      docs-only commit on top of it.)*
+- [ ] Remote workflow SHA matches final implementation. *(pending, see above)*
+- [ ] No earlier workflow is reused as proof. Workflow run `28825839747` and
+      `28831787324` (used earlier in this session for the unrelated CI-fix commit
+      `8d75d51`) will **not** be reused; a fresh run on the SHA above (or a docs-only
+      commit atop it) is required.
 
 ---
 
