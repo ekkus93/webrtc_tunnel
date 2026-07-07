@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ServiceState
+import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
 import com.phillipchin.webrtctunnel.model.isTunnelRunning
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -414,6 +415,83 @@ class TunnelForegroundServiceStopFailureTest {
             waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
         )
         assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
+    }
+
+    /**
+     * P0-001: Tests that START then PAUSE ordering is preserved.
+     * The command processor should handle START before PAUSE, so the final
+     * state reflects the PAUSE (not running).
+     */
+    @Test
+    fun startThenPauseOrderingPreserved() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Submit START, then immediately submit PAUSE.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 2)
+
+        // Wait for PAUSE to complete. The final state should be paused/stopped, not running.
+        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+        assertTrue(
+            "PAUSE after START must result in stopped state, not running",
+            waitForCondition {
+                deps.tunnelRepository.status.value.serviceState == ServiceState.Stopped ||
+                    deps.tunnelRepository.status.value.serviceState == ServiceState.Error
+            },
+        )
+        assertFalse(
+            "START then PAUSE must not leave the tunnel running",
+            deps.tunnelRepository.status.value.serviceState.isTunnelRunning(),
+        )
+    }
+
+    /**
+     * P0-001: Tests that PAUSE then START ordering is preserved.
+     * The command processor handles PAUSE first, then START.
+     * Final state should be active-or-starting.
+     */
+    @Test
+    fun pauseThenStartOrderingPreserved() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+
+        // Submit PAUSE (tunnel is stopped, so PAUSE is a no-op), then START.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 1)
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 2)
+
+        // Wait for START to complete.
+        assertTrue(
+            "PAUSE then START must result in active-or-starting state",
+            waitForCondition {
+                deps.tunnelRepository.status.value.serviceState.isTunnelActiveOrStarting()
+            },
+        )
+    }
+
+    /**
+     * P0-001: Tests that ALLOW_METERED then PAUSE ordering is preserved.
+     * The later PAUSE must supersede the earlier ALLOW_METERED command.
+     */
+    @Test
+    fun allowMeteredThenPauseOrderingPreserved() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+
+        // Submit ALLOW_METERED_SESSION, then immediately PAUSE.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_ALLOW_METERED_SESSION)).startCommand(0, 1)
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 2)
+
+        // Wait for PAUSE to complete. The tunnel should be stopped.
+        assertTrue(
+            "PAUSE after ALLOW_METERED must result in stopped state",
+            waitForCondition {
+                deps.tunnelRepository.status.value.serviceState == ServiceState.Stopped ||
+                    deps.tunnelRepository.status.value.serviceState == ServiceState.Error
+            },
+        )
+        assertFalse(
+            "ALLOW_METERED then PAUSE must not leave the tunnel running",
+            deps.tunnelRepository.status.value.serviceState.isTunnelRunning(),
+        )
     }
 }
 

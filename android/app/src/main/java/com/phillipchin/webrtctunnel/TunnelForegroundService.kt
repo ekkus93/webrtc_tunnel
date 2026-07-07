@@ -11,7 +11,6 @@ import com.phillipchin.webrtctunnel.data.IdentityValidationClient
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.StopStatusVerificationException
 import com.phillipchin.webrtctunnel.data.TunnelRepository
-import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -27,6 +26,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
@@ -51,6 +51,32 @@ private fun stopFailureCode(error: Throwable): String =
         "stop_failed"
     }
 
+// P0-001: Ordered lifecycle command processor.
+// Bounded capacity — not unlimited (non-negotiable rule).
+private const val LIFECYCLE_COMMAND_CAPACITY = 32
+
+// P0-001: All accepted lifecycle intentions flow through one ordered stream.
+// onStartCommand only submits; network policy also only submits.
+// The command processor drains in FIFO order, so command execution order
+// matches the order Android delivered the intents.
+private sealed interface LifecycleCommand {
+    data object StartOffer : LifecycleCommand
+
+    data object Pause : LifecycleCommand
+
+    data object Resume : LifecycleCommand
+
+    data object Stop : LifecycleCommand
+
+    data object AllowMeteredSession : LifecycleCommand
+
+    data class PolicyBlocked(
+        val reason: String,
+    ) : LifecycleCommand
+
+    data object PolicyAllowed : LifecycleCommand
+}
+
 class TunnelForegroundService
     @JvmOverloads
     constructor(
@@ -66,6 +92,14 @@ class TunnelForegroundService
         private lateinit var networkPolicyManager: NetworkPolicyManager
         private lateinit var localAddressResolver: LocalAddressResolver
         private val serviceScope = CoroutineScope(SupervisorJob() + defaultDispatcher)
+
+        // P0-001: ordered command queue.
+        private val lifecycleCommands =
+            Channel<LifecycleCommand>(
+                capacity = LIFECYCLE_COMMAND_CAPACITY,
+            )
+        private val nextLifecycleSequence = AtomicLong(0)
+
         private var networkMonitorJob: Job? = null
         private var startupJob: Job? = null
         private var statusPollJob: Job? = null
@@ -85,7 +119,12 @@ class TunnelForegroundService
         // loop below — so a plain Boolean write under the mutex would have no guaranteed
         // visibility to those unsynchronized readers (P1-004).
         internal val pausedByPolicy = AtomicBoolean(false)
-        private var allowMeteredForCurrentRun: Boolean = false
+
+        // P1-001: AtomicBoolean (not a plain var) because reads happen from coroutines
+        // that never hold lifecycleMutex — the network-policy monitor callback and
+        // status-poll loop — so a plain Boolean write would have no guaranteed visibility
+        // to those unsynchronized readers.
+        private val allowMeteredForCurrentRun = AtomicBoolean(false)
 
         // AtomicLong (not a mutex-guarded plain Long): generation checks must be lock-free so
         // an explicit lifecycle transition can cancel-and-join the startup coroutine while
@@ -115,30 +154,36 @@ class TunnelForegroundService
             networkPolicyManager = deps.networkPolicyManager
             localAddressResolver = deps.localAddressResolver
             repository.updateSessionMeteredAllowance(false)
+
+            // P0-001: command processor drains lifecycle commands in FIFO order.
+            // Commands are processed sequentially to maintain ordering guarantees.
+            serviceScope.launch {
+                for (command in lifecycleCommands) {
+                    dispatchCommand(command)
+                }
+            }
+
+            // Network monitor still collects network events, but submits commands
+            // through the same ordered queue instead of launching independent coroutines.
             networkMonitorJob =
                 serviceScope.launch {
                     networkPolicyManager.monitor(this@TunnelForegroundService).collect { _ ->
                         val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
-                        val policy = evaluatePolicy(prefs)
+                        val policy =
+                            networkPolicyManager.evaluateWithPolicy(
+                                prefs.allowMetered || allowMeteredForCurrentRun.get(),
+                            )
                         repository.updateNetworkStatus(policy)
                         if (policy.networkType == NetworkType.UnmeteredWifi) {
-                            // Do not pre-clear pausedByPolicy here: only runOfferStart()'s own
-                            // success path (via resume() -> startOffer()) may clear it, so a
-                            // failed resume attempt leaves the retry state true for the next
-                            // unmetered event to retry (P1-001).
-                            if (pausedByPolicy.get() && prefs.resumeOnUnmetered) {
-                                serviceScope.launch { offer.resume() }
-                            }
+                            // Policy allowed: submit through the ordered queue.
+                            submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
                         } else if (!policy.tunnelAllowed) {
-                            val current = repository.status.value.serviceState
-                            // A Listening tunnel is still running and must pause on a policy block.
-                            if (current.isTunnelRunning()) {
-                                serviceScope.launch {
-                                    offer.pauseForPolicy(
-                                        policy.blockReason ?: "Tunnel paused: network policy blocks metered/cellular",
-                                    )
-                                }
-                            }
+                            // Policy blocked: submit through the ordered queue.
+                            submitLifecycleCommand(
+                                LifecycleCommand.PolicyBlocked(
+                                    policy.blockReason ?: "Tunnel paused: network policy blocks metered/cellular",
+                                ),
+                            )
                         }
                     }
                 }
@@ -153,8 +198,8 @@ class TunnelForegroundService
                 stopSelf(startId)
                 return START_NOT_STICKY
             }
-            when (intent.action) {
-                ACTION_START_OFFER -> serviceScope.launch { offer.startOffer() }
+            when (val action = intent.action) {
+                ACTION_START_OFFER -> submitLifecycleCommand(LifecycleCommand.StartOffer)
                 ACTION_START_ANSWER -> {
                     publishError(
                         message = "Answer mode is not available on Android",
@@ -162,26 +207,50 @@ class TunnelForegroundService
                     )
                     stopSelf(startId)
                 }
-                ACTION_STOP -> {
-                    serviceScope.launch { offer.stopServiceWork() }
-                }
-                ACTION_PAUSE -> serviceScope.launch { offer.pause() }
-                ACTION_RESUME -> serviceScope.launch { offer.resume() }
-                ACTION_ALLOW_METERED_SESSION -> serviceScope.launch { offer.allowMeteredForSessionAndStart() }
+                ACTION_STOP -> submitLifecycleCommand(LifecycleCommand.Stop)
+                ACTION_PAUSE -> submitLifecycleCommand(LifecycleCommand.Pause)
+                ACTION_RESUME -> submitLifecycleCommand(LifecycleCommand.Resume)
+                ACTION_ALLOW_METERED_SESSION ->
+                    submitLifecycleCommand(LifecycleCommand.AllowMeteredSession)
                 else -> stopSelf(startId)
             }
             return START_NOT_STICKY
         }
 
-        private fun isCurrentGeneration(startGeneration: Long): Boolean = lifecycleGeneration.get() == startGeneration
+        // Dispatches a single lifecycle command to the appropriate coordinator action.
+        private suspend fun dispatchCommand(command: LifecycleCommand) {
+            when (command) {
+                LifecycleCommand.StartOffer -> {
+                    val current = repository.status.value.serviceState
+                    if (current.isTunnelRunning()) return
+                    offer.startOffer()
+                }
+                LifecycleCommand.Pause -> offer.pause()
+                LifecycleCommand.Resume -> offer.resume()
+                LifecycleCommand.Stop -> offer.stopServiceWork()
+                LifecycleCommand.AllowMeteredSession -> offer.allowMeteredForSessionAndStart()
+                is LifecycleCommand.PolicyBlocked -> offer.pauseForPolicy(command.reason)
+                LifecycleCommand.PolicyAllowed -> {
+                    if (pausedByPolicy.get()) {
+                        val prefs = runCatching { configRepository.preferences.first() }.getOrNull()
+                        if (prefs?.resumeOnUnmetered == true) {
+                            offer.resume()
+                        }
+                    }
+                }
+            }
+        }
 
-        private fun abortStartup(
-            message: String,
-            code: String,
-            state: ServiceState = ServiceState.Error,
-        ): Nothing {
-            publishError(message = message, code = code, state = state)
-            throw StartupAborted()
+        // P0-001: Submit a lifecycle command through the ordered queue.
+        private fun submitLifecycleCommand(command: LifecycleCommand) {
+            nextLifecycleSequence.incrementAndGet()
+            val result = lifecycleCommands.trySend(command)
+            if (result.isFailure) {
+                publishError(
+                    message = "Unable to queue lifecycle command ${command::class.simpleName}",
+                    code = "lifecycle_command_queue_failed",
+                )
+            }
         }
 
         private fun publishError(
@@ -193,9 +262,12 @@ class TunnelForegroundService
         override fun onBind(intent: Intent?): IBinder? = null
 
         override fun onDestroy() {
-            networkMonitorJob?.cancel()
             val pendingStop =
                 serviceScope.launch {
+                    // P0-006: Cancel network monitor and join it before fallback cleanup.
+                    val monitorJob = networkMonitorJob
+                    networkMonitorJob = null
+                    monitorJob?.cancelAndJoin()
                     lifecycleMutex.withLock {
                         lifecycleGeneration.incrementAndGet()
                         cancelStartupJobAndJoinLocked()
@@ -217,11 +289,17 @@ class TunnelForegroundService
             super.onDestroy()
         }
 
-        private fun evaluatePolicy(prefs: AndroidAppPreferences) =
-            networkPolicyManager.evaluateWithPolicy(prefs.allowMetered || allowMeteredForCurrentRun)
+        private fun abortStartup(
+            message: String,
+            code: String,
+            state: ServiceState = ServiceState.Error,
+        ): Nothing {
+            publishError(message = message, code = code, state = state)
+            throw StartupAborted()
+        }
 
         private fun clearTemporaryMeteredAllowance() {
-            allowMeteredForCurrentRun = false
+            allowMeteredForCurrentRun.set(false)
             repository.updateSessionMeteredAllowance(false)
         }
 
@@ -369,7 +447,10 @@ class TunnelForegroundService
             // bytes, or throws StartupAborted after publishing the appropriate state/error.
             private suspend fun prepareOfferIdentity(): ByteArray {
                 val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
-                val policy = evaluatePolicy(prefs)
+                val policy =
+                    networkPolicyManager.evaluateWithPolicy(
+                        prefs.allowMetered || allowMeteredForCurrentRun.get(),
+                    )
                 repository.updateNetworkStatus(policy)
                 if (!policy.tunnelAllowed) {
                     repository.setPolicyBlocked(policy.blockReason ?: "Tunnel blocked by current network policy")
@@ -416,7 +497,7 @@ class TunnelForegroundService
                 // The native start copies the identity across JNI, so the plaintext buffer is
                 // wiped once start returns (or any early exit), even on failure/cancellation.
                 try {
-                    if (!isCurrentGeneration(startGeneration)) {
+                    if (lifecycleGeneration.get() != startGeneration) {
                         return
                     }
                     // No catch for CancellationException here: if this coroutine is cancelled
@@ -429,7 +510,7 @@ class TunnelForegroundService
                         withContext(ioDispatcher) {
                             repository.start(TunnelMode.Offer, configRepository.configPath, identity)
                         }
-                    if (!isCurrentGeneration(startGeneration)) {
+                    if (lifecycleGeneration.get() != startGeneration) {
                         // The lifecycle transition that advanced generation owns cleanup; no
                         // second, independent stop call here (P0-001).
                         return
@@ -449,9 +530,12 @@ class TunnelForegroundService
                 }
             }
 
+            // P1-001: AllowMeteredSession is now one ordered lifecycle command.
+            // The handler performs: set allowance, update repository, begin startup
+            // within one command processing step.
             suspend fun allowMeteredForSessionAndStart() {
                 lifecycleMutex.withLock {
-                    allowMeteredForCurrentRun = true
+                    allowMeteredForCurrentRun.set(true)
                     repository.updateSessionMeteredAllowance(true)
                     pausedByPolicy.set(false)
                 }
