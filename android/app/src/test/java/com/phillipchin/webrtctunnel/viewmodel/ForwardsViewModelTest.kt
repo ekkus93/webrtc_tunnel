@@ -122,6 +122,93 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
     }
 
     @Test
+    fun forwardsViewModelSaveSurfacesRollbackFailureWhenRollbackPersistenceFails() {
+        // Inline (Unconfined) dispatchers would run save-to-rollback start-to-finish with
+        // no window to interleave a filesystem change, so use real IO dispatchers here —
+        // matching LogsViewModelTest's concurrentExportIsRejectedWhileOneIsAlreadyInFlight
+        // pattern — to genuinely suspend at withContext(ioDispatcher).
+        val realIoDeps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = { recordingBridge },
+                configRepository = configRepository,
+                networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                identityRepository = deps.identityRepository,
+                dispatchers = realIoTestDispatchers(),
+            )
+        val vm = ForwardsViewModel(realIoDeps)
+        val forward =
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+
+        recordingBridge.blockNextValidateConfig()
+        vm.saveForward(forward)
+        // The upsert() call itself hops to a real IO dispatcher and back before
+        // regenerateActiveConfig() runs, so the launch must be resumed on the (Robolectric
+        // shadow) main looper in between — pump it while waiting for entry rather than
+        // blocking this thread, which is the only thread that can drain that queue.
+        awaitCondition { recordingBridge.validateConfigEnteredNow() }
+        // Mutation persistence (the upsert) happens before regenerateActiveConfig() calls
+        // into validation, so reaching the blocked call proves it already succeeded.
+        assertTrue(realIoDeps.forwardsRepository.current().any { it.id == "web" })
+
+        // Make rollback persistence fail: the real ForwardsConfigStore writes forwards.json
+        // under filesDir, so making that directory unwritable forces its temp-file create to
+        // throw — no production hook needed, per the TODO's instruction.
+        assertTrue(app.filesDir.setWritable(false))
+        try {
+            recordingBridge.releaseBlockedValidateConfig(ValidationResult(false, "bad config"))
+            awaitMessage(vm) { it != null }
+        } finally {
+            app.filesDir.setWritable(true)
+        }
+
+        val message = requireNotNull(vm.message.value)
+        assertTrue("expected original failure in: $message", message.contains("bad config"))
+        assertTrue("expected rollback failure in: $message", message.contains("Rollback also failed"))
+        assertTrue(
+            "expected consistency-state wording in: $message",
+            message.contains("remains saved") && message.contains("not activated"),
+        )
+    }
+
+    @Test
+    fun forwardsViewModelDeleteSurfacesRollbackFailureWhenRollbackPersistenceFails() {
+        val realIoDeps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = { recordingBridge },
+                configRepository = configRepository,
+                networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                identityRepository = deps.identityRepository,
+                dispatchers = realIoTestDispatchers(),
+            )
+        val vm = ForwardsViewModel(realIoDeps)
+        // Seeded default forwards include "ssh"; delete it rather than an added one.
+        assertTrue(realIoDeps.forwardsRepository.current().any { it.id == "ssh" })
+
+        recordingBridge.blockNextValidateConfig()
+        vm.deleteForward("ssh")
+        awaitCondition { recordingBridge.validateConfigEnteredNow() }
+        assertTrue(realIoDeps.forwardsRepository.current().none { it.id == "ssh" })
+
+        assertTrue(app.filesDir.setWritable(false))
+        try {
+            recordingBridge.releaseBlockedValidateConfig(ValidationResult(false, "bad config"))
+            awaitMessage(vm) { it != null }
+        } finally {
+            app.filesDir.setWritable(true)
+        }
+
+        val message = requireNotNull(vm.message.value)
+        assertTrue("expected original failure in: $message", message.contains("bad config"))
+        assertTrue("expected rollback failure in: $message", message.contains("Rollback also failed"))
+        assertTrue(
+            "expected consistency-state wording in: $message",
+            message.contains("remains saved") && message.contains("not activated"),
+        )
+    }
+
+    @Test
     fun forwardsViewModelTestLocalPortReportsSuccessAndFailure() {
         runBlocking {
             val server = ServerSocket(0)
@@ -167,6 +254,17 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
         runBlocking {
             withTimeout(5_000) {
                 while (!predicate(vm.message.value)) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    delay(10)
+                }
+            }
+        }
+    }
+
+    private fun awaitCondition(predicate: () -> Boolean) {
+        runBlocking {
+            withTimeout(10_000) {
+                while (!predicate()) {
                     Shadows.shadowOf(Looper.getMainLooper()).idle()
                     delay(10)
                 }

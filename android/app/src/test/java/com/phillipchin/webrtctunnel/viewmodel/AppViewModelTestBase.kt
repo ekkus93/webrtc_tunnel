@@ -17,10 +17,16 @@ import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import org.junit.Before
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** A TunnelNativeBridge double that records status reads and returns a configurable validation result. */
 class RecordingBridge : TunnelNativeBridge {
-    var statusReads = 0
+    private val statusReadsAtomic = AtomicInteger(0)
+    val statusReads: Int get() = statusReadsAtomic.get()
     var validationResult: ValidationResult = ValidationResult(true, null)
 
     // Override the canned identity-validation/generation results below when a test needs a
@@ -37,8 +43,56 @@ class RecordingBridge : TunnelNativeBridge {
     // Tracks which config-validation entry point callers actually used, so a test can
     // prove identity-aware vs. identity-absent validation was chosen (P1-001) instead of
     // only observing the (identical) canned ValidationResult either path returns.
-    var validateConfigCalls = 0
-    var validateConfigWithIdentityCalls = 0
+    // Backed by atomics (P0-004): a validation barrier below is driven by a genuine
+    // Dispatchers.IO caller concurrently with the Robolectric test thread, so a plain
+    // `var` here would be a required test relying on accidental JVM visibility.
+    private val validateConfigCallsAtomic = AtomicInteger(0)
+    private val validateConfigWithIdentityCallsAtomic = AtomicInteger(0)
+    val validateConfigCalls: Int get() = validateConfigCallsAtomic.get()
+    val validateConfigWithIdentityCalls: Int get() = validateConfigWithIdentityCallsAtomic.get()
+
+    // P0-004: deterministic barrier so a test can block config validation mid-flight —
+    // after mutation persistence has already succeeded but before the sync result is
+    // known — to exercise the rollback-persistence-failure path without any production
+    // test hook. The forced result (if any) is what the blocked call returns once
+    // released, standing in for whatever validation outcome the test needs.
+    private val blockValidateConfigAtomic = AtomicBoolean(false)
+    private val validateConfigEntered = AtomicReference(CountDownLatch(0))
+    private val validateConfigRelease = AtomicReference(CountDownLatch(0))
+    private val forcedValidateConfigResult = AtomicReference<ValidationResult?>(null)
+
+    /** The next `validateConfig`/`validateConfigWithIdentity` call blocks until
+     * [releaseBlockedValidateConfig] is called. */
+    fun blockNextValidateConfig() {
+        validateConfigEntered.set(CountDownLatch(1))
+        validateConfigRelease.set(CountDownLatch(1))
+        blockValidateConfigAtomic.set(true)
+    }
+
+    fun awaitValidateConfigEntered(timeoutMs: Long): Boolean =
+        validateConfigEntered.get().await(timeoutMs, TimeUnit.MILLISECONDS)
+
+    /** Non-blocking peek so a caller pumping a Robolectric main-looper queue (needed to
+     * carry a coroutine across a real-dispatcher suspension point) can poll for entry
+     * instead of blocking the only thread that can drain that queue. */
+    fun validateConfigEnteredNow(): Boolean = validateConfigEntered.get().count == 0L
+
+    /** Releases a blocked validation call, forcing it to return [result]. */
+    fun releaseBlockedValidateConfig(result: ValidationResult) {
+        forcedValidateConfigResult.set(result)
+        validateConfigRelease.get().countDown()
+    }
+
+    private fun validationResultAfterOptionalBlock(): ValidationResult {
+        if (blockValidateConfigAtomic.compareAndSet(true, false)) {
+            validateConfigEntered.get().countDown()
+            check(validateConfigRelease.get().await(5, TimeUnit.SECONDS)) {
+                "blocked validateConfig was never released"
+            }
+            forcedValidateConfigResult.getAndSet(null)?.let { return it }
+        }
+        return validationResult
+    }
 
     override fun startOffer(
         configPath: String,
@@ -50,7 +104,7 @@ class RecordingBridge : TunnelNativeBridge {
     override fun stop(): Result<Unit> = Result.success(Unit)
 
     override fun getStatusJson(): String {
-        statusReads += 1
+        statusReadsAtomic.incrementAndGet()
         return kotlinx.serialization.json.Json.encodeToString(
             NativeRuntimeStatusDto.serializer(),
             NativeRuntimeStatusDto(state = "stopped", mode = "offer"),
@@ -60,16 +114,16 @@ class RecordingBridge : TunnelNativeBridge {
     override fun getRecentLogsJson(maxEvents: Int): String = recentLogsJson
 
     override fun validateConfig(configPath: String): ValidationResult {
-        validateConfigCalls += 1
-        return validationResult
+        validateConfigCallsAtomic.incrementAndGet()
+        return validationResultAfterOptionalBlock()
     }
 
     override fun validateConfigWithIdentity(
         configPath: String,
         identityBytes: ByteArray,
     ): ValidationResult {
-        validateConfigWithIdentityCalls += 1
-        return validationResult
+        validateConfigWithIdentityCallsAtomic.incrementAndGet()
+        return validationResultAfterOptionalBlock()
     }
 
     override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =

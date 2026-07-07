@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.data.describeForwardsFailure
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
@@ -56,8 +57,7 @@ class ForwardsViewModel(
                     } else {
                         val sync = withContext(ioDispatcher) { regenerateActiveConfig() }
                         if (!sync.valid) {
-                            deps.forwardsRepository.save(before)
-                            sync.message ?: "Forward update failed"
+                            rollbackAfterConfigSyncFailure(before, sync, "Forward update failed")
                         } else {
                             "Forward saved"
                         }
@@ -82,8 +82,7 @@ class ForwardsViewModel(
                     } else {
                         val sync = withContext(ioDispatcher) { regenerateActiveConfig() }
                         if (!sync.valid) {
-                            deps.forwardsRepository.save(before)
-                            sync.message ?: "Forward delete failed"
+                            rollbackAfterConfigSyncFailure(before, sync, "Forward delete failed")
                         } else {
                             "Forward deleted"
                         }
@@ -93,6 +92,28 @@ class ForwardsViewModel(
                 _isBusy.value = false
             }
         }
+    }
+
+    /**
+     * Rolls the in-memory/persisted forwards list back to [before] after [syncFailure] blocked
+     * activating the change, and reports whichever failure(s) actually occurred (P0-004): a
+     * rollback failure must never be silently ignored, since it means the saved forwards file
+     * and the active config have now diverged.
+     */
+    private suspend fun rollbackAfterConfigSyncFailure(
+        before: List<ForwardConfig>,
+        syncFailure: ValidationResult,
+        fallbackMessage: String,
+    ): String {
+        val original = syncFailure.message ?: fallbackMessage
+        return deps.forwardsRepository.save(before).fold(
+            onSuccess = { original },
+            onFailure = { rollbackError ->
+                val rollbackMessage = describeForwardsFailure(rollbackError)
+                "$original. Rollback also failed; the forward change remains saved " +
+                    "but was not activated: $rollbackMessage"
+            },
+        )
     }
 
     fun validateForwardDraft(
