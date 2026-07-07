@@ -19,13 +19,11 @@ import com.phillipchin.webrtctunnel.network.LocalAddressResolver
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.notification.NotificationController
 import com.phillipchin.webrtctunnel.security.IdentityRepository
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
@@ -38,6 +36,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 // Control-flow signal: a startup attempt aborted after publishing its own error/state.
 private class StartupAborted : Exception()
@@ -116,11 +115,11 @@ class TunnelForegroundService
         internal val pausedByPolicy = AtomicBoolean(false)
         private var allowMeteredForCurrentRun: Boolean = false
 
-        // internal (not private): P0-004's Robolectric test bumps this directly, under
-        // the same mutex below, to construct the startup-supersedence scenario (see
-        // StartupTestHooks) without adding a new member function to this class (which
-        // would trip detekt's TooManyFunctions threshold).
-        internal var lifecycleGeneration: Long = 0
+        // AtomicLong (not a mutex-guarded plain Long): generation checks must be lock-free so
+        // an explicit lifecycle transition can cancel-and-join the startup coroutine while
+        // holding lifecycleMutex without risking a deadlock against a startup coroutine that
+        // might otherwise need the same lock to check its own generation (P0-001).
+        private val lifecycleGeneration = AtomicLong(0)
         internal val lifecycleMutex = Mutex()
 
         // Notification + status-polling slice; accesses the shared lifecycle fields directly.
@@ -199,8 +198,7 @@ class TunnelForegroundService
             return START_NOT_STICKY
         }
 
-        private suspend fun isCurrentGeneration(startGeneration: Long): Boolean =
-            lifecycleMutex.withLock { lifecycleGeneration == startGeneration }
+        private fun isCurrentGeneration(startGeneration: Long): Boolean = lifecycleGeneration.get() == startGeneration
 
         private fun abortStartup(
             message: String,
@@ -224,8 +222,8 @@ class TunnelForegroundService
             val pendingStop =
                 serviceScope.launch {
                     lifecycleMutex.withLock {
-                        lifecycleGeneration += 1
-                        cancelStartupJobLocked()
+                        lifecycleGeneration.incrementAndGet()
+                        cancelStartupJobAndJoinLocked()
                         reporter.stopStatusPollingAndJoin()
                         withContext(ioDispatcher) {
                             repository.stop()
@@ -252,9 +250,16 @@ class TunnelForegroundService
             repository.updateSessionMeteredAllowance(false)
         }
 
-        private fun cancelStartupJobLocked() {
-            startupJob?.cancel()
+        // Cancels the startup coroutine and waits for it to fully unwind before returning, so
+        // the caller (an explicit lifecycle transition, always holding lifecycleMutex here) can
+        // safely perform the one authoritative repository.stop() afterward without racing the
+        // startup coroutine's own unwind. Safe to call under lifecycleMutex because generation
+        // checks are lock-free and no other code the startup coroutine runs acquires this mutex
+        // (P0-001).
+        private suspend fun cancelStartupJobAndJoinLocked() {
+            val job = startupJob
             startupJob = null
+            job?.cancelAndJoin()
         }
 
         // Notification rendering and status polling for the active tunnel.
@@ -362,8 +367,7 @@ class TunnelForegroundService
                         reporter.publishStatus(getString(R.string.service_msg_already_running))
                         return
                     }
-                    lifecycleGeneration += 1
-                    generation = lifecycleGeneration
+                    generation = lifecycleGeneration.incrementAndGet()
                     startupJob =
                         serviceScope.launch {
                             doStartOffer(generation)
@@ -440,29 +444,15 @@ class TunnelForegroundService
                     if (!isCurrentGeneration(startGeneration)) {
                         return
                     }
+                    // No catch for CancellationException here: if this coroutine is cancelled
+                    // (e.g. by an explicit pause/stop/onDestroy), that cancelling lifecycle
+                    // transition already owns the resulting native cleanup via
+                    // cancelStartupJobAndJoinLocked() + its own repository.stop() call. Letting
+                    // the exception unwind here (through the `finally` below) avoids a second,
+                    // independent, racing repository.stop() call from this coroutine (P0-001).
                     val result =
-                        try {
-                            withContext(ioDispatcher) {
-                                repository.start(TunnelMode.Offer, configRepository.configPath, identity)
-                            }
-                        } catch (_: CancellationException) {
-                            // This coroutine's own Job is already cancelled at this point, so a
-                            // plain `withContext(ioDispatcher) { ... }` would rethrow immediately
-                            // without ever running the block ("prompt cancellation") — the native
-                            // tunnel would be silently left running behind a "cancelled" startup.
-                            // NonCancellable lets this cleanup actually execute; it also covers
-                            // stopStatusPollingAndJoin() for the same reason (P0-001).
-                            testEvents.trySend(ServiceTestEvent.StartupCancellationCleanupStopEntered)
-                            withContext(NonCancellable + ioDispatcher) {
-                                reporter.stopStatusPollingAndJoin()
-                                repository.stop()
-                            }.onFailure {
-                                reporter.publishError(
-                                    message = it.message ?: "Unable to stop tunnel after startup was cancelled",
-                                    code = "stop_failed",
-                                )
-                            }
-                            return
+                        withContext(ioDispatcher) {
+                            repository.start(TunnelMode.Offer, configRepository.configPath, identity)
                         }
                     // P0-004 test-only barrier: no-op in production (both fields null).
                     startupTestHooks?.let { hooks ->
@@ -470,30 +460,19 @@ class TunnelForegroundService
                         hooks.releaseAfterNativeStart?.await()
                     }
                     if (!isCurrentGeneration(startGeneration)) {
-                        // Same "prompt cancellation" hazard as above: a newer start may have
-                        // cancelled this job's generation (or the job itself) by the time the
-                        // native start call returns, so this cleanup also needs NonCancellable.
-                        testEvents.trySend(ServiceTestEvent.StartupSupersedenceCleanupStopEntered)
-                        withContext(NonCancellable + ioDispatcher) {
-                            reporter.stopStatusPollingAndJoin()
-                            repository.stop()
-                        }.onFailure {
-                            reporter.publishError(
-                                message = it.message ?: "Unable to stop tunnel after a newer start superseded it",
-                                code = "stop_failed",
-                            )
-                        }
-                    } else {
-                        result.onSuccess {
-                            pausedByPolicy.set(false)
-                            reporter.publishStatus()
-                            reporter.startStatusPolling()
-                        }.onFailure {
-                            reporter.publishError(
-                                message = it.message ?: "Unable to start tunnel",
-                                code = "native_start_failed",
-                            )
-                        }
+                        // The lifecycle transition that advanced generation owns cleanup; no
+                        // second, independent stop call here (P0-001).
+                        return
+                    }
+                    result.onSuccess {
+                        pausedByPolicy.set(false)
+                        reporter.publishStatus()
+                        reporter.startStatusPolling()
+                    }.onFailure {
+                        reporter.publishError(
+                            message = it.message ?: "Unable to start tunnel",
+                            code = "native_start_failed",
+                        )
                     }
                 } finally {
                     identity.fill(0)
@@ -525,9 +504,9 @@ class TunnelForegroundService
 
             suspend fun pause() {
                 lifecycleMutex.withLock {
-                    lifecycleGeneration += 1
+                    lifecycleGeneration.incrementAndGet()
+                    cancelStartupJobAndJoinLocked()
                     reporter.stopStatusPollingAndJoin()
-                    cancelStartupJobLocked()
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
                             onSuccess = {
@@ -545,9 +524,9 @@ class TunnelForegroundService
 
             suspend fun pauseForPolicy(reason: String) {
                 lifecycleMutex.withLock {
-                    lifecycleGeneration += 1
+                    lifecycleGeneration.incrementAndGet()
+                    cancelStartupJobAndJoinLocked()
                     reporter.stopStatusPollingAndJoin()
-                    cancelStartupJobLocked()
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
                             onSuccess = {
@@ -572,9 +551,9 @@ class TunnelForegroundService
 
             suspend fun stopServiceWork() {
                 lifecycleMutex.withLock {
-                    lifecycleGeneration += 1
+                    lifecycleGeneration.incrementAndGet()
+                    cancelStartupJobAndJoinLocked()
                     reporter.stopStatusPollingAndJoin()
-                    cancelStartupJobLocked()
                     val stopResult = withContext(ioDispatcher) { repository.stop() }
                     pausedByPolicy.set(false)
                     clearTemporaryMeteredAllowance()

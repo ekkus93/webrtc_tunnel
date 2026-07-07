@@ -6,12 +6,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ServiceState
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -210,8 +207,18 @@ class TunnelForegroundServiceStopFailureTest {
         assertTrue(waitForCondition { bridge.startOfferCalls >= 2 })
     }
 
+    /**
+     * Regression test for P0-001: before this fix, an `ACTION_PAUSE` arriving while
+     * `startOffer()` is still in flight could race two independent, unsynchronized
+     * callers of `repository.stop()` — the explicit `pause()` path and the startup
+     * coroutine's own cancellation-catch cleanup — letting one see a duplicate/no-op
+     * success while the other later failed. After the fix, the cancelling lifecycle
+     * transition (`pause()`) is the sole owner: it cancels and *joins* the startup
+     * job before performing the one authoritative `repository.stop()` itself, so
+     * exactly one native stop call occurs no matter how the two coroutines interleave.
+     */
     @Test
-    fun stopDuringPendingStartWithFailingCleanupStopPublishesError() {
+    fun cancelledStartupAndExplicitPausePerformExactlyOneNativeStop() {
         val deps = (service.applicationContext as HasAppDependencies).deps
         val bridge = TunnelForegroundServiceTestHooks.bridge
 
@@ -219,27 +226,31 @@ class TunnelForegroundServiceStopFailureTest {
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
         assertTrue(bridge.awaitStartOfferEntered(10_000))
 
-        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
-        // stopServiceWork()'s own stop() call (unblocked) lands first and succeeds;
-        // only after that do we arm the failure, so it targets the startup-
-        // cancellation cleanup's own stop() call specifically, once the blocked
-        // start is released.
-        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 2)
+        // Arm the failure before releasing: whichever way the two coroutines actually
+        // interleave, pause() is the only path that will ever call repository.stop()
+        // here, so this deterministically targets that one call.
         bridge.failNextStop()
         bridge.releaseBlockedStartOffer()
 
-        // Exact-branch proof (P0-003): wait for the cancellation cleanup's own
-        // event, not just a stop-call count — a generic "some later stop failed"
-        // check cannot distinguish this branch from stopServiceWork()'s own call or
-        // the supersedence-cleanup branch.
-        val event = runBlocking { withTimeout(10_000) { service.testEvents.receive() } }
-        assertEquals(ServiceTestEvent.StartupCancellationCleanupStopEntered, event)
-
-        assertTrue(waitForCondition { bridge.stopCalls >= 2 })
-        assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error })
-        // No clean startup success can have been published: the cancellation catch
-        // branch returns unconditionally after handling cleanup, never reaching the
-        // result.onSuccess { ... } success path.
+        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+        assertTrue(
+            "a failed pause-owned stop after a cancelled startup must be reported as an error",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        // Give a hypothetical second (buggy, competing) stop call every chance to land
+        // before the final count check below: with the fix this can never happen (the
+        // startup coroutine has no remaining code path that calls repository.stop() at
+        // all, so waiting longer cannot change the outcome), so this only strengthens
+        // the regression-detection power of this test against the old dual-ownership
+        // bug without weakening the proof for the fixed behavior.
+        waitForCondition(timeoutMs = 3_000) { bridge.stopCalls >= 2 }
+        assertEquals(
+            "exactly one native stop call must occur; a competing stop from the cancelled " +
+                "startup coroutine would make this 2",
+            1,
+            bridge.stopCalls,
+        )
         assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
     }
 
@@ -295,52 +306,6 @@ class TunnelForegroundServiceStopFailureTest {
                 "in flight when the stop was requested",
             waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
         )
-        assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
-    }
-
-    @Test
-    fun startupSupersedenceCleanupStopFailurePublishesError() {
-        val deps = (service.applicationContext as HasAppDependencies).deps
-        val bridge = TunnelForegroundServiceTestHooks.bridge
-
-        // Pause runOfferStart after a *successful* native start but before the
-        // generation check that decides whether a newer start superseded this one.
-        val hooks =
-            StartupTestHooks(
-                afterNativeStartBeforeGenerationCheck = CompletableDeferred(),
-                releaseAfterNativeStart = CompletableDeferred(),
-            )
-        service.startupTestHooks = hooks
-
-        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
-        runBlocking { withTimeout(10_000) { hooks.afterNativeStartBeforeGenerationCheck!!.await() } }
-
-        // Simulate a newer start having superseded this one: bump the generation
-        // alone, without touching startupJob. No current production path can do this
-        // — every real generation bump also cancels startupJob in the same lock
-        // scope, which the in-flight runOfferStart observes as a
-        // CancellationException from its native-start withContext call (the
-        // cancellation-cleanup branch, P0-003) rather than this supersedence check.
-        // This exists solely to stimulate that real check/cleanup under test.
-        runBlocking { service.lifecycleMutex.withLock { service.lifecycleGeneration += 1 } }
-
-        // Arm the failure for the supersedence cleanup's own stop() call, then let
-        // runOfferStart proceed to its (now-stale) generation check.
-        bridge.failNextStop()
-        hooks.releaseAfterNativeStart!!.complete(Unit)
-
-        // Exact-branch proof (P0-004): wait for the supersedence cleanup's own
-        // event, not just a stop-call count.
-        val event = runBlocking { withTimeout(10_000) { service.testEvents.receive() } }
-        assertEquals(ServiceTestEvent.StartupSupersedenceCleanupStopEntered, event)
-
-        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
-        assertTrue(
-            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
-        )
-        // No clean startup success can have been published: the supersedence branch
-        // returns to the outer `if`'s `else` only when the generation still matches,
-        // which it deliberately does not here.
         assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
     }
 }
