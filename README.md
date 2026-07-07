@@ -594,8 +594,9 @@ These are the intended end-to-end checks for operators:
 
 ## Runtime constraints
 
-- CLI only
-- no GUI
+- core daemons (`p2p-offer`, `p2p-answer`, `p2pctl`) are CLI only, no GUI — the
+  experimental Android app is the sole GUI, and only exposes offer mode (see
+  [Android app](#android-app) above)
 - no TURN support
 - no plaintext signaling
 - no unsigned signaling
