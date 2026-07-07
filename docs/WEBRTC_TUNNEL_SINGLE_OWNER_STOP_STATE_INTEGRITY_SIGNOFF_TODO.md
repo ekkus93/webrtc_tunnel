@@ -1497,9 +1497,25 @@ Do not preserve an unused method whose return type cannot represent write failur
 
 ### Acceptance criteria
 
-- [ ] Store-level method removed.
-- [ ] No production caller existed.
-- [ ] Repository/controller mutation paths remain tested.
+- [x] Store-level method removed. `ForwardsConfigStore.upsertForward()` and its now-unused
+      `ValidationResult` import are deleted from `ForwardsConfigStore.kt`.
+- [x] No production caller existed. `rg -n 'upsertForward\(' android/app/src/main
+      android/app/src/test android/app/src/androidTest` confirmed the only production
+      callers use `SetupForwardsController.upsertForward()` (an unrelated name, routes
+      through `ForwardsRepository.upsert()`, not the store); the store-level method's only
+      caller anywhere was its own dedicated test.
+- [x] Repository/controller mutation paths remain tested. `ForwardsRepository`'s
+      upsert/delete/save paths (`ForwardsRepositoryTest.kt`) and
+      `SetupForwardsController.upsertForward()` (`SetupViewModelTest.kt`'s
+      `deleteForwardFailurePreservesErrorAndDoesNotClaimSuccess` /
+      `deleteForwardSuccessStillReportsSuccess` and the `ForwardsViewModelTest.kt` save/
+      delete tests) are untouched and still pass. Removed only the now-orphaned
+      `upsertOnCorruptFileIsRejectedAndDoesNotOverwrite` test (and its
+      then-unused `assertFalse` import) from `ForwardsConfigStoreTest.kt`, which existed
+      solely to exercise the deleted method.
+      Ran `ForwardsConfigStoreTest` 3x fresh (`--rerun`) with no flakes, then the full
+      `./gradlew check` gate (which also caught and required fixing one unused-import
+      ktlint finding left behind by the removal).
 
 ---
 
