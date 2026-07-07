@@ -69,9 +69,6 @@ class RecordingBridge : TunnelNativeBridge {
         blockValidateConfigAtomic.set(true)
     }
 
-    fun awaitValidateConfigEntered(timeoutMs: Long): Boolean =
-        validateConfigEntered.get().await(timeoutMs, TimeUnit.MILLISECONDS)
-
     /** Non-blocking peek so a caller pumping a Robolectric main-looper queue (needed to
      * carry a coroutine across a real-dispatcher suspension point) can poll for entry
      * instead of blocking the only thread that can drain that queue. */
