@@ -929,10 +929,28 @@ Review every remaining match.
 
 ### Acceptance criteria
 
-- [ ] No unbounded test event channel ships in production.
-- [ ] No test directly mutates lifecycle generation.
-- [ ] No synthetic unreachable supersedence scenario is presented as end-to-end production proof.
-- [ ] Remaining production lifecycle code is simpler than before.
+- [x] No unbounded test event channel ships in production. Deleted `ServiceTestEvent`
+      (sealed interface + both `data object`s), the `internal val testEvents =
+      Channel<ServiceTestEvent>(Channel.UNLIMITED)` field, and both `testEvents.trySend(...)`
+      call sites (already removed along with the code they lived in during P0-001).
+- [x] No test directly mutates lifecycle generation. Confirmed via `rg -n
+      'ServiceTestEvent|StartupTestHooks|testEvents|startupTestHooks' android/app/src/main
+      android/app/src/test` — zero remaining matches anywhere (the one test that bumped
+      `lifecycleGeneration` directly was removed in P0-001, and the field itself has been
+      `private` since that same task).
+- [x] No synthetic unreachable supersedence scenario is presented as end-to-end production
+      proof. Deleted `StartupTestHooks`, the `internal var startupTestHooks` field, and its
+      `.let { hooks -> ... }` use inside `runOfferStart()` — the scenario it constructed
+      (bump generation without cancelling `startupJob`) no longer has any corresponding
+      production cleanup code to exercise after P0-001 collapsed that branch to a bare `return`.
+- [x] Remaining production lifecycle code is simpler than before. `TunnelForegroundService.kt`
+      lost two top-level declarations, one class-level field/channel pair, and one test-hook
+      call site, with no replacement complexity added; net removal.
+      Full search-gate rerun after removal: `rg` for all four symbol names across both
+      `src/main` and `src/test` returns zero matches. Compiles clean; focused class passes 3x
+      fresh; full gates (`assembleDebug testDebugUnitTest`, `check`) — all green. No new
+      regression test needed for this task (pure dead-code removal with no behavior change);
+      the full existing suite passing unchanged is the proof.
 
 ---
 
