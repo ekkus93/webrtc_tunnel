@@ -55,6 +55,7 @@ object SensitiveDataRedactor {
     fun redactStatus(status: TunnelStatus): TunnelStatus =
         status.copy(
             lastError = status.lastError?.redacted(),
+            lastCleanupError = status.lastCleanupError?.redacted(),
         )
 
     private fun TunnelError.redacted(): TunnelError =

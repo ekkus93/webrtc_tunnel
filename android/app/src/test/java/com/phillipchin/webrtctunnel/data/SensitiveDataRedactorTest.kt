@@ -389,7 +389,50 @@ class SensitiveDataRedactorTest {
         assertNull(redacted.lastError)
     }
 
-    private fun sampleStatus(lastError: TunnelError?): TunnelStatus =
+    @Test
+    fun redactStatusRedactsLastCleanupErrorMessageAndDetails() {
+        val status =
+            sampleStatus(
+                lastError = null,
+                lastCleanupError =
+                    TunnelError(
+                        code = "stop_failed",
+                        message = "password=cleanup-sentinel-one",
+                        details = "token=cleanup-sentinel-two",
+                    ),
+            )
+        val redacted = SensitiveDataRedactor.redactStatus(status)
+        assertEquals("password=***REDACTED***", redacted.lastCleanupError?.message)
+        assertEquals("token=***REDACTED***", redacted.lastCleanupError?.details)
+        assertEquals("stop_failed", redacted.lastCleanupError?.code)
+    }
+
+    @Test
+    fun redactStatusWithNullLastCleanupErrorIsUnchanged() {
+        val redacted = SensitiveDataRedactor.redactStatus(sampleStatus(lastError = null, lastCleanupError = null))
+        assertNull(redacted.lastCleanupError)
+    }
+
+    @Test
+    fun redactStatusRedactsDistinctSentinelsInBothLastErrorAndLastCleanupErrorIndependently() {
+        val status =
+            sampleStatus(
+                lastError = TunnelError(code = "native_start_failed", message = "password=live-error-sentinel"),
+                lastCleanupError = TunnelError(code = "stop_failed", message = "token=cleanup-history-sentinel"),
+            )
+
+        val redacted = SensitiveDataRedactor.redactStatus(status)
+
+        assertFalse(redacted.lastError?.message.orEmpty().contains("live-error-sentinel"))
+        assertFalse(redacted.lastCleanupError?.message.orEmpty().contains("cleanup-history-sentinel"))
+        assertEquals("password=***REDACTED***", redacted.lastError?.message)
+        assertEquals("token=***REDACTED***", redacted.lastCleanupError?.message)
+    }
+
+    private fun sampleStatus(
+        lastError: TunnelError?,
+        lastCleanupError: TunnelError? = null,
+    ): TunnelStatus =
         TunnelStatus(
             serviceState = ServiceState.Error,
             mode = TunnelMode.Offer,
@@ -403,5 +446,6 @@ class SensitiveDataRedactorTest {
                     tunnelAllowed = false,
                 ),
             lastError = lastError,
+            lastCleanupError = lastCleanupError,
         )
 }
