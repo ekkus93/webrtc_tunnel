@@ -38,8 +38,12 @@ class SetupForwardsController(
         launchBusy {
             val result = deps.forwardsRepository.upsert(forward)
             access.setForwards(deps.forwardsRepository.current())
-            if (!result.valid) {
-                access.applyState(access.state().copy(errorMessage = result.message ?: "Forward update failed"))
+            if (!result.validationResult.valid) {
+                access.applyState(
+                    access.state().copy(
+                        errorMessage = result.validationResult.message ?: "Forward update failed",
+                    ),
+                )
             } else {
                 access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward saved"))
             }
@@ -50,10 +54,10 @@ class SetupForwardsController(
         launchBusy {
             val result = deps.forwardsRepository.delete(forwardId)
             access.setForwards(deps.forwardsRepository.current())
-            if (!result.valid) {
+            if (!result.validationResult.valid) {
                 access.applyState(
                     access.state().copy(
-                        errorMessage = result.message ?: "Failed to delete forward",
+                        errorMessage = result.validationResult.message ?: "Failed to delete forward",
                         saveResult = null,
                     ),
                 )

@@ -120,11 +120,22 @@ class TunnelForegroundService
         // visibility to those unsynchronized readers (P1-004).
         internal val pausedByPolicy = AtomicBoolean(false)
 
+        // P0-004: Retains one pending retry intention. Owned only by the command processor.
+        // When a PolicyAllowed arrives while a startup is active (because a previous
+        // PolicyAllowed already triggered a resume), this flag ensures the next allowed
+        // event triggers exactly one retry after the current attempt completes.
+        private val pendingPolicyResume = AtomicBoolean(false)
+
         // P1-001: AtomicBoolean (not a plain var) because reads happen from coroutines
         // that never hold lifecycleMutex — the network-policy monitor callback and
         // status-poll loop — so a plain Boolean write would have no guaranteed visibility
         // to those unsynchronized readers.
         private val allowMeteredForCurrentRun = AtomicBoolean(false)
+
+        // P0-006: Tracks whether a verified native stop has succeeded. Set to false when
+        // a new startup begins, set to true only after repository.stop() returns verified
+        // success. onDestroy() checks this to avoid a redundant second native stop.
+        private val nativeStopVerified = AtomicBoolean(true)
 
         // AtomicLong (not a mutex-guarded plain Long): generation checks must be lock-free so
         // an explicit lifecycle transition can cancel-and-join the startup coroutine while
@@ -222,8 +233,9 @@ class TunnelForegroundService
             when (command) {
                 LifecycleCommand.StartOffer -> {
                     val current = repository.status.value.serviceState
-                    if (current.isTunnelRunning()) return
-                    offer.startOffer()
+                    if (!current.isTunnelRunning()) {
+                        offer.startOffer()
+                    }
                 }
                 LifecycleCommand.Pause -> offer.pause()
                 LifecycleCommand.Resume -> offer.resume()
@@ -231,11 +243,22 @@ class TunnelForegroundService
                 LifecycleCommand.AllowMeteredSession -> offer.allowMeteredForSessionAndStart()
                 is LifecycleCommand.PolicyBlocked -> offer.pauseForPolicy(command.reason)
                 LifecycleCommand.PolicyAllowed -> {
-                    if (pausedByPolicy.get()) {
-                        val prefs = runCatching { configRepository.preferences.first() }.getOrNull()
-                        if (prefs?.resumeOnUnmetered == true) {
+                    if (pausedByPolicy.get() &&
+                        runCatching { configRepository.preferences.first() }
+                            .getOrNull()?.resumeOnUnmetered == true
+                    ) {
+                        // P0-004: If a startup is already in progress, retain the pending
+                        // retry intention for after that startup completes. Otherwise,
+                        // begin one resume attempt immediately.
+                        if (startupJob?.isActive == true) {
+                            pendingPolicyResume.set(true)
+                        } else {
+                            pendingPolicyResume.set(false)
                             offer.resume()
                         }
+                    } else if (!pausedByPolicy.get()) {
+                        // Not policy-paused, clear any stale pending intention.
+                        pendingPolicyResume.set(false)
                     }
                 }
             }
@@ -272,13 +295,16 @@ class TunnelForegroundService
                         lifecycleGeneration.incrementAndGet()
                         cancelStartupJobAndJoinLocked()
                         reporter.stopStatusPollingAndJoin()
-                        withContext(ioDispatcher) {
-                            repository.stop()
-                        }.onFailure {
-                            publishError(
-                                message = it.message ?: "Unable to stop tunnel",
-                                code = stopFailureCode(it),
-                            )
+                        // Only perform fallback cleanup if native stop was not already verified.
+                        if (!nativeStopVerified.get()) {
+                            withContext(ioDispatcher) {
+                                repository.stop()
+                            }.onFailure {
+                                publishError(
+                                    message = it.message ?: "Unable to stop tunnel",
+                                    code = stopFailureCode(it),
+                                )
+                            }
                         }
                         pausedByPolicy.set(false)
                         clearTemporaryMeteredAllowance()
@@ -421,6 +447,7 @@ class TunnelForegroundService
                         return
                     }
                     generation = lifecycleGeneration.incrementAndGet()
+                    nativeStopVerified.set(false)
                     startupJob =
                         serviceScope.launch {
                             doStartOffer(generation)
@@ -517,13 +544,24 @@ class TunnelForegroundService
                     }
                     result.onSuccess {
                         pausedByPolicy.set(false)
+                        pendingPolicyResume.set(false)
                         reporter.publishStatus()
                         reporter.startStatusPolling()
-                    }.onFailure {
-                        reporter.publishError(
-                            message = it.message ?: "Unable to start tunnel",
-                            code = "native_start_failed",
-                        )
+                    }.onFailure { error ->
+                        // P0-004: If a PolicyAllowed event arrived while this attempt was
+                        // in flight, retain the pending intention and trigger exactly one
+                        // retry after the failed attempt fully completes.
+                        if (pendingPolicyResume.compareAndSet(true, false)) {
+                            pendingPolicyResume.set(false)
+                            serviceScope.launch {
+                                offer.resume()
+                            }
+                        } else {
+                            reporter.publishError(
+                                message = error.message ?: "Unable to start tunnel",
+                                code = "native_start_failed",
+                            )
+                        }
                     }
                 } finally {
                     identity.fill(0)
@@ -613,6 +651,7 @@ class TunnelForegroundService
                     clearTemporaryMeteredAllowance()
                     stopResult.fold(
                         onSuccess = {
+                            nativeStopVerified.set(true)
                             notifications.show(
                                 notifications.buildStatusNotification(ServiceState.Stopped, "Tunnel stopped"),
                             )

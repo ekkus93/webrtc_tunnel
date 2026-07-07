@@ -35,7 +35,7 @@ class ForwardsRepositoryTest {
     fun upsertUpdatesObservableState() =
         runBlocking {
             val result = repo.upsert(forward("x", 1234))
-            assertTrue(result.valid)
+            assertTrue(result.validationResult.valid)
             assertTrue(repo.forwards.value.any { it.id == "x" })
         }
 
@@ -56,7 +56,7 @@ class ForwardsRepositoryTest {
 
             val result = corruptRepo.upsert(forward("x", 1234))
 
-            assertFalse(result.valid)
+            assertFalse(result.validationResult.valid)
             // The corrupt file must not be overwritten with a fresh/empty baseline.
             assertTrue(file.readText().contains("corrupt"))
         }
@@ -69,7 +69,7 @@ class ForwardsRepositoryTest {
 
             val result = corruptRepo.delete("anything")
 
-            assertFalse(result.valid)
+            assertFalse(result.validationResult.valid)
             // A corrupt forwards file must never be overwritten by a delete that dropped
             // the (unparseable) entries — the user's file is preserved for repair.
             assertTrue(file.readText().contains("corrupt"))
@@ -83,7 +83,7 @@ class ForwardsRepositoryTest {
 
             val result = repo.upsert(forward("added", 2222))
 
-            assertTrue(result.valid)
+            assertTrue(result.validationResult.valid)
             assertTrue(repo.forwards.value.any { it.id == "keep" })
             assertTrue(repo.forwards.value.any { it.id == "added" })
         }
@@ -96,7 +96,7 @@ class ForwardsRepositoryTest {
 
             val result = repo.upsert(forward("b", 1111)) // duplicate port
 
-            assertFalse(result.valid)
+            assertFalse(result.validationResult.valid)
             assertEquals(before, repo.forwards.value)
         }
 

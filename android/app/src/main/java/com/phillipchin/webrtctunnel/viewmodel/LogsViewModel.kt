@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.model.LogEvent
 import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.TunnelError
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +26,9 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
     val message: StateFlow<String?> = _message.asStateFlow()
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
+
+    // P0-005: Log retrieval failure is separate from tunnel lifecycle state.
+    val logsError: StateFlow<TunnelError?> = deps.tunnelRepository.logsError
 
     val filteredLogs: StateFlow<List<LogEvent>> =
         combine(_logs, _filter) { logs, level ->

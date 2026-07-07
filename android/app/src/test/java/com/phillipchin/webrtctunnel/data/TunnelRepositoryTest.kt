@@ -14,6 +14,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -140,13 +141,21 @@ class TunnelRepositoryTest {
 
     @Test
     fun recentLogsSurfacesErrorEventOnInvalidJsonAndMarksError() {
-        // Invalid native log output must not look like "no logs": it yields a visible error
-        // log entry and an Error status, not an empty list.
+        // P0-005: Invalid native log output must not affect tunnel lifecycle state.
+        // It yields a visible error log entry and logsError, not an Error status.
         bridge.logsJson = "{not-array"
         val logs = repository.recentLogs(10)
         assertEquals(1, logs.size)
         assertEquals("error", logs.first().level)
-        assertEquals(ServiceState.Error, repository.status.value.serviceState)
+        // Log failure must NOT set serviceState to Error (P0-005).
+        assertTrue(
+            "log retrieval failure must not change lifecycle state to Error",
+            repository.status.value.serviceState != ServiceState.Error,
+        )
+        // But logsError must be visible.
+        val error = repository.logsError.value
+        assertNotNull(error)
+        assertEquals("log_decode_failed", error!!.code)
     }
 
     @Test
@@ -318,12 +327,17 @@ class TunnelRepositoryTest {
     }
 
     @Test
-    fun refreshStatusForwardUnknownListenStateFallsBack() {
+    fun refreshStatusForwardUnknownListenStateBecomesError() {
+        // P1-004: Unknown listen state must become ListenState.Error, not Stopped.
         bridge.statusPayload =
             """{"state":"running","active":true,"forwards":[{"id":"x","listen_state":"weird"}]}"""
         repository.refreshStatus()
         val forward = repository.status.value.forwards.single()
-        assertEquals(ListenState.Stopped, forward.listenState)
+        assertEquals(
+            "unknown listen state must map to Error, not silently fall back to Stopped",
+            ListenState.Error,
+            forward.listenState,
+        )
     }
 
     @Test

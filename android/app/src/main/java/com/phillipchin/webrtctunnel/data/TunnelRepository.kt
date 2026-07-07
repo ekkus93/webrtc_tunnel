@@ -47,6 +47,10 @@ class TunnelRepository(
         )
     val status: StateFlow<TunnelStatus> = _status.asStateFlow()
 
+    // P0-005: Log retrieval failure does not affect tunnel lifecycle state.
+    private val _logsError = MutableStateFlow<TunnelError?>(null)
+    val logsError: StateFlow<TunnelError?> = _logsError.asStateFlow()
+
     // The one atomic state-mutation primitive (P0-002): every mutator below goes through
     // this compare-and-set loop instead of a plain `_status.value = _status.value.copy(...)`
     // read-modify-write, which could lose a concurrent writer's update between the read and
@@ -63,18 +67,51 @@ class TunnelRepository(
         }
     }
 
+    /**
+     * Verified start (P0-002): native JNI success alone is not sufficient proof of a clean
+     * start — a successful start requires [refreshStatusResult] to both succeed *and*
+     * observe an active-or-starting runtime state. Failure to verify does not mean the
+     * native runtime is absent (it may be running in an unverified state), so the caller
+     * must own the resulting cleanup via the ordered lifecycle coordinator (P0-001).
+     */
     fun start(
         mode: TunnelMode,
         configPath: String,
         identityBytes: ByteArray? = null,
     ): Result<Unit> {
-        val result =
+        val nativeResult =
             when (mode) {
                 TunnelMode.Offer -> bridge.startOffer(configPath, identityBytes)
                 TunnelMode.Answer -> bridge.startAnswer(configPath)
             }
-        result.onSuccess { refreshStatus() }
-        return result
+
+        return nativeResult.fold(
+            onFailure = { error -> Result.failure(error) },
+            onSuccess = {
+                refreshStatusResult(preservePolicyPaused = false).fold(
+                    onFailure = { error ->
+                        Result.failure(
+                            StartStatusVerificationException(
+                                "Native start returned success but runtime status could not be verified",
+                                error,
+                            ),
+                        )
+                    },
+                    onSuccess = { status ->
+                        if (status.serviceState.isTunnelActiveOrStarting()) {
+                            Result.success(Unit)
+                        } else {
+                            Result.failure(
+                                StartStatusVerificationException(
+                                    "Native start returned success but final state was " +
+                                        "${status.serviceState}",
+                                ),
+                            )
+                        }
+                    },
+                )
+            },
+        )
     }
 
     /**
@@ -123,7 +160,7 @@ class TunnelRepository(
      * Callers that only need "publish error into status, no direct result needed" should keep
      * using [refreshStatus] instead.
      */
-    fun refreshStatusResult(): Result<TunnelStatus> {
+    fun refreshStatusResult(preservePolicyPaused: Boolean = true): Result<TunnelStatus> {
         // Expensive native/JSON work happens once, outside the atomic mutation (P0-002):
         // only the merge decision (which depends on whatever the *latest* status turns out
         // to be at commit time, not this stale-by-the-time-we-commit snapshot) runs inside
@@ -154,8 +191,10 @@ class TunnelRepository(
                 // A native status poll must never resurrect a policy-paused state
                 // (PausedMeteredBlocked / NoNetwork) back to Connected: the daemon task
                 // may still be reported active while network policy has blocked the tunnel.
+                // During verified start/stop, the caller owns the policy state transition,
+                // so skip preservation and trust the native result.
                 val resolved =
-                    if (isPolicyPausedState(current.serviceState) && native.active) {
+                    if (preservePolicyPaused && isPolicyPausedState(current.serviceState) && native.active) {
                         mapped.copy(
                             serviceState = current.serviceState,
                             networkStatus = current.networkStatus,
@@ -171,8 +210,11 @@ class TunnelRepository(
         return Result.success(committed)
     }
 
-    fun recentLogs(maxEvents: Int): List<LogEvent> =
-        runCatching {
+    fun recentLogs(maxEvents: Int): List<LogEvent> {
+        // P0-005: Log retrieval failure does not affect tunnel lifecycle state.
+        // Clear the logs error so a later success clears it.
+        _logsError.value = null
+        return runCatching {
             Json.decodeFromString<List<NativeLogEventDto>>(bridge.getRecentLogsJson(maxEvents))
                 .map { event ->
                     SensitiveDataRedactor.redactLogEvent(
@@ -183,31 +225,27 @@ class TunnelRepository(
                         ),
                     )
                 }
-        }.onFailure { error ->
-            updateStatus { current ->
-                current.copy(
-                    serviceState = ServiceState.Error,
-                    lastError =
-                        TunnelError(
-                            code = "log_decode_failed",
-                            message = "Native log decode failed",
-                            details = SensitiveDataRedactor.redactText(error.message ?: "unknown log decode error"),
-                        ),
+        }.fold(
+            onSuccess = { logs -> logs },
+            onFailure = { error ->
+                _logsError.value =
+                    TunnelError(
+                        code = "log_decode_failed",
+                        message = "Native log retrieval failed",
+                        details = SensitiveDataRedactor.redactText(error.message ?: "unknown log retrieval error"),
+                    )
+                // Never return an empty list on failure — that reads as "no logs". Surface a
+                // synthetic error log entry so the log screen shows that retrieval failed.
+                listOf(
+                    LogEvent(
+                        unixMs = 0L,
+                        level = "error",
+                        message = "Native log retrieval failed; see logsError for details",
+                    ),
                 )
-            }
-        }.getOrElse {
-            // Never return an empty list on failure — that reads as "no logs". Surface a
-            // synthetic error log entry (in addition to the Error status set above) so the
-            // log screen shows that retrieval failed. An empty list means a successful fetch
-            // with no logs.
-            listOf(
-                LogEvent(
-                    unixMs = 0L,
-                    level = "error",
-                    message = "Native log retrieval failed; see status for details",
-                ),
-            )
-        }
+            },
+        )
+    }
 
     fun setPolicyBlocked(blockReason: String) {
         val redacted = SensitiveDataRedactor.redactText(blockReason)
@@ -293,17 +331,14 @@ private fun mapNativeServiceState(
         else -> ServiceState.Error
     }
 
-private fun mapNativeListenState(
-    state: String,
-    lastError: String?,
-): ListenState =
+private fun mapNativeListenState(state: String): ListenState =
     when (state.lowercase()) {
         "listening" -> ListenState.Listening
         "stopped" -> ListenState.Stopped
         "error" -> ListenState.Error
         "disabled" -> ListenState.Disabled
         "paused" -> ListenState.Paused
-        else -> if (lastError != null) ListenState.Error else ListenState.Stopped
+        else -> ListenState.Error
     }
 
 private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): TunnelStatus {
@@ -340,7 +375,7 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
                     if (configurationError != null) {
                         ListenState.Error
                     } else {
-                        mapNativeListenState(forward.listenState, forward.lastError)
+                        mapNativeListenState(forward.listenState)
                     },
                 lastError = configurationError ?: forward.lastError?.let(SensitiveDataRedactor::redactText),
                 configurationError = configurationError,
@@ -351,7 +386,13 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
         mode = modeValue,
         // Surface the real remote peer from the active session; retain the last-known
         // value between sessions rather than flicker to null.
-        remotePeerId = remotePeerId ?: previous.remotePeerId,
+        // P1-005: Clear stale active peer on terminal state.
+        remotePeerId =
+            if (stateValue == ServiceState.Stopped || stateValue == ServiceState.Error) {
+                null
+            } else {
+                remotePeerId ?: previous.remotePeerId
+            },
         mqttConnected = mqttConnected,
         activeSessionCount = activeSessionCount,
         sessionCapacity = sessionCapacity ?: previous.sessionCapacity,

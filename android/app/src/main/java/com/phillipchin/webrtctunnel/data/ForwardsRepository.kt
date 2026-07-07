@@ -10,6 +10,24 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
+ * Thrown when a rollback was requested but the repository revision has changed since
+ * the original mutation — prevents overwriting a newer concurrent mutation (P1-002).
+ */
+class ForwardsRevisionMismatchException(
+    expected: Long,
+    actual: Long,
+) :
+    IllegalStateException(
+            "Forwards changed concurrently; expected revision $expected but found $actual",
+        )
+
+/** Snapshot of forwards with the repository revision at the time of the snapshot. */
+data class ForwardsSnapshot(
+    val forwards: List<ForwardConfig>,
+    val revision: Long,
+)
+
+/**
  * Single source of truth for the configured local forwards. Holds the list in memory as
  * an observable [StateFlow]; all mutations work from that in-memory list (never re-read
  * possibly-corrupt disk), are serialized by a [Mutex], and publish only after a
@@ -35,6 +53,10 @@ class ForwardsRepository(
 
     private var hasValidBaseline = initial.isSuccess
 
+    // P1-002: Revision counter for conditional rollback. Owned by the same mutex as all
+    // other mutations. Incremented on every successful persistence change.
+    private var revision: Long = 0
+
     fun current(): List<ForwardConfig> = _forwards.value
 
     suspend fun refresh() {
@@ -52,7 +74,46 @@ class ForwardsRepository(
         }
     }
 
-    suspend fun upsert(forward: ForwardConfig): ValidationResult =
+    /** Returns the current snapshot with the latest revision. */
+    suspend fun snapshot(): ForwardsSnapshot =
+        mutex.withLock {
+            ForwardsSnapshot(_forwards.value, revision)
+        }
+
+    /**
+     * Saves forwards only if [expectedRevision] matches the current revision.
+     * Returns failure with [ForwardsRevisionMismatchException] if the revision
+     * has changed, preventing rollback from overwriting newer data (P1-002).
+     */
+    suspend fun saveIfRevisionMatches(
+        expectedRevision: Long,
+        forwards: List<ForwardConfig>,
+    ): Result<Unit> =
+        mutex.withLock {
+            if (revision != expectedRevision) {
+                return@withLock Result.failure(
+                    ForwardsRevisionMismatchException(expectedRevision, revision),
+                )
+            }
+            withContext(dispatchers.io) {
+                runCatching {
+                    store.saveForwards(forwards)
+                    _forwards.value = forwards
+                    revision += 1
+                }
+            }
+        }
+
+    /**
+     * Result of a forwards mutation operation, including the ValidationResult and
+     * the revision after the mutation (for rollback targeting) (P1-002).
+     */
+    data class MutationResult(
+        val validationResult: ValidationResult,
+        val revision: Long,
+    )
+
+    suspend fun upsert(forward: ForwardConfig): MutationResult =
         mutate { current ->
             current.toMutableList().apply {
                 val index = indexOfFirst { it.id == forward.id }
@@ -60,7 +121,7 @@ class ForwardsRepository(
             }
         }
 
-    suspend fun delete(forwardId: String): ValidationResult =
+    suspend fun delete(forwardId: String): MutationResult =
         mutate { current -> current.filterNot { it.id == forwardId } }
 
     /** Persist an exact list (used for rollback). Save-then-publish; serialized. */
@@ -71,26 +132,32 @@ class ForwardsRepository(
             }
         }
 
-    private suspend fun mutate(transform: (List<ForwardConfig>) -> List<ForwardConfig>): ValidationResult =
+    private suspend fun mutate(transform: (List<ForwardConfig>) -> List<ForwardConfig>): MutationResult =
         mutex.withLock {
             withContext(dispatchers.io) {
                 if (!hasValidBaseline) {
-                    return@withContext ValidationResult(
-                        false,
-                        _loadError.value ?: "Saved forwards file is corrupt; cannot save",
+                    return@withContext MutationResult(
+                        ValidationResult(
+                            false,
+                            _loadError.value ?: "Saved forwards file is corrupt; cannot save",
+                        ),
+                        revision,
                     )
                 }
                 val updated = transform(_forwards.value)
                 val error = store.validateForwards(updated)
                 if (error != null) {
-                    return@withContext ValidationResult(false, error)
+                    return@withContext MutationResult(ValidationResult(false, error), revision)
                 }
                 runCatching { store.saveForwards(updated) }.fold(
                     onSuccess = {
                         _forwards.value = updated
-                        ValidationResult(true, null)
+                        revision += 1
+                        MutationResult(ValidationResult(true, null), revision)
                     },
-                    onFailure = { ValidationResult(false, describeForwardsFailure(it)) },
+                    onFailure = {
+                        MutationResult(ValidationResult(false, describeForwardsFailure(it)), revision)
+                    },
                 )
             }
         }
