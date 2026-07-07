@@ -1365,9 +1365,23 @@ Assert every sentinel is absent after redaction.
 
 ### Acceptance criteria
 
-- [ ] Both error fields are redacted.
-- [ ] Unique sentinel test covers cleanup history.
-- [ ] Diagnostics serialization uses redacted value.
+- [x] Both error fields are redacted. `SensitiveDataRedactor.redactStatus()`
+      (`SensitiveDataRedactor.kt`) now also copies
+      `lastCleanupError = status.lastCleanupError?.redacted()`.
+- [x] Unique sentinel test covers cleanup history.
+      `redactStatusRedactsLastCleanupErrorMessageAndDetails` and
+      `redactStatusWithNullLastCleanupErrorIsUnchanged` mirror the existing `lastError`
+      tests; `redactStatusRedactsDistinctSentinelsInBothLastErrorAndLastCleanupErrorIndependently`
+      puts a unique sentinel in each of `lastError`/`lastCleanupError` in the same status
+      and asserts both are absent after redaction (`SensitiveDataRedactorTest.kt`).
+- [x] Diagnostics serialization uses redacted value. `redactStatus()` is the single
+      function called by `DiagnosticsRepository.kt`, `TunnelRepository.kt`'s status-commit
+      path, and `SettingsViewModel.kt`'s diagnostics export — all three now redact
+      `lastCleanupError` for free.
+      Verified by temporarily removing the `lastCleanupError = ...` line — both new
+      `lastCleanupError`-specific tests failed (the right reason), the other 44 tests in
+      the class kept passing, then the fix was restored and all 46 re-passed. Ran 3x fresh
+      (`--rerun`) with no flakes, then the full `./gradlew check` gate.
 
 ---
 
