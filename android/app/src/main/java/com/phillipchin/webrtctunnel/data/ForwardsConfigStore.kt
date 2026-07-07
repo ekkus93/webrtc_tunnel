@@ -3,7 +3,6 @@ package com.phillipchin.webrtctunnel.data
 import android.content.Context
 import android.util.Log
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -147,30 +146,6 @@ class ForwardsConfigStore(private val context: Context) {
             }
         } catch (error: IOException) {
             throw ForwardsWriteException(error)
-        }
-    }
-
-    /**
-     * Disk-based upsert used by the setup wizard. Corrupt-safe: a corrupt existing file
-     * is reported as a failure rather than treated as empty and overwritten.
-     * (Home/Forwards mutate through [ForwardsRepository] on the in-memory list instead.)
-     */
-    fun upsertForward(forward: ForwardConfig): ValidationResult {
-        val existing =
-            loadForwardsResult().getOrElse {
-                return ValidationResult(false, describeForwardsFailure(it))
-            }
-        val updated =
-            existing.toMutableList().apply {
-                val index = indexOfFirst { it.id == forward.id }
-                if (index >= 0) set(index, forward) else add(forward)
-            }
-        val error = validateForwards(updated)
-        return if (error != null) {
-            ValidationResult(false, error)
-        } else {
-            saveForwards(updated)
-            ValidationResult(true, null)
         }
     }
 
