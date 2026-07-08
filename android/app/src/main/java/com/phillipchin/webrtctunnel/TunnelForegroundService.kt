@@ -431,11 +431,12 @@ class TunnelForegroundService
             }
         }
 
-        // P0-001: Verified startup success.
+        // P0-001/P0-007: Verified startup success.
+        // P0-007: Do NOT clear metered allowance on success — it lasts through the run.
         private fun handleStartupSuccess(generation: Long) {
             pausedByPolicy.set(false)
             pendingPolicyResumeGeneration.set(null)
-            clearTemporaryMeteredAllowance()
+            // Metered allowance preserved through authorized run.
             reporter.publishStatus()
             reporter.startStatusPolling()
         }
@@ -817,6 +818,7 @@ class TunnelForegroundService
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
                             onSuccess = {
+                                clearTemporaryMeteredAllowance()
                                 reporter.publishStatus(getString(R.string.service_msg_paused))
                             },
                             onFailure = {
