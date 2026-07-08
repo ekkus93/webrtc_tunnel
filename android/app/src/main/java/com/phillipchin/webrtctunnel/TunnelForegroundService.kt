@@ -714,28 +714,38 @@ class TunnelForegroundService
                         .getOrElse {
                             abortStartup("Unable to decrypt private identity: ${it.message}", "identity_decrypt_failed")
                         }
-                // Apply the user's chosen ICE mode and inject the active network's IPv4
-                // (ConnectivityManager/LinkProperties) as the vnet_mux host candidate before
-                // validating/starting, so a strict vnet_mux start fails loudly rather than
-                // advertising a stale address or silently dropping to native ICE.
-                withContext(ioDispatcher) {
-                    configRepository.prepareActiveConfigForStart(
-                        prefs.androidIceMode,
-                        localAddressResolver.currentIpv4(),
-                    )
-                }
-                val validation =
+                // P0-008: Ownership transfer — identity is wiped if preparation fails.
+                var transferred = false
+                try {
+                    // Apply the user's chosen ICE mode and inject the active network's IPv4
+                    // (ConnectivityManager/LinkProperties) as the vnet_mux host candidate before
+                    // validating/starting, so a strict vnet_mux start fails loudly rather than
+                    // silently dropping to native ICE.
                     withContext(ioDispatcher) {
-                        identityValidation.validateConfigWithIdentity(configRepository.configPath, identity)
+                        configRepository.prepareActiveConfigForStart(
+                            prefs.androidIceMode,
+                            localAddressResolver.currentIpv4(),
+                        )
                     }
-                if (!validation.valid) {
-                    abortStartup(
-                        validation.message ?: "Config validation failed",
-                        "config_validation_failed",
-                        ServiceState.ConfigInvalid,
-                    )
+                    val validation =
+                        withContext(ioDispatcher) {
+                            identityValidation.validateConfigWithIdentity(configRepository.configPath, identity)
+                        }
+                    if (!validation.valid) {
+                        abortStartup(
+                            validation.message ?: "Config validation failed",
+                            "config_validation_failed",
+                            ServiceState.ConfigInvalid,
+                        )
+                    }
+                    transferred = true
+                    return identity
+                } finally {
+                    if (!transferred) {
+                        // Preparation failed — wipe the plaintext identity.
+                        identity.fill(0)
+                    }
                 }
-                return identity
             }
 
             // Starts the tunnel under the lifecycle-generation guard: aborts if a newer start
