@@ -489,6 +489,148 @@ class TunnelForegroundServiceStopFailureTest {
             deps.tunnelRepository.status.value.serviceState.isTunnelRunning(),
         )
     }
+
+    /**
+     * P0-001: Regression test for coordinator-owned cleanup on verified-start failure.
+     *
+     * Simulates a `StartStatusVerificationException` during startup by making the
+     * bridge's `startOffer()` succeed but `getStatusJson()` return an error state,
+     * causing the post-start verification to fail. The coordinator must perform
+     * exactly one cleanup stop, publish the original verification failure, and not
+     * trigger a policy retry.
+     */
+    @Test
+    fun startVerificationFailurePerformsOneCleanupStop() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Arm the verification failure before starting the tunnel.
+        bridge.forceNextStatusJsonToReportError()
+
+        // Start the tunnel. This triggers startOffer() + verification.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // The verification failure triggers a cleanup stop, which also fails if the
+        // status JSON is still error. Wait for the cleanup to complete.
+        assertTrue(
+            "start verification failure must trigger a cleanup stop",
+            waitForCondition { bridge.stopCalls >= 1 },
+        )
+
+        // The tunnel state must be Error, not running.
+        assertEquals(
+            "verification failure must leave the tunnel in Error state",
+            ServiceState.Error,
+            deps.tunnelRepository.status.value.serviceState,
+        )
+
+        // Exactly one stop call (the cleanup stop), no startup polling or retry.
+        assertEquals(
+            "exactly one cleanup stop call must occur",
+            1,
+            bridge.stopCalls,
+        )
+
+        // No policy retry should have occurred.
+        assertFalse(
+            "verification failure must not trigger policy retry",
+            bridge.startOfferCalls > 1,
+        )
+    }
+
+    /**
+     * P0-001: Regression test for cleanup failure preservation on verified-start failure.
+     *
+     * Simulates a `StartStatusVerificationException` followed by a failing cleanup stop.
+     * The error must contain both the original verification failure and the cleanup failure.
+     */
+    @Test
+    fun startVerificationCleanupFailurePreservesBothErrors() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Arm the verification failure and make the cleanup stop also fail.
+        bridge.forceNextStatusJsonToReportError()
+        bridge.failNextStop()
+
+        // Start the tunnel. This triggers startOffer() + verification.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Wait for the cleanup failure to be published.
+        assertTrue(
+            "cleanup failure must be published",
+            waitForCondition {
+                deps.tunnelRepository.status.value.serviceState == ServiceState.Error &&
+                    deps.tunnelRepository.status.value.lastError != null
+            },
+        )
+
+        // The error code must indicate cleanup failure, not just verification failure.
+        assertEquals(
+            "error code must be start_verification_cleanup_failed when cleanup also fails",
+            "start_verification_cleanup_failed",
+            deps.tunnelRepository.status.value.lastError?.code,
+        )
+
+        // The error message must contain both failures.
+        // Note: forceNextStatusJsonToReportError() returns a valid JSON with state "error",
+        // so the verification path is "refresh succeeded but state was wrong", producing a
+        // message like "Native start returned success but final state was Error".
+        val errorMessage = deps.tunnelRepository.status.value.lastError?.message
+        assertTrue(
+            "error message must contain original verification failure",
+            errorMessage?.contains("final state was") == true ||
+                errorMessage?.contains("could not be verified") == true,
+        )
+        assertTrue(
+            "error message must contain cleanup failure",
+            errorMessage?.contains("Cleanup also failed") == true,
+        )
+    }
+
+    /**
+     * P0-001: Regression test for stale generation cleanup.
+     *
+     * A later lifecycle command (PAUSE) that supersedes the startup must not
+     * produce an extra cleanup stop from the stale startup completion.
+     */
+    @Test
+    fun staleGenerationPerformsNoExtraCleanup() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Block the start offer so we can queue a PAUSE while startup is in progress.
+        bridge.blockNextStartOffer()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(bridge.awaitStartOfferEntered(10_000))
+
+        // Queue a PAUSE command that will supersede the startup.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 2)
+        bridge.failNextStop() // Make the PAUSE stop fail for visibility.
+
+        // Release the start offer, which will now be superseded.
+        bridge.releaseBlockedStartOffer()
+
+        // Wait for the PAUSE to complete.
+        assertTrue(
+            "PAUSE must complete",
+            waitForCondition { bridge.stopCalls >= 1 },
+        )
+
+        // Exactly one stop call from the PAUSE command, no extra cleanup from startup.
+        assertEquals(
+            "exactly one stop call from PAUSE, no extra cleanup from stale startup",
+            1,
+            bridge.stopCalls,
+        )
+
+        // The tunnel state must be Error (from the failed PAUSE stop).
+        assertEquals(
+            "PAUSE failure must leave tunnel in Error state",
+            ServiceState.Error,
+            deps.tunnelRepository.status.value.serviceState,
+        )
+    }
 }
 
 /**

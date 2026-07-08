@@ -9,6 +9,7 @@ import androidx.core.app.NotificationCompat
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.data.StartStatusVerificationException
 import com.phillipchin.webrtctunnel.data.StopStatusVerificationException
 import com.phillipchin.webrtctunnel.data.TunnelRepository
 import com.phillipchin.webrtctunnel.model.NetworkType
@@ -55,6 +56,34 @@ private fun stopFailureCode(error: Throwable): String =
 // Bounded capacity — not unlimited (non-negotiable rule).
 private const val LIFECYCLE_COMMAND_CAPACITY = 32
 
+// P0-001: Coordinator-owned cleanup for verified-start failure (P0-001).
+// Classifies the startup outcome so the coordinator knows whether a verified
+// native stop is required.
+private sealed interface StartupCompletion {
+    data object VerifiedSuccess : StartupCompletion
+
+    data class NativeStartFailure(
+        val error: Throwable,
+    ) : StartupCompletion
+
+    data class VerificationFailure(
+        val error: StartStatusVerificationException,
+    ) : StartupCompletion
+}
+
+// P0-001: Map a repository start result to a startup completion.
+private fun classifyStartupResult(result: Result<Unit>): StartupCompletion =
+    result.fold(
+        onSuccess = { StartupCompletion.VerifiedSuccess },
+        onFailure = { error ->
+            if (error is StartStatusVerificationException) {
+                StartupCompletion.VerificationFailure(error)
+            } else {
+                StartupCompletion.NativeStartFailure(error)
+            }
+        },
+    )
+
 // P0-001: All accepted lifecycle intentions flow through one ordered stream.
 // onStartCommand only submits; network policy also only submits.
 // The command processor drains in FIFO order, so command execution order
@@ -75,6 +104,8 @@ private sealed interface LifecycleCommand {
     ) : LifecycleCommand
 
     data object PolicyAllowed : LifecycleCommand
+
+    data object RetryPolicyResume : LifecycleCommand
 }
 
 class TunnelForegroundService
@@ -261,6 +292,11 @@ class TunnelForegroundService
                         pendingPolicyResume.set(false)
                     }
                 }
+                LifecycleCommand.RetryPolicyResume -> {
+                    // Internal retry after policy pause: resume the tunnel.
+                    pendingPolicyResume.set(false)
+                    offer.resume()
+                }
             }
         }
 
@@ -327,6 +363,55 @@ class TunnelForegroundService
         private fun clearTemporaryMeteredAllowance() {
             allowMeteredForCurrentRun.set(false)
             repository.updateSessionMeteredAllowance(false)
+        }
+
+        // P0-001: Coordinator-owned cleanup for a verified-start failure.
+        // When [cleanupUnverifiedStart()] is called, the coordinator (not the startup
+        // worker) decides whether cleanup is required based on the lifecycle generation.
+        // If a later Pause/Stop/PolicyBlocked superseded the startup, that transition
+        // owns the cleanup instead.
+        //
+        // Security implication: cleanup failure means native runtime existence is
+        // uncertain and automatic restart is prohibited. No auto-retry, no silent
+        // state success. The user must retry Stop or rely on destroy-time fallback.
+        private suspend fun cleanupUnverifiedStart(
+            originalError: StartStatusVerificationException,
+            startGeneration: Long,
+        ) {
+            // Generation guard: if a later lifecycle command superseded this startup,
+            // that command owns cleanup, so this worker does not perform it.
+            if (lifecycleGeneration.get() != startGeneration) {
+                return
+            }
+            reporter.stopStatusPollingAndJoin()
+            repository.stop().fold(
+                onSuccess = {
+                    nativeStopVerified.set(true)
+                    reporter.publishError(
+                        message = originalError.message ?: "Native startup could not be verified",
+                        code = "start_status_verification_failed",
+                    )
+                },
+                onFailure = { cleanupError ->
+                    nativeStopVerified.set(false)
+                    reporter.publishError(
+                        message = buildString {
+                            append(
+                                originalError.message
+                                    ?: "Native startup could not be verified",
+                            )
+                            append(". Cleanup also failed: ")
+                            append(
+                                SensitiveDataRedactor.redactText(
+                                    cleanupError.message
+                                        ?: "unknown cleanup failure",
+                                ),
+                            )
+                        },
+                        code = "start_verification_cleanup_failed",
+                    )
+                },
+            )
         }
 
         // Cancels the startup coroutine and waits for it to fully unwind before returning, so
@@ -542,25 +627,38 @@ class TunnelForegroundService
                         // second, independent stop call here (P0-001).
                         return
                     }
-                    result.onSuccess {
-                        pausedByPolicy.set(false)
-                        pendingPolicyResume.set(false)
-                        reporter.publishStatus()
-                        reporter.startStatusPolling()
-                    }.onFailure { error ->
-                        // P0-004: If a PolicyAllowed event arrived while this attempt was
-                        // in flight, retain the pending intention and trigger exactly one
-                        // retry after the failed attempt fully completes.
-                        if (pendingPolicyResume.compareAndSet(true, false)) {
+                    // P0-001: Classify the startup result so the coordinator can perform
+                    // the correct action (success, native failure, or verification cleanup).
+                    when (val completion = classifyStartupResult(result)) {
+                        is StartupCompletion.VerifiedSuccess -> {
+                            pausedByPolicy.set(false)
                             pendingPolicyResume.set(false)
-                            serviceScope.launch {
-                                offer.resume()
+                            clearTemporaryMeteredAllowance()
+                            reporter.publishStatus()
+                            reporter.startStatusPolling()
+                        }
+                        is StartupCompletion.NativeStartFailure -> {
+                            clearTemporaryMeteredAllowance()
+                            // P0-004: If a PolicyAllowed event arrived while this attempt was
+                            // in flight, retain the pending intention and trigger exactly one
+                            // retry after the failed attempt fully completes.
+                            if (pendingPolicyResume.compareAndSet(true, false)) {
+                                submitLifecycleCommand(LifecycleCommand.RetryPolicyResume)
+                            } else {
+                                reporter.publishError(
+                                    message = completion.error.message ?: "Unable to start tunnel",
+                                    code = "native_start_failed",
+                                )
                             }
-                        } else {
-                            reporter.publishError(
-                                message = error.message ?: "Unable to start tunnel",
-                                code = "native_start_failed",
-                            )
+                        }
+                        is StartupCompletion.VerificationFailure -> {
+                            // P0-001: Coordinator-owned cleanup for verified-start failure.
+                            // The generation check inside cleanupUnverifiedStart() ensures a
+                            // later Pause/Stop/PolicyBlocked supersedes this cleanup.
+                            cleanupUnverifiedStart(completion.error, startGeneration)
+                            clearTemporaryMeteredAllowance()
+                            // No auto-retry on verification failure because native runtime
+                            // may still exist (security/policy integrity requirement).
                         }
                     }
                 } finally {
