@@ -314,13 +314,13 @@ At least one ordering test must fail.
 
 ### Acceptance criteria
 
-- [ ] onStartCommand no longer launches independent lifecycle coroutines.
-- [ ] Network policy uses same command ordering path.
-- [ ] Queue is bounded.
-- [ ] Queue failure is visible.
-- [ ] Accepted sequence order is monotonic.
-- [ ] Later PAUSE/STOP cannot be undone by older START.
-- [ ] Ordering regression test fails on old architecture.
+- [x] onStartCommand no longer launches independent lifecycle coroutines.
+- [x] Network policy uses same command ordering path.
+- [x] Queue is bounded.
+- [x] Queue failure is visible.
+- [x] Accepted sequence order is monotonic.
+- [x] Later PAUSE/STOP cannot be undone by older START.
+- [x] Ordering regression test fails on old architecture.
 
 ---
 
@@ -535,13 +535,13 @@ New tests must fail.
 
 ### Acceptance criteria
 
-- [ ] JNI start success is not trusted alone.
-- [ ] Active-or-starting final state is required.
-- [ ] Read/decode failure is not clean start success.
-- [ ] Error/Stopped is not clean start success.
-- [ ] Verification failure does not clear policy retry state.
-- [ ] Verification failure cleanup has one owner.
-- [ ] Cleanup failure preserves original start failure.
+- [x] JNI start success is not trusted alone.
+- [x] Active-or-starting final state is required.
+- [x] Read/decode failure is not clean start success.
+- [x] Error/Stopped is not clean start success.
+- [x] Verification failure does not clear policy retry state.
+- [x] Verification failure cleanup has one owner.
+- [x] Cleanup failure preserves original start failure.
 
 ---
 
@@ -647,12 +647,12 @@ If runtime may still exist, policy command must still attempt cleanup.
 
 ### Acceptance criteria
 
-- [ ] PolicyBlocked does not depend on `isTunnelRunning()`.
-- [ ] In-flight startup is cancelled and joined.
-- [ ] Status polling is quiesced.
-- [ ] Verified stop occurs before policy-paused state.
-- [ ] Stop failure does not publish normal policy-paused state.
-- [ ] Policy command is ordered with user commands.
+- [x] PolicyBlocked does not depend on `isTunnelRunning()`.
+- [x] In-flight startup is cancelled and joined.
+- [x] Status polling is quiesced.
+- [x] Verified stop occurs before policy-paused state.
+- [x] Stop failure does not publish normal policy-paused state.
+- [x] Policy command is ordered with user commands.
 
 ---
 
@@ -757,12 +757,12 @@ Test must fail.
 
 ### Acceptance criteria
 
-- [ ] One later allowed event is sufficient.
-- [ ] No repeated synthetic event firing.
-- [ ] Pending retry is coordinator-owned.
-- [ ] Failed retry keeps policy pause true.
-- [ ] Successful retry clears flag.
-- [ ] PAUSE/STOP can supersede pending retry.
+- [x] One later allowed event is sufficient.
+- [x] No repeated synthetic event firing.
+- [x] Pending retry is coordinator-owned.
+- [x] Failed retry keeps policy pause true.
+- [x] Successful retry clears flag.
+- [x] PAUSE/STOP can supersede pending retry.
 
 ---
 
@@ -834,10 +834,10 @@ Keep synthetic visible error-log entry if useful.
 
 ### Acceptance criteria
 
-- [ ] Log failure cannot set tunnel lifecycle `Error`.
-- [ ] Log failure is separately visible.
-- [ ] Successful retrieval clears ancillary error.
-- [ ] Policy enforcement is unaffected by log UI failure.
+- [x] Log failure cannot set tunnel lifecycle `Error`.
+- [x] Log failure is separately visible.
+- [x] Successful retrieval clears ancillary error.
+- [x] Policy enforcement is unaffected by log UI failure.
 
 ---
 
@@ -943,11 +943,11 @@ Assert monitor cannot enqueue a policy command after destroy cleanup begins.
 
 ### Acceptance criteria
 
-- [ ] Normal STOP causes one native stop.
-- [ ] Destroy fallback still cleans unverified runtime.
-- [ ] Stop failure may retry exactly once on destroy.
-- [ ] Network monitor is cancel-and-joined.
-- [ ] No post-destroy policy command appears.
+- [x] Normal STOP causes one native stop.
+- [x] Destroy fallback still cleans unverified runtime.
+- [x] Stop failure may retry exactly once on destroy.
+- [x] Network monitor is cancel-and-joined.
+- [x] No post-destroy policy command appears.
 
 ---
 
@@ -1069,11 +1069,11 @@ Review every match.
 
 ### Acceptance criteria
 
-- [ ] No timeout is used to prove absence.
-- [ ] No settle wait is ignored.
-- [ ] Event ordering proves poll quiescing.
-- [ ] Final command completion proves exactly-one-stop count.
-- [ ] Reverted old competing stop fails deterministically.
+- [x] No timeout is used to prove absence.
+- [x] No settle wait is ignored.
+- [x] Event ordering proves poll quiescing.
+- [x] Final command completion proves exactly-one-stop count.
+- [x] Reverted old competing stop fails deterministically.
 
 ---
 
@@ -1165,13 +1165,13 @@ for this new pass.
 
 ### Acceptance criteria
 
-- [ ] All local gates reported PASS/FAIL/NOT RUN.
-- [ ] Remote CI ran after every production change.
-- [ ] Workflow head matches final code or one docs-only child.
-- [ ] Linux and macOS jobs observed.
-- [ ] Signal lifecycle jobs observed.
-- [ ] Package/service jobs observed.
-- [ ] No earlier workflow reused.
+- [x] All local gates reported PASS/FAIL/NOT RUN.
+- [x] Remote CI ran after every production change.
+- [x] Workflow head matches final code or one docs-only child.
+- [x] Linux and macOS jobs observed.
+- [x] Signal lifecycle jobs observed.
+- [x] Package/service jobs observed.
+- [x] No earlier workflow reused.
 
 ---
 
@@ -1230,9 +1230,9 @@ Assert later pause wins.
 
 ### Acceptance criteria
 
-- [ ] No plain cross-thread allowance Boolean.
-- [ ] Allow + start is one ordered lifecycle command.
-- [ ] Later PAUSE/STOP supersedes it.
+- [x] No plain cross-thread allowance Boolean.
+- [x] Allow + start is one ordered lifecycle command.
+- [x] Later PAUSE/STOP supersedes it.
 
 ---
 
@@ -1335,10 +1335,10 @@ Assert B remains.
 
 ### Acceptance criteria
 
-- [ ] Rollback cannot overwrite newer mutation.
-- [ ] Revision mismatch is visible.
-- [ ] Newer data remains untouched.
-- [ ] Normal rollback still works.
+- [x] Rollback cannot overwrite newer mutation.
+- [x] Revision mismatch is visible.
+- [x] Newer data remains untouched.
+- [x] Normal rollback still works.
 
 ---
 
@@ -1384,10 +1384,10 @@ Do not rely on one screen disabling Add.
 
 ### Acceptance criteria
 
-- [ ] No mutation path bypasses loadError.
-- [ ] Error is visible.
-- [ ] Saved corrupt/unreadable file remains untouched.
-- [ ] Successful reload re-enables mutation.
+- [x] No mutation path bypasses loadError.
+- [x] Error is visible.
+- [x] Saved corrupt/unreadable file remains untouched.
+- [x] Successful reload re-enables mutation.
 
 ---
 
@@ -1443,9 +1443,9 @@ Unknown native listen state: <redacted value>
 
 ### Acceptance criteria
 
-- [ ] No unknown mode → Offer fallback.
-- [ ] No unknown listen-state → Stopped fallback.
-- [ ] Schema drift is visible.
+- [x] No unknown mode → Offer fallback.
+- [x] No unknown listen-state → Stopped fallback.
+- [x] Schema drift is visible.
 
 ---
 
@@ -1490,9 +1490,9 @@ Assert no current peer is shown.
 
 ### Acceptance criteria
 
-- [ ] Terminal state does not show stale active peer.
-- [ ] Active state may retain peer between transient session updates.
-- [ ] No history feature is added in this pass.
+- [x] Terminal state does not show stale active peer.
+- [x] Active state may retain peer between transient session updates.
+- [x] No history feature is added in this pass.
 
 ---
 
@@ -1567,15 +1567,15 @@ Fix the last three.
 
 ### Acceptance criteria
 
-- [ ] No command-order inversion path remains.
-- [ ] No unverified start success remains.
-- [ ] No policy block ignores active startup.
-- [ ] No ancillary error rewrites lifecycle state.
-- [ ] No plain shared policy Boolean remains.
-- [ ] No rollback can erase newer data.
-- [ ] No load-error mutation bypass remains.
-- [ ] No timeout proves event absence.
-- [ ] Unknown native values do not become plausible defaults.
+- [x] No command-order inversion path remains.
+- [x] No unverified start success remains.
+- [x] No policy block ignores active startup.
+- [x] No ancillary error rewrites lifecycle state.
+- [x] No plain shared policy Boolean remains.
+- [x] No rollback can erase newer data.
+- [x] No load-error mutation bypass remains.
+- [x] No timeout proves event absence.
+- [x] Unknown native values do not become plausible defaults.
 
 ---
 
@@ -1695,68 +1695,68 @@ Do not make one giant commit.
 
 ## Lifecycle ordering
 
-- [ ] Accepted lifecycle commands have one processing order.
-- [ ] onStartCommand does not launch independent lifecycle coroutines.
-- [ ] Network policy uses same ordering path.
-- [ ] Queue is bounded and failure is visible.
-- [ ] Later PAUSE/STOP cannot be undone by older START.
+- [x] Accepted lifecycle commands have one processing order.
+- [x] onStartCommand does not launch independent lifecycle coroutines.
+- [x] Network policy uses same ordering path.
+- [x] Queue is bounded and failure is visible.
+- [x] Later PAUSE/STOP cannot be undone by older START.
 
 ## Start truthfulness
 
-- [ ] JNI start success requires verified active-or-starting state.
-- [ ] Status read/decode failure is not clean start success.
-- [ ] Error/Stopped is not clean start success.
-- [ ] Verification failure cleanup has one owner.
-- [ ] Cleanup failure preserves original start failure.
-- [ ] Policy retry state clears only after verified success.
+- [x] JNI start success requires verified active-or-starting state.
+- [x] Status read/decode failure is not clean start success.
+- [x] Error/Stopped is not clean start success.
+- [x] Verification failure cleanup has one owner.
+- [x] Cleanup failure preserves original start failure.
+- [x] Policy retry state clears only after verified success.
 
 ## Policy integrity
 
-- [ ] PolicyBlocked cancels and joins startup.
-- [ ] Policy block does not depend only on UI lifecycle state.
-- [ ] One later PolicyAllowed event is enough to retry.
-- [ ] Pending retry is superseded by later Pause/Stop/Block.
-- [ ] Metered-session allowance is thread-safe and ordered.
+- [x] PolicyBlocked cancels and joins startup.
+- [x] Policy block does not depend only on UI lifecycle state.
+- [x] One later PolicyAllowed event is enough to retry.
+- [x] Pending retry is superseded by later Pause/Stop/Block.
+- [x] Metered-session allowance is thread-safe and ordered.
 
 ## Lifecycle-domain separation
 
-- [ ] Log retrieval failure does not change tunnel lifecycle state.
-- [ ] Log error is separately visible.
-- [ ] Normal ACTION_STOP causes one native stop.
-- [ ] onDestroy fallback still cleans unverified runtime.
-- [ ] Network monitor is joined before destroy cleanup.
+- [x] Log retrieval failure does not change tunnel lifecycle state.
+- [x] Log error is separately visible.
+- [x] Normal ACTION_STOP causes one native stop.
+- [x] onDestroy fallback still cleans unverified runtime.
+- [x] Network monitor is joined before destroy cleanup.
 
 ## Test trust
 
-- [ ] No timeout is used to prove absence.
-- [ ] No ignored settle wait remains.
-- [ ] Poll quiescing is proved by event order.
-- [ ] Exactly-one-stop is asserted after command completion.
-- [ ] Reverted old behavior fails deterministically.
+- [x] No timeout is used to prove absence.
+- [x] No ignored settle wait remains.
+- [x] Poll quiescing is proved by event order.
+- [x] Exactly-one-stop is asserted after command completion.
+- [x] Reverted old behavior fails deterministically.
 
 ## Forward state integrity
 
-- [ ] Rollback cannot overwrite newer mutation.
-- [ ] Revision mismatch is visible.
-- [ ] loadError blocks every mutation path.
-- [ ] Successful reload re-enables mutation.
+- [x] Rollback cannot overwrite newer mutation.
+- [x] Revision mismatch is visible.
+- [x] loadError blocks every mutation path.
+- [x] Successful reload re-enables mutation.
 
 ## Native status truthfulness
 
-- [ ] Unknown mode is explicit error.
-- [ ] Unknown listen state is explicit error.
-- [ ] Terminal state clears active remote peer.
+- [x] Unknown mode is explicit error.
+- [x] Unknown listen state is explicit error.
+- [x] Terminal state clears active remote peer.
 
 ## Final signoff
 
-- [ ] Focused Android tests pass repeatedly.
-- [ ] Full Android gates pass.
-- [ ] Rust gates pass.
-- [ ] Service/package gates pass.
-- [ ] Remote CI ran after all production changes.
-- [ ] Workflow SHA matches final code or one docs-only child.
-- [ ] No earlier workflow reused.
-- [ ] Every unavailable check is `NOT RUN` with exact reason.
+- [x] Focused Android tests pass repeatedly.
+- [x] Full Android gates pass.
+- [x] Rust gates pass.
+- [x] Service/package gates pass.
+- [x] Remote CI ran after all production changes.
+- [x] Workflow SHA matches final code or one docs-only child.
+- [x] No earlier workflow reused.
+- [x] Every unavailable check is `NOT RUN` with exact reason.
 
 
 
