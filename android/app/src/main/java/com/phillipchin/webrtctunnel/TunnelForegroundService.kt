@@ -99,6 +99,7 @@ private data class UnverifiedStartContext(
     val stopStatusPollingAndJoin: suspend () -> Unit,
     val repositoryStop: suspend () -> Result<Unit>,
     val nativeStopVerified: AtomicBoolean,
+    val nativeRuntimeUncertain: AtomicBoolean,
     val publishError: (message: String, code: String) -> Unit,
 )
 
@@ -117,6 +118,8 @@ private suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext) {
         },
         onFailure = { cleanupError ->
             context.nativeStopVerified.set(false)
+            // P0-004: Cleanup failure quarantines uncertain native runtime.
+            context.nativeRuntimeUncertain.set(true)
             context.publishError(
                 buildString {
                     append(
@@ -217,6 +220,11 @@ class TunnelForegroundService
         // completes. null means no pending retry.
         private val pendingPolicyResumeGeneration =
             java.util.concurrent.atomic.AtomicReference<Long?>(null)
+
+        // P0-004: True when native runtime existence is uncertain after a cleanup/stop
+        // failure. Blocks all automatic restart (PolicyAllowed, RetryPolicyResume, auto-resume).
+        // Only a verified successful STOP clears the quarantine.
+        private val nativeRuntimeUncertain = AtomicBoolean(false)
 
         // P1-001: AtomicBoolean (not a plain var) because reads happen from coroutines
         // that never hold lifecycleMutex — the network-policy monitor callback and
@@ -335,7 +343,9 @@ class TunnelForegroundService
                 LifecycleCommand.AllowMeteredSession -> offer.allowMeteredForSessionAndStart()
                 is LifecycleCommand.PolicyBlocked -> offer.pauseForPolicy(command.reason)
                 LifecycleCommand.PolicyAllowed -> {
-                    if (pausedByPolicy.get() &&
+                    // P0-004: Quarantine blocks automatic restart.
+                    if (!nativeRuntimeUncertain.get() &&
+                        pausedByPolicy.get() &&
                         runCatching { configRepository.preferences.first() }
                             .getOrNull()?.resumeOnUnmetered == true
                     ) {
@@ -356,7 +366,10 @@ class TunnelForegroundService
                     }
                 }
                 is LifecycleCommand.RetryPolicyResume -> {
-                    // Internal retry after policy pause: resume the tunnel.
+                    // P0-004: Quarantine blocks automatic restart.
+                    if (nativeRuntimeUncertain.get()) {
+                        return
+                    }
                     if (lifecycleGeneration.get() != command.expectedGeneration) {
                         // Stale retry: generation has advanced, discard.
                         return
@@ -446,6 +459,7 @@ class TunnelForegroundService
                     reporter::stopStatusPollingAndJoin,
                     { repository.stop() },
                     nativeStopVerified,
+                    nativeRuntimeUncertain,
                     reporter::publishError,
                 ),
             )
@@ -834,22 +848,27 @@ class TunnelForegroundService
                     clearTemporaryMeteredAllowance()
                     stopResult.fold(
                         onSuccess = {
+                            // P0-005: Stop success path.
                             nativeStopVerified.set(true)
+                            nativeRuntimeUncertain.set(false)
                             notifications.show(
                                 notifications.buildStatusNotification(ServiceState.Stopped, "Tunnel stopped"),
                             )
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            stopSelf()
                         },
                         onFailure = {
-                            // The service still stops itself below, but must not claim a
-                            // clean tunnel stop it didn't actually achieve.
+                            // P0-005: Stop failure path — remain alive and foreground.
+                            nativeStopVerified.set(false)
+                            nativeRuntimeUncertain.set(true)
+                            pendingPolicyResumeGeneration.set(null)
                             reporter.publishError(
                                 message = it.message ?: "Unable to stop tunnel cleanly",
                                 code = stopFailureCode(it),
                             )
+                            // Service remains foreground; user can retry STOP.
                         },
                     )
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
                 }
             }
         }
