@@ -67,6 +67,8 @@ class ForwardsRepository(
                         _forwards.value = it
                         _loadError.value = null
                         hasValidBaseline = true
+                        // P1-002: Successful refresh advances revision to invalidate old receipts.
+                        revision += 1
                     }
                     .onFailure { _loadError.value = describeForwardsFailure(it) }
                 // onFailure keeps the existing in-memory list and baseline state.
