@@ -84,6 +84,54 @@ private fun classifyStartupResult(result: Result<Unit>): StartupCompletion =
         },
     )
 
+// P0-001: Coordinator-owned cleanup for verified-start failure.
+// Top-level (not a class member) so it doesn't count against TunnelForegroundService's
+// function budget. Takes dependencies as parameters to avoid coupling to the class.
+private data class UnverifiedStartContext(
+    val originalError: StartStatusVerificationException,
+    val startGeneration: Long,
+    val lifecycleGeneration: AtomicLong,
+    val stopStatusPollingAndJoin: suspend () -> Unit,
+    val repositoryStop: suspend () -> Result<Unit>,
+    val nativeStopVerified: AtomicBoolean,
+    val publishError: (message: String, code: String) -> Unit,
+)
+
+private suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext) {
+    if (context.lifecycleGeneration.get() != context.startGeneration) {
+        return
+    }
+    context.stopStatusPollingAndJoin()
+    context.repositoryStop().fold(
+        onSuccess = {
+            context.nativeStopVerified.set(true)
+            context.publishError(
+                context.originalError.message ?: "Native startup could not be verified",
+                "start_status_verification_failed",
+            )
+        },
+        onFailure = { cleanupError ->
+            context.nativeStopVerified.set(false)
+            context.publishError(
+                buildString {
+                    append(
+                        context.originalError.message
+                            ?: "Native startup could not be verified",
+                    )
+                    append(". Cleanup also failed: ")
+                    append(
+                        SensitiveDataRedactor.redactText(
+                            cleanupError.message
+                                ?: "unknown cleanup failure",
+                        ),
+                    )
+                },
+                "start_verification_cleanup_failed",
+            )
+        },
+    )
+}
+
 // P0-001: All accepted lifecycle intentions flow through one ordered stream.
 // onStartCommand only submits; network policy also only submits.
 // The command processor drains in FIFO order, so command execution order
@@ -365,55 +413,6 @@ class TunnelForegroundService
             repository.updateSessionMeteredAllowance(false)
         }
 
-        // P0-001: Coordinator-owned cleanup for a verified-start failure.
-        // When [cleanupUnverifiedStart()] is called, the coordinator (not the startup
-        // worker) decides whether cleanup is required based on the lifecycle generation.
-        // If a later Pause/Stop/PolicyBlocked superseded the startup, that transition
-        // owns the cleanup instead.
-        //
-        // Security implication: cleanup failure means native runtime existence is
-        // uncertain and automatic restart is prohibited. No auto-retry, no silent
-        // state success. The user must retry Stop or rely on destroy-time fallback.
-        private suspend fun cleanupUnverifiedStart(
-            originalError: StartStatusVerificationException,
-            startGeneration: Long,
-        ) {
-            // Generation guard: if a later lifecycle command superseded this startup,
-            // that command owns cleanup, so this worker does not perform it.
-            if (lifecycleGeneration.get() != startGeneration) {
-                return
-            }
-            reporter.stopStatusPollingAndJoin()
-            repository.stop().fold(
-                onSuccess = {
-                    nativeStopVerified.set(true)
-                    reporter.publishError(
-                        message = originalError.message ?: "Native startup could not be verified",
-                        code = "start_status_verification_failed",
-                    )
-                },
-                onFailure = { cleanupError ->
-                    nativeStopVerified.set(false)
-                    reporter.publishError(
-                        message = buildString {
-                            append(
-                                originalError.message
-                                    ?: "Native startup could not be verified",
-                            )
-                            append(". Cleanup also failed: ")
-                            append(
-                                SensitiveDataRedactor.redactText(
-                                    cleanupError.message
-                                        ?: "unknown cleanup failure",
-                                ),
-                            )
-                        },
-                        code = "start_verification_cleanup_failed",
-                    )
-                },
-            )
-        }
-
         // Cancels the startup coroutine and waits for it to fully unwind before returning, so
         // the caller (an explicit lifecycle transition, always holding lifecycleMutex here) can
         // safely perform the one authoritative repository.stop() afterward without racing the
@@ -653,9 +652,17 @@ class TunnelForegroundService
                         }
                         is StartupCompletion.VerificationFailure -> {
                             // P0-001: Coordinator-owned cleanup for verified-start failure.
-                            // The generation check inside cleanupUnverifiedStart() ensures a
-                            // later Pause/Stop/PolicyBlocked supersedes this cleanup.
-                            cleanupUnverifiedStart(completion.error, startGeneration)
+                            cleanupUnverifiedStart(
+                                UnverifiedStartContext(
+                                    completion.error,
+                                    startGeneration,
+                                    lifecycleGeneration,
+                                    reporter::stopStatusPollingAndJoin,
+                                    { repository.stop() },
+                                    nativeStopVerified,
+                                    reporter::publishError,
+                                ),
+                            )
                             clearTemporaryMeteredAllowance()
                             // No auto-retry on verification failure because native runtime
                             // may still exist (security/policy integrity requirement).
