@@ -270,7 +270,16 @@ class TunnelForegroundService
             // Commands are processed sequentially to maintain ordering guarantees.
             serviceScope.launch {
                 for (command in lifecycleCommands) {
-                    dispatchCommand(command)
+                    try {
+                        dispatchCommand(command)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        reporter.publishError(
+                            message = error.message ?: "Lifecycle command failed",
+                            code = "lifecycle_command_failed",
+                        )
+                    }
                 }
             }
 
@@ -279,21 +288,30 @@ class TunnelForegroundService
             networkMonitorJob =
                 serviceScope.launch {
                     networkPolicyManager.monitor(this@TunnelForegroundService).collect { _ ->
-                        val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
-                        val policy =
-                            networkPolicyManager.evaluateWithPolicy(
-                                prefs.allowMetered || allowMeteredForCurrentRun.get(),
-                            )
-                        repository.updateNetworkStatus(policy)
-                        if (policy.networkType == NetworkType.UnmeteredWifi) {
-                            // Policy allowed: submit through the ordered queue.
-                            submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
-                        } else if (!policy.tunnelAllowed) {
-                            // Policy blocked: submit through the ordered queue.
-                            submitLifecycleCommand(
-                                LifecycleCommand.PolicyBlocked(
-                                    policy.blockReason ?: "Tunnel paused: network policy blocks metered/cellular",
-                                ),
+                        try {
+                            val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
+                            val policy =
+                                networkPolicyManager.evaluateWithPolicy(
+                                    prefs.allowMetered || allowMeteredForCurrentRun.get(),
+                                )
+                            repository.updateNetworkStatus(policy)
+                            if (policy.networkType == NetworkType.UnmeteredWifi) {
+                                // Policy allowed: submit through the ordered queue.
+                                submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
+                            } else if (!policy.tunnelAllowed) {
+                                // Policy blocked: submit through the ordered queue.
+                                submitLifecycleCommand(
+                                    LifecycleCommand.PolicyBlocked(
+                                        policy.blockReason ?: "Tunnel paused: network policy blocks metered/cellular",
+                                    ),
+                                )
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Throwable) {
+                            reporter.publishError(
+                                message = error.message ?: "Network policy monitor failed",
+                                code = "network_policy_monitor_failed",
                             )
                         }
                     }
