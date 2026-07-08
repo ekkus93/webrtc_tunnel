@@ -23,6 +23,7 @@ import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -68,6 +69,10 @@ private sealed interface StartupCompletion {
 
     data class VerificationFailure(
         val error: StartStatusVerificationException,
+    ) : StartupCompletion
+
+    data class UnexpectedFailure(
+        val error: Throwable,
     ) : StartupCompletion
 }
 
@@ -153,7 +158,14 @@ private sealed interface LifecycleCommand {
 
     data object PolicyAllowed : LifecycleCommand
 
-    data object RetryPolicyResume : LifecycleCommand
+    data class RetryPolicyResume(
+        val expectedGeneration: Long,
+    ) : LifecycleCommand
+
+    data class StartupCompleted(
+        val generation: Long,
+        val completion: StartupCompletion,
+    ) : LifecycleCommand
 }
 
 class TunnelForegroundService
@@ -199,11 +211,12 @@ class TunnelForegroundService
         // visibility to those unsynchronized readers (P1-004).
         internal val pausedByPolicy = AtomicBoolean(false)
 
-        // P0-004: Retains one pending retry intention. Owned only by the command processor.
-        // When a PolicyAllowed arrives while a startup is active (because a previous
-        // PolicyAllowed already triggered a resume), this flag ensures the next allowed
-        // event triggers exactly one retry after the current attempt completes.
-        private val pendingPolicyResume = AtomicBoolean(false)
+        // P0-002: Retains one pending retry intention bound to a lifecycle generation.
+        // When a PolicyAllowed arrives while a startup is active, this records the
+        // expected generation so the retry can be validated after the current attempt
+        // completes. null means no pending retry.
+        private val pendingPolicyResumeGeneration =
+            java.util.concurrent.atomic.AtomicReference<Long?>(null)
 
         // P1-001: AtomicBoolean (not a plain var) because reads happen from coroutines
         // that never hold lifecycleMutex — the network-policy monitor callback and
@@ -326,25 +339,33 @@ class TunnelForegroundService
                         runCatching { configRepository.preferences.first() }
                             .getOrNull()?.resumeOnUnmetered == true
                     ) {
-                        // P0-004: If a startup is already in progress, retain the pending
-                        // retry intention for after that startup completes. Otherwise,
+                        // P0-002/P0-004: If a startup is already in progress, retain the
+                        // pending retry intention bound to current generation. Otherwise,
                         // begin one resume attempt immediately.
                         if (startupJob?.isActive == true) {
-                            pendingPolicyResume.set(true)
+                            pendingPolicyResumeGeneration.set(
+                                lifecycleGeneration.get(),
+                            )
                         } else {
-                            pendingPolicyResume.set(false)
+                            pendingPolicyResumeGeneration.set(null)
                             offer.resume()
                         }
                     } else if (!pausedByPolicy.get()) {
                         // Not policy-paused, clear any stale pending intention.
-                        pendingPolicyResume.set(false)
+                        pendingPolicyResumeGeneration.set(null)
                     }
                 }
-                LifecycleCommand.RetryPolicyResume -> {
+                is LifecycleCommand.RetryPolicyResume -> {
                     // Internal retry after policy pause: resume the tunnel.
-                    pendingPolicyResume.set(false)
+                    if (lifecycleGeneration.get() != command.expectedGeneration) {
+                        // Stale retry: generation has advanced, discard.
+                        return
+                    }
+                    pendingPolicyResumeGeneration.set(null)
                     offer.resume()
                 }
+                is LifecycleCommand.StartupCompleted ->
+                    dispatchStartupCompleted(command)
             }
         }
 
@@ -358,6 +379,91 @@ class TunnelForegroundService
                     code = "lifecycle_command_queue_failed",
                 )
             }
+        }
+
+        // P0-001: Coordinator owns startup completion decisions.
+        private suspend fun dispatchStartupCompleted(command: LifecycleCommand.StartupCompleted) {
+            if (lifecycleGeneration.get() != command.generation) {
+                // Stale completion: a newer lifecycle command superseded this one.
+                return
+            }
+            startupJob = null
+            when (val completion = command.completion) {
+                is StartupCompletion.VerifiedSuccess ->
+                    handleStartupSuccess(command.generation)
+                is StartupCompletion.NativeStartFailure ->
+                    handleStartupNativeFailure(command.generation, completion.error)
+                is StartupCompletion.VerificationFailure ->
+                    handleStartupVerificationFailure(command.generation, completion.error)
+                is StartupCompletion.UnexpectedFailure ->
+                    handleStartupUnexpectedFailure(command.generation, completion.error)
+            }
+        }
+
+        // P0-001: Verified startup success.
+        private fun handleStartupSuccess(generation: Long) {
+            pausedByPolicy.set(false)
+            pendingPolicyResumeGeneration.set(null)
+            clearTemporaryMeteredAllowance()
+            reporter.publishStatus()
+            reporter.startStatusPolling()
+        }
+
+        // P0-001: Native start failure (repository.start() returned failure).
+        private suspend fun handleStartupNativeFailure(
+            generation: Long,
+            error: Throwable,
+        ) {
+            clearTemporaryMeteredAllowance()
+            // P0-002/P0-003: If a PolicyAllowed event arrived while this attempt was
+            // in flight, retain the pending intention and trigger exactly one
+            // retry after the failed attempt fully completes.
+            val pending = pendingPolicyResumeGeneration.getAndSet(null)
+            if (pending == generation) {
+                submitLifecycleCommand(
+                    LifecycleCommand.RetryPolicyResume(
+                        expectedGeneration = generation,
+                    ),
+                )
+            } else {
+                reporter.publishError(
+                    message = error.message ?: "Unable to start tunnel",
+                    code = "native_start_failed",
+                )
+            }
+        }
+
+        // P0-001: Verification failure (native succeeded but state not verified).
+        private suspend fun handleStartupVerificationFailure(
+            generation: Long,
+            error: StartStatusVerificationException,
+        ) {
+            cleanupUnverifiedStart(
+                UnverifiedStartContext(
+                    error,
+                    generation,
+                    lifecycleGeneration,
+                    reporter::stopStatusPollingAndJoin,
+                    { repository.stop() },
+                    nativeStopVerified,
+                    reporter::publishError,
+                ),
+            )
+            clearTemporaryMeteredAllowance()
+            // No auto-retry on verification failure because native runtime
+            // may still exist (security/policy integrity requirement).
+        }
+
+        // P0-001: Unexpected failure (unhandled exception during startup).
+        private suspend fun handleStartupUnexpectedFailure(
+            generation: Long,
+            error: Throwable,
+        ) {
+            clearTemporaryMeteredAllowance()
+            reporter.publishError(
+                message = error.message ?: "Unexpected startup failure",
+                code = "startup_unexpected_failure",
+            )
         }
 
         private fun publishError(
@@ -601,15 +707,17 @@ class TunnelForegroundService
 
             // Starts the tunnel under the lifecycle-generation guard: aborts if a newer start
             // superseded this one (before or after the native start) or if it was cancelled.
+            // P0-001: Performs work/classification only, submits StartupCompleted to the
+            // coordinator. The coordinator owns all completion decisions.
             private suspend fun runOfferStart(
                 identity: ByteArray,
                 startGeneration: Long,
             ) {
                 // The native start copies the identity across JNI, so the plaintext buffer is
                 // wiped once start returns (or any early exit), even on failure/cancellation.
-                try {
+                val completion: StartupCompletion = try {
                     if (lifecycleGeneration.get() != startGeneration) {
-                        return
+                        return@runOfferStart
                     }
                     // No catch for CancellationException here: if this coroutine is cancelled
                     // (e.g. by an explicit pause/stop/onDestroy), that cancelling lifecycle
@@ -624,53 +732,23 @@ class TunnelForegroundService
                     if (lifecycleGeneration.get() != startGeneration) {
                         // The lifecycle transition that advanced generation owns cleanup; no
                         // second, independent stop call here (P0-001).
-                        return
+                        return@runOfferStart
                     }
-                    // P0-001: Classify the startup result so the coordinator can perform
-                    // the correct action (success, native failure, or verification cleanup).
-                    when (val completion = classifyStartupResult(result)) {
-                        is StartupCompletion.VerifiedSuccess -> {
-                            pausedByPolicy.set(false)
-                            pendingPolicyResume.set(false)
-                            clearTemporaryMeteredAllowance()
-                            reporter.publishStatus()
-                            reporter.startStatusPolling()
-                        }
-                        is StartupCompletion.NativeStartFailure -> {
-                            clearTemporaryMeteredAllowance()
-                            // P0-004: If a PolicyAllowed event arrived while this attempt was
-                            // in flight, retain the pending intention and trigger exactly one
-                            // retry after the failed attempt fully completes.
-                            if (pendingPolicyResume.compareAndSet(true, false)) {
-                                submitLifecycleCommand(LifecycleCommand.RetryPolicyResume)
-                            } else {
-                                reporter.publishError(
-                                    message = completion.error.message ?: "Unable to start tunnel",
-                                    code = "native_start_failed",
-                                )
-                            }
-                        }
-                        is StartupCompletion.VerificationFailure -> {
-                            // P0-001: Coordinator-owned cleanup for verified-start failure.
-                            cleanupUnverifiedStart(
-                                UnverifiedStartContext(
-                                    completion.error,
-                                    startGeneration,
-                                    lifecycleGeneration,
-                                    reporter::stopStatusPollingAndJoin,
-                                    { repository.stop() },
-                                    nativeStopVerified,
-                                    reporter::publishError,
-                                ),
-                            )
-                            clearTemporaryMeteredAllowance()
-                            // No auto-retry on verification failure because native runtime
-                            // may still exist (security/policy integrity requirement).
-                        }
-                    }
+                    classifyStartupResult(result)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    StartupCompletion.UnexpectedFailure(error)
                 } finally {
                     identity.fill(0)
                 }
+
+                submitLifecycleCommand(
+                    LifecycleCommand.StartupCompleted(
+                        generation = startGeneration,
+                        completion = completion,
+                    ),
+                )
             }
 
             // P1-001: AllowMeteredSession is now one ordered lifecycle command.
