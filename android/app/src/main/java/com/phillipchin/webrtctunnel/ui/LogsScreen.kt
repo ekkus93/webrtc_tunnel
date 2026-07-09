@@ -45,6 +45,7 @@ import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.LogEvent
 import com.phillipchin.webrtctunnel.model.NetworkStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
+import com.phillipchin.webrtctunnel.model.TunnelError
 import com.phillipchin.webrtctunnel.viewmodel.LogsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.NetworkPolicyViewModel
 import kotlinx.coroutines.delay
@@ -86,6 +87,8 @@ fun LogsScreen(
         }
     }
     val logs by vm.filteredLogs.collectAsStateWithLifecycle()
+    // P1-015: Surface logsError in the UI so retrieval failures are visible.
+    val logsError by vm.logsError.collectAsStateWithLifecycle(initialValue = null)
     val copyLogs = {
         clipboard.setText(AnnotatedString(redactedLogsText(logs)))
         vm.onLogsCopied()
@@ -112,6 +115,15 @@ fun LogsScreen(
     ) {
         Spacer(Modifier.height(16.dp))
         SectionHeader("Logs", "Redacted runtime events")
+        // P1-015: Show error banner when logs retrieval fails.
+        if (logsError != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "⚠ Logs error: ${logsError?.message}",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         Spacer(Modifier.height(8.dp))
         LogFilterChips(filter = filter, onSelect = vm::setFilter)
         Spacer(Modifier.height(8.dp))
