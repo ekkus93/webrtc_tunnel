@@ -495,6 +495,35 @@ class TunnelRepositoryTest {
         assertEquals(latestNetworkStatus, repository.status.value.networkStatus)
     }
 
+    // P0-009: start_verification_cleanup_failed must be sticky cleanup history
+    @Test
+    fun startVerificationCleanupFailedIsStickyHistory() {
+        bridge.statusPayload = statusJson("running", "offer")
+        repository.refreshStatus()
+
+        repository.setLocalError(
+            code = "start_verification_cleanup_failed",
+            message = "cleanup-failure-sentinel",
+        )
+
+        val status = repository.status.value
+        assertEquals(
+            "start_verification_cleanup_failed should set lastCleanupError",
+            "cleanup-failure-sentinel",
+            status.lastCleanupError?.message,
+        )
+
+        // A later successful refresh must not erase the cleanup history.
+        bridge.statusPayload = statusJson("running", "offer")
+        repository.refreshStatus()
+
+        assertEquals(
+            "cleanup history must survive later refresh",
+            "cleanup-failure-sentinel",
+            repository.status.value.lastCleanupError?.message,
+        )
+    }
+
     private fun statusJson(
         state: String,
         mode: String,

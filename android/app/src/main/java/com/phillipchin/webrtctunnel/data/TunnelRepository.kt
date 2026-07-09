@@ -282,13 +282,13 @@ class TunnelRepository(
                 mqttConnected = false,
                 activeSessionCount = 0,
                 lastError = error,
-                // "stop_failed"/"stop_status_verification_failed" are the codes every
-                // tunnel-stop/cleanup failure site in TunnelForegroundService uses (P0-003);
-                // record it as sticky history (P1-005) rather than only in lastError, which a
-                // later successful stop's refreshStatus() would otherwise overwrite and
+                // "stop_failed"/"stop_status_verification_failed"/"start_verification_cleanup_failed"
+                // are the codes every tunnel-stop/cleanup failure site in TunnelForegroundService
+                // uses (P0-003); record it as sticky history (P1-005) rather than only in lastError,
+                // which a later successful stop's refreshStatus() would otherwise overwrite and
                 // silently erase.
                 lastCleanupError =
-                    if (code == "stop_failed" || code == "stop_status_verification_failed") {
+                    if (isStickyCleanupCode(code)) {
                         error
                     } else {
                         current.lastCleanupError
@@ -305,6 +305,9 @@ class TunnelRepository(
         updateStatus { current -> current.copy(allowMeteredForCurrentSession = allowForCurrentSession) }
     }
 }
+
+private fun isStickyCleanupCode(code: String): Boolean =
+    code == "stop_failed" || code == "stop_status_verification_failed" || code == "start_verification_cleanup_failed"
 
 private fun isPolicyPausedState(state: ServiceState): Boolean =
     state == ServiceState.PausedMeteredBlocked || state == ServiceState.NoNetwork
