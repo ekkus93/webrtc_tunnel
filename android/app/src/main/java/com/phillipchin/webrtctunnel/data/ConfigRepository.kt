@@ -30,17 +30,19 @@ class ConfigRepository(private val context: Context) {
             prefs.toAppPreferences()
         }
 
-    suspend fun savePreferences(update: AndroidAppPreferences) {
-        context.dataStore.edit { prefs ->
-            prefs[Keys.allowMetered] = update.allowMetered
-            prefs[Keys.resumeOnUnmetered] = update.resumeOnUnmetered
-            prefs[Keys.showMeteredWarning] = update.showMeteredWarning
-            prefs[Keys.debugLogsEnabled] = update.debugLogsEnabled
-            prefs[Keys.advancedSettingsEnabled] = update.advancedSettingsEnabled
-            prefs[Keys.androidIceMode] = normalizeAndroidIceMode(update.androidIceMode)
-            prefs.remove(Keys.pauseOnMetered)
+    // P1-016: Wrap preference writes so failures are visible.
+    suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+        runCatching {
+            context.dataStore.edit { prefs ->
+                prefs[Keys.allowMetered] = update.allowMetered
+                prefs[Keys.resumeOnUnmetered] = update.resumeOnUnmetered
+                prefs[Keys.showMeteredWarning] = update.showMeteredWarning
+                prefs[Keys.debugLogsEnabled] = update.debugLogsEnabled
+                prefs[Keys.advancedSettingsEnabled] = update.advancedSettingsEnabled
+                prefs[Keys.androidIceMode] = normalizeAndroidIceMode(update.androidIceMode)
+                prefs.remove(Keys.pauseOnMetered)
+            }
         }
-    }
 
     fun ensureDefaultConfig(contents: String) {
         if (!configFile.exists()) {

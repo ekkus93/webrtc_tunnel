@@ -82,8 +82,14 @@ class SettingsViewModel(
         }
     }
 
+    // P1-016: Surface preference-write failures.
     fun savePreferences(updated: AndroidAppPreferences) {
-        viewModelScope.launch { deps.configRepository.savePreferences(updated) }
+        viewModelScope.launch {
+            deps.configRepository.savePreferences(updated).fold(
+                onSuccess = { deps.snackbar.show("Preferences saved") },
+                onFailure = { error -> deps.snackbar.show("Preferences save failed: ${error.message}") },
+            )
+        }
     }
 
     fun refreshPublicIdentity() {
