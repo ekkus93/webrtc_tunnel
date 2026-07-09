@@ -351,11 +351,31 @@ private fun mapNativeListenState(state: String): ListenState =
         else -> ListenState.Error
     }
 
+// P1-009: Returns true when the raw listen state value was unrecognized, so callers
+// can surface explicit diagnosis instead of silently mapping to Error.
+private fun isUnknownListenState(state: String): Boolean =
+    !KNOWN_LISTEN_STATES.contains(state.lowercase())
+
+private val KNOWN_LISTEN_STATES =
+    setOf("listening", "stopped", "error", "disabled", "paused")
+
 private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): TunnelStatus {
+    // P1-008: Reject unknown native mode explicitly.
     val modeValue =
         when (mode) {
+            null, "offer" -> TunnelMode.Offer
             "answer" -> TunnelMode.Answer
-            else -> TunnelMode.Offer
+            else -> {
+                // Unknown mode: retain previous mode, surface as schema error.
+                return previous.copy(
+                    serviceState = ServiceState.Error,
+                    lastError =
+                        TunnelError(
+                            code = "native_status_schema_error",
+                            message = "Unknown native mode: ${SensitiveDataRedactor.redactText(mode)}",
+                        ),
+                )
+            }
         }
     val stateValue = mapNativeServiceState(state, modeValue, activeSessionCount)
     // Uptime is only meaningful while a run is in progress; never show it for
@@ -372,6 +392,16 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
     val mappedForwards =
         forwards.map { forward ->
             val configurationError = forward.configurationError?.let(SensitiveDataRedactor::redactText)
+            val mappedState = mapNativeListenState(forward.listenState)
+            // P1-009: Surface raw value for unknown listen states.
+            val listenStateError =
+                if (configurationError != null) {
+                    configurationError
+                } else if (isUnknownListenState(forward.listenState)) {
+                    "Unknown listen state: ${SensitiveDataRedactor.redactText(forward.listenState)}"
+                } else {
+                    forward.lastError?.let(SensitiveDataRedactor::redactText)
+                }
             ForwardStatus(
                 id = forward.id,
                 name = forward.id,
@@ -385,9 +415,9 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
                     if (configurationError != null) {
                         ListenState.Error
                     } else {
-                        mapNativeListenState(forward.listenState)
+                        mappedState
                     },
-                lastError = configurationError ?: forward.lastError?.let(SensitiveDataRedactor::redactText),
+                lastError = listenStateError,
                 configurationError = configurationError,
             )
         }
