@@ -139,26 +139,28 @@ class SettingsViewModel(
                 }
         }
 
+    // P1-006: Report partial reset explicitly — track each stage outcome.
     fun resetConfiguration() {
         viewModelScope.launch {
-            val result =
-                withContext(deps.dispatchers.io) {
-                    runCatching {
-                        deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
-                        deps.configRepository.saveSetupInput(SetupConfigInput())
-                        deps.forwardsRepository.save(emptyList())
-                    }
-                }
-            result.fold(
-                onSuccess = {
-                    deps.snackbar.show("Configuration reset")
-                },
-                onFailure = { error ->
-                    val redacted = SensitiveDataRedactor.redactText(error.message ?: "unknown reset failure")
-                    Log.e("SettingsViewModel", "Configuration reset failed: $redacted")
-                    deps.snackbar.show("Reset failed: $redacted")
-                },
-            )
+            val failures = mutableListOf<String>()
+            withContext(deps.dispatchers.io) {
+                runCatching {
+                    deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
+                }.onFailure { error -> failures.add("config: " + (error.message ?: "unknown")) }
+                runCatching {
+                    deps.configRepository.saveSetupInput(SetupConfigInput())
+                }.onFailure { error -> failures.add("setup: " + (error.message ?: "unknown")) }
+                runCatching {
+                    deps.forwardsRepository.save(emptyList())
+                }.onFailure { error -> failures.add("forwards: " + (error.message ?: "unknown")) }
+            }
+            if (failures.isEmpty()) {
+                deps.snackbar.show("Configuration reset")
+            } else {
+                val summary = "Reset partial: " + failures.joinToString("; ")
+                Log.e("SettingsViewModel", summary)
+                deps.snackbar.show(summary)
+            }
         }
     }
 
