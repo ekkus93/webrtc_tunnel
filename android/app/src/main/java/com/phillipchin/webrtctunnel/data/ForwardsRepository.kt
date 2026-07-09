@@ -158,7 +158,8 @@ class ForwardsRepository(
     private suspend fun mutate(transform: (List<ForwardConfig>) -> List<ForwardConfig>): MutationResult =
         mutex.withLock {
             withContext(dispatchers.io) {
-                if (!hasValidBaseline) {
+                // P1-003: Central guard — block mutation whenever loadError is active.
+                if (_loadError.value != null) {
                     return@withContext MutationResult(
                         ValidationResult(
                             false,
