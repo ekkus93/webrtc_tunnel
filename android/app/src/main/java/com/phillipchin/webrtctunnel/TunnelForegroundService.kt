@@ -795,6 +795,8 @@ class TunnelForegroundService
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
                             onSuccess = {
+                                // P1-011: Set nativeStopVerified true after verified successful pause.
+                                nativeStopVerified.set(true)
                                 clearTemporaryMeteredAllowance()
                                 reporter.publishStatus(getString(R.string.service_msg_paused))
                             },
@@ -816,6 +818,8 @@ class TunnelForegroundService
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
                             onSuccess = {
+                                // P1-011: Set nativeStopVerified true after verified successful policy pause.
+                                nativeStopVerified.set(true)
                                 pausedByPolicy.set(true)
                                 repository.setPolicyBlocked(reason)
                                 reporter.publishStatus(reason)
