@@ -663,6 +663,9 @@ class TunnelForegroundService
                     )
                 repository.updateNetworkStatus(policy)
                 if (!policy.tunnelAllowed) {
+                    // P1-013: Signal that startup was blocked before native start.
+                    // This allows a later PolicyAllowed event to trigger a resume.
+                    pausedByPolicy.set(true)
                     repository.setPolicyBlocked(policy.blockReason ?: "Tunnel blocked by current network policy")
                     reporter.publishStatus(policy.blockReason ?: "Tunnel blocked by network policy")
                     throw StartupAborted()
