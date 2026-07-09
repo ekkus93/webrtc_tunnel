@@ -20,10 +20,10 @@ import com.phillipchin.webrtctunnel.network.LocalAddressResolver
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.notification.NotificationController
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -252,6 +252,10 @@ class TunnelForegroundService
         // this real path rather than a synthetic test-only wrapper function.
         internal val offer = OfferCoordinator()
 
+        // Handles network policy commands separately from dispatchCommand to keep
+        // its cyclomatic complexity below the detekt threshold.
+        private val policyDispatcher = PolicyDispatcher()
+
         override fun onCreate() {
             super.onCreate()
             notifications = NotificationController(this)
@@ -270,16 +274,14 @@ class TunnelForegroundService
             // Commands are processed sequentially to maintain ordering guarantees.
             serviceScope.launch {
                 for (command in lifecycleCommands) {
-                    try {
-                        dispatchCommand(command)
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (error: Throwable) {
-                        reporter.publishError(
-                            message = error.message ?: "Lifecycle command failed",
-                            code = "lifecycle_command_failed",
-                        )
-                    }
+                    runCatching { dispatchCommand(command) }
+                        .onFailure { error ->
+                            if (error is CancellationException) throw error
+                            reporter.publishError(
+                                message = error.message ?: "Lifecycle command failed",
+                                code = "lifecycle_command_failed",
+                            )
+                        }
                 }
             }
 
@@ -288,7 +290,7 @@ class TunnelForegroundService
             networkMonitorJob =
                 serviceScope.launch {
                     networkPolicyManager.monitor(this@TunnelForegroundService).collect { _ ->
-                        try {
+                        runCatching {
                             val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
                             val policy =
                                 networkPolicyManager.evaluateWithPolicy(
@@ -306,9 +308,7 @@ class TunnelForegroundService
                                     ),
                                 )
                             }
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: Throwable) {
+                        }.onFailure { error ->
                             reporter.publishError(
                                 message = error.message ?: "Network policy monitor failed",
                                 code = "network_policy_monitor_failed",
@@ -330,7 +330,7 @@ class TunnelForegroundService
             when (val action = intent.action) {
                 ACTION_START_OFFER -> submitLifecycleCommand(LifecycleCommand.StartOffer)
                 ACTION_START_ANSWER -> {
-                    publishError(
+                    reporter.publishError(
                         message = "Answer mode is not available on Android",
                         code = "answer_mode_disabled",
                     )
@@ -350,8 +350,7 @@ class TunnelForegroundService
         private suspend fun dispatchCommand(command: LifecycleCommand) {
             when (command) {
                 LifecycleCommand.StartOffer -> {
-                    val current = repository.status.value.serviceState
-                    if (!current.isTunnelRunning()) {
+                    if (!repository.status.value.serviceState.isTunnelRunning()) {
                         offer.startOffer()
                     }
                 }
@@ -360,41 +359,9 @@ class TunnelForegroundService
                 LifecycleCommand.Stop -> offer.stopServiceWork()
                 LifecycleCommand.AllowMeteredSession -> offer.allowMeteredForSessionAndStart()
                 is LifecycleCommand.PolicyBlocked -> offer.pauseForPolicy(command.reason)
-                LifecycleCommand.PolicyAllowed -> {
-                    // P0-004: Quarantine blocks automatic restart.
-                    if (!nativeRuntimeUncertain.get() &&
-                        pausedByPolicy.get() &&
-                        runCatching { configRepository.preferences.first() }
-                            .getOrNull()?.resumeOnUnmetered == true
-                    ) {
-                        // P0-002/P0-004: If a startup is already in progress, retain the
-                        // pending retry intention bound to current generation. Otherwise,
-                        // begin one resume attempt immediately.
-                        if (startupJob?.isActive == true) {
-                            pendingPolicyResumeGeneration.set(
-                                lifecycleGeneration.get(),
-                            )
-                        } else {
-                            pendingPolicyResumeGeneration.set(null)
-                            offer.resume()
-                        }
-                    } else if (!pausedByPolicy.get()) {
-                        // Not policy-paused, clear any stale pending intention.
-                        pendingPolicyResumeGeneration.set(null)
-                    }
-                }
-                is LifecycleCommand.RetryPolicyResume -> {
-                    // P0-004: Quarantine blocks automatic restart.
-                    if (nativeRuntimeUncertain.get()) {
-                        return
-                    }
-                    if (lifecycleGeneration.get() != command.expectedGeneration) {
-                        // Stale retry: generation has advanced, discard.
-                        return
-                    }
-                    pendingPolicyResumeGeneration.set(null)
-                    offer.resume()
-                }
+                LifecycleCommand.PolicyAllowed -> policyDispatcher.handlePolicyAllowed()
+                is LifecycleCommand.RetryPolicyResume ->
+                    policyDispatcher.handleRetryPolicyResume(command.expectedGeneration)
                 is LifecycleCommand.StartupCompleted ->
                     dispatchStartupCompleted(command)
             }
@@ -405,7 +372,7 @@ class TunnelForegroundService
             nextLifecycleSequence.incrementAndGet()
             val result = lifecycleCommands.trySend(command)
             if (result.isFailure) {
-                publishError(
+                reporter.publishError(
                     message = "Unable to queue lifecycle command ${command::class.simpleName}",
                     code = "lifecycle_command_queue_failed",
                 )
@@ -420,90 +387,58 @@ class TunnelForegroundService
             }
             startupJob = null
             when (val completion = command.completion) {
-                is StartupCompletion.VerifiedSuccess ->
-                    handleStartupSuccess(command.generation)
-                is StartupCompletion.NativeStartFailure ->
-                    handleStartupNativeFailure(command.generation, completion.error)
-                is StartupCompletion.VerificationFailure ->
-                    handleStartupVerificationFailure(command.generation, completion.error)
-                is StartupCompletion.UnexpectedFailure ->
-                    handleStartupUnexpectedFailure(command.generation, completion.error)
+                is StartupCompletion.VerifiedSuccess -> {
+                    // P0-007: Do NOT clear metered allowance on success — it lasts through the run.
+                    pausedByPolicy.set(false)
+                    pendingPolicyResumeGeneration.set(null)
+                    reporter.publishStatus()
+                    reporter.startStatusPolling()
+                }
+                is StartupCompletion.NativeStartFailure -> {
+                    // P0-001: Native start failure (repository.start() returned failure).
+                    offer.clearTemporaryMeteredAllowance()
+                    val pending = pendingPolicyResumeGeneration.getAndSet(null)
+                    if (pending == command.generation) {
+                        submitLifecycleCommand(
+                            LifecycleCommand.RetryPolicyResume(
+                                expectedGeneration = command.generation,
+                            ),
+                        )
+                    } else {
+                        reporter.publishError(
+                            message = completion.error.message ?: "Unable to start tunnel",
+                            code = "native_start_failed",
+                        )
+                    }
+                }
+                is StartupCompletion.VerificationFailure -> {
+                    // P0-001: Verification failure (native succeeded but state not verified).
+                    cleanupUnverifiedStart(
+                        UnverifiedStartContext(
+                            completion.error,
+                            command.generation,
+                            lifecycleGeneration,
+                            reporter::stopStatusPollingAndJoin,
+                            { repository.stop() },
+                            nativeStopVerified,
+                            nativeRuntimeUncertain,
+                            reporter::publishError,
+                        ),
+                    )
+                    offer.clearTemporaryMeteredAllowance()
+                }
+                is StartupCompletion.UnexpectedFailure -> {
+                    // P0-001: Unexpected failure (unhandled exception during startup).
+                    offer.clearTemporaryMeteredAllowance()
+                    reporter.publishError(
+                        message = completion.error.message ?: "Unexpected startup failure",
+                        code = "startup_unexpected_failure",
+                    )
+                }
             }
         }
 
-        // P0-001/P0-007: Verified startup success.
-        // P0-007: Do NOT clear metered allowance on success — it lasts through the run.
-        private fun handleStartupSuccess(generation: Long) {
-            pausedByPolicy.set(false)
-            pendingPolicyResumeGeneration.set(null)
-            // Metered allowance preserved through authorized run.
-            reporter.publishStatus()
-            reporter.startStatusPolling()
-        }
-
-        // P0-001: Native start failure (repository.start() returned failure).
-        private suspend fun handleStartupNativeFailure(
-            generation: Long,
-            error: Throwable,
-        ) {
-            clearTemporaryMeteredAllowance()
-            // P0-002/P0-003: If a PolicyAllowed event arrived while this attempt was
-            // in flight, retain the pending intention and trigger exactly one
-            // retry after the failed attempt fully completes.
-            val pending = pendingPolicyResumeGeneration.getAndSet(null)
-            if (pending == generation) {
-                submitLifecycleCommand(
-                    LifecycleCommand.RetryPolicyResume(
-                        expectedGeneration = generation,
-                    ),
-                )
-            } else {
-                reporter.publishError(
-                    message = error.message ?: "Unable to start tunnel",
-                    code = "native_start_failed",
-                )
-            }
-        }
-
-        // P0-001: Verification failure (native succeeded but state not verified).
-        private suspend fun handleStartupVerificationFailure(
-            generation: Long,
-            error: StartStatusVerificationException,
-        ) {
-            cleanupUnverifiedStart(
-                UnverifiedStartContext(
-                    error,
-                    generation,
-                    lifecycleGeneration,
-                    reporter::stopStatusPollingAndJoin,
-                    { repository.stop() },
-                    nativeStopVerified,
-                    nativeRuntimeUncertain,
-                    reporter::publishError,
-                ),
-            )
-            clearTemporaryMeteredAllowance()
-            // No auto-retry on verification failure because native runtime
-            // may still exist (security/policy integrity requirement).
-        }
-
-        // P0-001: Unexpected failure (unhandled exception during startup).
-        private suspend fun handleStartupUnexpectedFailure(
-            generation: Long,
-            error: Throwable,
-        ) {
-            clearTemporaryMeteredAllowance()
-            reporter.publishError(
-                message = error.message ?: "Unexpected startup failure",
-                code = "startup_unexpected_failure",
-            )
-        }
-
-        private fun publishError(
-            message: String,
-            code: String = "service_error",
-            state: ServiceState = ServiceState.Error,
-        ) = reporter.publishError(message = message, code = code, state = state)
+        // Removed: publishError was a thin wrapper; callers use reporter.publishError directly.
 
         override fun onBind(intent: Intent?): IBinder? = null
 
@@ -523,14 +458,14 @@ class TunnelForegroundService
                             withContext(ioDispatcher) {
                                 repository.stop()
                             }.onFailure {
-                                publishError(
+                                reporter.publishError(
                                     message = it.message ?: "Unable to stop tunnel",
                                     code = stopFailureCode(it),
                                 )
                             }
                         }
                         pausedByPolicy.set(false)
-                        clearTemporaryMeteredAllowance()
+                        offer.clearTemporaryMeteredAllowance()
                     }
                 }
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -543,13 +478,8 @@ class TunnelForegroundService
             code: String,
             state: ServiceState = ServiceState.Error,
         ): Nothing {
-            publishError(message = message, code = code, state = state)
+            reporter.publishError(message = message, code = code, state = state)
             throw StartupAborted()
-        }
-
-        private fun clearTemporaryMeteredAllowance() {
-            allowMeteredForCurrentRun.set(false)
-            repository.updateSessionMeteredAllowance(false)
         }
 
         // Cancels the startup coroutine and waits for it to fully unwind before returning, so
@@ -562,6 +492,36 @@ class TunnelForegroundService
             val job = startupJob
             startupJob = null
             job?.cancelAndJoin()
+        }
+
+        // Handles network policy resume commands. Extracted from dispatchCommand to keep
+        // its cyclomatic complexity below the detekt threshold.
+        private inner class PolicyDispatcher {
+            suspend fun handlePolicyAllowed() {
+                // P0-004: Quarantine blocks automatic restart.
+                if (nativeRuntimeUncertain.get() || !pausedByPolicy.get()) {
+                    pendingPolicyResumeGeneration.set(null)
+                    return
+                }
+                if (runCatching { configRepository.preferences.first() }
+                        .getOrNull()?.resumeOnUnmetered == true
+                ) {
+                    if (startupJob?.isActive == true) {
+                        pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
+                    } else {
+                        pendingPolicyResumeGeneration.set(null)
+                        offer.resume()
+                    }
+                }
+            }
+
+            suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
+                // P0-004: Quarantine blocks automatic restart.
+                if (nativeRuntimeUncertain.get()) return
+                if (lifecycleGeneration.get() != expectedGeneration) return
+                pendingPolicyResumeGeneration.set(null)
+                offer.resume()
+            }
         }
 
         // Notification rendering and status polling for the active tunnel.
@@ -758,40 +718,45 @@ class TunnelForegroundService
             ) {
                 // The native start copies the identity across JNI, so the plaintext buffer is
                 // wiped once start returns (or any early exit), even on failure/cancellation.
-                val completion: StartupCompletion = try {
-                    if (lifecycleGeneration.get() != startGeneration) {
-                        return@runOfferStart
-                    }
-                    // No catch for CancellationException here: if this coroutine is cancelled
-                    // (e.g. by an explicit pause/stop/onDestroy), that cancelling lifecycle
-                    // transition already owns the resulting native cleanup via
-                    // cancelStartupJobAndJoinLocked() + its own repository.stop() call. Letting
-                    // the exception unwind here (through the `finally` below) avoids a second,
-                    // independent, racing repository.stop() call from this coroutine (P0-001).
-                    val result =
-                        withContext(ioDispatcher) {
-                            repository.start(TunnelMode.Offer, configRepository.configPath, identity)
-                        }
-                    if (lifecycleGeneration.get() != startGeneration) {
-                        // The lifecycle transition that advanced generation owns cleanup; no
-                        // second, independent stop call here (P0-001).
-                        return@runOfferStart
-                    }
-                    classifyStartupResult(result)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Throwable) {
-                    StartupCompletion.UnexpectedFailure(error)
+                try {
+                    if (lifecycleGeneration.get() != startGeneration) return
+                    val completion =
+                        runCatching {
+                            // No catch for CancellationException here: if this coroutine is cancelled
+                            // (e.g. by an explicit pause/stop/onDestroy), that cancelling lifecycle
+                            // transition already owns the resulting native cleanup via
+                            // cancelStartupJobAndJoinLocked() + its own repository.stop() call. Letting
+                            // the exception unwind here (through the `finally` below) avoids a second,
+                            // independent, racing repository.stop() call from this coroutine (P0-001).
+                            val result =
+                                withContext(ioDispatcher) {
+                                    repository.start(TunnelMode.Offer, configRepository.configPath, identity)
+                                }
+                            if (lifecycleGeneration.get() != startGeneration) {
+                                // The lifecycle transition that advanced generation owns cleanup; no
+                                // second, independent stop call here (P0-001).
+                                throw StartupAborted()
+                            }
+                            classifyStartupResult(result)
+                        }.fold(
+                            onSuccess = { it },
+                            onFailure = { error ->
+                                when (error) {
+                                    is CancellationException -> throw error
+                                    is StartupAborted -> return
+                                    else -> StartupCompletion.UnexpectedFailure(error)
+                                }
+                            },
+                        )
+                    submitLifecycleCommand(
+                        LifecycleCommand.StartupCompleted(
+                            generation = startGeneration,
+                            completion = completion,
+                        ),
+                    )
                 } finally {
                     identity.fill(0)
                 }
-
-                submitLifecycleCommand(
-                    LifecycleCommand.StartupCompleted(
-                        generation = startGeneration,
-                        completion = completion,
-                    ),
-                )
             }
 
             // P1-001: AllowMeteredSession is now one ordered lifecycle command.
@@ -806,17 +771,14 @@ class TunnelForegroundService
                 startOffer()
             }
 
-            private fun startAnswer() {
-                reporter.publishError(
-                    message = "Answer mode is not available on Android",
-                    code = "answer_mode_disabled",
-                )
-            }
-
             suspend fun resume() {
                 when (lastMode) {
                     TunnelMode.Offer -> startOffer()
-                    TunnelMode.Answer -> startAnswer()
+                    TunnelMode.Answer ->
+                        reporter.publishError(
+                            message = "Answer mode is not available on Android",
+                            code = "answer_mode_disabled",
+                        )
                 }
             }
 
@@ -900,6 +862,12 @@ class TunnelForegroundService
                         },
                     )
                 }
+            }
+
+            // Clears the temporary metered allowance so a future run starts fresh.
+            fun clearTemporaryMeteredAllowance() {
+                allowMeteredForCurrentRun.set(false)
+                repository.updateSessionMeteredAllowance(false)
             }
         }
 
