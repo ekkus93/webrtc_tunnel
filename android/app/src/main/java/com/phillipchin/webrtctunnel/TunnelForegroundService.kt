@@ -15,6 +15,7 @@ import com.phillipchin.webrtctunnel.data.TunnelRepository
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
+import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
 import com.phillipchin.webrtctunnel.model.isTunnelRunning
 import com.phillipchin.webrtctunnel.network.LocalAddressResolver
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
@@ -350,7 +351,8 @@ class TunnelForegroundService
         private suspend fun dispatchCommand(command: LifecycleCommand) {
             when (command) {
                 LifecycleCommand.StartOffer -> {
-                    if (!repository.status.value.serviceState.isTunnelRunning()) {
+                    // P1-012: Block duplicate starts in transitional states.
+                    if (!repository.status.value.serviceState.isTunnelActiveOrStarting()) {
                         offer.startOffer()
                     }
                 }
@@ -624,8 +626,8 @@ class TunnelForegroundService
                         return
                     }
                     val current = repository.status.value.serviceState
-                    // Listening/Serving/Connected all mean a run is already up — don't start again.
-                    if (current.isTunnelRunning()) {
+                    // P1-012: Block duplicate starts in transitional states too.
+                    if (current.isTunnelActiveOrStarting()) {
                         reporter.publishStatus(getString(R.string.service_msg_already_running))
                         return
                     }
