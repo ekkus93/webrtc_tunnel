@@ -126,11 +126,15 @@ class ForwardsRepository(
     suspend fun delete(forwardId: String): MutationResult =
         mutate { current -> current.filterNot { it.id == forwardId } }
 
-    /** Persist an exact list (used for rollback). Save-then-publish; serialized. */
+    /** Persist an exact list (used for rollback). Save-then-publish; serialized. Advances revision on success. */
     suspend fun save(forwards: List<ForwardConfig>): Result<Unit> =
         mutex.withLock {
             withContext(dispatchers.io) {
-                runCatching { store.saveForwards(forwards) }.onSuccess { _forwards.value = forwards }
+                runCatching { store.saveForwards(forwards) }
+                    .onSuccess {
+                        _forwards.value = forwards
+                        revision += 1
+                    }
             }
         }
 

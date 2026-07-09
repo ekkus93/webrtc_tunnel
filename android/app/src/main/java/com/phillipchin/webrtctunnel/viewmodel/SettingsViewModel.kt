@@ -140,7 +140,7 @@ class SettingsViewModel(
                     runCatching {
                         deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
                         deps.configRepository.saveSetupInput(SetupConfigInput())
-                        deps.forwardsStore.saveForwards(emptyList())
+                        deps.forwardsRepository.save(emptyList())
                     }
                 }
             result.fold(
