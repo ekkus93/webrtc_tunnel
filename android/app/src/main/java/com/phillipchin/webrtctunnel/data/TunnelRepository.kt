@@ -309,6 +309,13 @@ class TunnelRepository(
 private fun isPolicyPausedState(state: ServiceState): Boolean =
     state == ServiceState.PausedMeteredBlocked || state == ServiceState.NoNetwork
 
+// P1-010: Terminal states clear the remote peer (no active connection).
+private fun isTerminalState(state: ServiceState): Boolean =
+    state == ServiceState.Stopped ||
+        state == ServiceState.Error ||
+        state == ServiceState.PausedMeteredBlocked ||
+        state == ServiceState.NoNetwork
+
 // Truthful mapping: native "running" only means the daemon task is alive. Reserve
 // Connected for an actual active session/tunnel; otherwise show a listening/serving
 // label. Unknown native states map to Error, never silently to Stopped.
@@ -386,9 +393,9 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
         mode = modeValue,
         // Surface the real remote peer from the active session; retain the last-known
         // value between sessions rather than flicker to null.
-        // P1-005: Clear stale active peer on terminal state.
+        // P1-010: Clear stale active peer on terminal state.
         remotePeerId =
-            if (stateValue == ServiceState.Stopped || stateValue == ServiceState.Error) {
+            if (isTerminalState(stateValue)) {
                 null
             } else {
                 remotePeerId ?: previous.remotePeerId
