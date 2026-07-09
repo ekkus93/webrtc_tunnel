@@ -12,6 +12,8 @@ import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -23,6 +25,9 @@ val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
 class ConfigRepository(private val context: Context) {
     private val configFile: File get() = File(context.filesDir, "config.toml")
     private val setupInputFile: File get() = File(context.filesDir, "setup_input.json")
+
+    // P1-007: Single write mutex for all config.toml writers to serialize atomic writes.
+    private val writeMutex = Mutex()
     val configPath: String get() = configFile.absolutePath
 
     val preferences: Flow<AndroidAppPreferences> =
@@ -68,16 +73,18 @@ class ConfigRepository(private val context: Context) {
      * config. No-op when no config exists yet; changes take effect on the next engine build
      * (tunnel restart), since the ICE mode is fixed when the WebRTC engine is built.
      */
-    fun prepareActiveConfigForStart(
+    suspend fun prepareActiveConfigForStart(
         iceMode: String,
         advertisedIpv4: String?,
     ) {
-        val current = readConfig()
-        if (current.isBlank()) {
-            return
+        writeMutex.withLock {
+            val current = readConfig()
+            if (current.isBlank()) {
+                return@withLock
+            }
+            val withIceMode = upsertAndroidIceMode(current, resolveAndroidIceMode(iceMode))
+            writeConfigAtomicallyLocked(upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4))
         }
-        val withIceMode = upsertAndroidIceMode(current, resolveAndroidIceMode(iceMode))
-        writeConfigAtomically(upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4))
     }
 
     fun writeConfig(contents: String) {
@@ -86,11 +93,22 @@ class ConfigRepository(private val context: Context) {
     }
 
     fun writeConfigAtomically(contents: String) {
+        writeConfigAtomicallyLocked(contents)
+    }
+
+    /**
+     * P1-007: Atomic write with unique temp file. Must be called under [writeMutex].
+     */
+    private fun writeConfigAtomicallyLocked(contents: String) {
         configFile.parentFile?.mkdirs()
-        val temp = File(configFile.parentFile, "${configFile.name}.tmp")
-        temp.writeText(contents)
+        val temp = Files.createTempFile(
+            configFile.parentFile?.toPath(),
+            "config.toml.tmp-",
+            ".partial",
+        )
+        temp.toFile().writeText(contents)
         Files.move(
-            temp.toPath(),
+            temp,
             configFile.toPath(),
             StandardCopyOption.REPLACE_EXISTING,
             StandardCopyOption.ATOMIC_MOVE,

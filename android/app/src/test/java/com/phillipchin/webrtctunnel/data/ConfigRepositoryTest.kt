@@ -190,12 +190,16 @@ class ConfigRepositoryTest {
             android_ice_mode = "vnet_mux"
             """.trimIndent(),
         )
-        repository.prepareActiveConfigForStart("native", "10.1.3.11")
+        runBlocking {
+            repository.prepareActiveConfigForStart("native", "10.1.3.11")
+        }
         val config = repository.readConfig()
         assertTrue(config.contains("android_ice_mode = \"native\""))
         assertTrue(config.contains("advertised_local_ipv4 = \"10.1.3.11\""))
         // A null address clears the advertised line while leaving the chosen mode intact.
-        repository.prepareActiveConfigForStart("native", null)
+        runBlocking {
+            repository.prepareActiveConfigForStart("native", null)
+        }
         val cleared = repository.readConfig()
         assertTrue(cleared.contains("android_ice_mode = \"native\""))
         assertFalse(cleared.contains("advertised_local_ipv4"))
@@ -203,7 +207,9 @@ class ConfigRepositoryTest {
 
     @Test
     fun prepareActiveConfigForStartIsNoOpWhenNoConfigExists() {
-        repository.prepareActiveConfigForStart("native", "10.1.3.11")
+        runBlocking {
+            repository.prepareActiveConfigForStart("native", "10.1.3.11")
+        }
         assertEquals("", repository.readConfig())
     }
 
