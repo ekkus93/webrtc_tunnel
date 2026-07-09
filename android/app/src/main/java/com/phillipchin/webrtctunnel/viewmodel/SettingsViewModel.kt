@@ -150,8 +150,9 @@ class SettingsViewModel(
                 runCatching {
                     deps.configRepository.saveSetupInput(SetupConfigInput())
                 }.onFailure { error -> failures.add("setup: " + (error.message ?: "unknown")) }
+                // P1-005: Use repository resetForwards() instead of raw save().
                 runCatching {
-                    deps.forwardsRepository.save(emptyList())
+                    deps.forwardsRepository.resetForwards()
                 }.onFailure { error -> failures.add("forwards: " + (error.message ?: "unknown")) }
             }
             if (failures.isEmpty()) {

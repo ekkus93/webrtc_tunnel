@@ -138,6 +138,23 @@ class ForwardsRepository(
             }
         }
 
+    /**
+     * P1-005: Atomic reset — clears disk, in-memory state, loadError, and advances
+     * revision under one mutex acquisition so old forwards cannot reappear.
+     */
+    suspend fun resetForwards(): Result<Unit> =
+        mutex.withLock {
+            withContext(dispatchers.io) {
+                runCatching {
+                    store.saveForwards(emptyList())
+                    _forwards.value = emptyList()
+                    _loadError.value = null
+                    hasValidBaseline = true
+                    revision += 1
+                }
+            }
+        }
+
     private suspend fun mutate(transform: (List<ForwardConfig>) -> List<ForwardConfig>): MutationResult =
         mutex.withLock {
             withContext(dispatchers.io) {
