@@ -82,13 +82,7 @@ class TransactionalResetCoordinator(
         }
     }
 
-    companion object {
-        // File names for reset stages (used for documentation).
-        private const val CONFIG_FILE_NAME = "config.toml"
-        private const val SETUP_INPUT_FILE_NAME = "setup_input.json"
-        private const val FORWARDS_FILE_NAME = "forwards.json"
     }
-}
 
 /**
  * Reset stages in execution order.
