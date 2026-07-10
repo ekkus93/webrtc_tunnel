@@ -123,7 +123,10 @@ class TunnelLifecycleCoordinator(
                             coordinator.platformOps.onStatus("Tunnel paused")
                         },
                         onFailure = { error ->
-                            coordinator.platformOps.onError(error.message ?: "Unable to stop tunnel", stopFailureCode(error))
+                            coordinator.platformOps.onError(
+                                error.message ?: "Unable to stop tunnel",
+                                stopFailureCode(error)
+                            )
                         }
                     )
                 }
@@ -148,7 +151,10 @@ class TunnelLifecycleCoordinator(
                             coordinator.nativeStopVerified.set(false)
                             coordinator.nativeRuntimeUncertain.set(true)
                             coordinator.pendingPolicyResumeGeneration.set(null)
-                            coordinator.platformOps.onError(it.message ?: "Unable to stop tunnel cleanly", stopFailureCode(it))
+                            coordinator.platformOps.onError(
+                                it.message ?: "Unable to stop tunnel cleanly",
+                                stopFailureCode(it)
+                            )
                         }
                     )
                 }
@@ -177,7 +183,10 @@ class TunnelLifecycleCoordinator(
                         },
                         onFailure = {
                             coordinator.pausedByPolicyState.set(false)
-                            coordinator.platformOps.onError(it.message ?: "Failed stopping tunnel after policy block", stopFailureCode(it))
+                            coordinator.platformOps.onError(
+                                it.message ?: "Failed stopping tunnel after policy block",
+                                stopFailureCode(it)
+                            )
                         }
                     )
                 }
@@ -220,7 +229,10 @@ class TunnelLifecycleCoordinator(
                         if (pending == command.generation) {
                             coordinator.submitCommand(LifecycleCommand.RetryPolicyResume(command.generation))
                         } else {
-                            coordinator.platformOps.onError(completion.error.message ?: "Unable to start tunnel", "native_start_failed")
+                            coordinator.platformOps.onError(
+                                completion.error.message ?: "Unable to start tunnel",
+                                "native_start_failed"
+                            )
                         }
                     }
                     is StartupCompletion.VerificationFailure -> {
@@ -240,7 +252,10 @@ class TunnelLifecycleCoordinator(
                     }
                     is StartupCompletion.UnexpectedFailure -> {
                         coordinator.clearTemporaryMeteredAllowance()
-                        coordinator.platformOps.onError(completion.error.message ?: "Unexpected startup failure", "startup_unexpected_failure")
+                        coordinator.platformOps.onError(
+                            completion.error.message ?: "Unexpected startup failure",
+                            "startup_unexpected_failure"
+                        )
                     }
                 }
             }
