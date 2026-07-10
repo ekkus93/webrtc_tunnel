@@ -5,9 +5,9 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ResetResult
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
-import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -139,28 +139,22 @@ class SettingsViewModel(
                 }
         }
 
-    // P1-006: Report partial reset explicitly — track each stage outcome.
+    // P2-003: Uses TransactionalResetCoordinator for atomic multi-file reset.
     fun resetConfiguration() {
         viewModelScope.launch {
-            val failures = mutableListOf<String>()
-            withContext(deps.dispatchers.io) {
-                runCatching {
-                    deps.configRepository.writeConfigAtomically(deps.configRepository.defaultConfigTemplate())
-                }.onFailure { error -> failures.add("config: " + (error.message ?: "unknown")) }
-                runCatching {
-                    deps.configRepository.saveSetupInput(SetupConfigInput())
-                }.onFailure { error -> failures.add("setup: " + (error.message ?: "unknown")) }
-                // P1-005: Use repository resetForwards() instead of raw save().
-                runCatching {
-                    deps.forwardsRepository.resetForwards()
-                }.onFailure { error -> failures.add("forwards: " + (error.message ?: "unknown")) }
-            }
-            if (failures.isEmpty()) {
-                deps.snackbar.show("Configuration reset")
-            } else {
-                val summary = "Reset partial: " + failures.joinToString("; ")
-                Log.e("SettingsViewModel", summary)
-                deps.snackbar.show(summary)
+            val result =
+                withContext(deps.dispatchers.io) {
+                    deps.transactionalResetCoordinator.resetConfiguration()
+                }
+            when (result) {
+                ResetResult.Success -> {
+                    deps.snackbar.show("Configuration reset")
+                }
+                is ResetResult.PartialFailure -> {
+                    val summary = "Reset partial: ${result.failedStages.joinToString("; ")}"
+                    Log.e("SettingsViewModel", summary)
+                    deps.snackbar.show(summary)
+                }
             }
         }
     }

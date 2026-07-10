@@ -33,6 +33,10 @@ class AppDependencies(
     // Single observable source of truth for configured forwards (Home + Forwards screens).
     val forwardsRepository: ForwardsRepository = ForwardsRepository(forwardsStore, dispatchers)
 
+    // Transactional reset coordinator for atomic multi-file configuration resets (P2-003).
+    val transactionalResetCoordinator: TransactionalResetCoordinator =
+        TransactionalResetCoordinator(configRepository, forwardsRepository)
+
     // TunnelRepository (runtime/status) and IdentityValidationClient (config/identity
     // validation) are separate collaborators that must share a single native bridge,
     // created lazily on first use.
