@@ -1,5 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
+import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -22,11 +23,10 @@ class TransactionalResetCoordinator(
      */
     suspend fun resetConfiguration(): ResetResult {
         return resetMutex.withLock {
-            // Execute reset stages and track outcomes
             val stageOutcomes = mutableListOf<StageOutcome>()
 
             // Config stage
-            val configOutcome = kotlinx.coroutines.runCatching {
+            val configOutcome = runCatching {
                 configRepository.writeConfigAtomically(configRepository.defaultConfigTemplate())
             }.fold(
                 onSuccess = { StageOutcome.Success(Stage.Config) },
@@ -35,8 +35,8 @@ class TransactionalResetCoordinator(
             stageOutcomes.add(configOutcome)
 
             // Setup input stage
-            val setupOutcome = kotlinx.coroutines.runCatching {
-                configRepository.saveSetupInput(com.phillipchin.webrtctunnel.model.SetupConfigInput())
+            val setupOutcome = runCatching {
+                configRepository.saveSetupInput(SetupConfigInput())
             }.fold(
                 onSuccess = { StageOutcome.Success(Stage.SetupInput) },
                 onFailure = { error -> StageOutcome.Failure(Stage.SetupInput, error.message ?: "unknown") }
@@ -44,7 +44,7 @@ class TransactionalResetCoordinator(
             stageOutcomes.add(setupOutcome)
 
             // Forwards stage
-            val forwardsOutcome = kotlinx.coroutines.runCatching {
+            val forwardsOutcome = runCatching {
                 forwardsRepository.resetForwards()
             }.fold(
                 onSuccess = { StageOutcome.Success(Stage.Forwards) },
@@ -66,7 +66,7 @@ class TransactionalResetCoordinator(
                                 configRepository.writeConfigAtomically(configRepository.defaultConfigTemplate())
                             }
                             Stage.SetupInput -> {
-                                configRepository.saveSetupInput(com.phillipchin.webrtctunnel.model.SetupConfigInput())
+                                configRepository.saveSetupInput(SetupConfigInput())
                             }
                             Stage.Forwards -> {
                                 forwardsRepository.resetForwards()
@@ -113,11 +113,3 @@ sealed class ResetResult {
     data object Success : ResetResult()
     data class PartialFailure(val failedStages: List<Pair<String, String>>) : ResetResult()
 }
-
-/**
- * Captures the initial configuration state before reset.
- */
-data class CaptureInitialConfig(
-    val configRepository: ConfigRepository,
-    val forwardsRepository: ForwardsRepository
-)
