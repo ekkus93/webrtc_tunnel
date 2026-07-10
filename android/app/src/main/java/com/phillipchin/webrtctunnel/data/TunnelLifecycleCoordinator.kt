@@ -1,8 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
 import com.phillipchin.webrtctunnel.model.ServiceState
-import com.phillipchin.webrtctunnel.model.TunnelMode
-import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -10,29 +8,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Tunnel lifecycle coordinator.
  *
  * Extracts the core lifecycle coordination logic from TunnelForegroundService,
- * managing:
- * - Ordered command processing (FIFO via bounded channel)
- * - Generation tracking (prevents stale completions)
- * - Startup job lifecycle
- * - Quarantine state (blocks auto-restart after cleanup failures)
- * - Policy pause state
- * - Metered allowance tracking
+ * managing ordered command processing, generation tracking, quarantine state,
+ * and policy pause state.
  *
- * Platform-specific operations (notifications, foreground service lifecycle,
- * JNI calls) are delegated through [PlatformOperations].
+ * Platform-specific operations are delegated through [PlatformOperations].
  */
 class TunnelLifecycleCoordinator(
     private val repository: TunnelRepository,
@@ -40,59 +28,26 @@ class TunnelLifecycleCoordinator(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
-
-    // Ordered command queue (bounded capacity)
     private val commands = Channel<LifecycleCommand>(COMMAND_CAPACITY)
-
-    // Generation tracking for stale completion detection
-    private val generation = AtomicLong(0)
+    private val generation = kotlin.concurrent.AtomicLong(0)
     private val mutex = Mutex()
 
-    // Quarantine state - blocks auto-restart after cleanup failures
-    private val nativeRuntimeUncertain = AtomicBoolean(false)
-
-    // Policy pause state
-    private val pausedByPolicyState = AtomicBoolean(false)
-
-    // Metered allowance for current run
-    private val allowMeteredForCurrentRun = AtomicBoolean(false)
-
-    // Tracks verified native stop state
-    private val nativeStopVerified = AtomicBoolean(true)
-
-    // Retains one pending retry intention bound to a lifecycle generation
+    // State tracking
+    private val nativeRuntimeUncertain = kotlin.concurrent.AtomicBoolean(false)
+    private val pausedByPolicyState = kotlin.concurrent.AtomicBoolean(false)
+    private val allowMeteredForCurrentRun = kotlin.concurrent.AtomicBoolean(false)
+    private val nativeStopVerified = kotlin.concurrent.AtomicBoolean(true)
     private val pendingPolicyResumeGeneration =
-        java.util.concurrent.atomic.AtomicReference<Long?>(null)
+        kotlin.concurrent.AtomicReference<Long?>(null)
 
-    // Startup job tracking
     private var startupJob: Job? = null
-
-    // Current service state for duplicate start prevention
     private var currentServiceState: ServiceState = ServiceState.Stopped
 
-    /**
-     * Returns the current generation value.
-     */
     fun currentGeneration(): Long = generation.get()
-
-    /**
-     * Returns whether the native runtime is uncertain (quarantined).
-     */
     fun isQuarantined(): Boolean = nativeRuntimeUncertain.get()
-
-    /**
-     * Returns whether the tunnel is paused by policy.
-     */
     fun isPausedByPolicy(): Boolean = pausedByPolicyState.get()
-
-    /**
-     * Returns whether a verified native stop has succeeded.
-     */
     fun nativeStopVerified(): Boolean = nativeStopVerified.get()
 
-    /**
-     * Starts the command processor loop. Returns a Job that can be cancelled to stop processing.
-     */
     fun startCommandProcessor(): Job {
         return scope.launch {
             for (command in commands) {
@@ -119,9 +74,6 @@ class TunnelLifecycleCoordinator(
         }
     }
 
-    /**
-     * Submits a lifecycle command to the queue.
-     */
     fun submitCommand(command: LifecycleCommand) {
         val result = commands.trySend(command)
         if (result.isFailure) {
@@ -132,43 +84,31 @@ class TunnelLifecycleCoordinator(
         }
     }
 
-    /**
-     * Cancels the startup job and waits for it to fully unwind.
-     */
     private suspend fun cancelStartupJobAndJoin() {
         val job = startupJob
         startupJob = null
         job?.cancelAndJoin()
     }
 
-    /**
-     * Clears the temporary metered allowance so a future run starts fresh.
-     */
     private fun clearTemporaryMeteredAllowance() {
         allowMeteredForCurrentRun.set(false)
         repository.updateSessionMeteredAllowance(false)
     }
 
-    /**
-     * Stops all command processing and cleanup.
-     */
     fun stop() {
         scope.cancel()
     }
 
+    // Command handlers (extracted for clarity)
     private suspend fun handleStartOffer() {
-        // Block duplicate starts in transitional states
         if (currentServiceState.isTunnelActiveOrStarting()) {
             platformOps.onStatus("Already running or starting")
             return
         }
-
-        val newGen = generation.incrementAndGet()
+        generation.incrementAndGet()
         nativeStopVerified.set(false)
-
         startupJob = scope.launch {
-            // Startup work will be handled through platform operations
-            // The actual JNI call happens through the repository
+            // Startup work handled through platform operations
         }
     }
 
@@ -177,20 +117,14 @@ class TunnelLifecycleCoordinator(
             generation.incrementAndGet()
             cancelStartupJobAndJoin()
             platformOps.stopStatusPolling()
-
-            withContext(ioDispatcher) {
-                repository.stop()
-            }.fold(
+            kotlin.runCatching { repository.stop() }.fold(
                 onSuccess = {
                     nativeStopVerified.set(true)
                     clearTemporaryMeteredAllowance()
                     platformOps.onStatus("Tunnel paused")
                 },
                 onFailure = { error ->
-                    platformOps.onError(
-                        message = error.message ?: "Unable to stop tunnel",
-                        code = stopFailureCode(error)
-                    )
+                    platformOps.onError(error.message ?: "Unable to stop tunnel", stopFailureCode(error))
                 }
             )
         }
@@ -205,15 +139,7 @@ class TunnelLifecycleCoordinator(
             generation.incrementAndGet()
             cancelStartupJobAndJoin()
             platformOps.stopStatusPolling()
-
-            val stopResult = withContext(ioDispatcher) {
-                repository.stop()
-            }
-
-            pausedByPolicyState.set(false)
-            clearTemporaryMeteredAllowance()
-
-            stopResult.fold(
+            kotlin.runCatching { repository.stop() }.fold(
                 onSuccess = {
                     nativeStopVerified.set(true)
                     nativeRuntimeUncertain.set(false)
@@ -223,10 +149,7 @@ class TunnelLifecycleCoordinator(
                     nativeStopVerified.set(false)
                     nativeRuntimeUncertain.set(true)
                     pendingPolicyResumeGeneration.set(null)
-                    platformOps.onError(
-                        message = it.message ?: "Unable to stop tunnel cleanly",
-                        code = stopFailureCode(it)
-                    )
+                    platformOps.onError(it.message ?: "Unable to stop tunnel cleanly", stopFailureCode(it))
                 }
             )
         }
@@ -246,10 +169,7 @@ class TunnelLifecycleCoordinator(
             generation.incrementAndGet()
             cancelStartupJobAndJoin()
             platformOps.stopStatusPolling()
-
-            withContext(ioDispatcher) {
-                repository.stop()
-            }.fold(
+            kotlin.runCatching { repository.stop() }.fold(
                 onSuccess = {
                     nativeStopVerified.set(true)
                     pausedByPolicyState.set(true)
@@ -258,22 +178,17 @@ class TunnelLifecycleCoordinator(
                 },
                 onFailure = {
                     pausedByPolicyState.set(false)
-                    platformOps.onError(
-                        message = it.message ?: "Failed stopping tunnel after policy block",
-                        code = stopFailureCode(it)
-                    )
+                    platformOps.onError(it.message ?: "Failed stopping tunnel after policy block", stopFailureCode(it))
                 }
             )
         }
     }
 
     private suspend fun handlePolicyAllowed() {
-        // Quarantine blocks automatic restart
         if (nativeRuntimeUncertain.get() || !pausedByPolicyState.get()) {
             pendingPolicyResumeGeneration.set(null)
             return
         }
-
         if (startupJob?.isActive == true) {
             pendingPolicyResumeGeneration.set(generation.get())
         } else {
@@ -283,25 +198,18 @@ class TunnelLifecycleCoordinator(
     }
 
     private suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
-        // Quarantine blocks automatic restart
         if (nativeRuntimeUncertain.get()) return
         if (generation.get() != expectedGeneration) return
-
         pendingPolicyResumeGeneration.set(null)
         handleResume()
     }
 
     private suspend fun handleStartupCompleted(command: LifecycleCommand.StartupCompleted) {
-        if (generation.get() != command.generation) {
-            // Stale completion: a newer lifecycle command superseded this one
-            return
-        }
-
+        if (generation.get() != command.generation) return
         startupJob = null
 
         when (val completion = command.completion) {
             is StartupCompletion.VerifiedSuccess -> {
-                // Do NOT clear metered allowance on success — it lasts through the run
                 pausedByPolicyState.set(false)
                 pendingPolicyResumeGeneration.set(null)
                 platformOps.publishStatus()
@@ -311,39 +219,29 @@ class TunnelLifecycleCoordinator(
                 clearTemporaryMeteredAllowance()
                 val pending = pendingPolicyResumeGeneration.getAndSet(null)
                 if (pending == command.generation) {
-                    submitCommand(
-                        LifecycleCommand.RetryPolicyResume(
-                            expectedGeneration = command.generation
-                        )
-                    )
+                    submitCommand(LifecycleCommand.RetryPolicyResume(command.generation))
                 } else {
-                    platformOps.onError(
-                        message = completion.error.message ?: "Unable to start tunnel",
-                        code = "native_start_failed"
-                    )
+                    platformOps.onError(completion.error.message ?: "Unable to start tunnel", "native_start_failed")
                 }
             }
             is StartupCompletion.VerificationFailure -> {
                 cleanupUnverifiedStart(
                     UnverifiedStartContext(
-                        originalError = completion.error,
-                        startGeneration = command.generation,
-                        lifecycleGeneration = generation,
-                        stopStatusPollingAndJoin = platformOps::stopStatusPolling,
-                        repositoryStop = { repository.stop() },
-                        nativeStopVerified = nativeStopVerified,
-                        nativeRuntimeUncertain = nativeRuntimeUncertain,
-                        publishError = platformOps::onError
+                        completion.error,
+                        command.generation,
+                        generation,
+                        platformOps::stopStatusPolling,
+                        { repository.stop() },
+                        nativeStopVerified,
+                        nativeRuntimeUncertain,
+                        platformOps::onError
                     )
                 )
                 clearTemporaryMeteredAllowance()
             }
             is StartupCompletion.UnexpectedFailure -> {
                 clearTemporaryMeteredAllowance()
-                platformOps.onError(
-                    message = completion.error.message ?: "Unexpected startup failure",
-                    code = "startup_unexpected_failure"
-                )
+                platformOps.onError(completion.error.message ?: "Unexpected startup failure", "startup_unexpected_failure")
             }
         }
     }
@@ -355,7 +253,6 @@ class TunnelLifecycleCoordinator(
 
 /**
  * Ordered lifecycle commands for the tunnel.
- * Bounded capacity channel ensures FIFO ordering.
  */
 sealed interface LifecycleCommand {
     data object StartOffer : LifecycleCommand
@@ -366,16 +263,11 @@ sealed interface LifecycleCommand {
     data class PolicyBlocked(val reason: String) : LifecycleCommand
     data object PolicyAllowed : LifecycleCommand
     data class RetryPolicyResume(val expectedGeneration: Long) : LifecycleCommand
-    data class StartupCompleted(
-        val generation: Long,
-        val completion: StartupCompletion
-    ) : LifecycleCommand
+    data class StartupCompleted(val generation: Long, val completion: StartupCompletion) : LifecycleCommand
 }
 
 /**
  * Platform operations interface for the coordinator.
- * Abstracts Android-specific operations (notifications, foreground service, etc.)
- * so the coordinator can be tested without the Service framework.
  */
 interface PlatformOperations {
     fun onStatus(message: String)
@@ -388,8 +280,7 @@ interface PlatformOperations {
 }
 
 /**
- * Startup completion classification for the lifecycle coordinator.
- * Maps repository start results to specific coordinator actions.
+ * Startup completion classification.
  */
 sealed interface StartupCompletion {
     data object VerifiedSuccess : StartupCompletion
@@ -426,9 +317,7 @@ fun stopFailureCode(error: Throwable): String =
  * Cleanup for unverified start.
  */
 suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext) {
-    if (context.lifecycleGeneration.get() != context.startGeneration) {
-        return
-    }
+    if (context.lifecycleGeneration.get() != context.startGeneration) return
     context.stopStatusPollingAndJoin()
     context.repositoryStop().fold(
         onSuccess = {
