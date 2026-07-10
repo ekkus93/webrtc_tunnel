@@ -265,12 +265,24 @@ class TunnelForegroundService
                         if (!nativeStopVerified.get()) {
                             withContext(ioDispatcher) {
                                 repository.stop()
-                            }.onFailure {
-                                reporter.publishError(
-                                    message = it.message ?: "Unable to stop tunnel",
-                                    code = stopFailureCode(it),
-                                )
-                            }
+                            }.fold(
+                                onSuccess = {
+                                    nativeStopVerified.set(true)
+                                    nativeRuntimeUncertain.set(false)
+                                },
+                                onFailure = { error ->
+                                    nativeStopVerified.set(false)
+                                    nativeRuntimeUncertain.set(true)
+                                    reporter.publishError(
+                                        code = "destroy_fallback_stop_failed",
+                                        message =
+                                            SensitiveDataRedactor.redactText(
+                                                error.message
+                                                    ?: "Destroy fallback stop failed",
+                                            ),
+                                    )
+                                },
+                            )
                         }
                         pausedByPolicy.set(false)
                         offer.clearTemporaryMeteredAllowance()
@@ -361,11 +373,19 @@ class TunnelForegroundService
                         while (active && !pausedByPolicy.get()) {
                             delay(STATUS_POLL_INTERVAL_MS)
                             if (pausedByPolicy.get()) break
-                            withContext(ioDispatcher) {
-                                runCatching { repository.refreshStatus() }.onFailure {
-                                    if (it is CancellationException) throw it
-                                    // Silently swallow — status poll is best-effort
-                                }
+                            try {
+                                repository.refreshStatus()
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Throwable) {
+                                reporter.publishError(
+                                    code = "status_poll_failed",
+                                    message =
+                                        SensitiveDataRedactor.redactText(
+                                            error.message
+                                                ?: "Status poll failed",
+                                        ),
+                                )
                             }
                             val state = repository.status.value.serviceState
                             if (state != lastState) {

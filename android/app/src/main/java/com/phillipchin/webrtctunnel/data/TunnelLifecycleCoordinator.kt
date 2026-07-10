@@ -56,10 +56,13 @@ class TunnelLifecycleCoordinator(
 
     private suspend fun processCommands() {
         for (command in commands) {
-            runCatching { handleCommand(command) }.onFailure {
-                if (it is CancellationException) throw it
+            try {
+                handleCommand(command)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
                 lifecycleOps.onError(
-                    it.message ?: "Lifecycle command failed",
+                    error.message ?: "Lifecycle command failed",
                     "lifecycle_command_failed",
                 )
             }

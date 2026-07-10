@@ -281,20 +281,13 @@ class TunnelForegroundServiceStopFailureTest {
             service.pausedByPolicy.get(),
         )
 
-        // Second unmetered event: the flag is still true, so this retries, and this time
-        // the native start succeeds. startOffer() intentionally no-ops ("already starting")
-        // if the first attempt's startupJob has not yet fully wound down by the time this
-        // event lands — under heavy machine load that window can outlast a single fire, so
-        // keep re-firing the network event on every poll until the retry is actually
-        // observed, rather than assuming exactly one fire is enough.
+        // Second unmetered event: the flag is still true, so this retries with exactly one event.
+        // The one-event invariant (P0-004): one later PolicyAllowed event is sufficient; no loop needed.
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+
         assertTrue(
-            "second unmetered event never triggered a successful retry start",
-            waitForCondition {
-                if (bridge.state != ServiceState.Connected) {
-                    shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
-                }
-                bridge.state == ServiceState.Connected
-            },
+            "one unmetered event must trigger a successful retry start",
+            waitForCondition { bridge.state == ServiceState.Connected },
         )
         assertTrue(
             "the retry flag must clear only once resume actually succeeds",
