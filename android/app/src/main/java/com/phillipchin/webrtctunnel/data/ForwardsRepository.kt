@@ -1,7 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -98,10 +97,13 @@ class ForwardsRepository(
                     )
                 }
                 val before = _forwards.value
-                val after = before.toMutableList().apply {
-                    val index = indexOfFirst { it.id == forward.id }
-                    if (index >= 0) set(index, forward) else add(forward)
-                }
+                val after =
+                    before
+                        .toMutableList()
+                        .apply {
+                            val index = indexOfFirst { it.id == forward.id }
+                            if (index >= 0) set(index, forward) else add(forward)
+                        }
                 val error = store.validateForwards(after)
                 if (error != null) {
                     return@withContext Result.failure(ForwardsMutationBlocked(error))

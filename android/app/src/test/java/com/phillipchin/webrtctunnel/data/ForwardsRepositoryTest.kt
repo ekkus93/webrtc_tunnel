@@ -22,6 +22,7 @@ class ForwardsRepositoryTest {
     @Before
     fun setUp() {
         file.delete()
+        file.writeText("[]") // Write a valid empty array so the initial load succeeds.
         // Real dispatchers; suspend repository methods complete under runBlocking.
         repo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
     }
@@ -29,23 +30,41 @@ class ForwardsRepositoryTest {
     private fun forward(
         id: String,
         port: Int,
-    ) = ForwardConfig(id = id, name = id, localPort = port, remoteForwardId = id, enabled = true)
+    ) = ForwardConfig(
+        id = id,
+        name = id,
+        localPort = port,
+        remoteForwardId = id,
+        enabled = true,
+    )
 
     @Test
-    fun upsertUpdatesObservableState() =
+    fun upsertWithReceiptAddsForwardAndReturnsReceipt() =
         runBlocking {
-            val result = repo.upsert(forward("x", 1234))
-            assertTrue(result.validationResult.valid)
-            assertTrue(repo.forwards.value.any { it.id == "x" })
+            val forward = forward("x", 1234)
+            val before = repo.current()
+            val result = repo.upsertWithReceipt(forward)
+
+            assertTrue(result.isSuccess)
+            val receipt = result.getOrThrow()
+            assertEquals(before, receipt.before)
+            assertTrue(receipt.after.any { it.id == "x" })
+            assertEquals(1, receipt.committedRevision)
         }
 
     @Test
-    fun deleteUpdatesObservableState() =
+    fun deleteWithReceiptRemovesForwardAndReturnsReceipt() =
         runBlocking {
-            repo.save(listOf(forward("d", 3333)))
-            assertTrue(repo.forwards.value.any { it.id == "d" })
-            repo.delete("d")
-            assertTrue(repo.forwards.value.none { it.id == "d" })
+            val forward = forward("d", 3333)
+            repo.upsertWithReceipt(forward)
+            val before = repo.current()
+
+            val result = repo.deleteWithReceipt("d")
+
+            assertTrue(result.isSuccess)
+            val receipt = result.getOrThrow()
+            assertTrue("delete receipt should reflect the forward in before", receipt.before.any { it.id == "d" })
+            assertTrue("delete receipt should not have forward in after", receipt.after.none { it.id == "d" })
         }
 
     @Test
@@ -54,9 +73,10 @@ class ForwardsRepositoryTest {
             file.writeText("{ corrupt json")
             val corruptRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
 
-            val result = corruptRepo.upsert(forward("x", 1234))
+            val result = corruptRepo.upsertWithReceipt(forward("x", 1234))
 
-            assertFalse(result.validationResult.valid)
+            assertFalse(result.isSuccess)
+            assertTrue(result.exceptionOrNull() is ForwardsMutationBlocked)
             // The corrupt file must not be overwritten with a fresh/empty baseline.
             assertTrue(file.readText().contains("corrupt"))
         }
@@ -67,9 +87,10 @@ class ForwardsRepositoryTest {
             file.writeText("{ corrupt json")
             val corruptRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
 
-            val result = corruptRepo.delete("anything")
+            val result = corruptRepo.deleteWithReceipt("anything")
 
-            assertFalse(result.validationResult.valid)
+            assertFalse(result.isSuccess)
+            assertTrue(result.exceptionOrNull() is ForwardsMutationBlocked)
             // A corrupt forwards file must never be overwritten by a delete that dropped
             // the (unparseable) entries — the user's file is preserved for repair.
             assertTrue(file.readText().contains("corrupt"))
@@ -78,25 +99,29 @@ class ForwardsRepositoryTest {
     @Test
     fun upsertAfterDiskCorruptionPreservesInMemoryList() =
         runBlocking {
-            repo.save(listOf(forward("keep", 1111)))
+            // Ensure a valid initial baseline by writing a valid empty array first.
+            file.writeText("[]")
+            val validRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+
+            validRepo.upsertWithReceipt(forward("keep", 1111))
             file.writeText("{ corrupt json")
 
-            val result = repo.upsert(forward("added", 2222))
+            val result = validRepo.upsertWithReceipt(forward("added", 2222))
 
-            assertTrue(result.validationResult.valid)
-            assertTrue(repo.forwards.value.any { it.id == "keep" })
-            assertTrue(repo.forwards.value.any { it.id == "added" })
+            assertTrue(result.isSuccess)
+            assertTrue(validRepo.forwards.value.any { it.id == "keep" })
+            assertTrue(validRepo.forwards.value.any { it.id == "added" })
         }
 
     @Test
     fun validationFailureLeavesObservableStateUnchanged() =
         runBlocking {
-            repo.save(listOf(forward("a", 1111)))
+            repo.upsertWithReceipt(forward("a", 1111))
             val before = repo.forwards.value
 
-            val result = repo.upsert(forward("b", 1111)) // duplicate port
+            val result = repo.upsertWithReceipt(forward("b", 1111)) // duplicate port
 
-            assertFalse(result.validationResult.valid)
+            assertFalse(result.isSuccess)
             assertEquals(before, repo.forwards.value)
         }
 
@@ -128,6 +153,7 @@ class ForwardsRepositoryTest {
     @Test
     fun refreshKeepsPriorListWhenFileIsCorrupt() =
         runBlocking {
+            // Seed a valid in-memory state via save() (bypasses loadError guard).
             repo.save(listOf(forward("keep", 2222)))
             assertTrue(repo.forwards.value.any { it.id == "keep" })
 
@@ -136,5 +162,71 @@ class ForwardsRepositoryTest {
 
             // The corrupt file must not erase the in-memory list.
             assertTrue(repo.forwards.value.any { it.id == "keep" })
+        }
+
+    @Test
+    fun rollbackRestoresExactState() =
+        runBlocking {
+            val forward = forward("x", 1234)
+            val receipt = repo.upsertWithReceipt(forward).getOrThrow()
+
+            val rollbackResult = repo.rollbackReceipt(receipt)
+
+            assertTrue(rollbackResult.isSuccess)
+            assertTrue(repo.current().none { it.id == "x" })
+        }
+
+    @Test
+    fun rollbackFailsWithStaleReceipt() =
+        runBlocking {
+            val forward = forward("x", 1234)
+            val receipt = repo.upsertWithReceipt(forward).getOrThrow()
+
+            // Another mutation advances the revision.
+            repo.upsertWithReceipt(forward("y", 5555))
+
+            val rollbackResult = repo.rollbackReceipt(receipt)
+
+            assertFalse(rollbackResult.isSuccess)
+            assertTrue(rollbackResult.exceptionOrNull() is ForwardsRevisionMismatchException)
+        }
+
+    @Test
+    fun refreshInvalidatesOldReceipts() =
+        runBlocking {
+            val forward = forward("x", 1234)
+            val receipt = repo.upsertWithReceipt(forward).getOrThrow()
+
+            // Refresh with valid data advances the revision.
+            file.writeText(
+                "[{\"id\":\"y\",\"name\":\"y\",\"localPort\":9999,\"remoteForwardId\":\"y\",\"enabled\":true}]",
+            )
+            repo.refresh()
+
+            val rollbackResult = repo.rollbackReceipt(receipt)
+
+            assertFalse(rollbackResult.isSuccess)
+        }
+
+    @Test
+    fun resetForwardsClearsStateAndLoadError() =
+        runBlocking {
+            repo.upsertWithReceipt(forward("x", 1234))
+
+            val result = repo.resetForwards()
+
+            assertTrue(result.isSuccess)
+            assertTrue(repo.current().isEmpty())
+            assertTrue(repo.loadError.value == null)
+        }
+
+    @Test
+    fun savePersistsExactList() =
+        runBlocking {
+            val forwards = listOf(forward("a", 1111), forward("b", 2222))
+            val result = repo.save(forwards)
+
+            assertTrue(result.isSuccess)
+            assertEquals(forwards, repo.current())
         }
 }
