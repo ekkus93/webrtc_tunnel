@@ -71,10 +71,15 @@ fun LogsScreen(
     val scope = rememberCoroutineScope()
     var paused by remember { mutableStateOf(false) }
 
+    // Collect network status for export
+    val networkStatus by networkVm.networkStatus.collectAsStateWithLifecycle(
+        initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
+    )
+
     val diagnosticsCreateDocumentLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.CreateDocument("text/plain"),
-        ) { uri -> if (uri != null) vm.exportDiagnosticsToUri(uri, networkVm.networkStatus.collectAsStateWithLifecycle().value) }
+        ) { uri -> uri?.let { vm.exportDiagnosticsToUri(it, networkStatus) } }
 
     val state = collectLogsScreenState(vm, networkVm)
 
@@ -89,8 +94,8 @@ fun LogsScreen(
         scope.launch {
             val share =
                 Intent.createChooser(
-                    vm.diagnosticsShareIntent(state.networkStatus),
-                    "Share diagnostics"
+                    vm.diagnosticsShareIntent(networkStatus),
+                    "Share diagnostics",
                 ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(share)
         }
@@ -107,12 +112,15 @@ fun LogsScreen(
         padding = padding,
         state = state,
         paused = paused,
-        onTogglePause = { paused = !paused },
-        onClearLogs = vm::clearLogs,
-        onCopyLogs = copyLogs,
-        onExport = exportDiagnostics,
-        onShare = shareDiagnostics,
-        onFilterSelect = vm::setFilter,
+        actions =
+            LogsScreenActions(
+                onTogglePause = { paused = !paused },
+                onClearLogs = vm::clearLogs,
+                onCopyLogs = copyLogs,
+                onExport = exportDiagnostics,
+                onShare = shareDiagnostics,
+                onFilterSelect = vm::setFilter,
+            ),
     )
 }
 
@@ -124,12 +132,7 @@ private fun LogsScreenContent(
     padding: PaddingValues,
     state: LogsScreenState,
     paused: Boolean,
-    onTogglePause: () -> Unit,
-    onClearLogs: () -> Unit,
-    onCopyLogs: () -> Unit,
-    onExport: () -> Unit,
-    onShare: () -> Unit,
-    onFilterSelect: (String) -> Unit,
+    actions: LogsScreenActions,
 ) {
     Column(
         modifier =
@@ -143,22 +146,32 @@ private fun LogsScreenContent(
         if (state.logsError != null) {
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "⚠ Logs error: ${state.logsError?.message}",
+                text = "⚠ Logs error: ${state.logsError.message}",
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
             )
         }
         Spacer(Modifier.height(8.dp))
-        LogFilterChips(filter = state.filter, onSelect = onFilterSelect)
+        LogFilterChips(filter = state.filter, onSelect = actions.onFilterSelect)
         Spacer(Modifier.height(8.dp))
         LogActionsRow(
             paused = paused,
-            onTogglePause = onTogglePause,
-            onClear = onClearLogs,
-            menu = LogMenuActions(onCopy = onCopyLogs, onExport = onExport, onShare = onShare),
+            onTogglePause = actions.onTogglePause,
+            onClear = actions.onClearLogs,
+            menu =
+                LogMenuActions(
+                    onCopy = actions.onCopyLogs,
+                    onExport = actions.onExport,
+                    onShare = actions.onShare,
+                ),
         )
         Spacer(Modifier.height(8.dp))
-        LogList(visibleLogs = state.visibleLogs, debugHidden = state.debugHidden, filter = state.filter, modifier = Modifier.weight(1f))
+        LogList(
+            visibleLogs = state.visibleLogs,
+            debugHidden = state.debugHidden,
+            filter = state.filter,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -172,9 +185,6 @@ private fun collectLogsScreenState(
 ): LogsScreenState {
     val filter by vm.filter.collectAsStateWithLifecycle()
     val prefs by networkVm.preferences.collectAsStateWithLifecycle(initialValue = AndroidAppPreferences())
-    val networkStatus by networkVm.networkStatus.collectAsStateWithLifecycle(
-        initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
-    )
     val logs by vm.filteredLogs.collectAsStateWithLifecycle()
     val logsError by vm.logsError.collectAsStateWithLifecycle(initialValue = null)
 
@@ -183,7 +193,6 @@ private fun collectLogsScreenState(
 
     return LogsScreenState(
         filter = filter,
-        networkStatus = networkStatus,
         logsError = logsError,
         visibleLogs = visibleLogs,
         debugHidden = debugHidden,
@@ -193,9 +202,17 @@ private fun collectLogsScreenState(
 /**
  * Logs screen state data class.
  */
+private data class LogsScreenActions(
+    val onTogglePause: () -> Unit,
+    val onClearLogs: () -> Unit,
+    val onCopyLogs: () -> Unit,
+    val onExport: () -> Unit,
+    val onShare: () -> Unit,
+    val onFilterSelect: (String) -> Unit,
+)
+
 private data class LogsScreenState(
     val filter: String,
-    val networkStatus: NetworkStatus,
     val logsError: com.phillipchin.webrtctunnel.model.TunnelError?,
     val visibleLogs: List<LogEvent>,
     val debugHidden: Boolean,

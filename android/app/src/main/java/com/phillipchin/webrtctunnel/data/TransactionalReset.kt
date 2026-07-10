@@ -26,30 +26,33 @@ class TransactionalResetCoordinator(
             val stageOutcomes = mutableListOf<StageOutcome>()
 
             // Config stage
-            val configOutcome = runCatching {
-                configRepository.writeConfigAtomically(configRepository.defaultConfigTemplate())
-            }.fold(
-                onSuccess = { StageOutcome.Success(Stage.Config) },
-                onFailure = { error -> StageOutcome.Failure(Stage.Config, error.message ?: "unknown") }
-            )
+            val configOutcome =
+                runCatching {
+                    configRepository.writeConfigAtomically(configRepository.defaultConfigTemplate())
+                }.fold(
+                    onSuccess = { StageOutcome.Success(Stage.Config) },
+                    onFailure = { error -> StageOutcome.Failure(Stage.Config, error.message ?: "unknown") },
+                )
             stageOutcomes.add(configOutcome)
 
             // Setup input stage
-            val setupOutcome = runCatching {
-                configRepository.saveSetupInput(SetupConfigInput())
-            }.fold(
-                onSuccess = { StageOutcome.Success(Stage.SetupInput) },
-                onFailure = { error -> StageOutcome.Failure(Stage.SetupInput, error.message ?: "unknown") }
-            )
+            val setupOutcome =
+                runCatching {
+                    configRepository.saveSetupInput(SetupConfigInput())
+                }.fold(
+                    onSuccess = { StageOutcome.Success(Stage.SetupInput) },
+                    onFailure = { error -> StageOutcome.Failure(Stage.SetupInput, error.message ?: "unknown") },
+                )
             stageOutcomes.add(setupOutcome)
 
             // Forwards stage
-            val forwardsOutcome = runCatching {
-                forwardsRepository.resetForwards()
-            }.fold(
-                onSuccess = { StageOutcome.Success(Stage.Forwards) },
-                onFailure = { error -> StageOutcome.Failure(Stage.Forwards, error.message ?: "unknown") }
-            )
+            val forwardsOutcome =
+                runCatching {
+                    forwardsRepository.resetForwards()
+                }.fold(
+                    onSuccess = { StageOutcome.Success(Stage.Forwards) },
+                    onFailure = { error -> StageOutcome.Failure(Stage.Forwards, error.message ?: "unknown") },
+                )
             stageOutcomes.add(forwardsOutcome)
 
             // Check for any failures
@@ -76,13 +79,12 @@ class TransactionalResetCoordinator(
                 }
 
                 ResetResult.PartialFailure(
-                    failedStages = failures.map { it.stage.name to it.message }
+                    failedStages = failures.map { it.stage.name to it.message },
                 )
             }
         }
     }
-
-    }
+}
 
 /**
  * Reset stages in execution order.
@@ -90,7 +92,7 @@ class TransactionalResetCoordinator(
 enum class Stage {
     Config,
     SetupInput,
-    Forwards
+    Forwards,
 }
 
 /**
@@ -98,6 +100,7 @@ enum class Stage {
  */
 sealed class StageOutcome {
     data class Success(val stage: Stage) : StageOutcome()
+
     data class Failure(val stage: Stage, val message: String) : StageOutcome()
 }
 
@@ -106,5 +109,6 @@ sealed class StageOutcome {
  */
 sealed class ResetResult {
     data object Success : ResetResult()
+
     data class PartialFailure(val failedStages: List<Pair<String, String>>) : ResetResult()
 }

@@ -141,7 +141,7 @@ class ConfigRepository(private val context: Context) {
 /**
  * Internal: atomic config write without acquiring the mutex (caller must hold [writeMutex]).
  */
-private suspend fun writeConfigAtomicallyLocked(
+private fun writeConfigAtomicallyLocked(
     configFile: File,
     contents: String,
 ) {

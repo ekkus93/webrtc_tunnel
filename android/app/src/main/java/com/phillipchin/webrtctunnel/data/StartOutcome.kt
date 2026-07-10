@@ -2,7 +2,6 @@ package com.phillipchin.webrtctunnel.data
 
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
-import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
 
 /**
  * Typed start outcome for JNI operations.

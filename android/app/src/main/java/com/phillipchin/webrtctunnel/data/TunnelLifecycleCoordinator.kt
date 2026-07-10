@@ -1,6 +1,7 @@
 package com.phillipchin.webrtctunnel.data
 
 import com.phillipchin.webrtctunnel.model.ServiceState
+import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -8,10 +9,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Tunnel lifecycle coordinator.
@@ -29,23 +34,25 @@ class TunnelLifecycleCoordinator(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
     private val commands = Channel<LifecycleCommand>(COMMAND_CAPACITY)
-    private val generation = kotlin.concurrent.AtomicLong(0)
+    private val generation = AtomicLong(0)
     private val mutex = Mutex()
 
     // State tracking
-    private val nativeRuntimeUncertain = kotlin.concurrent.AtomicBoolean(false)
-    private val pausedByPolicyState = kotlin.concurrent.AtomicBoolean(false)
-    private val allowMeteredForCurrentRun = kotlin.concurrent.AtomicBoolean(false)
-    private val nativeStopVerified = kotlin.concurrent.AtomicBoolean(true)
-    private val pendingPolicyResumeGeneration =
-        kotlin.concurrent.AtomicReference<Long?>(null)
+    private val nativeRuntimeUncertain = AtomicBoolean(false)
+    private val pausedByPolicyState = AtomicBoolean(false)
+    private val allowMeteredForCurrentRun = AtomicBoolean(false)
+    private val nativeStopVerified = AtomicBoolean(true)
+    private val pendingPolicyResumeGeneration = AtomicReference<Long?>(null)
 
     private var startupJob: Job? = null
-    private var currentServiceState: ServiceState = ServiceState.Stopped
+    private val currentServiceState: ServiceState = ServiceState.Stopped
 
     fun currentGeneration(): Long = generation.get()
+
     fun isQuarantined(): Boolean = nativeRuntimeUncertain.get()
+
     fun isPausedByPolicy(): Boolean = pausedByPolicyState.get()
+
     fun nativeStopVerified(): Boolean = nativeStopVerified.get()
 
     fun startCommandProcessor(): Job {
@@ -67,9 +74,20 @@ class TunnelLifecycleCoordinator(
         if (result.isFailure) {
             platformOps.onError(
                 message = "Unable to queue lifecycle command ${command::class.java.simpleName}",
-                code = "lifecycle_command_queue_failed"
+                code = "lifecycle_command_queue_failed",
             )
         }
+    }
+
+    private suspend fun cancelStartupJobAndJoin() {
+        val job = startupJob
+        startupJob = null
+        job?.cancelAndJoin()
+    }
+
+    private fun clearTemporaryMeteredAllowance() {
+        allowMeteredForCurrentRun.set(false)
+        repository.updateSessionMeteredAllowance(false)
     }
 
     fun stop() {
@@ -81,7 +99,7 @@ class TunnelLifecycleCoordinator(
 
         // Command handler logic extracted to reduce coordinator function count
         class CommandHandler(
-            private val coordinator: TunnelLifecycleCoordinator
+            private val coordinator: TunnelLifecycleCoordinator,
         ) {
             suspend fun handle(command: LifecycleCommand) {
                 when (command) {
@@ -99,16 +117,17 @@ class TunnelLifecycleCoordinator(
                 }
             }
 
-            private suspend fun handleStartOffer() {
+            private fun handleStartOffer() {
                 if (coordinator.currentServiceState.isTunnelActiveOrStarting()) {
                     coordinator.platformOps.onStatus("Already running or starting")
                     return
                 }
                 coordinator.generation.incrementAndGet()
                 coordinator.nativeStopVerified.set(false)
-                coordinator.startupJob = coordinator.scope.launch {
-                    // Startup work handled through platform operations
-                }
+                coordinator.startupJob =
+                    coordinator.scope.launch {
+                        // Startup work handled through platform operations
+                    }
             }
 
             private suspend fun handlePause() {
@@ -116,7 +135,7 @@ class TunnelLifecycleCoordinator(
                     coordinator.generation.incrementAndGet()
                     coordinator.cancelStartupJobAndJoin()
                     coordinator.platformOps.stopStatusPolling()
-                    kotlin.runCatching { coordinator.repository.stop() }.fold(
+                    runCatching { coordinator.repository.stop() }.fold(
                         onSuccess = {
                             coordinator.nativeStopVerified.set(true)
                             coordinator.clearTemporaryMeteredAllowance()
@@ -125,14 +144,14 @@ class TunnelLifecycleCoordinator(
                         onFailure = { error ->
                             coordinator.platformOps.onError(
                                 error.message ?: "Unable to stop tunnel",
-                                stopFailureCode(error)
+                                stopFailureCode(error),
                             )
-                        }
+                        },
                     )
                 }
             }
 
-            private suspend fun handleResume() {
+            private fun handleResume() {
                 // Resume logic goes here
             }
 
@@ -141,7 +160,7 @@ class TunnelLifecycleCoordinator(
                     coordinator.generation.incrementAndGet()
                     coordinator.cancelStartupJobAndJoin()
                     coordinator.platformOps.stopStatusPolling()
-                    kotlin.runCatching { coordinator.repository.stop() }.fold(
+                    runCatching { coordinator.repository.stop() }.fold(
                         onSuccess = {
                             coordinator.nativeStopVerified.set(true)
                             coordinator.nativeRuntimeUncertain.set(false)
@@ -153,9 +172,9 @@ class TunnelLifecycleCoordinator(
                             coordinator.pendingPolicyResumeGeneration.set(null)
                             coordinator.platformOps.onError(
                                 it.message ?: "Unable to stop tunnel cleanly",
-                                stopFailureCode(it)
+                                stopFailureCode(it),
                             )
-                        }
+                        },
                     )
                 }
             }
@@ -174,7 +193,7 @@ class TunnelLifecycleCoordinator(
                     coordinator.generation.incrementAndGet()
                     coordinator.cancelStartupJobAndJoin()
                     coordinator.platformOps.stopStatusPolling()
-                    kotlin.runCatching { coordinator.repository.stop() }.fold(
+                    runCatching { coordinator.repository.stop() }.fold(
                         onSuccess = {
                             coordinator.nativeStopVerified.set(true)
                             coordinator.pausedByPolicyState.set(true)
@@ -185,14 +204,14 @@ class TunnelLifecycleCoordinator(
                             coordinator.pausedByPolicyState.set(false)
                             coordinator.platformOps.onError(
                                 it.message ?: "Failed stopping tunnel after policy block",
-                                stopFailureCode(it)
+                                stopFailureCode(it),
                             )
-                        }
+                        },
                     )
                 }
             }
 
-            private suspend fun handlePolicyAllowed() {
+            private fun handlePolicyAllowed() {
                 if (coordinator.nativeRuntimeUncertain.get() || !coordinator.pausedByPolicyState.get()) {
                     coordinator.pendingPolicyResumeGeneration.set(null)
                     return
@@ -205,7 +224,7 @@ class TunnelLifecycleCoordinator(
                 }
             }
 
-            private suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
+            private fun handleRetryPolicyResume(expectedGeneration: Long) {
                 if (coordinator.nativeRuntimeUncertain.get()) return
                 if (coordinator.generation.get() != expectedGeneration) return
                 coordinator.pendingPolicyResumeGeneration.set(null)
@@ -231,7 +250,7 @@ class TunnelLifecycleCoordinator(
                         } else {
                             coordinator.platformOps.onError(
                                 completion.error.message ?: "Unable to start tunnel",
-                                "native_start_failed"
+                                "native_start_failed",
                             )
                         }
                     }
@@ -245,8 +264,8 @@ class TunnelLifecycleCoordinator(
                                 { coordinator.repository.stop() },
                                 coordinator.nativeStopVerified,
                                 coordinator.nativeRuntimeUncertain,
-                                coordinator.platformOps::onError
-                            )
+                                coordinator.platformOps::onError,
+                            ),
                         )
                         coordinator.clearTemporaryMeteredAllowance()
                     }
@@ -254,7 +273,7 @@ class TunnelLifecycleCoordinator(
                         coordinator.clearTemporaryMeteredAllowance()
                         coordinator.platformOps.onError(
                             completion.error.message ?: "Unexpected startup failure",
-                            "startup_unexpected_failure"
+                            "startup_unexpected_failure",
                         )
                     }
                 }
@@ -268,13 +287,21 @@ class TunnelLifecycleCoordinator(
  */
 sealed interface LifecycleCommand {
     data object StartOffer : LifecycleCommand
+
     data object Pause : LifecycleCommand
+
     data object Resume : LifecycleCommand
+
     data object Stop : LifecycleCommand
+
     data object AllowMeteredSession : LifecycleCommand
+
     data class PolicyBlocked(val reason: String) : LifecycleCommand
+
     data object PolicyAllowed : LifecycleCommand
+
     data class RetryPolicyResume(val expectedGeneration: Long) : LifecycleCommand
+
     data class StartupCompleted(val generation: Long, val completion: StartupCompletion) : LifecycleCommand
 }
 
@@ -283,11 +310,21 @@ sealed interface LifecycleCommand {
  */
 interface PlatformOperations {
     fun onStatus(message: String)
+
     fun publishStatus()
-    fun onError(message: String, code: String, state: ServiceState = ServiceState.Error)
+
+    fun onError(
+        message: String,
+        code: String,
+        state: ServiceState = ServiceState.Error,
+    )
+
     fun startStatusPolling()
+
     fun stopStatusPolling()
+
     fun stopForeground()
+
     fun stopSelf()
 }
 
@@ -296,8 +333,11 @@ interface PlatformOperations {
  */
 sealed interface StartupCompletion {
     data object VerifiedSuccess : StartupCompletion
+
     data class NativeStartFailure(val error: Throwable) : StartupCompletion
+
     data class VerificationFailure(val error: StartStatusVerificationException) : StartupCompletion
+
     data class UnexpectedFailure(val error: Throwable) : StartupCompletion
 }
 
@@ -312,7 +352,7 @@ data class UnverifiedStartContext(
     val repositoryStop: suspend () -> Result<Unit>,
     val nativeStopVerified: AtomicBoolean,
     val nativeRuntimeUncertain: AtomicBoolean,
-    val publishError: (message: String, code: String) -> Unit
+    val publishError: (message: String, code: String) -> Unit,
 )
 
 /**
@@ -336,7 +376,7 @@ suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext) {
             context.nativeStopVerified.set(true)
             context.publishError(
                 context.originalError.message ?: "Native startup could not be verified",
-                "start_status_verification_failed"
+                "start_status_verification_failed",
             )
         },
         onFailure = { cleanupError ->
@@ -348,8 +388,8 @@ suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext) {
                     append(". Cleanup also failed: ")
                     append(cleanupError.message ?: "unknown cleanup failure")
                 },
-                "start_verification_cleanup_failed"
+                "start_verification_cleanup_failed",
             )
-        }
+        },
     )
 }
