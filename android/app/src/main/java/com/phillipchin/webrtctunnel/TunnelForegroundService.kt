@@ -162,8 +162,9 @@ class TunnelForegroundService
 
             // P0-001: command processor drains lifecycle commands in FIFO order.
             // Commands are processed sequentially to maintain ordering guarantees.
-            coordinator = TunnelLifecycleCoordinator(coordinatorOps, ioDispatcher)
-            coordinator.startCommandProcessor()
+            // P0-003: Service owns coordinator scope; coordinator cannot outlive service.
+            coordinator = TunnelLifecycleCoordinator(coordinatorOps, serviceScope)
+            coordinator.start()
 
             // Network monitor still collects network events, but submits commands
             // through the same ordered queue instead of launching independent coroutines.
@@ -227,8 +228,11 @@ class TunnelForegroundService
         }
 
         // P0-001: Submit a lifecycle command through the ordered queue.
+        // P0-003: Callback paths hand off to service scope for suspending submit.
         private fun submitLifecycleCommand(command: LifecycleCommand) {
-            coordinator.submitCommand(command)
+            serviceScope.launch {
+                coordinator.submit(command)
+            }
         }
 
         // Removed: publishError was a thin wrapper; callers use reporter.publishError directly.
@@ -242,6 +246,8 @@ class TunnelForegroundService
                     val monitorJob = networkMonitorJob
                     networkMonitorJob = null
                     monitorJob?.cancelAndJoin()
+                    // P0-003: Stop coordinator processor before fallback cleanup.
+                    coordinator.stop()
                     lifecycleMutex.withLock {
                         lifecycleGeneration.incrementAndGet()
                         cancelStartupJobAndJoinLocked()

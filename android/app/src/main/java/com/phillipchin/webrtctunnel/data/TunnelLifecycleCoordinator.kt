@@ -2,56 +2,69 @@ package com.phillipchin.webrtctunnel.data
 
 import com.phillipchin.webrtctunnel.model.ServiceState
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Tunnel lifecycle coordinator.
+ * Lifecycle coordinator that owns the command processor lifetime.
  *
- * Extracts the core lifecycle coordination logic from TunnelForegroundService,
- * managing ordered command processing.
- *
- * Lifecycle operations are delegated through [lifecycleOps].
+ * P0-003: Service provides the CoroutineScope, so the coordinator cannot outlive the service.
+ * Commands are submitted through an unlimited channel to prevent lossy semantics.
+ * The processor can be cancelled on teardown.
  */
 class TunnelLifecycleCoordinator(
     private val lifecycleOps: CoordinatorOperations,
-    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val scope: CoroutineScope,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
-    private val commands = Channel<LifecycleCommand>(COMMAND_CAPACITY)
+    private val commands = Channel<LifecycleCommand>(Channel.UNLIMITED)
 
-    fun startCommandProcessor(): Job {
-        return scope.launch {
-            for (command in commands) {
-                runCatching {
-                    handleCommand(command)
-                }.onFailure { error ->
-                    if (error !is CancellationException) {
-                        lifecycleOps.onError(
-                            error.message ?: "Lifecycle command failed",
-                            "lifecycle_command_failed",
-                        )
-                    }
-                }
-            }
+    private var processorJob: Job? = null
+
+    /**
+     * Starts the command processor. Must be called exactly once.
+     */
+    fun start() {
+        check(processorJob == null) {
+            "Lifecycle coordinator already started"
+        }
+        processorJob = scope.launch {
+            processCommands()
         }
     }
 
-    fun submitCommand(command: LifecycleCommand) {
-        val result = commands.trySend(command)
-        if (result.isFailure) {
-            lifecycleOps.onError(
-                "Unable to queue lifecycle command ${command::class.java.simpleName}",
-                "lifecycle_command_queue_failed",
-            )
+    /**
+     * Stops the command processor by closing the channel and cancelling the processor.
+     */
+    suspend fun stop() {
+        commands.close()
+        val job = processorJob
+        processorJob = null
+        job?.cancelAndJoin()
+    }
+
+    /**
+     * Submit a lifecycle command. Commands are processed in FIFO order.
+     * Critical commands (STOP, PAUSE, StartupCompleted) are never dropped.
+     */
+    suspend fun submit(command: LifecycleCommand) {
+        commands.send(command)
+    }
+
+    private suspend fun processCommands() {
+        for (command in commands) {
+            try {
+                handleCommand(command)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                lifecycleOps.onError(
+                    error.message ?: "Lifecycle command failed",
+                    "lifecycle_command_failed",
+                )
+            }
         }
     }
 
@@ -71,14 +84,6 @@ class TunnelLifecycleCoordinator(
             is LifecycleCommand.StartupCompleted ->
                 lifecycleOps.handleStartupCompleted(command.generation, command.outcome)
         }
-    }
-
-    fun stop() {
-        scope.cancel()
-    }
-
-    private companion object {
-        private const val COMMAND_CAPACITY = 32
     }
 }
 
@@ -118,92 +123,14 @@ interface CoordinatorOperations {
 /**
  * Ordered lifecycle commands for the tunnel.
  */
-sealed interface LifecycleCommand {
-    data object StartOffer : LifecycleCommand
-
-    data object Pause : LifecycleCommand
-
-    data object Resume : LifecycleCommand
-
-    data object Stop : LifecycleCommand
-
-    data object AllowMeteredSession : LifecycleCommand
-
-    data class PolicyBlocked(val reason: String) : LifecycleCommand
-
-    data object PolicyAllowed : LifecycleCommand
-
-    data class RetryPolicyResume(val expectedGeneration: Long) : LifecycleCommand
-
-    data class StartupCompleted(val generation: Long, val outcome: StartOutcome) : LifecycleCommand
-}
-
-/**
- * Platform operations for status reporting and service control.
- */
-interface PlatformOperations {
-    fun onStatus(message: String)
-
-    fun publishStatus()
-
-    fun startStatusPolling()
-
-    fun stopStatusPolling()
-
-    fun serviceStopForeground()
-
-    fun serviceStopSelf()
-}
-
-/**
- * Context for unverified start cleanup.
- */
-data class UnverifiedStartContext(
-    val originalError: StartStatusVerificationException,
-    val startGeneration: Long,
-    val lifecycleGeneration: AtomicLong,
-    val stopStatusPollingAndJoin: suspend () -> Unit,
-    val repositoryStop: suspend () -> Result<Unit>,
-    val nativeStopVerified: AtomicBoolean,
-    val nativeRuntimeUncertain: AtomicBoolean,
-    val publishError: (message: String, code: String) -> Unit,
-)
-
-/**
- * Helper function to determine stop failure code.
- */
-fun stopFailureCode(error: Throwable): String =
-    if (error is StopStatusVerificationException) {
-        "stop_status_verification_failed"
-    } else {
-        "stop_failed"
-    }
-
-/**
- * Cleanup for unverified start.
- */
-suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext) {
-    if (context.lifecycleGeneration.get() != context.startGeneration) return
-    context.stopStatusPollingAndJoin()
-    context.repositoryStop().fold(
-        onSuccess = {
-            context.nativeStopVerified.set(true)
-            context.publishError(
-                context.originalError.message ?: "Native startup could not be verified",
-                "start_status_verification_failed",
-            )
-        },
-        onFailure = { cleanupError ->
-            context.nativeStopVerified.set(false)
-            context.nativeRuntimeUncertain.set(true)
-            context.publishError(
-                buildString {
-                    append(context.originalError.message ?: "Native startup could not be verified")
-                    append(". Cleanup also failed: ")
-                    append(cleanupError.message ?: "unknown cleanup failure")
-                },
-                "start_verification_cleanup_failed",
-            )
-        },
-    )
+sealed class LifecycleCommand {
+    object StartOffer : LifecycleCommand()
+    object Pause : LifecycleCommand()
+    object Resume : LifecycleCommand()
+    object Stop : LifecycleCommand()
+    object AllowMeteredSession : LifecycleCommand()
+    data class PolicyBlocked(val reason: String) : LifecycleCommand()
+    object PolicyAllowed : LifecycleCommand()
+    data class RetryPolicyResume(val expectedGeneration: Long) : LifecycleCommand()
+    data class StartupCompleted(val generation: Long, val outcome: StartOutcome) : LifecycleCommand()
 }
