@@ -89,9 +89,16 @@ class TunnelForegroundService
         private val serviceScope = CoroutineScope(SupervisorJob() + defaultDispatcher)
 
         private var networkMonitorJob: Job? = null
-        private var startupJob: Job? = null
+        // P0-004: Explicit startup ownership — coordinator is the only authority that clears it.
+        private var activeStartup: ActiveStartup? = null
         private var statusPollJob: Job? = null
         private var lastMode: TunnelMode = TunnelMode.Offer
+
+        // P0-004: Startup ownership data class.
+        private data class ActiveStartup(
+            val generation: Long,
+            val job: Job,
+        )
 
         // internal (not private): P0-001's Robolectric test captures this reference and
         // joins it directly, so it can deterministically wait for a specific stale poll
@@ -288,9 +295,9 @@ class TunnelForegroundService
         // checks are lock-free and no other code the startup coroutine runs acquires this mutex
         // (P0-001).
         private suspend fun cancelStartupJobAndJoinLocked() {
-            val job = startupJob
-            startupJob = null
-            job?.cancelAndJoin()
+            val startup = activeStartup
+            activeStartup = null
+            startup?.job?.cancelAndJoin()
         }
 
         // Notification rendering and status polling for the active tunnel.
@@ -476,7 +483,7 @@ class TunnelForegroundService
                             return
                         }
                     if (prefs?.resumeOnUnmetered == true) {
-                        if (startupJob?.isActive == true) {
+                        if (activeStartup != null) {
                             pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
                         } else {
                             pendingPolicyResumeGeneration.set(null)
@@ -501,7 +508,8 @@ class TunnelForegroundService
                         // Stale completion: a newer lifecycle command superseded this one.
                         return
                     }
-                    startupJob = null
+                    // P0-004: Coordinator clears startup ownership after processing.
+                    activeStartup = null
                     when (outcome) {
                         StartOutcome.VerifiedSuccess -> {
                             // P0-007: Do NOT clear metered allowance on success — it lasts through the run.
@@ -563,7 +571,7 @@ class TunnelForegroundService
             suspend fun startOffer() {
                 var generation = 0L
                 lifecycleMutex.withLock {
-                    if (startupJob?.isActive == true) {
+                    if (activeStartup != null) {
                         reporter.publishStatus(getString(R.string.service_msg_already_starting))
                         return
                     }
@@ -575,10 +583,11 @@ class TunnelForegroundService
                     }
                     generation = lifecycleGeneration.incrementAndGet()
                     nativeStopVerified.set(false)
-                    startupJob =
+                    val job =
                         serviceScope.launch {
                             doStartOffer(generation)
                         }
+                    activeStartup = ActiveStartup(generation, job)
                 }
             }
 
