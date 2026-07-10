@@ -8,10 +8,12 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
+import com.phillipchin.webrtctunnel.data.LifecycleCommand
+import com.phillipchin.webrtctunnel.data.PlatformOperations
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.StartOutcome
-import com.phillipchin.webrtctunnel.data.StartStatusVerificationException
 import com.phillipchin.webrtctunnel.data.StopStatusVerificationException
+import com.phillipchin.webrtctunnel.data.TunnelLifecycleCoordinator
 import com.phillipchin.webrtctunnel.data.TunnelRepository
 import com.phillipchin.webrtctunnel.data.classifyStartResult
 import com.phillipchin.webrtctunnel.model.NetworkType
@@ -30,9 +32,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -55,94 +55,14 @@ private fun stopFailureCode(error: Throwable): String =
         "stop_failed"
     }
 
-// P0-001: Ordered lifecycle command processor.
-// Bounded capacity — not unlimited (non-negotiable rule).
-private const val LIFECYCLE_COMMAND_CAPACITY = 32
-
 // P0-001: Coordinator-owned cleanup for verified-start failure (P0-001).
 // Uses StartOutcome from the data layer for startup classification.
-
-// P0-001: Coordinator-owned cleanup for verified-start failure.
-// Top-level (not a class member) so it doesn't count against TunnelForegroundService's
-// function budget. Takes dependencies as parameters to avoid coupling to the class.
-private data class UnverifiedStartContext(
-    val originalError: StartStatusVerificationException,
-    val startGeneration: Long,
-    val lifecycleGeneration: AtomicLong,
-    val stopStatusPollingAndJoin: suspend () -> Unit,
-    val repositoryStop: suspend () -> Result<Unit>,
-    val nativeStopVerified: AtomicBoolean,
-    val nativeRuntimeUncertain: AtomicBoolean,
-    val publishError: (message: String, code: String) -> Unit,
-)
-
-private suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext) {
-    if (context.lifecycleGeneration.get() != context.startGeneration) {
-        return
-    }
-    context.stopStatusPollingAndJoin()
-    context.repositoryStop().fold(
-        onSuccess = {
-            context.nativeStopVerified.set(true)
-            context.publishError(
-                context.originalError.message ?: "Native startup could not be verified",
-                "start_status_verification_failed",
-            )
-        },
-        onFailure = { cleanupError ->
-            context.nativeStopVerified.set(false)
-            // P0-004: Cleanup failure quarantines uncertain native runtime.
-            context.nativeRuntimeUncertain.set(true)
-            context.publishError(
-                buildString {
-                    append(
-                        context.originalError.message
-                            ?: "Native startup could not be verified",
-                    )
-                    append(". Cleanup also failed: ")
-                    append(
-                        SensitiveDataRedactor.redactText(
-                            cleanupError.message
-                                ?: "unknown cleanup failure",
-                        ),
-                    )
-                },
-                "start_verification_cleanup_failed",
-            )
-        },
-    )
-}
 
 // P0-001: All accepted lifecycle intentions flow through one ordered stream.
 // onStartCommand only submits; network policy also only submits.
 // The command processor drains in FIFO order, so command execution order
 // matches the order Android delivered the intents.
-private sealed interface LifecycleCommand {
-    data object StartOffer : LifecycleCommand
-
-    data object Pause : LifecycleCommand
-
-    data object Resume : LifecycleCommand
-
-    data object Stop : LifecycleCommand
-
-    data object AllowMeteredSession : LifecycleCommand
-
-    data class PolicyBlocked(
-        val reason: String,
-    ) : LifecycleCommand
-
-    data object PolicyAllowed : LifecycleCommand
-
-    data class RetryPolicyResume(
-        val expectedGeneration: Long,
-    ) : LifecycleCommand
-
-    data class StartupCompleted(
-        val generation: Long,
-        val outcome: StartOutcome,
-    ) : LifecycleCommand
-}
+// LifecycleCommand is imported from TunnelLifecycleCoordinator.
 
 class TunnelForegroundService
     @JvmOverloads
@@ -158,14 +78,8 @@ class TunnelForegroundService
         private lateinit var identityRepository: IdentityRepository
         private lateinit var networkPolicyManager: NetworkPolicyManager
         private lateinit var localAddressResolver: LocalAddressResolver
+        private lateinit var coordinator: TunnelLifecycleCoordinator
         private val serviceScope = CoroutineScope(SupervisorJob() + defaultDispatcher)
-
-        // P0-001: ordered command queue.
-        private val lifecycleCommands =
-            Channel<LifecycleCommand>(
-                capacity = LIFECYCLE_COMMAND_CAPACITY,
-            )
-        private val nextLifecycleSequence = AtomicLong(0)
 
         private var networkMonitorJob: Job? = null
         private var startupJob: Job? = null
@@ -225,10 +139,6 @@ class TunnelForegroundService
         // this real path rather than a synthetic test-only wrapper function.
         internal val offer = OfferCoordinator()
 
-        // Handles network policy commands separately from dispatchCommand to keep
-        // its cyclomatic complexity below the detekt threshold.
-        private val policyDispatcher = PolicyDispatcher()
-
         override fun onCreate() {
             super.onCreate()
             notifications = NotificationController(this)
@@ -245,18 +155,8 @@ class TunnelForegroundService
 
             // P0-001: command processor drains lifecycle commands in FIFO order.
             // Commands are processed sequentially to maintain ordering guarantees.
-            serviceScope.launch {
-                for (command in lifecycleCommands) {
-                    runCatching { dispatchCommand(command) }
-                        .onFailure { error ->
-                            if (error is CancellationException) throw error
-                            reporter.publishError(
-                                message = error.message ?: "Lifecycle command failed",
-                                code = "lifecycle_command_failed",
-                            )
-                        }
-                }
-            }
+            coordinator = TunnelLifecycleCoordinator(repository, platformOps, ioDispatcher)
+            coordinator.startCommandProcessor()
 
             // Network monitor still collects network events, but submits commands
             // through the same ordered queue instead of launching independent coroutines.
@@ -319,100 +219,9 @@ class TunnelForegroundService
             return START_NOT_STICKY
         }
 
-        // Dispatches a single lifecycle command to the appropriate coordinator action.
-        private suspend fun dispatchCommand(command: LifecycleCommand) {
-            when (command) {
-                LifecycleCommand.StartOffer -> {
-                    // P1-012: Block duplicate starts in transitional states.
-                    if (!repository.status.value.serviceState.isTunnelActiveOrStarting()) {
-                        offer.startOffer()
-                    }
-                }
-                LifecycleCommand.Pause -> offer.pause()
-                LifecycleCommand.Resume -> offer.resume()
-                LifecycleCommand.Stop -> offer.stopServiceWork()
-                LifecycleCommand.AllowMeteredSession -> offer.allowMeteredForSessionAndStart()
-                is LifecycleCommand.PolicyBlocked -> offer.pauseForPolicy(command.reason)
-                LifecycleCommand.PolicyAllowed -> policyDispatcher.handlePolicyAllowed()
-                is LifecycleCommand.RetryPolicyResume ->
-                    policyDispatcher.handleRetryPolicyResume(command.expectedGeneration)
-                is LifecycleCommand.StartupCompleted ->
-                    dispatchStartupCompleted(command)
-            }
-        }
-
         // P0-001: Submit a lifecycle command through the ordered queue.
         private fun submitLifecycleCommand(command: LifecycleCommand) {
-            nextLifecycleSequence.incrementAndGet()
-            val result = lifecycleCommands.trySend(command)
-            if (result.isFailure) {
-                reporter.publishError(
-                    message = "Unable to queue lifecycle command ${command::class.simpleName}",
-                    code = "lifecycle_command_queue_failed",
-                )
-            }
-        }
-
-        // P0-001: Coordinator owns startup completion decisions.
-        private suspend fun dispatchStartupCompleted(command: LifecycleCommand.StartupCompleted) {
-            if (lifecycleGeneration.get() != command.generation) {
-                // Stale completion: a newer lifecycle command superseded this one.
-                return
-            }
-            startupJob = null
-            when (val outcome = command.outcome) {
-                StartOutcome.VerifiedSuccess -> {
-                    // P0-007: Do NOT clear metered allowance on success — it lasts through the run.
-                    pausedByPolicy.set(false)
-                    pendingPolicyResumeGeneration.set(null)
-                    reporter.publishStatus()
-                    reporter.startStatusPolling()
-                }
-                is StartOutcome.NativeFailure -> {
-                    // P0-001: Native start failure (repository.start() returned failure).
-                    offer.clearTemporaryMeteredAllowance()
-                    val pending = pendingPolicyResumeGeneration.getAndSet(null)
-                    if (pending == command.generation) {
-                        submitLifecycleCommand(
-                            LifecycleCommand.RetryPolicyResume(
-                                expectedGeneration = command.generation,
-                            ),
-                        )
-                    } else {
-                        reporter.publishError(
-                            message = outcome.error.message ?: "Unable to start tunnel",
-                            code = "native_start_failed",
-                        )
-                    }
-                }
-                is StartOutcome.VerificationFailure -> {
-                    // P0-001: Verification failure (native succeeded but state not verified).
-                    cleanupUnverifiedStart(
-                        UnverifiedStartContext(
-                            outcome.error,
-                            command.generation,
-                            lifecycleGeneration,
-                            reporter::stopStatusPollingAndJoin,
-                            { repository.stop() },
-                            nativeStopVerified,
-                            nativeRuntimeUncertain,
-                            reporter::publishError,
-                        ),
-                    )
-                    offer.clearTemporaryMeteredAllowance()
-                }
-                is StartOutcome.UnexpectedFailure -> {
-                    // P0-001: Unexpected failure (unhandled exception during startup).
-                    offer.clearTemporaryMeteredAllowance()
-                    reporter.publishError(
-                        message = outcome.error.message ?: "Unexpected startup failure",
-                        code = "startup_unexpected_failure",
-                    )
-                }
-                StartOutcome.Aborted -> {
-                    // Startup was aborted by control flow (stale generation).
-                }
-            }
+            coordinator.submitCommand(command)
         }
 
         // Removed: publishError was a thin wrapper; callers use reporter.publishError directly.
@@ -469,36 +278,6 @@ class TunnelForegroundService
             val job = startupJob
             startupJob = null
             job?.cancelAndJoin()
-        }
-
-        // Handles network policy resume commands. Extracted from dispatchCommand to keep
-        // its cyclomatic complexity below the detekt threshold.
-        private inner class PolicyDispatcher {
-            suspend fun handlePolicyAllowed() {
-                // P0-004: Quarantine blocks automatic restart.
-                if (nativeRuntimeUncertain.get() || !pausedByPolicy.get()) {
-                    pendingPolicyResumeGeneration.set(null)
-                    return
-                }
-                if (runCatching { configRepository.preferences.first() }
-                        .getOrNull()?.resumeOnUnmetered == true
-                ) {
-                    if (startupJob?.isActive == true) {
-                        pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
-                    } else {
-                        pendingPolicyResumeGeneration.set(null)
-                        offer.resume()
-                    }
-                }
-            }
-
-            suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
-                // P0-004: Quarantine blocks automatic restart.
-                if (nativeRuntimeUncertain.get()) return
-                if (lifecycleGeneration.get() != expectedGeneration) return
-                pendingPolicyResumeGeneration.set(null)
-                offer.resume()
-            }
         }
 
         // Notification rendering and status polling for the active tunnel.
@@ -590,6 +369,42 @@ class TunnelForegroundService
                 job?.cancelAndJoin()
             }
         }
+
+        // PlatformOperations implementation for TunnelLifecycleCoordinator.
+        private val platformOps: PlatformOperations =
+            object : PlatformOperations {
+                override fun onStatus(message: String) {
+                    reporter.publishStatus(message)
+                }
+
+                override fun publishStatus() {
+                    reporter.publishStatus()
+                }
+
+                override fun onError(
+                    message: String,
+                    code: String,
+                    state: ServiceState,
+                ) {
+                    reporter.publishError(message, code, state)
+                }
+
+                override fun startStatusPolling() {
+                    reporter.startStatusPolling()
+                }
+
+                override fun stopStatusPolling() {
+                    reporter.stopStatusPolling()
+                }
+
+                override fun serviceStopForeground() {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                }
+
+                override fun serviceStopSelf() {
+                    stopSelf()
+                }
+            }
 
         // Offer-mode start plus pause/stop transitions, guarded by the lifecycle generation.
         inner class OfferCoordinator {

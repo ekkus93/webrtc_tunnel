@@ -326,9 +326,9 @@ interface PlatformOperations {
 
     fun stopStatusPolling()
 
-    fun stopForeground()
+    fun serviceStopForeground()
 
-    fun stopSelf()
+    fun serviceStopSelf()
 }
 
 /**
