@@ -4,8 +4,8 @@ import com.phillipchin.webrtctunnel.model.ServiceState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 
 /**
@@ -30,9 +30,10 @@ class TunnelLifecycleCoordinator(
         check(processorJob == null) {
             "Lifecycle coordinator already started"
         }
-        processorJob = scope.launch {
-            processCommands()
-        }
+        processorJob =
+            scope.launch {
+                processCommands()
+            }
     }
 
     /**
@@ -55,13 +56,10 @@ class TunnelLifecycleCoordinator(
 
     private suspend fun processCommands() {
         for (command in commands) {
-            try {
-                handleCommand(command)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
+            runCatching { handleCommand(command) }.onFailure {
+                if (it is CancellationException) throw it
                 lifecycleOps.onError(
-                    error.message ?: "Lifecycle command failed",
+                    it.message ?: "Lifecycle command failed",
                     "lifecycle_command_failed",
                 )
             }
@@ -125,12 +123,20 @@ interface CoordinatorOperations {
  */
 sealed class LifecycleCommand {
     object StartOffer : LifecycleCommand()
+
     object Pause : LifecycleCommand()
+
     object Resume : LifecycleCommand()
+
     object Stop : LifecycleCommand()
+
     object AllowMeteredSession : LifecycleCommand()
+
     data class PolicyBlocked(val reason: String) : LifecycleCommand()
+
     object PolicyAllowed : LifecycleCommand()
+
     data class RetryPolicyResume(val expectedGeneration: Long) : LifecycleCommand()
+
     data class StartupCompleted(val generation: Long, val outcome: StartOutcome) : LifecycleCommand()
 }

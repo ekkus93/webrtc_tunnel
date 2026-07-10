@@ -91,7 +91,7 @@
 
    **A:** 
 
-   Do not relax the integrity requirement into a vague “attempted restore” success condition.
+   Do not relax the integrity requirement into a vague "attempted restore" success condition.
 
    Clarify it instead:
 
@@ -115,7 +115,7 @@
 
    For P1-006, extend the existing startup result payload with a policy-blocked outcome, or the current equivalent, so initial policy block returns through the same completion path.
 
-   The prerequisite is not “create the command”; it is “make the existing completion model cover initial policy block and preserve coordinator ownership.”
+   The prerequisite is not "create the command"; it is "make the existing completion model cover initial policy block and preserve coordinator ownership."
 
 9. **Q:** (P0-005) Should `prepareStartupInputs()` have its own outer boundary separate from `runNativeStart()` if preparation has distinct failure modes?
 
@@ -131,132 +131,164 @@
 
     **A:** 
 
-   From the reviewed tree, the dangerous `snapshot()` + mutation + revision-checked rollback pattern was in the forwards ViewModel/repository workflow. I did not identify a service-layer caller that needs this rollback pattern.
+    From the reviewed tree, the dangerous `snapshot()` + mutation + revision-checked rollback pattern was in the forwards ViewModel/repository workflow. I did not identify a service-layer caller that needs this rollback pattern.
 
-   Treat this primarily as a `ForwardsViewModel` + `ForwardsRepository` change.
+    Treat this primarily as a `ForwardsViewModel` + `ForwardsRepository` change.
 
-   Before editing, still search the repository for:
+    Before editing, still search the repository for:
 
-   ```text
-   snapshot(
-   saveIfRevisionMatches(
-   ForwardsRepository.save(
-   ForwardsConfigStore.saveForwards(
-   ```
+    ```text
+    snapshot(
+    saveIfRevisionMatches(
+    ForwardsRepository.save(
+    ForwardsConfigStore.saveForwards(
+    ```
 
-   Migrate every mutation caller found. If another caller exists, it must use the same receipt API rather than keeping a bypass.
+    Migrate every mutation caller found. If another caller exists, it must use the same receipt API rather than keeping a bypass.
 
 11. **Q:** (P1-003) Is there an existing config-write mutex, or does this task need to introduce one?
 
     **A:** 
 
-   Yes. There is already a config write mutex / serialized atomic writer in `ConfigRepository`.
+    Yes. There is already a config write mutex / serialized atomic writer in `ConfigRepository`.
 
-   Do **not** create a second mutex.
+    Do **not** create a second mutex.
 
-   P1-003 is to finish the invariant:
+    P1-003 is to finish the invariant:
 
-   - route every production `config.toml` writer through the existing mutex-backed atomic writer;
-   - remove direct `configFile.writeText(...)` production bypasses;
-   - ensure unique temp files;
-   - clean temp files in `finally`;
-   - add the overlapping-writer regression test.
+    - route every production `config.toml` writer through the existing mutex-backed atomic writer;
+    - remove direct `configFile.writeText(...)` production bypasses;
+    - ensure unique temp files;
+    - clean temp files in `finally`;
+    - add the overlapping-writer regression test.
 
-   Reuse and strengthen the existing abstraction.
+    Reuse and strengthen the existing abstraction.
 
 12. **Q:** (P1-006) Confirm whether P1-006 cannot start until P0-004 is complete.
 
     **A:** 
 
-   Confirmed.
+    Confirmed.
 
-   P1-006 depends on the startup completion/coordinator model being correct first. Complete P0-004 before implementing final P1-006 behavior.
+    P1-006 depends on the startup completion/coordinator model being correct first. Complete P0-004 before implementing final P1-006 behavior.
 
-   Order:
+    Order:
 
-   1. fix completion-driven startup ownership and one-event retry;
-   2. add or extend the existing completion payload with `PolicyBlocked`;
-   3. implement initially-blocked startup auto-resume through that path.
+    1. fix completion-driven startup ownership and one-event retry;
+    2. add or extend the existing completion payload with `PolicyBlocked`;
+    3. implement initially-blocked startup auto-resume through that path.
 
-   Do not build P1-006 on the current `startupJob?.isActive` behavior.
+    Do not build P1-006 on the current `startupJob?.isActive` behavior.
 
 13. **Q:** (Cross-Cutting #1) P1-006 depends on P0-004's `StartupCompletion` model — is this dependency explicit and acknowledged?
 
     **A:** 
 
-   Yes. The dependency is explicit and acknowledged.
+    Yes. The dependency is explicit and acknowledged.
 
-   P1-006 must reuse the completion-driven lifecycle model completed in P0-004. The initial policy-block case should become another typed completion handled by the coordinator after startup ownership is cleared.
+    P1-006 must reuse the completion-driven lifecycle model completed in P0-004. The initial policy-block case should become another typed completion handled by the coordinator after startup ownership is cleared.
 
-   Update the TODO dependency note so Claude Code does not attempt P1-006 independently or introduce a parallel completion abstraction.
+    Update the TODO dependency note so Claude Code does not attempt P1-006 independently or introduce a parallel completion abstraction.
 
 14. **Q:** (Cross-Cutting #4) `NativeRuntimeQuarantinedException` — should this be a custom `Exception` subclass or a sealed interface/result type?
 
     **A:** 
 
-   Use a small custom exception subclass carried inside `Result.failure`.
+    Use a small custom exception subclass carried inside `Result.failure`.
 
-   Recommended:
+    Recommended:
 
-   ```kotlin
-   internal class NativeRuntimeQuarantinedException(
-       message: String,
-   ) : IllegalStateException(message)
-   ```
+    ```kotlin
+    internal class NativeRuntimeQuarantinedException(
+        message: String,
+    ) : IllegalStateException(message)
+    ```
 
-   Then:
+    Then:
 
-   ```kotlin
-   private fun requireRuntimeStartAllowed(): Result<Unit>
-   ```
+    ```kotlin
+    private fun requireRuntimeStartAllowed(): Result<Unit>
+    ```
 
-   can return `Result.failure(NativeRuntimeQuarantinedException(...))`.
+    can return `Result.failure(NativeRuntimeQuarantinedException(...))`.
 
-   This is the smallest change and fits the current `Result`-based guard style. Do not add a new sealed hierarchy solely for quarantine unless the current lifecycle API already has a typed start-denial result that can be extended cleanly.
+    This is the smallest change and fits the current `Result`-based guard style. Do not add a new sealed hierarchy solely for quarantine unless the current lifecycle API already has a typed start-denial result that can be extended cleanly.
 
 15. **Q:** (Cross-Cutting #5) Config file mutex (P1-003) and identity zeroization (P0-006) both touch config/identity file I/O — should these be coordinated in the same pass?
 
     **A:** 
 
-   No. Keep them as separate scoped passes/commits.
+    No. Keep them as separate scoped passes/commits.
 
-   Identity zeroization is a P0 secret-ownership invariant. Config write serialization is a P1 persistence/concurrency invariant. They should not be coupled merely because both involve file-adjacent code.
+    Identity zeroization is a P0 secret-ownership invariant. Config write serialization is a P1 persistence/concurrency invariant. They should not be coupled merely because both involve file-adjacent code.
 
-   Recommended order:
+    Recommended order:
 
-   1. P0-006 identity zeroization;
-   2. validate focused identity tests;
-   3. later P1-003 config serialization.
+    1. P0-006 identity zeroization;
+    2. validate focused identity tests;
+    3. later P1-003 config serialization.
 
-   Coordinate only if a genuinely shared helper must change. Otherwise keep the blast radius small.
+    Coordinate only if a genuinely shared helper must change. Otherwise keep the blast radius small.
 
 16. **Q:** (Cross-Cutting #6) The TODO requires deleting tests before replacement tests are added. Should the deleted tests be removed first, or should replacement tests be added alongside before cleanup?
 
     **A:** 
 
-   Add the replacement regression first, or rewrite the incorrect test in the same scoped commit. Do not create a coverage gap.
+    Add the replacement regression first, or rewrite the incorrect test in the same scoped commit. Do not create a coverage gap.
 
-   Preferred sequence:
+    Preferred sequence:
 
-   1. add the correct invariant test and confirm it fails against current code;
-   2. implement the fix;
-   3. remove or rewrite the workaround/opposite-invariant test;
-   4. run the focused suite.
+    1. add the correct invariant test and confirm it fails against current code;
+    2. implement the fix;
+    3. remove or rewrite the workaround/opposite-invariant test;
+    4. run the focused suite.
 
-   For the repeated-network-event workaround, the replacement one-event test should exist before the loop is removed.
+    For the repeated-network-event workaround, the replacement one-event test should exist before the loop is removed.
 
-   For the restart-after-failed-STOP test, rewrite it in the same commit to:
+    For the restart-after-failed-STOP test, rewrite it in the same commit to:
 
-   ```text
-   STOP fails
-   quarantine active
-   START blocked
-   STOP retry succeeds
-   quarantine clears
-   START allowed
-   ```
+    ```text
+    STOP fails
+    quarantine active
+    START blocked
+    STOP retry succeeds
+    quarantine clears
+    START allowed
+    ```
 
-   Never delete coverage first and plan to restore it later.
+    Never delete coverage first and plan to restore it later.
+
+---
+
+## Still open — need user decisions
+
+17. **Q:** `runCatching` vs `try`/`catch` in `TunnelLifecycleCoordinator.processCommands()`: The spec explicitly marks `runCatching` as "Wrong" for critical paths, requiring `try`/`catch` with `CancellationException` rethrown. Should `processCommands()` be converted to `try`/`catch`, or is `runCatching` acceptable where the result is handled?
+
+   **A:** 
+
+18. **Q:** The `failedAutoResumeLeavesPausedByPolicyTrueForNextRetry` test still loops network events until success via `waitForCondition` that re-emits `onAvailable` on each iteration. Should this test be rewritten to the one-event invariant (send exactly one event, assert outcome), or does the loop serve a different testing purpose here?
+
+   **A:** 
+
+19. **Q:** Has Logs generation ordering (P1-007) been implemented? The spec requires generation checks for log list and log error together, but this wasn't visible in the files reviewed.
+
+   **A:** 
+
+20. **Q:** Should status poll failures be published as visible errors with code `status_poll_failed`, or is silent swallowing intentional ("best-effort" design)?
+
+   **A:** 
+
+21. **Q:** Is notification retry wired through `submitLifecycleCommand` (thus going through the coordinator and guarded by quarantine), or does it have a direct path that needs the `requireRuntimeStartAllowed()` guard explicitly added?
+
+   **A:** 
+
+22. **Q:** Have sentinel-byte tests been written for P0-006 identity zeroization failure paths? The spec requires tests asserting zeroization on every failure path.
+
+   **A:** 
+
+23. **Q:** Should `onDestroy()` update `nativeStopVerified` after performing fallback `repository.stop()`, or is this intentionally omitted because the service is being destroyed?
+
+   **A:** 
 
 ---
 

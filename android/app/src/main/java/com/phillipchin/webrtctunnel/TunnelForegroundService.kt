@@ -89,6 +89,7 @@ class TunnelForegroundService
         private val serviceScope = CoroutineScope(SupervisorJob() + defaultDispatcher)
 
         private var networkMonitorJob: Job? = null
+
         // P0-004: Explicit startup ownership — coordinator is the only authority that clears it.
         private var activeStartup: ActiveStartup? = null
         private var statusPollJob: Job? = null
@@ -196,9 +197,10 @@ class TunnelForegroundService
                                     ),
                                 )
                             }
-                        }.onFailure { error ->
+                        }.onFailure {
+                            if (it is CancellationException) throw it
                             reporter.publishError(
-                                message = error.message ?: "Network policy monitor failed",
+                                message = it.message ?: "Network policy monitor failed",
                                 code = "network_policy_monitor_failed",
                             )
                         }
@@ -359,7 +361,12 @@ class TunnelForegroundService
                         while (active && !pausedByPolicy.get()) {
                             delay(STATUS_POLL_INTERVAL_MS)
                             if (pausedByPolicy.get()) break
-                            withContext(ioDispatcher) { runCatching { repository.refreshStatus() } }
+                            withContext(ioDispatcher) {
+                                runCatching { repository.refreshStatus() }.onFailure {
+                                    if (it is CancellationException) throw it
+                                    // Silently swallow — status poll is best-effort
+                                }
+                            }
                             val state = repository.status.value.serviceState
                             if (state != lastState) {
                                 lastState = state
@@ -401,6 +408,7 @@ class TunnelForegroundService
             }
             return Result.success(Unit)
         }
+
         private val coordinatorOps: CoordinatorOperations =
             object : CoordinatorOperations {
                 override fun onError(
@@ -415,9 +423,10 @@ class TunnelForegroundService
                     requireRuntimeStartAllowed()
                         .getOrElse { error ->
                             reporter.publishError(
-                                message = SensitiveDataRedactor.redactText(
-                                    error.message ?: "Runtime restart is blocked"
-                                ),
+                                message =
+                                    SensitiveDataRedactor.redactText(
+                                        error.message ?: "Runtime restart is blocked",
+                                    ),
                                 code = "native_runtime_quarantined",
                             )
                             return
@@ -435,9 +444,10 @@ class TunnelForegroundService
                     requireRuntimeStartAllowed()
                         .getOrElse { error ->
                             reporter.publishError(
-                                message = SensitiveDataRedactor.redactText(
-                                    error.message ?: "Runtime restart is blocked"
-                                ),
+                                message =
+                                    SensitiveDataRedactor.redactText(
+                                        error.message ?: "Runtime restart is blocked",
+                                    ),
                                 code = "native_runtime_quarantined",
                             )
                             return
@@ -453,9 +463,10 @@ class TunnelForegroundService
                     requireRuntimeStartAllowed()
                         .getOrElse { error ->
                             reporter.publishError(
-                                message = SensitiveDataRedactor.redactText(
-                                    error.message ?: "Runtime restart is blocked"
-                                ),
+                                message =
+                                    SensitiveDataRedactor.redactText(
+                                        error.message ?: "Runtime restart is blocked",
+                                    ),
                                 code = "native_runtime_quarantined",
                             )
                             return
@@ -468,28 +479,26 @@ class TunnelForegroundService
                 }
 
                 override suspend fun handlePolicyAllowed() {
-                    requireRuntimeStartAllowed()
-                        .getOrElse {
-                            pendingPolicyResumeGeneration.set(null)
-                            return
-                        }
-                    if (!pausedByPolicy.get()) {
+                    if (requireRuntimeStartAllowed().isFailure || !pausedByPolicy.get()) {
                         pendingPolicyResumeGeneration.set(null)
                         return
                     }
-                    val prefs = runCatching { configRepository.preferences.first() }
-                        .getOrElse {
+                    runCatching { configRepository.preferences.first() }.fold(
+                        onSuccess = { prefs ->
+                            if (prefs.resumeOnUnmetered) {
+                                if (activeStartup != null) {
+                                    pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
+                                } else {
+                                    pendingPolicyResumeGeneration.set(null)
+                                    offer.resume()
+                                }
+                            }
+                        },
+                        onFailure = {
+                            if (it is CancellationException) throw it
                             pendingPolicyResumeGeneration.set(null)
-                            return
-                        }
-                    if (prefs?.resumeOnUnmetered == true) {
-                        if (activeStartup != null) {
-                            pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
-                        } else {
-                            pendingPolicyResumeGeneration.set(null)
-                            offer.resume()
-                        }
-                    }
+                        },
+                    )
                 }
 
                 override suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
@@ -543,7 +552,7 @@ class TunnelForegroundService
                                     generation,
                                     lifecycleGeneration,
                                     reporter::stopStatusPollingAndJoin,
-                                    { repository.stop() },
+                                    { repository.stop().getOrThrow() },
                                     nativeStopVerified,
                                     nativeRuntimeUncertain,
                                     reporter::publishError,
@@ -624,9 +633,9 @@ class TunnelForegroundService
                     throw StartupAborted()
                 }
                 val identity =
-                    withContext(ioDispatcher) {
-                        runCatching { identityRepository.readPrivateIdentityPlaintext() }
-                    }
+                    runCatching {
+                        withContext(ioDispatcher) { identityRepository.readPrivateIdentityPlaintext() }
+                    }.onFailure { if (it is CancellationException) throw it }
                         .getOrElse {
                             abortStartup("Unable to decrypt private identity: ${it.message}", "identity_decrypt_failed")
                         }
@@ -773,6 +782,7 @@ class TunnelForegroundService
                                 nativeStopVerified.set(true)
                                 pausedByPolicy.set(true)
                                 repository.setPolicyBlocked(reason)
+                                clearTemporaryMeteredAllowance()
                                 reporter.publishStatus(reason)
                             },
                             onFailure = {

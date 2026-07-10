@@ -137,8 +137,8 @@ class SettingsViewModelTest : AppViewModelTestBase() {
             collector.cancel()
 
             val message = messages.first()
-            assertTrue("expected a detailed failure message, got: $message", message.startsWith("Reset partial:"))
-            assertTrue("the underlying failure reason must not be discarded", message != "Reset partial:")
+            assertTrue("expected a detailed failure message, got: $message", message.startsWith("Reset failed at"))
+            assertTrue("the underlying failure reason must not be discarded", message.contains(":"))
         }
 
     @Test

@@ -3,8 +3,9 @@ package com.phillipchin.webrtctunnel.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ForwardsMutationBlocked
+import com.phillipchin.webrtctunnel.data.ForwardsMutationReceipt
 import com.phillipchin.webrtctunnel.data.ForwardsRevisionMismatchException
-import com.phillipchin.webrtctunnel.data.ForwardsSnapshot
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.describeForwardsFailure
 import com.phillipchin.webrtctunnel.model.ForwardConfig
@@ -55,25 +56,20 @@ class ForwardsViewModel(
         viewModelScope.launch {
             _isBusy.value = true
             try {
-                val beforeSnapshot = deps.forwardsRepository.snapshot()
-                val mutationResult = deps.forwardsRepository.upsert(forward)
-                report(
-                    if (!mutationResult.validationResult.valid) {
-                        mutationResult.validationResult.message ?: "Forward update failed"
-                    } else {
-                        val sync = withContext(ioDispatcher) { regenerateActiveConfig() }
-                        if (!sync.valid) {
-                            rollbackAfterConfigSyncFailure(
-                                beforeSnapshot,
-                                mutationResult.revision,
-                                sync,
-                                "Forward update failed",
-                            )
-                        } else {
-                            "Forward saved"
-                        }
-                    },
-                )
+                // P1-001: Use receipt-based atomic upsert.
+                val receipt: ForwardsMutationReceipt =
+                    deps.forwardsRepository.upsertWithReceipt(forward).getOrElse { error ->
+                        report(mapMutationError(error))
+                        return@launch
+                    }
+
+                val sync = withContext(ioDispatcher) { regenerateActiveConfig() }
+                if (sync.valid) {
+                    report("Forward saved")
+                } else {
+                    // Config sync failed — attempt to rollback the mutation via receipt.
+                    rollbackWithReceipt(receipt, sync.message ?: "Forward update failed")
+                }
             } finally {
                 _isBusy.value = false
             }
@@ -85,63 +81,62 @@ class ForwardsViewModel(
         viewModelScope.launch {
             _isBusy.value = true
             try {
-                val beforeSnapshot = deps.forwardsRepository.snapshot()
-                val mutationResult = deps.forwardsRepository.delete(forwardId)
-                report(
-                    if (!mutationResult.validationResult.valid) {
-                        mutationResult.validationResult.message ?: "Forward delete failed"
-                    } else {
-                        val sync = withContext(ioDispatcher) { regenerateActiveConfig() }
-                        if (!sync.valid) {
-                            rollbackAfterConfigSyncFailure(
-                                beforeSnapshot,
-                                mutationResult.revision,
-                                sync,
-                                "Forward delete failed",
-                            )
-                        } else {
-                            "Forward deleted"
-                        }
-                    },
-                )
+                // P1-001: Use receipt-based atomic delete.
+                val receipt: ForwardsMutationReceipt =
+                    deps.forwardsRepository.deleteWithReceipt(forwardId).getOrElse { error ->
+                        report(mapMutationError(error))
+                        return@launch
+                    }
+
+                val sync = withContext(ioDispatcher) { regenerateActiveConfig() }
+                if (sync.valid) {
+                    report("Forward deleted")
+                } else {
+                    // Config sync failed — attempt to rollback the mutation via receipt.
+                    rollbackWithReceipt(receipt, sync.message ?: "Forward delete failed")
+                }
             } finally {
                 _isBusy.value = false
             }
         }
     }
 
+    /** Maps a forwards mutation error to a user-visible message. */
+    private fun mapMutationError(error: Throwable): String {
+        return when (error) {
+            is ForwardsMutationBlocked -> error.message ?: "Forwards mutation blocked"
+            else -> describeForwardsFailure(error)
+        }
+    }
+
     /**
-     * Rolls the in-memory/persisted forwards list back to [snapshot] after [syncFailure] blocked
-     * activating the change, and reports whichever failure(s) actually occurred (P0-004): a
-     * rollback failure must never be silently ignored, since it means the saved forwards file
-     * and the active config have now diverged.
+     * P1-001: Rolls the mutation back using the [receipt].
+     * If the rollback fails due to a revision mismatch (a newer mutation happened),
+     * that is preserved. Otherwise, the rollback failure is reported.
      */
-    private suspend fun rollbackAfterConfigSyncFailure(
-        snapshot: ForwardsSnapshot,
-        mutationRevision: Long,
-        syncFailure: ValidationResult,
-        fallbackMessage: String,
-    ): String {
-        val original = syncFailure.message ?: fallbackMessage
-        // Rollback targets the revision AFTER the mutation, so the check passes when
-        // no newer concurrent mutation happened. The forwards to restore are from the
-        // snapshot taken BEFORE the mutation.
-        return deps.forwardsRepository.saveIfRevisionMatches(
-            expectedRevision = mutationRevision,
-            forwards = snapshot.forwards,
-        ).fold(
-            onSuccess = { original },
+    private suspend fun rollbackWithReceipt(
+        receipt: ForwardsMutationReceipt,
+        syncFailureMessage: String,
+    ) {
+        deps.forwardsRepository.rollbackReceipt(receipt).fold(
+            onSuccess = {
+                report(syncFailureMessage)
+            },
             onFailure = { rollbackError ->
                 when (rollbackError) {
                     is ForwardsRevisionMismatchException -> {
                         // Revision changed: newer mutation happened, don't overwrite it.
-                        "Activation failed. Automatic rollback was skipped because " +
-                            "forwards changed again. The newer changes were left untouched."
+                        report(
+                            "Activation failed. Automatic rollback was skipped because " +
+                                "forwards changed again. The newer changes were left untouched.",
+                        )
                     }
                     else -> {
                         val rollbackMessage = describeForwardsFailure(rollbackError)
-                        "$original. Rollback also failed; the forward change remains saved " +
-                            "but was not activated: $rollbackMessage"
+                        report(
+                            "$syncFailureMessage. Rollback also failed; the forward change " +
+                                "remains saved but was not activated: $rollbackMessage",
+                        )
                     }
                 }
             },

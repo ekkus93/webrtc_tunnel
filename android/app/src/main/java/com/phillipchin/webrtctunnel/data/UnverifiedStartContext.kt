@@ -1,6 +1,5 @@
 package com.phillipchin.webrtctunnel.data
 
-import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -23,23 +22,16 @@ data class UnverifiedStartContext(
  * Returns true if cleanup succeeded, false otherwise.
  */
 suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext): Boolean {
-    val result = runCatching {
-        if (context.generation == context.currentGeneration.get()) {
-            context.stopStatusPollingAndJoin()
-            context.stop()
-        }
+    if (context.generation != context.currentGeneration.get()) return false
+    context.stopStatusPollingAndJoin()
+    val stopResult = runCatching { context.stop() }
+    stopResult.onFailure {
+        context.nativeRuntimeUncertain.set(true)
+        context.publishError(
+            it.message ?: "Failed to cleanup unverified start",
+            "unverified_start_cleanup_failed",
+        )
     }
-    result.fold(
-        onSuccess = {
-            context.nativeStopVerified.set(true)
-        },
-        onFailure = {
-            context.nativeRuntimeUncertain.set(true)
-            context.publishError(
-                it.message ?: "Failed to cleanup unverified start",
-                "unverified_start_cleanup_failed",
-            )
-        },
-    )
-    return result.isSuccess
+    context.nativeStopVerified.set(stopResult.isSuccess)
+    return stopResult.isSuccess
 }
