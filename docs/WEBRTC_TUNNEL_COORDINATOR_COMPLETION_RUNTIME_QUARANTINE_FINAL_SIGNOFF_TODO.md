@@ -907,17 +907,39 @@ no success snackbar
 
 # P2 tasks
 
-## P2-001 — Consider extracting TunnelLifecycleCoordinator
+## P2-001 — Extract TunnelLifecycleCoordinator
 
-Deferred.
+**Status:** In Progress
 
-## P2-002 — Consider typed StartOutcome through JNI
+Extracted coordinator class to `TunnelLifecycleCoordinator.kt`.
+Coordinator owns:
+- Ordered command processing (FIFO via bounded channel)
+- Generation tracking (prevents stale completions)
+- Startup job lifecycle
+- Quarantine state (blocks auto-restart after cleanup failures)
+- Policy pause state
+- Metered allowance tracking
 
-Deferred.
+Platform-specific operations delegated through `PlatformOperations` interface.
 
-## P2-003 — Consider transactional multi-file settings reset
+## P2-002 — Typed StartOutcome through JNI
 
-Deferred.
+**Status:** In Progress
+
+Created `StartOutcome.kt` with typed result for JNI start operations.
+Moves classification closer to the JNI boundary, replacing post-hoc `StartupCompletion`
+classification in the coordinator.
+
+## P2-003 — Transactional multi-file settings reset
+
+**Status:** Implemented
+
+Created `TransactionalResetCoordinator` with rollback capability.
+Provides atomic multi-file reset with:
+- Mutex-serialized execution
+- Stage-by-stage outcome tracking
+- Automatic rollback on partial failure
+- Explicit reporting of which stages succeeded/failed
 
 ---
 
