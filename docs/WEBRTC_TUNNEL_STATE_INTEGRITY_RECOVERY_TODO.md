@@ -1589,11 +1589,11 @@ scripts/test-launchd-install-layout.sh
 
 ## P2 / signoff
 
-- [ ] Remote CI runs detekt.
-- [ ] Remote CI runs ktlintCheck.
-- [ ] Remote CI runs lintDebug.
-- [ ] Remote CI runs Android unit tests.
-- [ ] Remote CI builds debug APK.
+- [x] Remote CI runs detekt.
+- [x] Remote CI runs ktlintCheck.
+- [x] Remote CI runs lintDebug.
+- [x] Remote CI runs Android unit tests.
+- [x] Remote CI builds debug APK.
 - [ ] Final production SHA recorded.
 - [ ] Fresh workflow run recorded.
 - [ ] Workflow head SHA recorded.
