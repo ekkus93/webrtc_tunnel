@@ -9,9 +9,11 @@ import androidx.core.app.NotificationCompat
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.data.StartOutcome
 import com.phillipchin.webrtctunnel.data.StartStatusVerificationException
 import com.phillipchin.webrtctunnel.data.StopStatusVerificationException
 import com.phillipchin.webrtctunnel.data.TunnelRepository
+import com.phillipchin.webrtctunnel.data.classifyStartResult
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -58,36 +60,7 @@ private fun stopFailureCode(error: Throwable): String =
 private const val LIFECYCLE_COMMAND_CAPACITY = 32
 
 // P0-001: Coordinator-owned cleanup for verified-start failure (P0-001).
-// Classifies the startup outcome so the coordinator knows whether a verified
-// native stop is required.
-private sealed interface StartupCompletion {
-    data object VerifiedSuccess : StartupCompletion
-
-    data class NativeStartFailure(
-        val error: Throwable,
-    ) : StartupCompletion
-
-    data class VerificationFailure(
-        val error: StartStatusVerificationException,
-    ) : StartupCompletion
-
-    data class UnexpectedFailure(
-        val error: Throwable,
-    ) : StartupCompletion
-}
-
-// P0-001: Map a repository start result to a startup completion.
-private fun classifyStartupResult(result: Result<Unit>): StartupCompletion =
-    result.fold(
-        onSuccess = { StartupCompletion.VerifiedSuccess },
-        onFailure = { error ->
-            if (error is StartStatusVerificationException) {
-                StartupCompletion.VerificationFailure(error)
-            } else {
-                StartupCompletion.NativeStartFailure(error)
-            }
-        },
-    )
+// Uses StartOutcome from the data layer for startup classification.
 
 // P0-001: Coordinator-owned cleanup for verified-start failure.
 // Top-level (not a class member) so it doesn't count against TunnelForegroundService's
@@ -167,7 +140,7 @@ private sealed interface LifecycleCommand {
 
     data class StartupCompleted(
         val generation: Long,
-        val completion: StartupCompletion,
+        val outcome: StartOutcome,
     ) : LifecycleCommand
 }
 
@@ -387,15 +360,15 @@ class TunnelForegroundService
                 return
             }
             startupJob = null
-            when (val completion = command.completion) {
-                is StartupCompletion.VerifiedSuccess -> {
+            when (val outcome = command.outcome) {
+                StartOutcome.VerifiedSuccess -> {
                     // P0-007: Do NOT clear metered allowance on success — it lasts through the run.
                     pausedByPolicy.set(false)
                     pendingPolicyResumeGeneration.set(null)
                     reporter.publishStatus()
                     reporter.startStatusPolling()
                 }
-                is StartupCompletion.NativeStartFailure -> {
+                is StartOutcome.NativeFailure -> {
                     // P0-001: Native start failure (repository.start() returned failure).
                     offer.clearTemporaryMeteredAllowance()
                     val pending = pendingPolicyResumeGeneration.getAndSet(null)
@@ -407,16 +380,16 @@ class TunnelForegroundService
                         )
                     } else {
                         reporter.publishError(
-                            message = completion.error.message ?: "Unable to start tunnel",
+                            message = outcome.error.message ?: "Unable to start tunnel",
                             code = "native_start_failed",
                         )
                     }
                 }
-                is StartupCompletion.VerificationFailure -> {
+                is StartOutcome.VerificationFailure -> {
                     // P0-001: Verification failure (native succeeded but state not verified).
                     cleanupUnverifiedStart(
                         UnverifiedStartContext(
-                            completion.error,
+                            outcome.error,
                             command.generation,
                             lifecycleGeneration,
                             reporter::stopStatusPollingAndJoin,
@@ -428,13 +401,16 @@ class TunnelForegroundService
                     )
                     offer.clearTemporaryMeteredAllowance()
                 }
-                is StartupCompletion.UnexpectedFailure -> {
+                is StartOutcome.UnexpectedFailure -> {
                     // P0-001: Unexpected failure (unhandled exception during startup).
                     offer.clearTemporaryMeteredAllowance()
                     reporter.publishError(
-                        message = completion.error.message ?: "Unexpected startup failure",
+                        message = outcome.error.message ?: "Unexpected startup failure",
                         code = "startup_unexpected_failure",
                     )
+                }
+                StartOutcome.Aborted -> {
+                    // Startup was aborted by control flow (stale generation).
                 }
             }
         }
@@ -741,21 +717,21 @@ class TunnelForegroundService
                                 // second, independent stop call here (P0-001).
                                 throw StartupAborted()
                             }
-                            classifyStartupResult(result)
+                            classifyStartResult(result)
                         }.fold(
                             onSuccess = { it },
                             onFailure = { error ->
                                 when (error) {
                                     is CancellationException -> throw error
                                     is StartupAborted -> return
-                                    else -> StartupCompletion.UnexpectedFailure(error)
+                                    else -> StartOutcome.UnexpectedFailure(error)
                                 }
                             },
                         )
                     submitLifecycleCommand(
                         LifecycleCommand.StartupCompleted(
                             generation = startGeneration,
-                            completion = completion,
+                            outcome = completion,
                         ),
                     )
                 } finally {
