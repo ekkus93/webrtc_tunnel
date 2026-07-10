@@ -46,6 +46,11 @@ import java.util.concurrent.atomic.AtomicLong
 // Control-flow signal: a startup attempt aborted after publishing its own error/state.
 private class StartupAborted : Exception()
 
+// P0-002: Quarantine violation — thrown when native runtime state is uncertain.
+internal class NativeRuntimeQuarantinedException(
+    message: String,
+) : IllegalStateException(message)
+
 // Distinguishes an outright native stop failure from a stop that JNI reported as successful
 // but whose final state could not be verified as Stopped (P0-003), so TunnelRepository's
 // sticky lastCleanupError history can retain both categories. Top-level (not a class member)
@@ -372,7 +377,17 @@ class TunnelForegroundService
             }
         }
 
-        // Coordinator operations for TunnelLifecycleCoordinator.
+        // P0-002: Canonical quarantine guard — blocks all start/resume when runtime uncertain.
+        private fun requireRuntimeStartAllowed(): Result<Unit> {
+            if (nativeRuntimeUncertain.get()) {
+                return Result.failure(
+                    NativeRuntimeQuarantinedException(
+                        "Native runtime state is uncertain; explicit STOP is required before restart.",
+                    ),
+                )
+            }
+            return Result.success(Unit)
+        }
         private val coordinatorOps: CoordinatorOperations =
             object : CoordinatorOperations {
                 override fun onError(
@@ -384,6 +399,16 @@ class TunnelForegroundService
                 }
 
                 override suspend fun startOffer() {
+                    requireRuntimeStartAllowed()
+                        .getOrElse { error ->
+                            reporter.publishError(
+                                message = SensitiveDataRedactor.redactText(
+                                    error.message ?: "Runtime restart is blocked"
+                                ),
+                                code = "native_runtime_quarantined",
+                            )
+                            return
+                        }
                     if (!repository.status.value.serviceState.isTunnelActiveOrStarting()) {
                         offer.startOffer()
                     }
@@ -394,6 +419,16 @@ class TunnelForegroundService
                 }
 
                 override suspend fun resume() {
+                    requireRuntimeStartAllowed()
+                        .getOrElse { error ->
+                            reporter.publishError(
+                                message = SensitiveDataRedactor.redactText(
+                                    error.message ?: "Runtime restart is blocked"
+                                ),
+                                code = "native_runtime_quarantined",
+                            )
+                            return
+                        }
                     offer.resume()
                 }
 
@@ -402,6 +437,16 @@ class TunnelForegroundService
                 }
 
                 override suspend fun allowMeteredForSessionAndStart() {
+                    requireRuntimeStartAllowed()
+                        .getOrElse { error ->
+                            reporter.publishError(
+                                message = SensitiveDataRedactor.redactText(
+                                    error.message ?: "Runtime restart is blocked"
+                                ),
+                                code = "native_runtime_quarantined",
+                            )
+                            return
+                        }
                     offer.allowMeteredForSessionAndStart()
                 }
 
@@ -410,13 +455,21 @@ class TunnelForegroundService
                 }
 
                 override suspend fun handlePolicyAllowed() {
-                    if (nativeRuntimeUncertain.get() || !pausedByPolicy.get()) {
+                    requireRuntimeStartAllowed()
+                        .getOrElse {
+                            pendingPolicyResumeGeneration.set(null)
+                            return
+                        }
+                    if (!pausedByPolicy.get()) {
                         pendingPolicyResumeGeneration.set(null)
                         return
                     }
-                    if (runCatching { configRepository.preferences.first() }
-                            .getOrNull()?.resumeOnUnmetered == true
-                    ) {
+                    val prefs = runCatching { configRepository.preferences.first() }
+                        .getOrElse {
+                            pendingPolicyResumeGeneration.set(null)
+                            return
+                        }
+                    if (prefs?.resumeOnUnmetered == true) {
                         if (startupJob?.isActive == true) {
                             pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
                         } else {
@@ -427,7 +480,8 @@ class TunnelForegroundService
                 }
 
                 override suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
-                    if (nativeRuntimeUncertain.get()) return
+                    requireRuntimeStartAllowed()
+                        .getOrElse { return }
                     if (lifecycleGeneration.get() != expectedGeneration) return
                     pendingPolicyResumeGeneration.set(null)
                     offer.resume()
