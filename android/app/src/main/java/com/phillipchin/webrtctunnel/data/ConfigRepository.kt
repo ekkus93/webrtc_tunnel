@@ -83,7 +83,7 @@ class ConfigRepository(private val context: Context) {
                 return@withLock
             }
             val withIceMode = upsertAndroidIceMode(current, resolveAndroidIceMode(iceMode))
-            writeConfigAtomicallyLocked(upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4))
+            writeConfigAtomicallyLocked(configFile, upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4))
         }
     }
 
@@ -92,27 +92,14 @@ class ConfigRepository(private val context: Context) {
         configFile.writeText(contents)
     }
 
-    fun writeConfigAtomically(contents: String) {
-        writeConfigAtomicallyLocked(contents)
-    }
-
     /**
-     * P1-007: Atomic write with unique temp file. Must be called under [writeMutex].
+     * P1-007: Atomic write with unique temp file under [writeMutex].
+     * All config writers go through this single serialized boundary.
      */
-    private fun writeConfigAtomicallyLocked(contents: String) {
-        configFile.parentFile?.mkdirs()
-        val temp = Files.createTempFile(
-            configFile.parentFile?.toPath(),
-            "config.toml.tmp-",
-            ".partial",
-        )
-        temp.toFile().writeText(contents)
-        Files.move(
-            temp,
-            configFile.toPath(),
-            StandardCopyOption.REPLACE_EXISTING,
-            StandardCopyOption.ATOMIC_MOVE,
-        )
+    suspend fun writeConfigAtomically(contents: String) {
+        writeMutex.withLock {
+            writeConfigAtomicallyLocked(configFile, contents)
+        }
     }
 
     fun saveSetupInput(input: SetupConfigInput) {
@@ -149,6 +136,29 @@ class ConfigRepository(private val context: Context) {
                 androidIceMode = resolveAndroidIceMode(androidIceMode),
             ),
         )
+}
+
+/**
+ * Internal: atomic config write without acquiring the mutex (caller must hold [writeMutex]).
+ */
+private suspend fun writeConfigAtomicallyLocked(
+    configFile: File,
+    contents: String,
+) {
+    configFile.parentFile?.mkdirs()
+    val temp =
+        Files.createTempFile(
+            configFile.parentFile?.toPath(),
+            "config.toml.tmp-",
+            ".partial",
+        )
+    temp.toFile().writeText(contents)
+    Files.move(
+        temp,
+        configFile.toPath(),
+        StandardCopyOption.REPLACE_EXISTING,
+        StandardCopyOption.ATOMIC_MOVE,
+    )
 }
 
 /**

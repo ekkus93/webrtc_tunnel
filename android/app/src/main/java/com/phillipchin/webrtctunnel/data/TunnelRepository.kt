@@ -353,80 +353,31 @@ private fun mapNativeListenState(state: String): ListenState =
 
 // P1-009: Returns true when the raw listen state value was unrecognized, so callers
 // can surface explicit diagnosis instead of silently mapping to Error.
-private fun isUnknownListenState(state: String): Boolean =
-    !KNOWN_LISTEN_STATES.contains(state.lowercase())
+private fun isUnknownListenState(state: String): Boolean = !KNOWN_LISTEN_STATES.contains(state.lowercase())
 
 private val KNOWN_LISTEN_STATES =
     setOf("listening", "stopped", "error", "disabled", "paused")
 
 private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): TunnelStatus {
     // P1-008: Reject unknown native mode explicitly.
-    val modeValue =
-        when (mode) {
-            null, "offer" -> TunnelMode.Offer
-            "answer" -> TunnelMode.Answer
-            else -> {
-                // Unknown mode: retain previous mode, surface as schema error.
-                return previous.copy(
-                    serviceState = ServiceState.Error,
-                    lastError =
-                        TunnelError(
-                            code = "native_status_schema_error",
-                            message = "Unknown native mode: ${SensitiveDataRedactor.redactText(mode)}",
-                        ),
-                )
-            }
-        }
+    val modeValue = resolveNativeMode(mode)
+    if (modeValue == null) {
+        // Unknown mode: retain previous mode, surface as schema error.
+        return previous.copy(
+            serviceState = ServiceState.Error,
+            lastError =
+                TunnelError(
+                    code = "native_status_schema_error",
+                    message = "Unknown native mode: ${SensitiveDataRedactor.redactText(mode ?: "null")}",
+                ),
+        )
+    }
     val stateValue = mapNativeServiceState(state, modeValue, activeSessionCount)
-    // Uptime is only meaningful while a run is in progress; never show it for
-    // stopped/error/paused states even if a stale timestamp were present.
-    val uptimeSeconds =
-        if (stateValue.isTunnelActiveOrStarting()) {
-            startedAtUnixMs?.let { startedAt ->
-                val elapsedMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
-                elapsedMs / MILLIS_PER_SECOND
-            }
-        } else {
-            null
-        }
-    val mappedForwards =
-        forwards.map { forward ->
-            val configurationError = forward.configurationError?.let(SensitiveDataRedactor::redactText)
-            val mappedState = mapNativeListenState(forward.listenState)
-            // P1-009: Surface raw value for unknown listen states.
-            val listenStateError =
-                if (configurationError != null) {
-                    configurationError
-                } else if (isUnknownListenState(forward.listenState)) {
-                    "Unknown listen state: ${SensitiveDataRedactor.redactText(forward.listenState)}"
-                } else {
-                    forward.lastError?.let(SensitiveDataRedactor::redactText)
-                }
-            ForwardStatus(
-                id = forward.id,
-                name = forward.id,
-                localHost = forward.localHost,
-                localPort = forward.localPort,
-                remoteForwardId = forward.id,
-                enabled = forward.listenState.lowercase() != "disabled",
-                // A configuration mismatch always means an error, regardless of what
-                // listen_state the daemon reported alongside it.
-                listenState =
-                    if (configurationError != null) {
-                        ListenState.Error
-                    } else {
-                        mappedState
-                    },
-                lastError = listenStateError,
-                configurationError = configurationError,
-            )
-        }
+    val uptimeSeconds = calculateUptimeSeconds(stateValue, startedAtUnixMs)
+    val mappedForwards = mapForwards()
     return previous.copy(
         serviceState = stateValue,
         mode = modeValue,
-        // Surface the real remote peer from the active session; retain the last-known
-        // value between sessions rather than flicker to null.
-        // P1-010: Clear stale active peer on terminal state.
         remotePeerId =
             if (isTerminalState(stateValue)) {
                 null
@@ -444,3 +395,58 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
             },
     )
 }
+
+// P1-008: Resolve native mode, returning null for unknown modes.
+private fun resolveNativeMode(mode: String?): TunnelMode? =
+    when (mode) {
+        null -> TunnelMode.Offer
+        "offer" -> TunnelMode.Offer
+        "answer" -> TunnelMode.Answer
+        else -> null
+    }
+
+// Calculate uptime seconds only while a run is in progress.
+private fun calculateUptimeSeconds(
+    stateValue: ServiceState,
+    startedAtUnixMs: Long?,
+): Long? =
+    if (stateValue.isTunnelActiveOrStarting()) {
+        startedAtUnixMs?.let { startedAt ->
+            val elapsedMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+            elapsedMs / MILLIS_PER_SECOND
+        }
+    } else {
+        null
+    }
+
+// Map forwards with explicit diagnosis for unknown listen states (P1-009).
+private fun NativeRuntimeStatusDto.mapForwards(): List<ForwardStatus> =
+    forwards.map { forward ->
+        val configurationError = forward.configurationError?.let(SensitiveDataRedactor::redactText)
+        val mappedState = mapNativeListenState(forward.listenState)
+        // P1-009: Surface raw value for unknown listen states.
+        val listenStateError =
+            if (configurationError != null) {
+                configurationError
+            } else if (isUnknownListenState(forward.listenState)) {
+                "Unknown listen state: ${SensitiveDataRedactor.redactText(forward.listenState)}"
+            } else {
+                forward.lastError?.let(SensitiveDataRedactor::redactText)
+            }
+        ForwardStatus(
+            id = forward.id,
+            name = forward.id,
+            localHost = forward.localHost,
+            localPort = forward.localPort,
+            remoteForwardId = forward.id,
+            enabled = forward.listenState.lowercase() != "disabled",
+            listenState =
+                if (configurationError != null) {
+                    ListenState.Error
+                } else {
+                    mappedState
+                },
+            lastError = listenStateError,
+            configurationError = configurationError,
+        )
+    }

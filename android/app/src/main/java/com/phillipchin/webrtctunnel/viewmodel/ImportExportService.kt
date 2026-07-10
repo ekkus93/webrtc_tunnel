@@ -11,7 +11,7 @@ enum class ImportKind(val label: String) {
 
 /** Import/export operations (validation + file IO) split out of ImportExportViewModel. */
 class ImportExportService(private val deps: AppDependencies) {
-    fun importContent(
+    suspend fun importContent(
         kind: ImportKind,
         content: String,
     ) {
@@ -27,7 +27,7 @@ class ImportExportService(private val deps: AppDependencies) {
         return deps.configRepository.readConfig()
     }
 
-    private fun importConfigContent(candidate: String) {
+    private suspend fun importConfigContent(candidate: String) {
         val temp = File(deps.context.cacheDir, "config-import-candidate.toml")
         temp.parentFile?.mkdirs()
         // Identity absence and identity-present-but-unreadable are different states: only the

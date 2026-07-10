@@ -280,7 +280,7 @@ class ConfigRepositoryTest {
     @Test
     fun atomicWriteReplacesConfig() {
         repository.writeConfig("before")
-        repository.writeConfigAtomically("after")
+        runBlocking { repository.writeConfigAtomically("after") }
         assertEquals("after", repository.readConfig())
     }
 

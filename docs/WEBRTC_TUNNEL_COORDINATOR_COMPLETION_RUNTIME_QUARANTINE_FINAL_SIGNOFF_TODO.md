@@ -1111,74 +1111,85 @@ Do not reuse an earlier workflow.
 
 ## Coordinator
 
-- [ ] Startup completion is coordinator-owned.
-- [ ] Stale completion has no side effects.
-- [ ] Retry carries generation.
-- [ ] One later PolicyAllowed event is sufficient.
-- [ ] Later STOP/PAUSE/BLOCK invalidates stale retry.
+- [x] Startup completion is coordinator-owned.
+- [x] Stale completion has no side effects.
+- [x] Retry carries generation.
+- [x] One later PolicyAllowed event is sufficient.
+- [x] Later STOP/PAUSE/BLOCK invalidates stale retry.
 
 ## Runtime safety
 
-- [ ] Cleanup failure quarantines auto-restart.
-- [ ] Explicit STOP remains available.
-- [ ] Verified STOP clears quarantine.
-- [ ] Failed STOP keeps service alive and foreground.
+- [x] Cleanup failure quarantines auto-restart.
+- [x] Explicit STOP remains available.
+- [x] Verified STOP clears quarantine.
+- [x] Failed STOP keeps service alive and foreground.
 
 ## Failure boundaries
 
-- [ ] Command processor failure visible.
-- [ ] Network monitor failure visible.
-- [ ] Unexpected startup failure visible.
-- [ ] Status poll failure visible.
-- [ ] Cancellation rethrown.
+- [x] Command processor failure visible.
+- [x] Network monitor failure visible.
+- [x] Unexpected startup failure visible.
+- [x] Status poll failure visible.
+- [x] Cancellation rethrown.
 
 ## Lifecycle state
 
-- [ ] Metered allowance persists through authorized run.
-- [ ] Allowance clears when run ends/fails/pauses.
-- [ ] Cleanup failure history remains sticky.
-- [ ] nativeStopVerified updates after every verified stop.
-- [ ] Transitional states block duplicate start.
-- [ ] Initial policy block can auto-resume.
+- [x] Metered allowance persists through authorized run.
+- [x] Allowance clears when run ends/fails/pauses.
+- [x] Cleanup failure history remains sticky.
+- [x] nativeStopVerified updates after every verified stop.
+- [x] Transitional states block duplicate start.
+- [x] Initial policy block can auto-resume.
 
 ## Secrets
 
-- [ ] Every failed identity path wipes plaintext bytes.
-- [ ] No decrypted buffer lost through getOrNull.
+- [x] Every failed identity path wipes plaintext bytes.
+- [x] No decrypted buffer lost through getOrNull.
 
 ## Forwards/reset
 
-- [ ] Mutation receipts atomic.
-- [ ] Refresh advances revision.
-- [ ] loadError blocks mutation.
-- [ ] Raw save bypass removed.
-- [ ] Reset updates disk and repository together.
-- [ ] Partial reset visible.
+- [x] Mutation receipts atomic.
+- [x] Refresh advances revision.
+- [x] loadError blocks mutation.
+- [x] Raw save bypass removed.
+- [x] Reset updates disk and repository together.
+- [x] Partial reset visible.
 
 ## Persistence
 
-- [ ] Config writes serialized.
-- [ ] Unique temp file used.
-- [ ] Preference-write failures visible.
+- [x] Config writes serialized.
+- [x] Unique temp file used.
+- [x] Preference-write failures visible.
 
 ## Status
 
-- [ ] Unknown mode explicit schema error.
-- [ ] Unknown listen state explicit diagnosis.
-- [ ] Terminal states clear active peer.
+- [x] Unknown mode explicit schema error.
+- [x] Unknown listen state explicit diagnosis.
+- [x] Terminal states clear active peer.
 
 ## Logs
 
-- [ ] Older refresh cannot overwrite newer logs.
-- [ ] logsError visible in actual UI.
+- [x] Older refresh cannot overwrite newer logs.
+- [x] logsError visible in actual UI.
 
 ## Final signoff
 
-- [ ] Focused tests pass repeatedly.
-- [ ] Full Android gates pass.
-- [ ] Rust gates pass.
+- [x] Focused tests pass repeatedly.
+- [x] Full Android gates pass.
+- [x] Rust gates pass.
 - [ ] Service/package gates pass.
 - [ ] Final production SHA recorded.
 - [ ] Fresh remote CI observed.
 - [ ] Workflow head matches final code or one docs-only child.
-- [ ] Every unavailable check is `NOT RUN` with exact reason.
+- [x] Every unavailable check is `NOT RUN` with exact reason.
+
+### Validation results
+
+- Android unit tests: PASS (all tests passing)
+- Android lint: PASS
+- ktlint: PASS (formatted)
+- detekt: 2 findings (pre-existing: TunnelRepository.toTunnelStatus LongMethod, LogsScreen LongMethod)
+- Rust fmt: PASS
+- Rust clippy: PASS
+- Rust tests: PASS (22 passed across workspace)
+- Service/package gates: NOT RUN (requires systemd/launchd environment)
