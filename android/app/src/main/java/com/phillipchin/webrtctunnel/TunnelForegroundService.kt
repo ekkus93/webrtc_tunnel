@@ -7,15 +7,17 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.phillipchin.webrtctunnel.data.ConfigRepository
+import com.phillipchin.webrtctunnel.data.CoordinatorOperations
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
 import com.phillipchin.webrtctunnel.data.LifecycleCommand
-import com.phillipchin.webrtctunnel.data.PlatformOperations
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.StartOutcome
 import com.phillipchin.webrtctunnel.data.StopStatusVerificationException
 import com.phillipchin.webrtctunnel.data.TunnelLifecycleCoordinator
 import com.phillipchin.webrtctunnel.data.TunnelRepository
+import com.phillipchin.webrtctunnel.data.UnverifiedStartContext
 import com.phillipchin.webrtctunnel.data.classifyStartResult
+import com.phillipchin.webrtctunnel.data.cleanupUnverifiedStart
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -155,7 +157,7 @@ class TunnelForegroundService
 
             // P0-001: command processor drains lifecycle commands in FIFO order.
             // Commands are processed sequentially to maintain ordering guarantees.
-            coordinator = TunnelLifecycleCoordinator(repository, platformOps, ioDispatcher)
+            coordinator = TunnelLifecycleCoordinator(coordinatorOps, ioDispatcher)
             coordinator.startCommandProcessor()
 
             // Network monitor still collects network events, but submits commands
@@ -370,17 +372,9 @@ class TunnelForegroundService
             }
         }
 
-        // PlatformOperations implementation for TunnelLifecycleCoordinator.
-        private val platformOps: PlatformOperations =
-            object : PlatformOperations {
-                override fun onStatus(message: String) {
-                    reporter.publishStatus(message)
-                }
-
-                override fun publishStatus() {
-                    reporter.publishStatus()
-                }
-
+        // Coordinator operations for TunnelLifecycleCoordinator.
+        private val coordinatorOps: CoordinatorOperations =
+            object : CoordinatorOperations {
                 override fun onError(
                     message: String,
                     code: String,
@@ -389,20 +383,118 @@ class TunnelForegroundService
                     reporter.publishError(message, code, state)
                 }
 
-                override fun startStatusPolling() {
-                    reporter.startStatusPolling()
+                override suspend fun startOffer() {
+                    if (!repository.status.value.serviceState.isTunnelActiveOrStarting()) {
+                        offer.startOffer()
+                    }
                 }
 
-                override fun stopStatusPolling() {
-                    reporter.stopStatusPolling()
+                override suspend fun pause() {
+                    offer.pause()
                 }
 
-                override fun serviceStopForeground() {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
+                override suspend fun resume() {
+                    offer.resume()
                 }
 
-                override fun serviceStopSelf() {
-                    stopSelf()
+                override suspend fun stop() {
+                    offer.stopServiceWork()
+                }
+
+                override suspend fun allowMeteredForSessionAndStart() {
+                    offer.allowMeteredForSessionAndStart()
+                }
+
+                override suspend fun pauseForPolicy(reason: String) {
+                    offer.pauseForPolicy(reason)
+                }
+
+                override suspend fun handlePolicyAllowed() {
+                    if (nativeRuntimeUncertain.get() || !pausedByPolicy.get()) {
+                        pendingPolicyResumeGeneration.set(null)
+                        return
+                    }
+                    if (runCatching { configRepository.preferences.first() }
+                            .getOrNull()?.resumeOnUnmetered == true
+                    ) {
+                        if (startupJob?.isActive == true) {
+                            pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
+                        } else {
+                            pendingPolicyResumeGeneration.set(null)
+                            offer.resume()
+                        }
+                    }
+                }
+
+                override suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
+                    if (nativeRuntimeUncertain.get()) return
+                    if (lifecycleGeneration.get() != expectedGeneration) return
+                    pendingPolicyResumeGeneration.set(null)
+                    offer.resume()
+                }
+
+                override suspend fun handleStartupCompleted(
+                    generation: Long,
+                    outcome: StartOutcome,
+                ) {
+                    if (lifecycleGeneration.get() != generation) {
+                        // Stale completion: a newer lifecycle command superseded this one.
+                        return
+                    }
+                    startupJob = null
+                    when (outcome) {
+                        StartOutcome.VerifiedSuccess -> {
+                            // P0-007: Do NOT clear metered allowance on success — it lasts through the run.
+                            pausedByPolicy.set(false)
+                            pendingPolicyResumeGeneration.set(null)
+                            reporter.publishStatus()
+                            reporter.startStatusPolling()
+                        }
+                        is StartOutcome.NativeFailure -> {
+                            // Native start failure (repository.start() returned failure).
+                            offer.clearTemporaryMeteredAllowance()
+                            val pending = pendingPolicyResumeGeneration.getAndSet(null)
+                            if (pending == generation) {
+                                submitLifecycleCommand(
+                                    LifecycleCommand.RetryPolicyResume(
+                                        expectedGeneration = generation,
+                                    ),
+                                )
+                            } else {
+                                reporter.publishError(
+                                    message = outcome.error.message ?: "Unable to start tunnel",
+                                    code = "native_start_failed",
+                                )
+                            }
+                        }
+                        is StartOutcome.VerificationFailure -> {
+                            // Verification failure (native succeeded but state not verified).
+                            cleanupUnverifiedStart(
+                                UnverifiedStartContext(
+                                    outcome.error,
+                                    generation,
+                                    lifecycleGeneration,
+                                    reporter::stopStatusPollingAndJoin,
+                                    { repository.stop() },
+                                    nativeStopVerified,
+                                    nativeRuntimeUncertain,
+                                    reporter::publishError,
+                                ),
+                            )
+                            offer.clearTemporaryMeteredAllowance()
+                        }
+                        is StartOutcome.UnexpectedFailure -> {
+                            // Unexpected failure (unhandled exception during startup).
+                            offer.clearTemporaryMeteredAllowance()
+                            reporter.publishError(
+                                message = outcome.error.message ?: "Unexpected startup failure",
+                                code = "startup_unexpected_failure",
+                            )
+                        }
+                        StartOutcome.Aborted -> {
+                            // Startup was aborted by control flow (stale generation).
+                        }
+                    }
                 }
             }
 
