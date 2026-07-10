@@ -235,29 +235,29 @@ class TunnelLifecycleCoordinator(
                 if (coordinator.generation.get() != command.generation) return
                 coordinator.startupJob = null
 
-                when (val completion = command.completion) {
-                    is StartupCompletion.VerifiedSuccess -> {
+                when (val outcome = command.outcome) {
+                    StartOutcome.VerifiedSuccess -> {
                         coordinator.pausedByPolicyState.set(false)
                         coordinator.pendingPolicyResumeGeneration.set(null)
                         coordinator.platformOps.publishStatus()
                         coordinator.platformOps.startStatusPolling()
                     }
-                    is StartupCompletion.NativeStartFailure -> {
+                    is StartOutcome.NativeFailure -> {
                         coordinator.clearTemporaryMeteredAllowance()
                         val pending = coordinator.pendingPolicyResumeGeneration.getAndSet(null)
                         if (pending == command.generation) {
                             coordinator.submitCommand(LifecycleCommand.RetryPolicyResume(command.generation))
                         } else {
                             coordinator.platformOps.onError(
-                                completion.error.message ?: "Unable to start tunnel",
+                                outcome.error.message ?: "Unable to start tunnel",
                                 "native_start_failed",
                             )
                         }
                     }
-                    is StartupCompletion.VerificationFailure -> {
+                    is StartOutcome.VerificationFailure -> {
                         cleanupUnverifiedStart(
                             UnverifiedStartContext(
-                                completion.error,
+                                outcome.error,
                                 command.generation,
                                 coordinator.generation,
                                 coordinator.platformOps::stopStatusPolling,
@@ -269,12 +269,15 @@ class TunnelLifecycleCoordinator(
                         )
                         coordinator.clearTemporaryMeteredAllowance()
                     }
-                    is StartupCompletion.UnexpectedFailure -> {
+                    is StartOutcome.UnexpectedFailure -> {
                         coordinator.clearTemporaryMeteredAllowance()
                         coordinator.platformOps.onError(
-                            completion.error.message ?: "Unexpected startup failure",
+                            outcome.error.message ?: "Unexpected startup failure",
                             "startup_unexpected_failure",
                         )
+                    }
+                    StartOutcome.Aborted -> {
+                        // Startup was aborted by control flow (stale generation).
                     }
                 }
             }
@@ -302,7 +305,7 @@ sealed interface LifecycleCommand {
 
     data class RetryPolicyResume(val expectedGeneration: Long) : LifecycleCommand
 
-    data class StartupCompleted(val generation: Long, val completion: StartupCompletion) : LifecycleCommand
+    data class StartupCompleted(val generation: Long, val outcome: StartOutcome) : LifecycleCommand
 }
 
 /**
@@ -326,19 +329,6 @@ interface PlatformOperations {
     fun stopForeground()
 
     fun stopSelf()
-}
-
-/**
- * Startup completion classification.
- */
-sealed interface StartupCompletion {
-    data object VerifiedSuccess : StartupCompletion
-
-    data class NativeStartFailure(val error: Throwable) : StartupCompletion
-
-    data class VerificationFailure(val error: StartStatusVerificationException) : StartupCompletion
-
-    data class UnexpectedFailure(val error: Throwable) : StartupCompletion
 }
 
 /**
