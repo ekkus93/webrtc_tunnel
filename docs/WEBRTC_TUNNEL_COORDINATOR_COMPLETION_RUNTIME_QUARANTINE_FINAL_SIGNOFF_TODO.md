@@ -909,7 +909,7 @@ no success snackbar
 
 ## P2-001 — Extract TunnelLifecycleCoordinator
 
-**Status:** In Progress
+**Status:** Implemented
 
 Extracted coordinator class to `TunnelLifecycleCoordinator.kt`.
 Coordinator owns:
@@ -924,7 +924,7 @@ Platform-specific operations delegated through `PlatformOperations` interface.
 
 ## P2-002 — Typed StartOutcome through JNI
 
-**Status:** In Progress
+**Status:** Implemented
 
 Created `StartOutcome.kt` with typed result for JNI start operations.
 Moves classification closer to the JNI boundary, replacing post-hoc `StartupCompletion`
