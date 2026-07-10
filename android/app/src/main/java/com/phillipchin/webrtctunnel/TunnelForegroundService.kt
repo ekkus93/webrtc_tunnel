@@ -373,11 +373,10 @@ class TunnelForegroundService
                         while (active && !pausedByPolicy.get()) {
                             delay(STATUS_POLL_INTERVAL_MS)
                             if (pausedByPolicy.get()) break
-                            try {
+                            runCatching {
                                 repository.refreshStatus()
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (error: Throwable) {
+                            }.onFailure { error ->
+                                if (error is CancellationException) throw error
                                 reporter.publishError(
                                     code = "status_poll_failed",
                                     message =
