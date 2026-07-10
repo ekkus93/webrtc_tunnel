@@ -67,44 +67,70 @@ fun LogsScreen(
     networkVm: NetworkPolicyViewModel,
 ) {
     val context = LocalContext.current
-    val filter by vm.filter.collectAsStateWithLifecycle()
-    val prefs by networkVm.preferences.collectAsStateWithLifecycle(initialValue = AndroidAppPreferences())
-    val networkStatus by networkVm.networkStatus.collectAsStateWithLifecycle(
-        initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
-    )
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var paused by remember { mutableStateOf(false) }
+
     val diagnosticsCreateDocumentLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.CreateDocument("text/plain"),
-        ) { uri -> if (uri != null) vm.exportDiagnosticsToUri(uri, networkStatus) }
+        ) { uri -> if (uri != null) vm.exportDiagnosticsToUri(uri, networkVm.networkStatus.collectAsStateWithLifecycle().value) }
+
+    val state = collectLogsScreenState(vm, networkVm)
+
+    val copyLogs = {
+        clipboard.setText(AnnotatedString(redactedLogsText(state.visibleLogs)))
+        vm.onLogsCopied()
+    }
+    val exportDiagnostics = {
+        diagnosticsCreateDocumentLauncher.launch("webrtc_diagnostics_redacted.txt")
+    }
+    val shareDiagnostics: () -> Unit = {
+        scope.launch {
+            val share =
+                Intent.createChooser(
+                    vm.diagnosticsShareIntent(state.networkStatus),
+                    "Share diagnostics"
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(share)
+        }
+    }
+
     LaunchedEffect(paused) {
         while (!paused) {
             vm.refresh()
             delay(LOG_REFRESH_INTERVAL_MS)
         }
     }
-    val logs by vm.filteredLogs.collectAsStateWithLifecycle()
-    // P1-015: Surface logsError in the UI so retrieval failures are visible.
-    val logsError by vm.logsError.collectAsStateWithLifecycle(initialValue = null)
-    val copyLogs = {
-        clipboard.setText(AnnotatedString(redactedLogsText(logs)))
-        vm.onLogsCopied()
-    }
-    val exportDiagnostics = { diagnosticsCreateDocumentLauncher.launch("webrtc_diagnostics_redacted.txt") }
-    val shareDiagnostics: () -> Unit = {
-        scope.launch {
-            val share =
-                Intent.createChooser(vm.diagnosticsShareIntent(networkStatus), "Share diagnostics")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(share)
-        }
-    }
 
-    val visibleLogs = logs.filterNot { it.level.equals("debug", true) && !prefs.debugLogsEnabled }
-    val debugHidden = logs.any { it.level.equals("debug", true) && !prefs.debugLogsEnabled }
+    LogsScreenContent(
+        padding = padding,
+        state = state,
+        paused = paused,
+        onTogglePause = { paused = !paused },
+        onClearLogs = vm::clearLogs,
+        onCopyLogs = copyLogs,
+        onExport = exportDiagnostics,
+        onShare = shareDiagnostics,
+        onFilterSelect = vm::setFilter,
+    )
+}
 
+/**
+ * Logs screen UI content.
+ */
+@Composable
+private fun LogsScreenContent(
+    padding: PaddingValues,
+    state: LogsScreenState,
+    paused: Boolean,
+    onTogglePause: () -> Unit,
+    onClearLogs: () -> Unit,
+    onCopyLogs: () -> Unit,
+    onExport: () -> Unit,
+    onShare: () -> Unit,
+    onFilterSelect: (String) -> Unit,
+) {
     Column(
         modifier =
             Modifier
@@ -114,28 +140,66 @@ fun LogsScreen(
     ) {
         Spacer(Modifier.height(16.dp))
         SectionHeader("Logs", "Redacted runtime events")
-        // P1-015: Show error banner when logs retrieval fails.
-        if (logsError != null) {
+        if (state.logsError != null) {
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "⚠ Logs error: ${logsError?.message}",
+                text = "⚠ Logs error: ${state.logsError?.message}",
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
             )
         }
         Spacer(Modifier.height(8.dp))
-        LogFilterChips(filter = filter, onSelect = vm::setFilter)
+        LogFilterChips(filter = state.filter, onSelect = onFilterSelect)
         Spacer(Modifier.height(8.dp))
         LogActionsRow(
             paused = paused,
-            onTogglePause = { paused = !paused },
-            onClear = vm::clearLogs,
-            menu = LogMenuActions(onCopy = copyLogs, onExport = exportDiagnostics, onShare = shareDiagnostics),
+            onTogglePause = onTogglePause,
+            onClear = onClearLogs,
+            menu = LogMenuActions(onCopy = onCopyLogs, onExport = onExport, onShare = onShare),
         )
         Spacer(Modifier.height(8.dp))
-        LogList(visibleLogs = visibleLogs, debugHidden = debugHidden, filter = filter, modifier = Modifier.weight(1f))
+        LogList(visibleLogs = state.visibleLogs, debugHidden = state.debugHidden, filter = state.filter, modifier = Modifier.weight(1f))
     }
 }
+
+/**
+ * Logs screen state collected from ViewModels.
+ */
+@Composable
+private fun collectLogsScreenState(
+    vm: LogsViewModel,
+    networkVm: NetworkPolicyViewModel,
+): LogsScreenState {
+    val filter by vm.filter.collectAsStateWithLifecycle()
+    val prefs by networkVm.preferences.collectAsStateWithLifecycle(initialValue = AndroidAppPreferences())
+    val networkStatus by networkVm.networkStatus.collectAsStateWithLifecycle(
+        initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
+    )
+    val logs by vm.filteredLogs.collectAsStateWithLifecycle()
+    val logsError by vm.logsError.collectAsStateWithLifecycle(initialValue = null)
+
+    val visibleLogs = logs.filterNot { it.level.equals("debug", true) && !prefs.debugLogsEnabled }
+    val debugHidden = logs.any { it.level.equals("debug", true) && !prefs.debugLogsEnabled }
+
+    return LogsScreenState(
+        filter = filter,
+        networkStatus = networkStatus,
+        logsError = logsError,
+        visibleLogs = visibleLogs,
+        debugHidden = debugHidden,
+    )
+}
+
+/**
+ * Logs screen state data class.
+ */
+private data class LogsScreenState(
+    val filter: String,
+    val networkStatus: NetworkStatus,
+    val logsError: com.phillipchin.webrtctunnel.model.TunnelError?,
+    val visibleLogs: List<LogEvent>,
+    val debugHidden: Boolean,
+)
 
 @Composable
 private fun LogFilterChips(
