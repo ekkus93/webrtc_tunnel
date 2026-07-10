@@ -909,18 +909,16 @@ no success snackbar
 
 ## P2-001 — Extract TunnelLifecycleCoordinator
 
-**Status:** Implemented
+**Status:** Implemented (refactored)
 
-Extracted coordinator class to `TunnelLifecycleCoordinator.kt`.
-Coordinator owns:
+Coordinator is a pure command bus — it does NOT own lifecycle state.
 - Ordered command processing (FIFO via bounded channel)
-- Generation tracking (prevents stale completions)
-- Startup job lifecycle
-- Quarantine state (blocks auto-restart after cleanup failures)
-- Policy pause state
-- Metered allowance tracking
+- Submits commands to `CoordinatorOperations` for processing
+- All lifecycle state lives in `TunnelForegroundService`
+- Platform-specific operations delegated through `CoordinatorOperations` interface
 
-Platform-specific operations delegated through `PlatformOperations` interface.
+The coordinator was refactored to be a command router that submits lifecycle operations
+to the service's coordinator operations rather than managing state independently.
 
 ## P2-002 — Typed StartOutcome through JNI
 
@@ -1210,7 +1208,7 @@ Do not reuse an earlier workflow.
 - Android unit tests: PASS (all tests passing)
 - Android lint: PASS
 - ktlint: PASS (formatted)
-- detekt: 2 findings (pre-existing: TunnelRepository.toTunnelStatus LongMethod, LogsScreen LongMethod)
+- detekt: PASS (clean)
 - Rust fmt: PASS
 - Rust clippy: PASS
 - Rust tests: PASS (22 passed across workspace)
