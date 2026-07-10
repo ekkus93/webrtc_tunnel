@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ResetResult
+import com.phillipchin.webrtctunnel.data.RollbackStageResult
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -147,11 +148,21 @@ class SettingsViewModel(
                     deps.transactionalResetCoordinator.resetConfiguration()
                 }
             when (result) {
-                ResetResult.Success -> {
+                is ResetResult.Success -> {
                     deps.snackbar.show("Configuration reset")
                 }
-                is ResetResult.PartialFailure -> {
-                    val summary = "Reset partial: ${result.failedStages.joinToString("; ")}"
+                is ResetResult.Failed -> {
+                    val rollbackSummary =
+                        result.rollback.joinToString("; ") {
+                            when (it) {
+                                is RollbackStageResult.Success ->
+                                    "${it.stage.name}: rollback_ok"
+                                is RollbackStageResult.Failure ->
+                                    "${it.stage.name}: ${it.reason}"
+                            }
+                        }
+                    val summary =
+                        "Reset failed at ${result.failedStage.name}: ${result.cause}\nRollback: $rollbackSummary"
                     Log.e("SettingsViewModel", summary)
                     deps.snackbar.show(summary)
                 }
