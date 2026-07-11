@@ -10,6 +10,9 @@ import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.concurrent.CountDownLatch
@@ -23,6 +26,8 @@ class TestWebRtcTunnelApplication : Application(), HasAppDependencies {
     private lateinit var appDependencies: AppDependencies
     override val deps: AppDependencies
         get() = appDependencies
+
+    private val appScope = CoroutineScope(SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
@@ -58,7 +63,9 @@ class TestWebRtcTunnelApplication : Application(), HasAppDependencies {
                     },
                 identityRepository = identityRepository,
             )
-        configRepository.ensureDefaultConfig(configRepository.defaultConfigTemplate())
+        appScope.launch {
+            configRepository.ensureDefaultConfig(configRepository.defaultConfigTemplate())
+        }
     }
 }
 

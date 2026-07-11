@@ -36,14 +36,18 @@ class ConfigRepositoryTest {
 
     @Test
     fun ensureDefaultConfigCreatesFileWhenMissing() {
-        repository.ensureDefaultConfig("abc")
+        runBlocking {
+            repository.ensureDefaultConfig("abc")
+        }
         assertEquals("abc", repository.readConfig())
     }
 
     @Test
     fun ensureDefaultConfigDoesNotOverwriteExistingFile() {
         repository.writeConfig("existing")
-        repository.ensureDefaultConfig("default")
+        runBlocking {
+            repository.ensureDefaultConfig("default")
+        }
         assertEquals("existing", repository.readConfig())
     }
 

@@ -134,9 +134,9 @@ class TunnelRepositoryTest {
     @Test
     fun recentLogsParsesValidJson() {
         bridge.logsJson = Json.encodeToString(listOf(NativeLogEventDto(1L, "info", "ok")))
-        val logs = repository.recentLogs(10)
-        assertEquals(1, logs.size)
-        assertEquals("ok", logs.first().message)
+        val result = repository.recentLogs(10)
+        assertEquals(1, result.logs.size)
+        assertEquals("ok", result.logs.first().message)
     }
 
     @Test
@@ -144,9 +144,9 @@ class TunnelRepositoryTest {
         // P0-005: Invalid native log output must not affect tunnel lifecycle state.
         // It yields a visible error log entry and logsError, not an Error status.
         bridge.logsJson = "{not-array"
-        val logs = repository.recentLogs(10)
-        assertEquals(1, logs.size)
-        assertEquals("error", logs.first().level)
+        val result = repository.recentLogs(10)
+        assertEquals(1, result.logs.size)
+        assertEquals("error", result.logs.first().level)
         // Log failure must NOT set serviceState to Error (P0-005).
         assertTrue(
             "log retrieval failure must not change lifecycle state to Error",
@@ -309,7 +309,7 @@ class TunnelRepositoryTest {
     fun refreshStatusReportsConfigurationErrorInsteadOfFabricatingAnEndpoint() {
         bridge.statusPayload =
             """
-            {"state":"running","active":true,
+            {"state":"running","mode":"offer","active":true,
              "forwards":[
                {"id":"orphan","local_host":null,"local_port":null,"listen_state":"listening",
                 "configuration_error":"daemon reported forward 'orphan' but no matching configured endpoint exists"}
@@ -330,7 +330,7 @@ class TunnelRepositoryTest {
     fun refreshStatusForwardUnknownListenStateBecomesError() {
         // P1-004: Unknown listen state must become ListenState.Error, not Stopped.
         bridge.statusPayload =
-            """{"state":"running","active":true,"forwards":[{"id":"x","listen_state":"weird"}]}"""
+            """{"state":"running","mode":"offer","active":true,"forwards":[{"id":"x","listen_state":"weird"}]}"""
         repository.refreshStatus()
         val forward = repository.status.value.forwards.single()
         assertEquals(

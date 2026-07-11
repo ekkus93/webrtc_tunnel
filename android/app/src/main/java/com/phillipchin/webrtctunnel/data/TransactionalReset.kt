@@ -72,33 +72,55 @@ class TransactionalResetCoordinator(
             // Step 1: capture exact prior state (P0-001 snapshot)
             val snapshot = captureSnapshot()
 
-            // Step 2: perform reset stages in order
-            val stageResults = mutableListOf<ResetStageResult>()
+            // Step 2: perform reset stages in order, stopping on first failure
+            val mutatedStages = mutableListOf<ResetStage>()
 
-            // Config stage — wrap Unit-returning write in Result for error reporting
-            val configOutcome: ResetStageResult =
-                runCatching {
-                    configRepository.writeConfigAtomically(configRepository.defaultConfigTemplate())
-                    ResetStageResult.Success(ResetStage.Config)
-                }.getOrElse {
-                    ResetStageResult.Failure(ResetStage.Config, it.message ?: "unknown")
+            for (stage in resetStages) {
+                val outcome = resetStage(stage)
+                if (outcome is ResetStageResult.Failure) {
+                    // Stop immediately and rollback only the stages that already mutated
+                    val rollbackResults = rollbackFromSnapshot(snapshot, mutatedStages)
+                    return@withLock ResetResult.Failed(
+                        failedStage = stage,
+                        cause = outcome.reason,
+                        rollback = rollbackResults,
+                    )
                 }
-            stageResults.add(configOutcome)
+                mutatedStages.add(stage)
+            }
 
-            // Setup input stage
-            val setupResult: ResetStageResult =
+            // All stages succeeded
+            val stageResults =
+                resetStages.map { stage ->
+                    ResetStageResult.Success(stage)
+                }
+            ResetResult.Success(stageResults)
+        }
+    }
+
+    private suspend fun resetStage(stage: ResetStage): ResetStageResult =
+        when (stage) {
+            ResetStage.Config ->
+                configRepository.writeConfigAtomically(configRepository.defaultConfigTemplate()).fold(
+                    onSuccess = { ResetStageResult.Success(ResetStage.Config) },
+                    onFailure = { error ->
+                        ResetStageResult.Failure(
+                            ResetStage.Config,
+                            error.message ?: "unknown",
+                        )
+                    },
+                )
+
+            ResetStage.SetupInput ->
                 runCatching {
                     configRepository.saveSetupInput(SetupConfigInput())
                     ResetStageResult.Success(ResetStage.SetupInput)
                 }.getOrElse {
                     ResetStageResult.Failure(ResetStage.SetupInput, it.message ?: "unknown")
                 }
-            stageResults.add(setupResult)
 
-            // Forwards stage — explicitly fold the inner Result, no nested runCatching (P0-001)
-            val resetForwardsResult = forwardsRepository.resetForwards()
-            val forwardsOutcome: ResetStageResult =
-                resetForwardsResult.fold(
+            ResetStage.Forwards ->
+                forwardsRepository.resetForwards().fold(
                     onSuccess = { ResetStageResult.Success(ResetStage.Forwards) },
                     onFailure = { error ->
                         ResetStageResult.Failure(
@@ -107,24 +129,7 @@ class TransactionalResetCoordinator(
                         )
                     },
                 )
-            stageResults.add(forwardsOutcome)
-
-            // Check for failures
-            val firstFailure = stageResults.firstOrNull { it is ResetStageResult.Failure } as? ResetStageResult.Failure
-            if (firstFailure == null) {
-                return ResetResult.Success(stageResults)
-            }
-
-            // Step 3: rollback from snapshot in reverse order
-            val rollbackResults = rollbackFromSnapshot(snapshot, stageResults)
-
-            ResetResult.Failed(
-                failedStage = firstFailure.stage,
-                cause = firstFailure.reason,
-                rollback = rollbackResults,
-            )
         }
-    }
 
     private fun captureSnapshot(): ResetSnapshot {
         return ResetSnapshot(
@@ -136,13 +141,9 @@ class TransactionalResetCoordinator(
 
     private suspend fun rollbackFromSnapshot(
         snapshot: ResetSnapshot,
-        mutatedStages: List<ResetStageResult>,
+        mutatedStages: List<ResetStage>,
     ): List<RollbackStageResult> {
-        val mutated =
-            mutatedStages
-                .filterIsInstance<ResetStageResult.Success>()
-                .map { it.stage }
-        return mutated.asReversed().map { stage ->
+        return mutatedStages.asReversed().map { stage ->
             when (stage) {
                 ResetStage.Config -> restoreConfig(snapshot.configToml)
                 ResetStage.SetupInput -> restoreSetupInput(snapshot.setupInput)
@@ -153,14 +154,30 @@ class TransactionalResetCoordinator(
 
     private suspend fun restoreConfig(priorConfig: String?): RollbackStageResult {
         return if (priorConfig != null) {
-            runCatching {
-                configRepository.writeConfigAtomically(priorConfig)
-                RollbackStageResult.Success(ResetStage.Config)
-            }.getOrElse {
-                RollbackStageResult.Failure(ResetStage.Config, it.message ?: "unknown")
-            }
+            configRepository.writeConfigAtomically(priorConfig).fold(
+                onSuccess = {
+                    RollbackStageResult.Success(ResetStage.Config)
+                },
+                onFailure = { error ->
+                    RollbackStageResult.Failure(
+                        ResetStage.Config,
+                        error.message ?: "unknown",
+                    )
+                },
+            )
         } else {
-            RollbackStageResult.Success(ResetStage.Config)
+            // Config was absent before reset — must delete it
+            configRepository.deleteConfigFileForTransactionalReset().fold(
+                onSuccess = {
+                    RollbackStageResult.Success(ResetStage.Config)
+                },
+                onFailure = { error ->
+                    RollbackStageResult.Failure(
+                        ResetStage.Config,
+                        error.message ?: "unknown",
+                    )
+                },
+            )
         }
     }
 
@@ -174,18 +191,25 @@ class TransactionalResetCoordinator(
     }
 
     private suspend fun restoreForwards(forwards: List<ForwardConfig>): RollbackStageResult {
-        return if (forwards.isEmpty()) {
+        // Always restore forwards, even if empty — empty is a valid state that must be persisted
+        val result = forwardsRepository.restoreForTransactionalReset(forwards)
+        return if (result.isSuccess) {
             RollbackStageResult.Success(ResetStage.Forwards)
         } else {
-            val result = forwardsRepository.save(forwards)
-            if (result.isSuccess) {
-                RollbackStageResult.Success(ResetStage.Forwards)
-            } else {
-                RollbackStageResult.Failure(
-                    ResetStage.Forwards,
-                    result.exceptionOrNull()?.message ?: "unknown",
-                )
-            }
+            RollbackStageResult.Failure(
+                ResetStage.Forwards,
+                result.exceptionOrNull()?.message ?: "unknown",
+            )
         }
     }
 }
+
+/**
+ * Reset stages in order.
+ */
+private val resetStages =
+    listOf(
+        ResetStage.Config,
+        ResetStage.SetupInput,
+        ResetStage.Forwards,
+    )

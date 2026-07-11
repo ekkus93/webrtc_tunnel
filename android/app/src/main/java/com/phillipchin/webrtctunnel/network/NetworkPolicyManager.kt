@@ -4,8 +4,10 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.util.Log
 import com.phillipchin.webrtctunnel.model.NetworkStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
+import kotlinx.coroutines.channels.ProducerScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,13 +46,13 @@ class NetworkPolicyManager internal constructor(
                     override fun onAvailable(network: android.net.Network) {
                         val current = evaluate(classifier(), allowMetered = false)
                         _status.value = current
-                        trySend(current)
+                        emitPolicyStatus(current)
                     }
 
                     override fun onLost(network: android.net.Network) {
                         val current = evaluate(classifier(), allowMetered = false)
                         _status.value = current
-                        trySend(current)
+                        emitPolicyStatus(current)
                     }
 
                     override fun onCapabilitiesChanged(
@@ -59,16 +61,28 @@ class NetworkPolicyManager internal constructor(
                     ) {
                         val current = evaluate(classifier(), allowMetered = false)
                         _status.value = current
-                        trySend(current)
+                        emitPolicyStatus(current)
                     }
                 }
             val request = NetworkRequest.Builder().build()
             cm.registerNetworkCallback(request, callback)
-            trySend(evaluate(classifier(), allowMetered = false))
+            emitPolicyStatus(evaluate(classifier(), allowMetered = false))
             awaitClose { cm.unregisterNetworkCallback(callback) }
         }.conflate()
 
     private companion object {
+        private const val TAG = "NetworkPolicyManager"
+
+        /**
+         * P1-005: Wraps trySend so delivery failures are visible (logged) rather than silently lost.
+         */
+        private fun ProducerScope<NetworkStatus>.emitPolicyStatus(status: NetworkStatus) {
+            val result = trySend(status)
+            if (result.isFailure) {
+                Log.w(TAG, "Network policy event delivery failed", result.exceptionOrNull())
+            }
+        }
+
         fun classifyCurrentNetwork(context: Context): Pair<NetworkType, Boolean> {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val network = cm.activeNetwork

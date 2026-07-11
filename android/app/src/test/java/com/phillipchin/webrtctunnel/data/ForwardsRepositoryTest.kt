@@ -153,8 +153,8 @@ class ForwardsRepositoryTest {
     @Test
     fun refreshKeepsPriorListWhenFileIsCorrupt() =
         runBlocking {
-            // Seed a valid in-memory state via save() (bypasses loadError guard).
-            repo.save(listOf(forward("keep", 2222)))
+            // Seed a valid in-memory state via the receipt API.
+            repo.upsertWithReceipt(forward("keep", 2222)).getOrThrow()
             assertTrue(repo.forwards.value.any { it.id == "keep" })
 
             file.writeText("{ corrupt json")
@@ -218,15 +218,5 @@ class ForwardsRepositoryTest {
             assertTrue(result.isSuccess)
             assertTrue(repo.current().isEmpty())
             assertTrue(repo.loadError.value == null)
-        }
-
-    @Test
-    fun savePersistsExactList() =
-        runBlocking {
-            val forwards = listOf(forward("a", 1111), forward("b", 2222))
-            val result = repo.save(forwards)
-
-            assertTrue(result.isSuccess)
-            assertEquals(forwards, repo.current())
         }
 }

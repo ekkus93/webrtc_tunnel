@@ -9,6 +9,7 @@ import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -41,7 +42,7 @@ class SetupSaveController(
     private val deps: AppDependencies,
     private val scope: CoroutineScope,
     private val loadPreferences: suspend () -> AndroidAppPreferences,
-    private val persistPreferences: suspend (AndroidAppPreferences) -> Unit,
+    private val persistPreferences: suspend (AndroidAppPreferences) -> Result<Unit>,
     private val access: WizardStateAccess,
     private val ioDispatcher: CoroutineDispatcher = deps.dispatchers.io,
 ) {
@@ -96,9 +97,9 @@ class SetupSaveController(
                 validateStep(deps, SetupStep.Review, current)?.let { saveError(it, redact = false) }
                 val identity = resolveSaveIdentity(current)
                 try {
-                    if (identity.third != input.localPeerId) {
+                    if (identity.peerId != input.localPeerId) {
                         saveError(
-                            "Local peer ID must match private identity peer ID (${identity.third})",
+                            "Local peer ID must match private identity peer ID (${identity.peerId})",
                             redact = true,
                         )
                     }
@@ -115,24 +116,24 @@ class SetupSaveController(
                             prefs.androidIceMode,
                         )
                     val validation =
-                        withContext(ioDispatcher) { validateCandidateConfig(deps, candidate, identity.first) }
+                        withContext(ioDispatcher) { validateCandidateConfig(deps, candidate, identity.privateIdentity) }
                     if (!validation.valid) {
                         saveError(validation.message ?: "Config validation failed", redact = false)
                     }
                     persistConfig(candidate, input)
                     identity
                 } finally {
-                    // Wipe the plaintext identity buffer; only the public id/peer id (second/
-                    // third) are used after this point.
-                    identity.first.fill(0)
+                    // Wipe the plaintext identity buffer; only the public id/peer id are
+                    // used after this point.
+                    identity.privateIdentity.fill(0)
                 }
             }
         return outcome.fold(
             onSuccess = { identity ->
                 access.applyState(
                     current.copy(
-                        localPublicIdentity = identity.second,
-                        identityPeerId = identity.third,
+                        localPublicIdentity = identity.publicIdentity,
+                        identityPeerId = identity.peerId,
                         errorMessage = null,
                         saveResult = "Configuration saved",
                     ),
@@ -149,7 +150,7 @@ class SetupSaveController(
         )
     }
 
-    private suspend fun resolveSaveIdentity(current: SetupWizardState): Triple<ByteArray, String, String> {
+    private suspend fun resolveSaveIdentity(current: SetupWizardState): ResolvedIdentity {
         val resolved =
             if (current.importIdentityPath.isNotBlank()) {
                 withContext(ioDispatcher) { importPrivateIdentity(deps, current.importIdentityPath) }
@@ -163,7 +164,7 @@ class SetupSaveController(
                 resolveStoredIdentity(deps, ioDispatcher)
                     ?: saveError("Stored private key exists but could not be loaded or is invalid", redact = true)
             }
-        if (resolved.first.isEmpty()) {
+        if (resolved.privateIdentity.isEmpty()) {
             saveError("Missing encrypted identity", redact = true)
         }
         return resolved
@@ -183,11 +184,36 @@ class SetupSaveController(
                         allowMetered = input.allowMetered,
                         resumeOnUnmetered = input.resumeOnUnmetered,
                     ),
-                )
+                ).getOrElse { error ->
+                    throw PreferencePersistenceException(
+                        error.message
+                            ?: "Failed to save preferences",
+                        error,
+                    )
+                }
             }
         }.getOrElse { saveError(it.message ?: "Failed saving configuration", redact = true) }
     }
 }
+
+/**
+ * Thrown when preference persistence fails during setup save.
+ * This allows the caller to distinguish between config write failures and preference write failures.
+ */
+private class PreferencePersistenceException(
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause)
+
+/**
+ * P0-002: Named type for resolved identity components.
+ * Replaces raw Triple for safer ownership semantics.
+ */
+private data class ResolvedIdentity(
+    val privateIdentity: ByteArray,
+    val publicIdentity: String,
+    val peerId: String,
+)
 
 private fun saveError(
     message: String,
@@ -196,24 +222,35 @@ private fun saveError(
 
 private suspend fun resolveStoredIdentity(
     deps: AppDependencies,
-    dispatcher: CoroutineDispatcher = deps.dispatchers.io,
-): Triple<ByteArray, String, String>? =
+    dispatcher: CoroutineDispatcher,
+): ResolvedIdentity? =
     withContext(dispatcher) {
-        runCatching {
-            val bytes = deps.identityRepository.readPrivateIdentityPlaintext()
+        var bytes: ByteArray? = null
+        var transferred = false
+        try {
+            bytes = deps.identityRepository.readPrivateIdentityPlaintext()
             val validated = deps.identityValidation.validatePrivateIdentity(bytes.decodeToString())
             require(validated.valid) { validated.message ?: "Stored private identity is invalid" }
             val peerId = validated.peerId ?: throw IllegalArgumentException("Missing identity peer id")
             val publicIdentity =
                 validated.canonicalPublicIdentity ?: deps.identityRepository.readPublicIdentity()
-            Triple(bytes, publicIdentity, peerId)
-        }.getOrNull()
+            transferred = true
+            ResolvedIdentity(bytes, publicIdentity, peerId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            null
+        } finally {
+            if (!transferred) {
+                bytes?.fill(0)
+            }
+        }
     }
 
 private fun importPrivateIdentity(
     deps: AppDependencies,
     path: String,
-): Result<Triple<ByteArray, String, String>> =
+): Result<ResolvedIdentity> =
     runCatching {
         val privateIdentity = deps.identityRepository.readPrivateIdentityFile(path).getOrThrow()
         val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
@@ -224,7 +261,7 @@ private fun importPrivateIdentity(
                 ?: throw IllegalArgumentException("Missing canonical public identity")
         val peerId = validated.peerId ?: throw IllegalArgumentException("Missing canonical peer id")
         deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
-        Triple(canonicalPrivate.toByteArray(), canonicalPublic, peerId)
+        ResolvedIdentity(canonicalPrivate.toByteArray(), canonicalPublic, peerId)
     }
 
 private fun importPublicIdentity(

@@ -4,10 +4,10 @@ import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
 
 /**
- * Typed start outcome for JNI operations.
+ * Typed start outcome for Android-side classification.
  *
- * Moves the classification closer to the JNI boundary, making the coordinator
- * use this typed outcome instead of post-hoc classification.
+ * The JNI bridge still exposes primitive success/failure. This type is used above
+ * the bridge boundary to route startup completion through the lifecycle coordinator.
  */
 sealed interface StartOutcome {
     /**
@@ -30,16 +30,23 @@ sealed interface StartOutcome {
     ) : StartOutcome
 
     /**
-     * Unexpected failure during startup.
+     * Policy blocked before native start.
      */
-    data class UnexpectedFailure(
-        val error: Throwable,
+    data class PolicyBlocked(
+        val reason: String,
     ) : StartOutcome
 
     /**
      * Startup was aborted by control flow (e.g., stale generation).
      */
     data object Aborted : StartOutcome
+
+    /**
+     * Unexpected failure during startup.
+     */
+    data class UnexpectedFailure(
+        val error: Throwable,
+    ) : StartOutcome
 }
 
 /**
@@ -81,5 +88,6 @@ data class StartResult(
             is StartOutcome.VerificationFailure -> outcome.error.message
             is StartOutcome.UnexpectedFailure -> outcome.error.message
             is StartOutcome.Aborted -> null
+            is StartOutcome.PolicyBlocked -> outcome.reason
         }
 }

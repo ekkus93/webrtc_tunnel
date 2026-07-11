@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
@@ -15,8 +16,20 @@ class NetworkPolicyViewModel(private val deps: AppDependencies) : ViewModel() {
 
     fun savePreferences(updated: com.phillipchin.webrtctunnel.model.AndroidAppPreferences) {
         viewModelScope.launch {
-            deps.configRepository.savePreferences(updated)
-            deps.snackbar.show("Network policy updated")
+            val result = deps.configRepository.savePreferences(updated)
+            result.fold(
+                onSuccess = {
+                    deps.snackbar.show("Network policy updated")
+                },
+                onFailure = { error ->
+                    deps.snackbar.show(
+                        SensitiveDataRedactor.redactText(
+                            error.message
+                                ?: "Failed to update network policy",
+                        ),
+                    )
+                },
+            )
         }
     }
 }

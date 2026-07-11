@@ -47,7 +47,7 @@ class SetupViewModel(
     private val loadPreferences: suspend () -> AndroidAppPreferences = { deps.configRepository.preferences.first() },
     private val persistPreferences: suspend (
         AndroidAppPreferences,
-    ) -> Unit = { deps.configRepository.savePreferences(it) },
+    ) -> Result<Unit> = { deps.configRepository.savePreferences(it) },
 ) : ViewModel() {
     private val _state = MutableStateFlow(SetupWizardState())
     val state: StateFlow<SetupWizardState> = _state.asStateFlow()

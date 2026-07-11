@@ -10,6 +10,7 @@ import com.phillipchin.webrtctunnel.BuildConfig
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
@@ -17,6 +18,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -49,10 +51,13 @@ class ConfigRepository(private val context: Context) {
             }
         }
 
-    fun ensureDefaultConfig(contents: String) {
+    /**
+     * P1-007: Ensures a default config exists by writing through the serialized atomic
+     * writer so the first write cannot race with a later [writeConfigAtomically] call.
+     */
+    suspend fun ensureDefaultConfig(contents: String) {
         if (!configFile.exists()) {
-            configFile.parentFile?.mkdirs()
-            configFile.writeText(contents)
+            writeConfigAtomically(contents)
         }
     }
 
@@ -83,7 +88,14 @@ class ConfigRepository(private val context: Context) {
                 return@withLock
             }
             val withIceMode = upsertAndroidIceMode(current, resolveAndroidIceMode(iceMode))
-            writeConfigAtomicallyLocked(configFile, upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4))
+            writeConfigAtomicallyLocked(
+                configFile,
+                upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4),
+            ).onFailure { error ->
+                // Config write failure is non-fatal for startup preparation
+                // (the tunnel will log the error but continue)
+                android.util.Log.w("ConfigRepository", "Failed to prepare active config", error)
+            }
         }
     }
 
@@ -95,12 +107,25 @@ class ConfigRepository(private val context: Context) {
     /**
      * P1-007: Atomic write with unique temp file under [writeMutex].
      * All config writers go through this single serialized boundary.
+     * Returns Result.success(Unit) on success, Result.failure(...) on failure.
      */
-    suspend fun writeConfigAtomically(contents: String) {
+    suspend fun writeConfigAtomically(contents: String): Result<Unit> =
         writeMutex.withLock {
             writeConfigAtomicallyLocked(configFile, contents)
         }
-    }
+
+    /**
+     * Internal: delete config file for transactional reset rollback.
+     * Used when the config file was absent before reset and a later stage failed,
+     * so rollback must restore the absent state (not leave a stale config behind).
+     * Returns Result.success(Unit) on success, Result.failure(...) on failure.
+     */
+    internal suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> =
+        writeMutex.withLock {
+            runCatching<Unit> {
+                configFile.delete()
+            }
+        }
 
     fun saveSetupInput(input: SetupConfigInput) {
         setupInputFile.parentFile?.mkdirs()
@@ -144,22 +169,39 @@ class ConfigRepository(private val context: Context) {
 private fun writeConfigAtomicallyLocked(
     configFile: File,
     contents: String,
-) {
-    configFile.parentFile?.mkdirs()
-    val temp =
-        Files.createTempFile(
-            configFile.parentFile?.toPath(),
-            "config.toml.tmp-",
-            ".partial",
-        )
-    temp.toFile().writeText(contents)
-    Files.move(
-        temp,
-        configFile.toPath(),
-        StandardCopyOption.REPLACE_EXISTING,
-        StandardCopyOption.ATOMIC_MOVE,
-    )
-}
+): Result<Unit> =
+    runCatching {
+        configFile.parentFile?.mkdirs()
+        val temp =
+            Files.createTempFile(
+                configFile.parentFile?.toPath(),
+                "config.toml.tmp-",
+                ".partial",
+            )
+        try {
+            temp.toFile().writeText(contents)
+            try {
+                Files.move(
+                    temp,
+                    configFile.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (unsupported: AtomicMoveNotSupportedException) {
+                // Fallback when ATOMIC_MOVE is not supported on the filesystem
+                Files.move(
+                    temp,
+                    configFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } finally {
+            // Clean up temp file if it still exists (move succeeded or failed)
+            Files.deleteIfExists(temp)
+        }
+    }
 
 /**
  * Resolve the effective `android_ice_mode`: the debug `getprop` override wins when present

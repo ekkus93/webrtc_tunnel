@@ -211,9 +211,9 @@ class TunnelRepository(
     }
 
     data class LogsFetchResult(
-    val logs: List<LogEvent>,
-    val error: String?,
-)
+        val logs: List<LogEvent>,
+        val error: TunnelError?,
+    )
 
     fun recentLogs(maxEvents: Int): LogsFetchResult {
         // P0-005: Log retrieval failure does not affect tunnel lifecycle state.
@@ -243,14 +243,15 @@ class TunnelRepository(
                 // Never return an empty list on failure — that reads as "no logs". Surface a
                 // synthetic error log entry so the log screen shows that retrieval failed.
                 LogsFetchResult(
-                    logs = listOf(
-                        LogEvent(
-                            unixMs = 0L,
-                            level = "error",
-                            message = "Native log retrieval failed; see logsError for details",
+                    logs =
+                        listOf(
+                            LogEvent(
+                                unixMs = 0L,
+                                level = "error",
+                                message = "Native log retrieval failed; see logsError for details",
+                            ),
                         ),
-                    ),
-                    error = _logsError.value?.message,
+                    error = _logsError.value,
                 )
             },
         )
@@ -406,9 +407,10 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
 }
 
 // P1-008: Resolve native mode, returning null for unknown modes.
+// P1-003: null mode is a schema error (missing field), not a fallback to Offer.
 private fun resolveNativeMode(mode: String?): TunnelMode? =
     when (mode) {
-        null -> TunnelMode.Offer
+        null -> null
         "offer" -> TunnelMode.Offer
         "answer" -> TunnelMode.Answer
         else -> null

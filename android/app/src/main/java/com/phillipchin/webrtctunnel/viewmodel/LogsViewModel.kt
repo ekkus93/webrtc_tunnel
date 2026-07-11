@@ -31,8 +31,8 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
     private var refreshGeneration = 0L
 
     // P1-007: Own log error state locally so generation check covers both logs and error.
-    private val _logsError = MutableStateFlow<String?>(null)
-    val logsError: StateFlow<String?> = _logsError.asStateFlow()
+    private val _logsError = MutableStateFlow<TunnelError?>(null)
+    val logsError: StateFlow<TunnelError?> = _logsError.asStateFlow()
 
     val filteredLogs: StateFlow<List<LogEvent>> =
         combine(_logs, _filter) { logs, level ->

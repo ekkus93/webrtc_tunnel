@@ -184,15 +184,20 @@ class ForwardsRepository(
             }
         }
 
-    /** Persist an exact list (used for reset/rollback). Save-then-publish; serialized. Advances revision on success. */
-    suspend fun save(forwards: List<ForwardConfig>): Result<Unit> =
+    /**
+     * P1-001: Internal restore for transactional reset rollback.
+     * Persists an exact forwards list without validation (bypass is intentional for rollback).
+     * Save-then-publish; serialized. Advances revision on success.
+     * Not exposed to ViewModels — only TransactionalResetCoordinator calls this.
+     */
+    internal suspend fun restoreForTransactionalReset(forwards: List<ForwardConfig>): Result<Unit> =
         mutex.withLock {
             withContext(dispatchers.io) {
-                runCatching { store.saveForwards(forwards) }
-                    .onSuccess {
-                        _forwards.value = forwards
-                        revision += 1
-                    }
+                runCatching {
+                    store.saveForwards(forwards)
+                    _forwards.value = forwards
+                    revision += 1
+                }
             }
         }
 }
