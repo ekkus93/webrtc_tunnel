@@ -167,9 +167,7 @@ open class AppViewModelTestBase {
      * Create AppDependencies for tests.
      * Subclasses can override this to inject custom dependencies.
      */
-    protected open fun createTestDeps(
-        configRepository: ConfigRepository,
-    ): AppDependencies =
+    protected open fun createTestDeps(configRepository: ConfigRepository): AppDependencies =
         AppDependencies(
             context = app,
             nativeBridgeFactory = { recordingBridge },

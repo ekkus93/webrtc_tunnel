@@ -140,15 +140,21 @@ class TunnelForegroundServiceStopFailureTest {
         assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
     }
 
+    /**
+     * P0-005: A failed STOP quarantines the tunnel until an explicit STOP succeeds.
+     * Once a successful STOP clears the quarantine, the earlier cleanup failure must
+     * remain visible in diagnostics, not silently erased by the later successful retry.
+     */
     @Test
     fun laterSuccessfulStopDoesNotEraseEarlierCleanupFailureHistory() {
         val deps = (service.applicationContext as HasAppDependencies).deps
         val bridge = TunnelForegroundServiceTestHooks.bridge
 
+        // 1. Start successfully.
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
         assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
 
-        // First stop attempt fails.
+        // 2. First stop attempt fails.
         bridge.failNextStop()
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
         assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error })
@@ -157,14 +163,20 @@ class TunnelForegroundServiceStopFailureTest {
             waitForCondition { deps.tunnelRepository.status.value.lastCleanupError != null },
         )
 
-        // A later retry succeeds: the current runtime state may truthfully become Stopped...
+        // 3. Quarantine blocks START until an explicit STOP succeeds.
+        val startCountBeforeQuarantineClear = bridge.startOfferCalls
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 3)
-        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
-        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 4)
-        assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Stopped })
+        assertEquals(
+            "START must be blocked while quarantine is active",
+            startCountBeforeQuarantineClear,
+            bridge.startOfferCalls,
+        )
 
-        // ...but the earlier cleanup failure must remain visible in diagnostics, not silently
-        // erased by the later successful retry (P1-005).
+        // 4. Explicit STOP succeeds → clears quarantine.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 4)
+        assertTrue(waitForCondition { bridge.stopCalls >= 2 })
+
+        // 5. Cleanup error history must remain visible after the later successful stop.
         assertTrue(
             "an earlier cleanup failure must remain visible after a later successful stop",
             deps.tunnelRepository.status.value.lastCleanupError != null,

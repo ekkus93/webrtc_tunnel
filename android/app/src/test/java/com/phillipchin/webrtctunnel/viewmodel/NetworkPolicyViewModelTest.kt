@@ -30,137 +30,149 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
     }
 
     @Test
-    fun savePreferencesSuccessShowsUpdatedMessage() = runBlocking {
-        val messages = mutableListOf<String>()
-        val job = launch {
-            deps.snackbar.messages.collect { messages.add(it) }
-        }
+    fun savePreferencesSuccessShowsUpdatedMessage() =
+        runBlocking {
+            val messages = mutableListOf<String>()
+            val job =
+                launch {
+                    deps.snackbar.messages.collect { messages.add(it) }
+                }
 
-        viewModel.savePreferences(AndroidAppPreferences())
+            viewModel.savePreferences(AndroidAppPreferences())
 
-        withTimeout(5_000) {
-            while (messages.isEmpty()) {
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                kotlinx.coroutines.delay(10)
-            }
-        }
-
-        assertEquals("Network policy updated", messages.first())
-        job.cancel()
-    }
-
-    @Test
-    fun savePreferencesFailureShowsErrorMessage() = runBlocking {
-        val failingRepository =
-            object : ConfigRepository(app) {
-                override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
-                    return Result.failure(RuntimeException("simulated datastore failure"))
+            withTimeout(5_000) {
+                while (messages.isEmpty()) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    kotlinx.coroutines.delay(10)
                 }
             }
 
-        // Use real IO dispatchers so the launch gets a real suspension point.
-        val realDeps = AppDependencies(
-            context = app,
-            nativeBridgeFactory = { recordingBridge },
-            configRepository = failingRepository,
-            networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
-            identityRepository = deps.identityRepository,
-            dispatchers = realIoTestDispatchers(),
-        )
-
-        val realViewModel = NetworkPolicyViewModel(realDeps)
-        realViewModel.savePreferences(AndroidAppPreferences())
-
-        // Collect snackbar messages with a timeout.
-        val messages = mutableListOf<String>()
-        val job = launch {
-            realDeps.snackbar.messages.collect { messages.add(it) }
+            assertEquals("Network policy updated", messages.first())
+            job.cancel()
         }
-
-        withTimeout(5_000) {
-            while (messages.isEmpty()) {
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                kotlinx.coroutines.delay(10)
-            }
-        }
-
-        val message = messages.first()
-        assertFalse(
-            "failure must not show success message",
-            message == "Network policy updated",
-        )
-        assertTrue(
-            "failure message must be non-blank",
-            message.isNotBlank(),
-        )
-        job.cancel()
-    }
 
     @Test
-    fun savePreferencesFailureDoesNotShowSuccess() = runBlocking {
-        val failingRepository =
-            object : ConfigRepository(app) {
-                override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
-                    return Result.failure(RuntimeException("no write"))
+    fun savePreferencesFailureShowsErrorMessage() =
+        runBlocking {
+            val failingRepository =
+                object : ConfigRepository(app) {
+                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
+                        return Result.failure(RuntimeException("simulated datastore failure"))
+                    }
+                }
+
+            // Use real IO dispatchers so the launch gets a real suspension point.
+            val realDeps =
+                AppDependencies(
+                    context = app,
+                    nativeBridgeFactory = { recordingBridge },
+                    configRepository = failingRepository,
+                    networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                    identityRepository = deps.identityRepository,
+                    dispatchers = realIoTestDispatchers(),
+                )
+
+            val realViewModel = NetworkPolicyViewModel(realDeps)
+            realViewModel.savePreferences(AndroidAppPreferences())
+
+            // Collect snackbar messages with a timeout.
+            val messages = mutableListOf<String>()
+            val job =
+                launch {
+                    realDeps.snackbar.messages.collect { messages.add(it) }
+                }
+
+            withTimeout(5_000) {
+                while (messages.isEmpty()) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    kotlinx.coroutines.delay(10)
                 }
             }
 
-        val realDeps = AppDependencies(
-            context = app,
-            nativeBridgeFactory = { recordingBridge },
-            configRepository = failingRepository,
-            networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
-            identityRepository = deps.identityRepository,
-            dispatchers = realIoTestDispatchers(),
-        )
-
-        val realViewModel = NetworkPolicyViewModel(realDeps)
-        realViewModel.savePreferences(AndroidAppPreferences())
-
-        // Collect snackbar messages with a timeout.
-        val messages = mutableListOf<String>()
-        val job = launch {
-            realDeps.snackbar.messages.collect { messages.add(it) }
+            val message = messages.first()
+            assertFalse(
+                "failure must not show success message",
+                message == "Network policy updated",
+            )
+            assertTrue(
+                "failure message must be non-blank",
+                message.isNotBlank(),
+            )
+            job.cancel()
         }
-
-        withTimeout(5_000) {
-            while (messages.isEmpty()) {
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                kotlinx.coroutines.delay(10)
-            }
-        }
-
-        assertFalse(
-            "failure must not show 'Network policy updated'",
-            messages.any { it == "Network policy updated" },
-        )
-        job.cancel()
-    }
 
     @Test
-    fun networkStatusCombinesPolicyAndPreferences() = runBlocking {
-        val status = kotlinx.coroutines.withTimeout(5_000) {
-            viewModel.networkStatus.first()
-        }
+    fun savePreferencesFailureDoesNotShowSuccess() =
+        runBlocking {
+            val failingRepository =
+                object : ConfigRepository(app) {
+                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
+                        return Result.failure(RuntimeException("no write"))
+                    }
+                }
 
-        assertTrue(
-            "default combined status must allow tunnel (unmetered wifi)",
-            status.networkType == NetworkType.UnmeteredWifi,
-        )
-    }
+            val realDeps =
+                AppDependencies(
+                    context = app,
+                    nativeBridgeFactory = { recordingBridge },
+                    configRepository = failingRepository,
+                    networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                    identityRepository = deps.identityRepository,
+                    dispatchers = realIoTestDispatchers(),
+                )
+
+            val realViewModel = NetworkPolicyViewModel(realDeps)
+            realViewModel.savePreferences(AndroidAppPreferences())
+
+            // Collect snackbar messages with a timeout.
+            val messages = mutableListOf<String>()
+            val job =
+                launch {
+                    realDeps.snackbar.messages.collect { messages.add(it) }
+                }
+
+            withTimeout(5_000) {
+                while (messages.isEmpty()) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    kotlinx.coroutines.delay(10)
+                }
+            }
+
+            assertFalse(
+                "failure must not show 'Network policy updated'",
+                messages.any { it == "Network policy updated" },
+            )
+            job.cancel()
+        }
 
     @Test
-    fun preferencesReflectsRepository() = runBlocking {
-        val prefs = deps.configRepository.preferences
-        val collected = runCatching {
-            kotlinx.coroutines.withTimeout(5_000) {
-                prefs.first()
-            }
+    fun networkStatusCombinesPolicyAndPreferences() =
+        runBlocking {
+            val status =
+                kotlinx.coroutines.withTimeout(5_000) {
+                    viewModel.networkStatus.first()
+                }
+
+            assertTrue(
+                "default combined status must allow tunnel (unmetered wifi)",
+                status.networkType == NetworkType.UnmeteredWifi,
+            )
         }
 
-        assertTrue(
-            "default preferences must load",
-            collected.isSuccess,
-        )
-    }
+    @Test
+    fun preferencesReflectsRepository() =
+        runBlocking {
+            val prefs = deps.configRepository.preferences
+            val collected =
+                runCatching {
+                    kotlinx.coroutines.withTimeout(5_000) {
+                        prefs.first()
+                    }
+                }
+
+            assertTrue(
+                "default preferences must load",
+                collected.isSuccess,
+            )
+        }
 }

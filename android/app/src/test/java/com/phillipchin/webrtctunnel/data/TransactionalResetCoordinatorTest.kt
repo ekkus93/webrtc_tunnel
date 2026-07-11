@@ -55,8 +55,7 @@ class TransactionalResetCoordinatorTest {
         var saveCallCount = 0
         var loadedForwards = initialForwards
 
-        override fun loadForwardsResult(): Result<List<ForwardConfig>> =
-            Result.success(loadedForwards)
+        override fun loadForwardsResult(): Result<List<ForwardConfig>> = Result.success(loadedForwards)
 
         override fun saveForwards(forwards: List<ForwardConfig>) {
             saveCallCount++
@@ -93,10 +92,11 @@ class TransactionalResetCoordinatorTest {
             forwardsRepo.upsertWithReceipt(forward("test")).getOrThrow()
 
             // Create a coordinator that will fail on the Forwards stage to trigger rollback.
-            val fakeStore = FakeForwardsStore(
-                initialForwards = forwardsRepo.current(),
-                throwOnSave = true,
-            )
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = forwardsRepo.current(),
+                    throwOnSave = true,
+                )
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
@@ -119,10 +119,11 @@ class TransactionalResetCoordinatorTest {
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
 
             // Create a coordinator that will fail on the Forwards stage to trigger rollback.
-            val fakeStore = FakeForwardsStore(
-                initialForwards = forwardsRepo.current(),
-                throwOnSave = true,
-            )
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = forwardsRepo.current(),
+                    throwOnSave = true,
+                )
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
@@ -150,10 +151,11 @@ class TransactionalResetCoordinatorTest {
             configRepo.saveSetupInput(priorInput)
 
             // Create a coordinator that will fail on the Forwards stage to trigger rollback.
-            val fakeStore = FakeForwardsStore(
-                initialForwards = forwardsRepo.current(),
-                throwOnSave = true,
-            )
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = forwardsRepo.current(),
+                    throwOnSave = true,
+                )
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
@@ -178,10 +180,11 @@ class TransactionalResetCoordinatorTest {
             assertTrue(priorForwards.isEmpty())
 
             // Create a coordinator that will fail on the Forwards stage to trigger rollback.
-            val fakeStore = FakeForwardsStore(
-                initialForwards = priorForwards,
-                throwOnSave = true,
-            )
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = priorForwards,
+                    throwOnSave = true,
+                )
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
@@ -209,10 +212,11 @@ class TransactionalResetCoordinatorTest {
             assertEquals(1, priorForwards.size)
 
             // Create a coordinator that will fail on the Forwards stage to trigger rollback.
-            val fakeStore = FakeForwardsStore(
-                initialForwards = priorForwards,
-                throwOnSave = true,
-            )
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = priorForwards,
+                    throwOnSave = true,
+                )
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
@@ -232,10 +236,11 @@ class TransactionalResetCoordinatorTest {
     fun resetStopsAfterFirstFailedStage() =
         runBlocking {
             // Create a coordinator that will fail on the Forwards stage to trigger rollback.
-            val fakeStore = FakeForwardsStore(
-                initialForwards = forwardsRepo.current(),
-                throwOnSave = true,
-            )
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = forwardsRepo.current(),
+                    throwOnSave = true,
+                )
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
@@ -254,10 +259,11 @@ class TransactionalResetCoordinatorTest {
     fun rollbackFailureResultIsNotSuccess() =
         runBlocking {
             // Create a coordinator that will fail on the Forwards stage to trigger rollback.
-            val fakeStore = FakeForwardsStore(
-                initialForwards = forwardsRepo.current(),
-                throwOnSave = true,
-            )
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = forwardsRepo.current(),
+                    throwOnSave = true,
+                )
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 

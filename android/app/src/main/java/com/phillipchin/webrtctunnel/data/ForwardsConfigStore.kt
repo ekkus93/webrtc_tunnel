@@ -44,21 +44,20 @@ internal fun describeForwardsFailure(error: Throwable): String =
     }
 
 /**
- * Low-level persistence + validation for the configured local forwards. Mutation /
- * in-memory source-of-truth lives in [ForwardsRepository]; this class only loads,
- * saves (atomically), and validates.
- */
-/**
- * Low-level persistence for the configured local forwards.
+ * Low-level persistence + validation for the configured local forwards.
  * Extracted so the coordinator can be tested with a fake that throws on specific operations.
  */
 interface ForwardsStore {
     fun loadForwardsResult(): Result<List<ForwardConfig>>
+
     fun saveForwards(forwards: List<ForwardConfig>)
+
     fun validateForwards(forwards: List<ForwardConfig>): String?
 }
 
 /**
+ * Concrete [ForwardsStore] implementation that persists forwards to `forwards.json`
+ * in the app's files directory.
  */
 class ForwardsConfigStore(private val context: Context) : ForwardsStore {
     private val forwardsFile: File get() = File(context.filesDir, "forwards.json")
