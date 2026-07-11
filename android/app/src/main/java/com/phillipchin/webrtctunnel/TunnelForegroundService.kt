@@ -675,6 +675,10 @@ class TunnelForegroundService
                 } catch (aborted: StartupAborted) {
                     android.util.Log.d(tag, "Startup aborted: ${aborted.javaClass.simpleName}")
                     StartOutcome.Aborted
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    StartOutcome.UnexpectedFailure(error)
                 }
 
             // Loads + validates prerequisites for an offer start. Returns the private identity
