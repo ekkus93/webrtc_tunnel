@@ -1,5 +1,6 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
+import android.os.Looper
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
@@ -8,12 +9,14 @@ import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 
 @RunWith(RobolectricTestRunner::class)
 open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
