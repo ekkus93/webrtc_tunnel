@@ -156,33 +156,41 @@ open class AppViewModelTestBase {
     protected lateinit var deps: AppDependencies
 
     @Before
-    fun setUp() {
+    open fun setUp() {
         configRepository = ConfigRepository(app)
         recordingBridge = RecordingBridge()
-        deps =
-            AppDependencies(
-                context = app,
-                nativeBridgeFactory = { recordingBridge },
-                configRepository = configRepository,
-                networkPolicyManager =
-                    NetworkPolicyManager {
-                        NetworkType.UnmeteredWifi to false
-                    },
-                identityRepository =
-                    IdentityRepository(
-                        app,
-                        object : IdentityCrypto {
-                            override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
-
-                            override fun decrypt(payload: ByteArray): ByteArray = payload
-                        },
-                    ),
-                // Run all ViewModel IO inline so coroutine results are observable
-                // synchronously in tests (no real thread hops).
-                dispatchers = inlineTestDispatchers(),
-            )
+        deps = createTestDeps(configRepository = configRepository)
         tunnelRepository = deps.tunnelRepository
     }
+
+    /**
+     * Create AppDependencies for tests.
+     * Subclasses can override this to inject custom dependencies.
+     */
+    protected open fun createTestDeps(
+        configRepository: ConfigRepository,
+    ): AppDependencies =
+        AppDependencies(
+            context = app,
+            nativeBridgeFactory = { recordingBridge },
+            configRepository = configRepository,
+            networkPolicyManager =
+                NetworkPolicyManager {
+                    NetworkType.UnmeteredWifi to false
+                },
+            identityRepository =
+                IdentityRepository(
+                    app,
+                    object : IdentityCrypto {
+                        override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
+
+                        override fun decrypt(payload: ByteArray): ByteArray = payload
+                    },
+                ),
+            // Run all ViewModel IO inline so coroutine results are observable
+            // synchronously in tests (no real thread hops).
+            dispatchers = inlineTestDispatchers(),
+        )
 }
 
 /** Test dispatchers that execute inline. The `Dispatchers.Unconfined` default keeps the

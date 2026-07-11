@@ -24,7 +24,7 @@ import java.nio.file.StandardCopyOption
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
 
-class ConfigRepository(private val context: Context) {
+open class ConfigRepository(private val context: Context) {
     private val configFile: File get() = File(context.filesDir, "config.toml")
     private val setupInputFile: File get() = File(context.filesDir, "setup_input.json")
 
@@ -38,7 +38,7 @@ class ConfigRepository(private val context: Context) {
         }
 
     // P1-016: Wrap preference writes so failures are visible.
-    suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+    open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
         runCatching {
             context.dataStore.edit { prefs ->
                 prefs[Keys.allowMetered] = update.allowMetered
