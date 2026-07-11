@@ -30,8 +30,9 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
     // P1-014: Generation counter to prevent stale refresh from overwriting newer results.
     private var refreshGeneration = 0L
 
-    // P0-005: Log retrieval failure is separate from tunnel lifecycle state.
-    val logsError: StateFlow<TunnelError?> = deps.tunnelRepository.logsError
+    // P1-007: Own log error state locally so generation check covers both logs and error.
+    private val _logsError = MutableStateFlow<String?>(null)
+    val logsError: StateFlow<String?> = _logsError.asStateFlow()
 
     val filteredLogs: StateFlow<List<LogEvent>> =
         combine(_logs, _filter) { logs, level ->
@@ -42,10 +43,11 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
         // P1-014: Bump generation to invalidate any in-flight refresh.
         val generation = ++refreshGeneration
         viewModelScope.launch {
-            val refreshedLogs = withContext(deps.dispatchers.io) { deps.tunnelRepository.recentLogs(maxEvents) }
-            // Only apply if this generation is still the latest.
+            val result = withContext(deps.dispatchers.io) { deps.tunnelRepository.recentLogs(maxEvents) }
+            // P1-007: Only apply if this generation is still the latest.
             if (refreshGeneration == generation) {
-                _logs.value = refreshedLogs
+                _logs.value = result.logs
+                _logsError.value = result.error
             }
         }
     }

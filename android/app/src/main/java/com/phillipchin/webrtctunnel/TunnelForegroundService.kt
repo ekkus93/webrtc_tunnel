@@ -179,7 +179,7 @@ class TunnelForegroundService
             networkMonitorJob =
                 serviceScope.launch {
                     networkPolicyManager.monitor(this@TunnelForegroundService).collect { _ ->
-                        runCatching {
+                        try {
                             val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
                             val policy =
                                 networkPolicyManager.evaluateWithPolicy(
@@ -197,10 +197,11 @@ class TunnelForegroundService
                                     ),
                                 )
                             }
-                        }.onFailure {
-                            if (it is CancellationException) throw it
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Throwable) {
                             reporter.publishError(
-                                message = it.message ?: "Network policy monitor failed",
+                                message = error.message ?: "Network policy monitor failed",
                                 code = "network_policy_monitor_failed",
                             )
                         }
@@ -373,10 +374,11 @@ class TunnelForegroundService
                         while (active && !pausedByPolicy.get()) {
                             delay(STATUS_POLL_INTERVAL_MS)
                             if (pausedByPolicy.get()) break
-                            runCatching {
+                            try {
                                 repository.refreshStatus()
-                            }.onFailure { error ->
-                                if (error is CancellationException) throw error
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Throwable) {
                                 reporter.publishError(
                                     code = "status_poll_failed",
                                     message =
@@ -502,22 +504,21 @@ class TunnelForegroundService
                         pendingPolicyResumeGeneration.set(null)
                         return
                     }
-                    runCatching { configRepository.preferences.first() }.fold(
-                        onSuccess = { prefs ->
-                            if (prefs.resumeOnUnmetered) {
-                                if (activeStartup != null) {
-                                    pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
-                                } else {
-                                    pendingPolicyResumeGeneration.set(null)
-                                    offer.resume()
-                                }
+                    try {
+                        val prefs = configRepository.preferences.first()
+                        if (prefs.resumeOnUnmetered) {
+                            if (activeStartup != null) {
+                                pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
+                            } else {
+                                pendingPolicyResumeGeneration.set(null)
+                                offer.resume()
                             }
-                        },
-                        onFailure = {
-                            if (it is CancellationException) throw it
-                            pendingPolicyResumeGeneration.set(null)
-                        },
-                    )
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        pendingPolicyResumeGeneration.set(null)
+                    }
                 }
 
                 override suspend fun handleRetryPolicyResume(expectedGeneration: Long) {

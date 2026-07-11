@@ -210,10 +210,14 @@ class TunnelRepository(
         return Result.success(committed)
     }
 
-    fun recentLogs(maxEvents: Int): List<LogEvent> {
+    data class LogsFetchResult(
+    val logs: List<LogEvent>,
+    val error: String?,
+)
+
+    fun recentLogs(maxEvents: Int): LogsFetchResult {
         // P0-005: Log retrieval failure does not affect tunnel lifecycle state.
-        // Clear the logs error so a later success clears it.
-        _logsError.value = null
+        // P1-007: Return typed result so ViewModel owns generation check for both logs and error.
         return runCatching {
             Json.decodeFromString<List<NativeLogEventDto>>(bridge.getRecentLogsJson(maxEvents))
                 .map { event ->
@@ -226,7 +230,9 @@ class TunnelRepository(
                     )
                 }
         }.fold(
-            onSuccess = { logs -> logs },
+            onSuccess = { logs ->
+                LogsFetchResult(logs = logs, error = null)
+            },
             onFailure = { error ->
                 _logsError.value =
                     TunnelError(
@@ -236,12 +242,15 @@ class TunnelRepository(
                     )
                 // Never return an empty list on failure — that reads as "no logs". Surface a
                 // synthetic error log entry so the log screen shows that retrieval failed.
-                listOf(
-                    LogEvent(
-                        unixMs = 0L,
-                        level = "error",
-                        message = "Native log retrieval failed; see logsError for details",
+                LogsFetchResult(
+                    logs = listOf(
+                        LogEvent(
+                            unixMs = 0L,
+                            level = "error",
+                            message = "Native log retrieval failed; see logsError for details",
+                        ),
                     ),
+                    error = _logsError.value?.message,
                 )
             },
         )
