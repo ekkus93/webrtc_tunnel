@@ -48,7 +48,19 @@ internal fun describeForwardsFailure(error: Throwable): String =
  * in-memory source-of-truth lives in [ForwardsRepository]; this class only loads,
  * saves (atomically), and validates.
  */
-class ForwardsConfigStore(private val context: Context) {
+/**
+ * Low-level persistence for the configured local forwards.
+ * Extracted so the coordinator can be tested with a fake that throws on specific operations.
+ */
+interface ForwardsStore {
+    fun loadForwardsResult(): Result<List<ForwardConfig>>
+    fun saveForwards(forwards: List<ForwardConfig>)
+    fun validateForwards(forwards: List<ForwardConfig>): String?
+}
+
+/**
+ */
+class ForwardsConfigStore(private val context: Context) : ForwardsStore {
     private val forwardsFile: File get() = File(context.filesDir, "forwards.json")
 
     // Seeded on a clean install. The remoteForwardId of each entry must match a forward `id`
@@ -84,7 +96,7 @@ class ForwardsConfigStore(private val context: Context) {
      * write failures are distinguished via [ForwardsConfigException] subtypes rather
      * than collapsed into one "corrupt" outcome (P1-003).
      */
-    fun loadForwardsResult(): Result<List<ForwardConfig>> =
+    override fun loadForwardsResult(): Result<List<ForwardConfig>> =
         if (!forwardsFile.exists()) {
             runCatching {
                 val defaults = defaultForwards()
@@ -124,7 +136,7 @@ class ForwardsConfigStore(private val context: Context) {
      * Any failure here is a [ForwardsWriteException], never a bare I/O exception, so
      * callers can distinguish a write failure from a read/parse one (P1-003).
      */
-    fun saveForwards(forwards: List<ForwardConfig>) {
+    override fun saveForwards(forwards: List<ForwardConfig>) {
         try {
             val dir = forwardsFile.parentFile
             dir?.mkdirs()
@@ -149,7 +161,7 @@ class ForwardsConfigStore(private val context: Context) {
         }
     }
 
-    fun validateForwards(forwards: List<ForwardConfig>): String? {
+    override fun validateForwards(forwards: List<ForwardConfig>): String? {
         val duplicateId = forwards.groupBy { it.id }.entries.firstOrNull { it.value.size > 1 }?.key
         val enabled = forwards.filter { it.enabled }
         val duplicatePort = enabled.groupBy { it.localPort }.entries.firstOrNull { it.value.size > 1 }?.key

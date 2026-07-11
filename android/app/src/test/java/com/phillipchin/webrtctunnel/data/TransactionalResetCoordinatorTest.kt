@@ -11,6 +11,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import java.io.IOException
 
 @RunWith(RobolectricTestRunner::class)
 class TransactionalResetCoordinatorTest {
@@ -43,6 +44,31 @@ class TransactionalResetCoordinatorTest {
         enabled = true,
     )
 
+    /**
+     * Fake ForwardsStore for testing the transactional reset coordinator.
+     * Allows injecting failures on specific operations to test rollback behavior.
+     */
+    private class FakeForwardsStore(
+        val initialForwards: List<ForwardConfig> = emptyList(),
+        val throwOnSave: Boolean = false,
+    ) : ForwardsStore {
+        var saveCallCount = 0
+        var loadedForwards = initialForwards
+
+        override fun loadForwardsResult(): Result<List<ForwardConfig>> =
+            Result.success(loadedForwards)
+
+        override fun saveForwards(forwards: List<ForwardConfig>) {
+            saveCallCount++
+            if (throwOnSave) {
+                throw IOException("Simulated save failure")
+            }
+            loadedForwards = forwards
+        }
+
+        override fun validateForwards(forwards: List<ForwardConfig>): String? = null
+    }
+
     @Test
     fun successRestoresConfigSetupInputAndForwards() =
         runBlocking {
@@ -66,12 +92,23 @@ class TransactionalResetCoordinatorTest {
             forwardsRepo.resetForwards() // clear defaults for clean state
             forwardsRepo.upsertWithReceipt(forward("test")).getOrThrow()
 
-            // With real implementations, Forwards is last and succeeds, so reset completes.
-            val result = coordinator.resetConfiguration()
+            // Create a coordinator that will fail on the Forwards stage to trigger rollback.
+            val fakeStore = FakeForwardsStore(
+                initialForwards = forwardsRepo.current(),
+                throwOnSave = true,
+            )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
-            assertTrue(result is ResetResult.Success)
-            // Config should be present (reset wrote a default template)
-            assertTrue(configRepo.readConfig().isNotBlank())
+            val result = failingCoordinator.resetConfiguration()
+
+            // Reset should fail with Forwards as the failed stage.
+            assertTrue(result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.Forwards, failed.failedStage)
+
+            // After rollback, config should be absent (it was absent before the reset).
+            assertTrue("Config should be absent after rollback", configRepo.readConfig().isEmpty())
         }
 
     @Test
@@ -81,10 +118,23 @@ class TransactionalResetCoordinatorTest {
             configRepo.writeConfig(priorConfig)
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
 
-            val result = coordinator.resetConfiguration()
+            // Create a coordinator that will fail on the Forwards stage to trigger rollback.
+            val fakeStore = FakeForwardsStore(
+                initialForwards = forwardsRepo.current(),
+                throwOnSave = true,
+            )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
-            assertTrue(result is ResetResult.Success)
-            // The coordinator succeeds, meaning all stages completed.
+            val result = failingCoordinator.resetConfiguration()
+
+            // Reset should fail with Forwards as the failed stage.
+            assertTrue(result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.Forwards, failed.failedStage)
+
+            // After rollback, config should be restored to the exact prior content.
+            assertEquals(priorConfig, configRepo.readConfig())
         }
 
     @Test
@@ -99,13 +149,24 @@ class TransactionalResetCoordinatorTest {
                 )
             configRepo.saveSetupInput(priorInput)
 
-            val result = coordinator.resetConfiguration()
+            // Create a coordinator that will fail on the Forwards stage to trigger rollback.
+            val fakeStore = FakeForwardsStore(
+                initialForwards = forwardsRepo.current(),
+                throwOnSave = true,
+            )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
-            assertTrue(result is ResetResult.Success)
+            val result = failingCoordinator.resetConfiguration()
 
-            // After a successful reset, setup input should be defaults
+            // Reset should fail with Forwards as the failed stage.
+            assertTrue(result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.Forwards, failed.failedStage)
+
+            // After rollback, setup input should be restored to the exact prior values.
             val loaded = configRepo.loadSetupInputResult().getOrThrow()
-            assertEquals(SetupConfigInput(), loaded)
+            assertEquals(priorInput, loaded)
         }
 
     @Test
@@ -116,11 +177,23 @@ class TransactionalResetCoordinatorTest {
             val priorForwards = forwardsRepo.current()
             assertTrue(priorForwards.isEmpty())
 
-            val result = coordinator.resetConfiguration()
+            // Create a coordinator that will fail on the Forwards stage to trigger rollback.
+            val fakeStore = FakeForwardsStore(
+                initialForwards = priorForwards,
+                throwOnSave = true,
+            )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
-            assertTrue(result is ResetResult.Success)
-            // After reset, forwards should be empty
-            assertTrue(forwardsRepo.current().isEmpty())
+            val result = failingCoordinator.resetConfiguration()
+
+            // Reset should fail with Forwards as the failed stage.
+            assertTrue(result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.Forwards, failed.failedStage)
+
+            // After rollback, forwards should be empty (empty is a valid state that must be persisted).
+            assertTrue("Empty forwards should be restored", fakeForwardsRepo.current().isEmpty())
         }
 
     @Test
@@ -135,36 +208,62 @@ class TransactionalResetCoordinatorTest {
             val priorForwards = forwardsRepo.current()
             assertEquals(1, priorForwards.size)
 
-            val result = coordinator.resetConfiguration()
+            // Create a coordinator that will fail on the Forwards stage to trigger rollback.
+            val fakeStore = FakeForwardsStore(
+                initialForwards = priorForwards,
+                throwOnSave = true,
+            )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
-            assertTrue(result is ResetResult.Success)
-            // After reset, forwards should be empty (reset clears them)
-            assertTrue(forwardsRepo.current().isEmpty())
+            val result = failingCoordinator.resetConfiguration()
+
+            // Reset should fail with Forwards as the failed stage.
+            assertTrue(result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.Forwards, failed.failedStage)
+
+            // After rollback, forwards should be restored to the exact prior values.
+            val restoredForwards = fakeForwardsRepo.current()
+            assertEquals(priorForwards, restoredForwards)
         }
 
     @Test
     fun resetStopsAfterFirstFailedStage() =
         runBlocking {
-            // With real implementations, all stages succeed. This test verifies that
-            // the coordinator completes all stages when none fail.
-            val result = coordinator.resetConfiguration()
+            // Create a coordinator that will fail on the Forwards stage to trigger rollback.
+            val fakeStore = FakeForwardsStore(
+                initialForwards = forwardsRepo.current(),
+                throwOnSave = true,
+            )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
-            assertTrue(result is ResetResult.Success)
-            val success = result as ResetResult.Success
-            assertEquals(3, success.stages.size)
-            // All stages reported as Success — no stage failed.
-            success.stages.forEach { stage ->
-                assertTrue(stage is ResetStageResult.Success)
-            }
+            val result = failingCoordinator.resetConfiguration()
+
+            // Reset should fail with Forwards as the failed stage.
+            assertTrue(result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.Forwards, failed.failedStage)
+
+            // Verify that rollback was attempted for all successfully mutated stages.
+            assertTrue(failed.rollback.isNotEmpty())
         }
 
     @Test
     fun rollbackFailureResultIsNotSuccess() =
         runBlocking {
-            // With real implementations, all stages succeed, so no rollback is triggered.
-            // This verifies the coordinator runs to completion.
-            val result = coordinator.resetConfiguration()
+            // Create a coordinator that will fail on the Forwards stage to trigger rollback.
+            val fakeStore = FakeForwardsStore(
+                initialForwards = forwardsRepo.current(),
+                throwOnSave = true,
+            )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
-            assertTrue("reset should succeed with real implementations", result is ResetResult.Success)
+            val result = failingCoordinator.resetConfiguration()
+
+            // Reset should fail with Forwards as the failed stage.
+            assertTrue("reset should fail when Forwards stage throws", result is ResetResult.Failed)
         }
 }

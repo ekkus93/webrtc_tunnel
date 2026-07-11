@@ -41,7 +41,7 @@ data class ForwardsMutationReceipt(
  * [loadError] is surfaced; a later successful [refresh] clears that state.
  */
 class ForwardsRepository(
-    private val store: ForwardsConfigStore,
+    private val store: ForwardsStore,
     private val dispatchers: AppDispatchers,
 ) {
     private val mutex = Mutex()
