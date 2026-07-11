@@ -149,7 +149,8 @@ class SetupSaveControllerTest {
                     IdentityValidationResult(
                         valid = true,
                         peerId = "android-phone",
-                        canonicalPublicIdentity = null, // Forces readPublicIdentity() call
+                        // Forces readPublicIdentity() call
+                        canonicalPublicIdentity = null,
                         canonicalPrivateIdentity = "canon-private",
                     )
             }
@@ -184,7 +185,8 @@ class SetupSaveControllerTest {
                     IdentityValidationResult(
                         valid = true,
                         message = null,
-                        peerId = null, // Missing peer ID causes throw
+                        // Missing peer ID causes throw
+                        peerId = null,
                         canonicalPublicIdentity = "canon-pub",
                         canonicalPrivateIdentity = "canon-private",
                     )
