@@ -38,8 +38,8 @@ open class ConfigRepository(private val context: Context) {
         }
 
     // P1-016: Wrap preference writes so failures are visible.
-    open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
-        runCatching {
+    open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
+        return try {
             context.dataStore.edit { prefs ->
                 prefs[Keys.allowMetered] = update.allowMetered
                 prefs[Keys.resumeOnUnmetered] = update.resumeOnUnmetered
@@ -49,7 +49,13 @@ open class ConfigRepository(private val context: Context) {
                 prefs[Keys.androidIceMode] = normalizeAndroidIceMode(update.androidIceMode)
                 prefs.remove(Keys.pauseOnMetered)
             }
+            Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            Result.failure(error)
         }
+    }
 
     /**
      * P1-007: Ensures a default config exists by writing through the serialized atomic
