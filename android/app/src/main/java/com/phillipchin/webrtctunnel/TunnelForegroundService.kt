@@ -651,27 +651,38 @@ class TunnelForegroundService
 
             // P0-001: Wraps both preparation and native start into a single completion boundary.
             // Every path returns a typed StartOutcome — no path may return without completion.
-            // Uses runCatching but explicitly rethrows CancellationException to avoid masking cancellation.
+            // Cancellation propagates; other exceptions become typed StartOutcome values.
             private suspend fun performStartupAttempt(generation: Long): StartOutcome {
-                val outcome =
-                    runCatching {
-                        val identity = prepareOfferIdentity()
-                        try {
-                            classifyStartAndZeroIdentity(identity, generation)
-                        } finally {
-                            identity.fill(0)
-                        }
-                    }
-                return when (val error = outcome.exceptionOrNull()) {
-                    null -> outcome.getOrThrow()
-                    is CancellationException -> throw error
-                    is StartupPolicyBlocked ->
-                        StartOutcome.PolicyBlocked(
-                            reason = error.message ?: "Blocked by network policy",
+                return try {
+                    val identity =
+                        prepareOfferIdentity()
+
+                    try {
+                        classifyStartAndZeroIdentity(
+                            identity = identity,
+                            generation = generation,
                         )
-                    is StartupAborted ->
-                        StartOutcome.Aborted(reason = error.message ?: "Startup aborted")
-                    else -> StartOutcome.UnexpectedFailure(error)
+                    } finally {
+                        identity.fill(0)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (blocked: StartupPolicyBlocked) {
+                    StartOutcome.PolicyBlocked(
+                        reason =
+                            blocked.message
+                                ?: "Blocked by network policy",
+                    )
+                } catch (aborted: StartupAborted) {
+                    StartOutcome.Aborted(
+                        reason =
+                            aborted.message
+                                ?: "Startup aborted",
+                    )
+                } catch (error: Throwable) {
+                    StartOutcome.UnexpectedFailure(
+                        error = error,
+                    )
                 }
             }
 
