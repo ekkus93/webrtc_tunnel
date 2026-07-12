@@ -389,4 +389,31 @@ class TransactionalResetCoordinatorTest {
                 configRepo.readConfig().isEmpty(),
             )
         }
+
+    // P1-003: absent setup input uses default behavior (does not fail snapshot capture)
+
+    @Test
+    fun absentSetupInputUsesDefaultBehavior() =
+        runBlocking {
+            // Setup input file is already deleted in @Before, ensuring absence
+            val absentSetupInput = File(context.filesDir, "setup_input.json")
+            assertTrue("Setup input should be absent", !absentSetupInput.exists())
+
+            // Verify load returns default on absence
+            val loadResult = configRepo.loadSetupInputResult()
+            assertTrue("Load should succeed for absent setup input", loadResult.isSuccess)
+            assertEquals(
+                "Absent setup input must load as empty defaults",
+                SetupConfigInput(),
+                loadResult.getOrNull(),
+            )
+
+            val result = coordinator.resetConfiguration()
+
+            // Reset should succeed (absent input uses defaults, not failure)
+            assertTrue(
+                "Reset should proceed with default setup input",
+                result is ResetResult.Success,
+            )
+        }
 }
