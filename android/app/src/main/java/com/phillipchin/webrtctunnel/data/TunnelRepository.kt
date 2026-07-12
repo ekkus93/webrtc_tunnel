@@ -219,33 +219,29 @@ class TunnelRepository(
     fun recentLogs(maxEvents: Int): LogsFetchResult {
         // P0-005: Log retrieval failure does not affect tunnel lifecycle state.
         // P1-007: Return typed result so ViewModel owns generation check for both logs and error.
-        // Uses runCatching but explicitly rethrows CancellationException to avoid masking cancellation.
+        // Cancellation propagates; other errors become typed LogsFetchResult.
         // Repository does NOT mutate _logsError — ViewModel applies it under generation guard.
-        val result =
-            runCatching {
-                val dtos = Json.decodeFromString<List<NativeLogEventDto>>(bridge.getRecentLogsJson(maxEvents))
-                val logs =
-                    dtos.map { event ->
-                        SensitiveDataRedactor.redactLogEvent(
-                            LogEvent(
-                                unixMs = event.unixMs,
-                                level = event.level,
-                                message = event.message,
-                            ),
-                        )
-                    }
-                LogsFetchResult(logs = logs, error = null)
-            }
-        // Rethrow CancellationException to avoid masking coroutine cancellation.
-        if (result.exceptionOrNull() is CancellationException) {
-            throw result.exceptionOrNull()!!
-        }
-        return result.getOrElse {
+        return try {
+            val dtos = Json.decodeFromString<List<NativeLogEventDto>>(bridge.getRecentLogsJson(maxEvents))
+            val logs =
+                dtos.map { event ->
+                    SensitiveDataRedactor.redactLogEvent(
+                        LogEvent(
+                            unixMs = event.unixMs,
+                            level = event.level,
+                            message = event.message,
+                        ),
+                    )
+                }
+            LogsFetchResult(logs = logs, error = null)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
             val tunnelError =
                 TunnelError(
                     code = "log_decode_failed",
                     message = "Native log retrieval failed",
-                    details = SensitiveDataRedactor.redactText(it.message ?: "unknown log retrieval error"),
+                    details = SensitiveDataRedactor.redactText(error.message ?: "unknown log retrieval error"),
                 )
             // Never return an empty list on failure — that reads as "no logs". Surface a
             // synthetic error log entry so the log screen shows that retrieval failed.
