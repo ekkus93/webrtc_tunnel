@@ -132,6 +132,16 @@ class TunnelRepositoryTest {
     }
 
     @Test
+    fun missingModeReturnsSchemaError() {
+        // P1-007: When the native status JSON is missing the mode field,
+        // the repository should surface a schema error, not silently default.
+        bridge.statusPayload = """{"state":"stopped","active":false}"""
+        repository.refreshStatus()
+        assertEquals(ServiceState.Error, repository.status.value.serviceState)
+        assertEquals("native_status_schema_error", repository.status.value.lastError?.code)
+    }
+
+    @Test
     fun unknownNativeModeReturnsSchemaError() {
         // When the native status returns an unknown mode (e.g., future version),
         // the repository should surface a schema error rather than crashing.
@@ -365,6 +375,11 @@ class TunnelRepositoryTest {
             "unknown listen state must map to Error, not silently fall back to Stopped",
             ListenState.Error,
             forward.listenState,
+        )
+        // P1-007: Unknown listen state must surface the raw value (redacted).
+        assertTrue(
+            "unknown listen state error must include the raw value",
+            forward.lastError?.contains("weird") == true,
         )
     }
 
