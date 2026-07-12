@@ -153,7 +153,7 @@ open class ConfigRepository(private val context: Context) {
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (error: Throwable) {
+            } catch (error: IOException) {
                 Result.failure(error)
             }
         }
@@ -229,7 +229,7 @@ private fun writeConfigAtomicallyLocked(
         Result.success(Unit)
     } catch (cancelled: CancellationException) {
         throw cancelled
-    } catch (error: Throwable) {
+    } catch (error: IOException) {
         Result.failure(error)
     } finally {
         // Clean up temp file if it still exists (move succeeded or failed)

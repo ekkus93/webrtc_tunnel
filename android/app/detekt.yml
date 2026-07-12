@@ -7,3 +7,17 @@ naming:
     # Jetpack Compose @Composable functions are PascalCase by official convention;
     # renaming them would be incorrect. Same alignment we apply for ktlint.
     ignoreAnnotated: ['Composable']
+
+# TooGenericExceptionCaught: Flag `catch (e: Throwable)` but allow
+# `catch (e: Exception)`. We catch Throwable in boundaries where we want to
+# propagate CancellationException separately, then catch any other error.
+# Catching Exception is sufficient — catching Throwable would also catch
+# OOM/ControlThrowable which we explicitly don't want to handle.
+exceptions:
+  TooGenericExceptionCaught:
+    # Only flag 'Throwable' catches — 'Exception' catches are acceptable.
+    # By default, detekt flags both Throwable and Exception. We only want to
+    # flag Throwable catches because Exception is the correct boundary for
+    # our try/catch patterns where we explicitly re-throw CancellationException.
+    exceptionNames:
+      - java.lang.Throwable

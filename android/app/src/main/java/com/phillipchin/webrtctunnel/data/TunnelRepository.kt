@@ -236,7 +236,7 @@ class TunnelRepository(
             LogsFetchResult(logs = logs, error = null)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (error: Throwable) {
+        } catch (error: RuntimeException) {
             val tunnelError =
                 TunnelError(
                     code = "log_decode_failed",

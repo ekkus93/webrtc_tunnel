@@ -682,7 +682,7 @@ class TunnelForegroundService
                             aborted.message
                                 ?: "Startup aborted",
                     )
-                } catch (error: Throwable) {
+                } catch (error: Exception) {
                     StartOutcome.UnexpectedFailure(
                         error = error,
                     )
