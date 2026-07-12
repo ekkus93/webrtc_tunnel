@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import kotlinx.coroutines.channels.ProducerScope
@@ -30,14 +31,17 @@ object NoopNetworkPolicyEventReporter : NetworkPolicyEventReporter {
     override fun reportNetworkPolicyEventDeliveryFailed(cause: Throwable?) = Unit
 }
 
-class NetworkPolicyManager private constructor(
+class NetworkPolicyManager internal constructor(
     private val classifier: () -> Pair<NetworkType, Boolean>,
     private val reporter: NetworkPolicyEventReporter,
 ) {
-    constructor(context: Context) : this({ classifyCurrentNetwork(context) }, NoopNetworkPolicyEventReporter)
+    constructor(context: Context) : this(
+        { classifyCurrentNetwork(context) },
+        NoopNetworkPolicyEventReporter,
+    )
 
-    /** Internal constructor for testing. */
-    internal constructor(classifier: () -> Pair<NetworkType, Boolean>) :
+    /** Constructor for testing with a custom classifier. */
+    constructor(classifier: () -> Pair<NetworkType, Boolean>) :
         this(classifier, NoopNetworkPolicyEventReporter)
 
     private val _status = MutableStateFlow(evaluate(classifier(), allowMetered = false))
@@ -89,7 +93,7 @@ class NetworkPolicyManager private constructor(
             awaitClose { cm.unregisterNetworkCallback(callback) }
         }.conflate()
 
-    private companion object {
+    companion object {
         private const val TAG = "NetworkPolicyManager"
 
         /**
@@ -106,14 +110,33 @@ class NetworkPolicyManager private constructor(
                 if (isExpectedChannelClose(cause)) {
                     return
                 }
-                Log.w(TAG, "Network policy event delivery failed", cause)
-                reporter.reportNetworkPolicyEventDeliveryFailed(cause)
+                val redacted = redactCause(cause)
+                Log.w(TAG, "Network policy event delivery failed", redacted)
+                reporter.reportNetworkPolicyEventDeliveryFailed(redacted)
             }
         }
 
-        private fun isExpectedChannelClose(cause: Throwable?): Boolean =
+        /**
+         * Returns true if the cause is a cancellation or closed channel —
+         * delivery failures in these cases are expected and should not be reported.
+         */
+        internal fun isExpectedChannelClose(cause: Throwable?): Boolean =
             cause is kotlinx.coroutines.CancellationException ||
                 cause is kotlinx.coroutines.channels.ClosedSendChannelException
+
+        /**
+         * Returns the cause with any sensitive data in its message redacted.
+         */
+        internal fun redactCause(cause: Throwable?): Throwable? {
+            val m = cause?.message
+            return if (m != null) {
+                cause.apply {
+                    initCause(Exception(SensitiveDataRedactor.redactText(m)))
+                }
+            } else {
+                cause
+            }
+        }
 
         fun classifyCurrentNetwork(context: Context): Pair<NetworkType, Boolean> {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
