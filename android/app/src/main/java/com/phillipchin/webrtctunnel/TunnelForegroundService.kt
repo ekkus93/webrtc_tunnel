@@ -187,29 +187,32 @@ class TunnelForegroundService
             networkMonitorJob =
                 serviceScope.launch {
                     networkPolicyManager.monitor(this@TunnelForegroundService).collect { _ ->
-                        try {
-                            val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
-                            val policy =
-                                networkPolicyManager.evaluateWithPolicy(
-                                    prefs.allowMetered || allowMeteredForCurrentRun.get(),
-                                )
-                            repository.updateNetworkStatus(policy)
-                            if (policy.networkType == NetworkType.UnmeteredWifi) {
-                                // Policy allowed: submit through the ordered queue.
-                                submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
-                            } else if (!policy.tunnelAllowed) {
-                                // Policy blocked: submit through the ordered queue.
-                                submitLifecycleCommand(
-                                    LifecycleCommand.PolicyBlocked(
-                                        policy.blockReason ?: "Tunnel paused: network policy blocks metered/cellular",
-                                    ),
-                                )
+                        val result =
+                            runCatching {
+                                val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
+                                val policy =
+                                    networkPolicyManager.evaluateWithPolicy(
+                                        prefs.allowMetered || allowMeteredForCurrentRun.get(),
+                                    )
+                                repository.updateNetworkStatus(policy)
+                                if (policy.networkType == NetworkType.UnmeteredWifi) {
+                                    // Policy allowed: submit through the ordered queue.
+                                    submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
+                                } else if (!policy.tunnelAllowed) {
+                                    // Policy blocked: submit through the ordered queue.
+                                    submitLifecycleCommand(
+                                        LifecycleCommand.PolicyBlocked(
+                                            policy.blockReason
+                                                ?: "Tunnel paused: network policy blocks metered/cellular",
+                                        ),
+                                    )
+                                }
                             }
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: Throwable) {
+                        if (result.isFailure) {
+                            val error = result.exceptionOrNull()
+                            if (error is CancellationException) throw error
                             reporter.publishError(
-                                message = error.message ?: "Network policy monitor failed",
+                                message = error?.message ?: "Network policy monitor failed",
                                 code = "network_policy_monitor_failed",
                             )
                         }
@@ -294,7 +297,7 @@ class TunnelForegroundService
                             )
                         }
                         pausedByPolicy.set(false)
-                        offer.clearTemporaryMeteredAllowance()
+                        clearTemporaryMeteredAllowance()
                     }
                 }
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -382,26 +385,25 @@ class TunnelForegroundService
                         while (active && !pausedByPolicy.get()) {
                             delay(STATUS_POLL_INTERVAL_MS)
                             if (pausedByPolicy.get()) break
-                            try {
-                                repository.refreshStatus()
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (error: Throwable) {
+                            val result = runCatching { repository.refreshStatus() }
+                            if (result.isFailure) {
+                                val error = result.exceptionOrNull()
+                                if (error is CancellationException) throw error
                                 reporter.publishError(
                                     code = "status_poll_failed",
                                     message =
                                         SensitiveDataRedactor.redactText(
-                                            error.message
-                                                ?: "Status poll failed",
+                                            error?.message ?: "Status poll failed",
                                         ),
                                 )
+                            } else {
+                                val state = repository.status.value.serviceState
+                                if (state != lastState) {
+                                    lastState = state
+                                    publishStatus()
+                                }
+                                active = state in ACTIVE_STATES
                             }
-                            val state = repository.status.value.serviceState
-                            if (state != lastState) {
-                                lastState = state
-                                publishStatus()
-                            }
-                            active = state in ACTIVE_STATES
                         }
                     }
             }
@@ -512,7 +514,7 @@ class TunnelForegroundService
                         invalidatePendingPolicyRetry()
                         return
                     }
-                    try {
+                    runCatching {
                         val prefs = configRepository.preferences.first()
                         if (prefs.resumeOnUnmetered) {
                             if (activeStartup != null) {
@@ -522,10 +524,10 @@ class TunnelForegroundService
                                 offer.resume()
                             }
                         }
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (error: Throwable) {
-                        invalidatePendingPolicyRetry()
+                    }.onFailure { error ->
+                        if (error !is CancellationException) {
+                            invalidatePendingPolicyRetry()
+                        }
                     }
                 }
 
@@ -541,39 +543,30 @@ class TunnelForegroundService
                     generation: Long,
                     outcome: StartOutcome,
                 ) {
-                    if (lifecycleGeneration.get() != generation) {
-                        // Stale completion: a newer lifecycle command superseded this one.
-                        return
-                    }
-                    // P0-004: Coordinator clears startup ownership after processing.
+                    if (lifecycleGeneration.get() != generation) return
                     activeStartup = null
                     when (outcome) {
                         StartOutcome.VerifiedSuccess -> {
-                            // P0-007: Do NOT clear metered allowance on success — it lasts through the run.
                             pausedByPolicy.set(false)
                             invalidatePendingPolicyRetry()
                             reporter.publishStatus()
                             reporter.startStatusPolling()
                         }
                         is StartOutcome.NativeFailure -> {
-                            // Native start failure (repository.start() returned failure).
-                            offer.clearTemporaryMeteredAllowance()
+                            clearTemporaryMeteredAllowance()
                             val pending = pendingPolicyResumeGeneration.getAndSet(null)
                             if (pending == generation) {
                                 submitLifecycleCommand(
-                                    LifecycleCommand.RetryPolicyResume(
-                                        expectedGeneration = generation,
-                                    ),
+                                    LifecycleCommand.RetryPolicyResume(expectedGeneration = generation),
                                 )
                             } else {
                                 reporter.publishError(
-                                    message = outcome.error.message ?: "Unable to start tunnel",
-                                    code = "native_start_failed",
+                                    outcome.error.message ?: "Unable to start tunnel",
+                                    "native_start_failed",
                                 )
                             }
                         }
                         is StartOutcome.VerificationFailure -> {
-                            // Verification failure (native succeeded but state not verified).
                             cleanupUnverifiedStart(
                                 UnverifiedStartContext(
                                     outcome.error,
@@ -586,27 +579,24 @@ class TunnelForegroundService
                                     reporter::publishError,
                                 ),
                             )
-                            offer.clearTemporaryMeteredAllowance()
+                            clearTemporaryMeteredAllowance()
                         }
                         is StartOutcome.UnexpectedFailure -> {
-                            // Unexpected failure (unhandled exception during startup).
-                            offer.clearTemporaryMeteredAllowance()
+                            clearTemporaryMeteredAllowance()
                             reporter.publishError(
-                                message = outcome.error.message ?: "Unexpected startup failure",
-                                code = "startup_unexpected_failure",
+                                outcome.error.message ?: "Unexpected startup failure",
+                                "startup_unexpected_failure",
                             )
                         }
                         is StartOutcome.PolicyBlocked -> {
-                            offer.clearTemporaryMeteredAllowance()
+                            clearTemporaryMeteredAllowance()
                             pausedByPolicy.set(true)
                             nativeStopVerified.set(true)
                             invalidatePendingPolicyRetry()
                             repository.setPolicyBlocked(outcome.reason)
                             reporter.publishStatus(outcome.reason)
                         }
-                        StartOutcome.Aborted -> {
-                            // Startup was aborted by control flow (stale generation).
-                        }
+                        StartOutcome.Aborted -> {}
                     }
                 }
             }
@@ -648,38 +638,52 @@ class TunnelForegroundService
 
             // P0-001: Wraps both preparation and native start into a single completion boundary.
             // Every path returns a typed StartOutcome — no path may return without completion.
-            private suspend fun performStartupAttempt(generation: Long): StartOutcome =
-                try {
-                    val identity = prepareOfferIdentity()
-                    try {
-                        if (lifecycleGeneration.get() != generation) {
-                            StartOutcome.Aborted
-                        } else {
-                            val result =
-                                withContext(ioDispatcher) {
-                                    repository.start(TunnelMode.Offer, configRepository.configPath, identity)
-                                }
-                            if (lifecycleGeneration.get() != generation) {
-                                StartOutcome.Aborted
-                            } else {
-                                classifyStartResult(result)
-                            }
+            private suspend fun performStartupAttempt(generation: Long): StartOutcome {
+                val outcome =
+                    runCatching {
+                        val identity = prepareOfferIdentity()
+                        try {
+                            return@runCatching classifyStartAndZeroIdentity(identity, generation)
+                        } finally {
+                            identity.fill(0)
                         }
-                    } finally {
-                        identity.fill(0)
-                    }
-                } catch (blocked: StartupPolicyBlocked) {
-                    StartOutcome.PolicyBlocked(
-                        blocked.message ?: "Blocked by network policy",
+                    }.fold(
+                        onSuccess = { it },
+                        onFailure = { error ->
+                            when (error) {
+                                is CancellationException -> throw error
+                                is StartupPolicyBlocked ->
+                                    StartOutcome.PolicyBlocked(
+                                        error.message ?: "Blocked by network policy",
+                                    )
+                                is StartupAborted -> {
+                                    android.util.Log.d(tag, "Startup aborted: ${error.javaClass.simpleName}")
+                                    StartOutcome.Aborted
+                                }
+                                else -> StartOutcome.UnexpectedFailure(error)
+                            }
+                        },
                     )
-                } catch (aborted: StartupAborted) {
-                    android.util.Log.d(tag, "Startup aborted: ${aborted.javaClass.simpleName}")
-                    StartOutcome.Aborted
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Throwable) {
-                    StartOutcome.UnexpectedFailure(error)
+                return outcome
+            }
+
+            // Classifies the native start result after identity has been prepared.
+            private suspend fun classifyStartAndZeroIdentity(
+                identity: ByteArray,
+                generation: Long,
+            ): StartOutcome {
+                var outcome: StartOutcome = StartOutcome.Aborted
+                if (lifecycleGeneration.get() == generation) {
+                    val result =
+                        withContext(ioDispatcher) {
+                            repository.start(TunnelMode.Offer, configRepository.configPath, identity)
+                        }
+                    if (lifecycleGeneration.get() == generation) {
+                        outcome = classifyStartResult(result)
+                    }
                 }
+                return outcome
+            }
 
             // Loads + validates prerequisites for an offer start. Returns the private identity
             // bytes, or throws StartupAborted after publishing the appropriate state/error.
@@ -845,12 +849,12 @@ class TunnelForegroundService
                     )
                 }
             }
+        }
 
-            // Clears the temporary metered allowance so a future run starts fresh.
-            fun clearTemporaryMeteredAllowance() {
-                allowMeteredForCurrentRun.set(false)
-                repository.updateSessionMeteredAllowance(false)
-            }
+        // Clears the temporary metered allowance so a future run starts fresh.
+        private fun clearTemporaryMeteredAllowance() {
+            allowMeteredForCurrentRun.set(false)
+            repository.updateSessionMeteredAllowance(false)
         }
 
         companion object {

@@ -53,7 +53,7 @@ class ConfigRepositoryTest {
 
     @Test
     fun defaultTemplateContainsRequiredSections() {
-        val template = repository.defaultConfigTemplate()
+        val template = repository.defaultConfigTemplate
         assertTrue(template.contains("format = \"p2ptunnel-config-v3\""))
         assertTrue(template.contains("[broker]"))
         assertTrue(template.contains("[security]"))
@@ -66,7 +66,7 @@ class ConfigRepositoryTest {
 
     @Test
     fun defaultTemplateInjectsDataPlaneFields() {
-        val template = repository.defaultConfigTemplate()
+        val template = repository.defaultConfigTemplate
         // Release/default builds emit the strict "vnet_mux" ICE mode, the probe timeout, and
         // the mid-session heartbeat knobs.
         assertTrue(template.contains("android_ice_mode = \"vnet_mux\""))

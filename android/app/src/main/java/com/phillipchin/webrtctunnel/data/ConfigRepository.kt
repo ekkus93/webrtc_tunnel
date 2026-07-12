@@ -18,6 +18,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.IOException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -39,7 +40,8 @@ open class ConfigRepository(private val context: Context) {
 
     // P1-016: Wrap preference writes so failures are visible.
     open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
-        return try {
+        var result = Result.success(Unit)
+        try {
             context.dataStore.edit { prefs ->
                 prefs[Keys.allowMetered] = update.allowMetered
                 prefs[Keys.resumeOnUnmetered] = update.resumeOnUnmetered
@@ -49,12 +51,14 @@ open class ConfigRepository(private val context: Context) {
                 prefs[Keys.androidIceMode] = normalizeAndroidIceMode(update.androidIceMode)
                 prefs.remove(Keys.pauseOnMetered)
             }
-            Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (error: Throwable) {
-            Result.failure(error)
+        } catch (e: IllegalStateException) {
+            result = Result.failure(e)
+        } catch (e: IOException) {
+            result = Result.failure(e)
         }
+        return result
     }
 
     /**
@@ -67,11 +71,12 @@ open class ConfigRepository(private val context: Context) {
         }
     }
 
-    fun defaultConfigTemplate(): String =
-        buildDefaultConfigTemplate(
-            context.filesDir,
-            ConfigRenderOptions(androidIceMode = resolveAndroidIceMode(DEFAULT_ANDROID_ICE_MODE)),
-        )
+    val defaultConfigTemplate: String
+        get() =
+            buildDefaultConfigTemplate(
+                context.filesDir,
+                ConfigRenderOptions(androidIceMode = resolveAndroidIceMode(DEFAULT_ANDROID_ICE_MODE)),
+            )
 
     fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()
 
@@ -193,16 +198,15 @@ private fun writeConfigAtomicallyLocked(
                     StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING,
                 )
-            } catch (unsupported: AtomicMoveNotSupportedException) {
+            } catch (e: AtomicMoveNotSupportedException) {
                 // Fallback when ATOMIC_MOVE is not supported on the filesystem
+                android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", e)
                 Files.move(
                     temp,
                     configFile.toPath(),
                     StandardCopyOption.REPLACE_EXISTING,
                 )
             }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
         } finally {
             // Clean up temp file if it still exists (move succeeded or failed)
             Files.deleteIfExists(temp)

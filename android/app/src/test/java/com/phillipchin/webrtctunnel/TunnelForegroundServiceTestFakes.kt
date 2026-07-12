@@ -88,7 +88,7 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
                     },
                 identityRepository = identityRepository,
             )
-        runBlocking { configRepository.ensureDefaultConfig(configRepository.defaultConfigTemplate()) }
+        runBlocking { configRepository.ensureDefaultConfig(configRepository.defaultConfigTemplate) }
         // Pin resumeOnUnmetered = false regardless of any residual preference left on
         // disk by an earlier Robolectric test sharing this JVM's real DataStore file:
         // the fake NetworkPolicyManager below always reports UnmeteredWifi, so leaving

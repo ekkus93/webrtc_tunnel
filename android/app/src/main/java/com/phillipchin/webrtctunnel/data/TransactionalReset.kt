@@ -101,7 +101,7 @@ class TransactionalResetCoordinator(
     private suspend fun resetStage(stage: ResetStage): ResetStageResult =
         when (stage) {
             ResetStage.Config ->
-                configRepository.writeConfigAtomically(configRepository.defaultConfigTemplate()).fold(
+                configRepository.writeConfigAtomically(configRepository.defaultConfigTemplate).fold(
                     onSuccess = { ResetStageResult.Success(ResetStage.Config) },
                     onFailure = { error ->
                         ResetStageResult.Failure(

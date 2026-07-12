@@ -7,6 +7,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import java.io.IOException
 
 /**
  * Lifecycle coordinator that owns the command processor lifetime.
@@ -65,7 +66,17 @@ class TunnelLifecycleCoordinator(
             handleCommand(command)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (error: Throwable) {
+        } catch (error: IllegalArgumentException) {
+            lifecycleOps.onError(
+                error.message ?: "Lifecycle command failed",
+                "lifecycle_command_failed",
+            )
+        } catch (error: IllegalStateException) {
+            lifecycleOps.onError(
+                error.message ?: "Lifecycle command failed",
+                "lifecycle_command_failed",
+            )
+        } catch (error: IOException) {
             lifecycleOps.onError(
                 error.message ?: "Lifecycle command failed",
                 "lifecycle_command_failed",
