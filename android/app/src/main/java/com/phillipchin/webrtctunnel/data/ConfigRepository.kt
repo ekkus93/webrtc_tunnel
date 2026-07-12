@@ -187,38 +187,42 @@ open class ConfigRepository(private val context: Context) {
 private fun writeConfigAtomicallyLocked(
     configFile: File,
     contents: String,
-): Result<Unit> =
-    runCatching {
-        configFile.parentFile?.mkdirs()
-        val temp =
-            Files.createTempFile(
-                configFile.parentFile?.toPath(),
-                "config.toml.tmp-",
-                ".partial",
-            )
+): Result<Unit> {
+    configFile.parentFile?.mkdirs()
+    val temp =
+        Files.createTempFile(
+            configFile.parentFile?.toPath(),
+            "config.toml.tmp-",
+            ".partial",
+        )
+    return try {
+        temp.toFile().writeText(contents)
         try {
-            temp.toFile().writeText(contents)
-            try {
-                Files.move(
-                    temp,
-                    configFile.toPath(),
-                    StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING,
-                )
-            } catch (e: AtomicMoveNotSupportedException) {
-                // Fallback when ATOMIC_MOVE is not supported on the filesystem
-                android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", e)
-                Files.move(
-                    temp,
-                    configFile.toPath(),
-                    StandardCopyOption.REPLACE_EXISTING,
-                )
-            }
-        } finally {
-            // Clean up temp file if it still exists (move succeeded or failed)
-            Files.deleteIfExists(temp)
+            Files.move(
+                temp,
+                configFile.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        } catch (e: AtomicMoveNotSupportedException) {
+            // Fallback when ATOMIC_MOVE is not supported on the filesystem
+            android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", e)
+            Files.move(
+                temp,
+                configFile.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
         }
+        Result.success(Unit)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Throwable) {
+        Result.failure(error)
+    } finally {
+        // Clean up temp file if it still exists (move succeeded or failed)
+        Files.deleteIfExists(temp)
     }
+}
 
 /**
  * Resolve the effective `android_ice_mode`: the debug `getprop` override wins when present
