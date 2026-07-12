@@ -612,8 +612,8 @@ class TunnelForegroundServiceStopFailureTest {
 
         // The error code must indicate cleanup failure.
         assertEquals(
-            "error code must be unverified_start_cleanup_failed when cleanup fails",
-            "unverified_start_cleanup_failed",
+            "error code must be start_verification_cleanup_failed when cleanup fails",
+            "start_verification_cleanup_failed",
             deps.tunnelRepository.status.value.lastError?.code,
         )
 

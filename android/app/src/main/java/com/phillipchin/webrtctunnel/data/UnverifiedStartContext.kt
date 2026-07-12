@@ -29,7 +29,7 @@ suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext): Boolean {
         context.nativeRuntimeUncertain.set(true)
         context.publishError(
             it.message ?: "Failed to cleanup unverified start",
-            "unverified_start_cleanup_failed",
+            "start_verification_cleanup_failed",
         )
     }
     context.nativeStopVerified.set(stopResult.isSuccess)
