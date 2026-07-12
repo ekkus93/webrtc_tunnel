@@ -143,6 +143,8 @@ class TunnelRepositoryTest {
     fun recentLogsSurfacesErrorEventOnInvalidJsonAndMarksError() {
         // P0-005: Invalid native log output must not affect tunnel lifecycle state.
         // It yields a visible error log entry and logsError, not an Error status.
+        // P1-007: Repository returns LogsFetchResult with error; ViewModel owns _logsError
+        // generation guard, so repository does NOT mutate _logsError directly.
         bridge.logsJson = "{not-array"
         val result = repository.recentLogs(10)
         assertEquals(1, result.logs.size)
@@ -152,8 +154,8 @@ class TunnelRepositoryTest {
             "log retrieval failure must not change lifecycle state to Error",
             repository.status.value.serviceState != ServiceState.Error,
         )
-        // But logsError must be visible.
-        val error = repository.logsError.value
+        // Error must be carried in LogsFetchResult (not set in repository _logsError).
+        val error = result.error
         assertNotNull(error)
         assertEquals("log_decode_failed", error!!.code)
     }

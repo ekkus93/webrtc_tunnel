@@ -44,7 +44,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 // Control-flow signal: a startup attempt aborted after publishing its own error/state.
-private class StartupAborted : Exception()
+private class StartupAborted(message: String) : Exception(message)
 
 // P0-001: Signal that startup was blocked by network policy before native start.
 private class StartupPolicyBlocked(message: String) : RuntimeException(message)
@@ -311,7 +311,7 @@ class TunnelForegroundService
             state: ServiceState = ServiceState.Error,
         ): Nothing {
             reporter.publishError(message = message, code = code, state = state)
-            throw StartupAborted()
+            throw StartupAborted(message)
         }
 
         // Cancels the startup coroutine and waits for it to fully unwind before returning, so
@@ -532,9 +532,17 @@ class TunnelForegroundService
                 }
 
                 override suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
-                    requireRuntimeStartAllowed()
-                        .getOrElse { return }
-                    if (lifecycleGeneration.get() != expectedGeneration) return
+                    val allowed = requireRuntimeStartAllowed().getOrNull()
+                    if (allowed == null) {
+                        invalidatePendingPolicyRetry()
+                        return
+                    }
+                    if (lifecycleGeneration.get() != expectedGeneration ||
+                        !pausedByPolicy.get()
+                    ) {
+                        invalidatePendingPolicyRetry()
+                        return
+                    }
                     invalidatePendingPolicyRetry()
                     offer.resume()
                 }
@@ -596,7 +604,10 @@ class TunnelForegroundService
                             repository.setPolicyBlocked(outcome.reason)
                             reporter.publishStatus(outcome.reason)
                         }
-                        StartOutcome.Aborted -> {}
+                        is StartOutcome.Aborted -> {
+                            clearTemporaryMeteredAllowance()
+                            reporter.publishError(outcome.reason, "startup_aborted")
+                        }
                     }
                 }
             }
@@ -618,6 +629,8 @@ class TunnelForegroundService
                     }
                     generation = lifecycleGeneration.incrementAndGet()
                     nativeStopVerified.set(false)
+                    // Invalidate any pending retry when a new start begins.
+                    invalidatePendingPolicyRetry()
                     val job =
                         serviceScope.launch {
                             doStartOffer(generation)
@@ -638,51 +651,50 @@ class TunnelForegroundService
 
             // P0-001: Wraps both preparation and native start into a single completion boundary.
             // Every path returns a typed StartOutcome — no path may return without completion.
+            // Uses runCatching but explicitly rethrows CancellationException to avoid masking cancellation.
             private suspend fun performStartupAttempt(generation: Long): StartOutcome {
                 val outcome =
                     runCatching {
                         val identity = prepareOfferIdentity()
                         try {
-                            return@runCatching classifyStartAndZeroIdentity(identity, generation)
+                            classifyStartAndZeroIdentity(identity, generation)
                         } finally {
                             identity.fill(0)
                         }
-                    }.fold(
-                        onSuccess = { it },
-                        onFailure = { error ->
-                            when (error) {
-                                is CancellationException -> throw error
-                                is StartupPolicyBlocked ->
-                                    StartOutcome.PolicyBlocked(
-                                        error.message ?: "Blocked by network policy",
-                                    )
-                                is StartupAborted -> {
-                                    android.util.Log.d(tag, "Startup aborted: ${error.javaClass.simpleName}")
-                                    StartOutcome.Aborted
-                                }
-                                else -> StartOutcome.UnexpectedFailure(error)
-                            }
-                        },
-                    )
-                return outcome
+                    }
+                return when (val error = outcome.exceptionOrNull()) {
+                    null -> outcome.getOrThrow()
+                    is CancellationException -> throw error
+                    is StartupPolicyBlocked ->
+                        StartOutcome.PolicyBlocked(
+                            reason = error.message ?: "Blocked by network policy",
+                        )
+                    is StartupAborted ->
+                        StartOutcome.Aborted(reason = error.message ?: "Startup aborted")
+                    else -> StartOutcome.UnexpectedFailure(error)
+                }
             }
 
-            // Classifies the native start result after identity has been prepared.
+            // Classifies the native start result after identity has been prepared. Returns Aborted
+            // if the generation changed at any point, otherwise classifies the native start result.
             private suspend fun classifyStartAndZeroIdentity(
                 identity: ByteArray,
                 generation: Long,
             ): StartOutcome {
-                var outcome: StartOutcome = StartOutcome.Aborted
-                if (lifecycleGeneration.get() == generation) {
+                val generationStillValid = lifecycleGeneration.get() == generation
+                return if (generationStillValid) {
                     val result =
                         withContext(ioDispatcher) {
                             repository.start(TunnelMode.Offer, configRepository.configPath, identity)
                         }
                     if (lifecycleGeneration.get() == generation) {
-                        outcome = classifyStartResult(result)
+                        classifyStartResult(result)
+                    } else {
+                        StartOutcome.Aborted("Startup superseded during native start")
                     }
+                } else {
+                    StartOutcome.Aborted("Startup superseded by newer lifecycle generation")
                 }
-                return outcome
             }
 
             // Loads + validates prerequisites for an offer start. Returns the private identity
@@ -711,10 +723,22 @@ class TunnelForegroundService
                     // (ConnectivityManager/LinkProperties) as the vnet_mux host candidate before
                     // validating/starting, so a strict vnet_mux start fails loudly rather than
                     // silently dropping to native ICE.
-                    withContext(ioDispatcher) {
-                        configRepository.prepareActiveConfigForStart(
-                            prefs.androidIceMode,
-                            localAddressResolver.currentIpv4(),
+                    val configResult =
+                        withContext(ioDispatcher) {
+                            configRepository.prepareActiveConfigForStart(
+                                prefs.androidIceMode,
+                                localAddressResolver.currentIpv4(),
+                            )
+                        }
+                    if (!configResult.isSuccess) {
+                        val redacted =
+                            SensitiveDataRedactor.redactText(
+                                configResult.exceptionOrNull()
+                                    ?.message ?: "unknown error",
+                            )
+                        abortStartup(
+                            "Failed to prepare active config: $redacted",
+                            "config_prep_failed",
                         )
                     }
                     val validation =
@@ -748,6 +772,7 @@ class TunnelForegroundService
                     allowMeteredForCurrentRun.set(true)
                     repository.updateSessionMeteredAllowance(true)
                     pausedByPolicy.set(false)
+                    invalidatePendingPolicyRetry()
                 }
                 startOffer()
             }
@@ -768,6 +793,7 @@ class TunnelForegroundService
                     lifecycleGeneration.incrementAndGet()
                     cancelStartupJobAndJoinLocked()
                     reporter.stopStatusPollingAndJoin()
+                    invalidatePendingPolicyRetry()
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
                             onSuccess = {

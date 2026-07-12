@@ -37,9 +37,12 @@ sealed interface StartOutcome {
     ) : StartOutcome
 
     /**
-     * Startup was aborted by control flow (e.g., stale generation).
+     * Startup was aborted by control flow (e.g., stale generation, identity read failure,
+     * config rewrite failure). Carries a diagnostic reason.
      */
-    data object Aborted : StartOutcome
+    data class Aborted(
+        val reason: String,
+    ) : StartOutcome
 
     /**
      * Unexpected failure during startup.
@@ -87,7 +90,7 @@ data class StartResult(
             is StartOutcome.NativeFailure -> outcome.error.message
             is StartOutcome.VerificationFailure -> outcome.error.message
             is StartOutcome.UnexpectedFailure -> outcome.error.message
-            is StartOutcome.Aborted -> null
+            is StartOutcome.Aborted -> outcome.reason
             is StartOutcome.PolicyBlocked -> outcome.reason
         }
 }

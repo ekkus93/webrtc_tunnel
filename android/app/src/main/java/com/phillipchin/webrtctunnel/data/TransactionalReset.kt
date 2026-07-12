@@ -6,11 +6,21 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
+ * Captures config file state during transactional reset snapshot.
+ * Distinguishes between "file existed" and "file contents" so rollback
+ * can restore an empty existing file differently from an absent file.
+ */
+data class ConfigSnapshot(
+    val existed: Boolean,
+    val contents: String?,
+)
+
+/**
  * Snapshot of the exact state before a transactional reset begins.
  * Used to restore prior state on rollback (P0-001).
  */
 data class ResetSnapshot(
-    val configToml: String?,
+    val config: ConfigSnapshot,
     val setupInput: SetupConfigInput,
     val forwards: List<ForwardConfig>,
 )
@@ -132,8 +142,14 @@ class TransactionalResetCoordinator(
         }
 
     private fun captureSnapshot(): ResetSnapshot {
+        val existed = configRepository.configFileExists
+        val contents = configRepository.readConfig()
         return ResetSnapshot(
-            configToml = configRepository.readConfig().takeIf { it.isNotBlank() },
+            config =
+                ConfigSnapshot(
+                    existed = existed,
+                    contents = contents,
+                ),
             setupInput = configRepository.loadSetupInputResult().getOrDefault(SetupConfigInput()),
             forwards = forwardsRepository.current(),
         )
@@ -145,16 +161,17 @@ class TransactionalResetCoordinator(
     ): List<RollbackStageResult> {
         return mutatedStages.asReversed().map { stage ->
             when (stage) {
-                ResetStage.Config -> restoreConfig(snapshot.configToml)
+                ResetStage.Config -> restoreConfig(snapshot.config)
                 ResetStage.SetupInput -> restoreSetupInput(snapshot.setupInput)
                 ResetStage.Forwards -> restoreForwards(snapshot.forwards)
             }
         }
     }
 
-    private suspend fun restoreConfig(priorConfig: String?): RollbackStageResult {
-        return if (priorConfig != null) {
-            configRepository.writeConfigAtomically(priorConfig).fold(
+    private suspend fun restoreConfig(snapshot: ConfigSnapshot): RollbackStageResult {
+        return if (snapshot.existed) {
+            // File existed — restore the exact contents (even if blank/whitespace).
+            configRepository.writeConfigAtomically(snapshot.contents ?: "").fold(
                 onSuccess = {
                     RollbackStageResult.Success(ResetStage.Config)
                 },
@@ -166,7 +183,7 @@ class TransactionalResetCoordinator(
                 },
             )
         } else {
-            // Config was absent before reset — must delete it
+            // File was absent — must delete to restore absent state.
             configRepository.deleteConfigFileForTransactionalReset().fold(
                 onSuccess = {
                     RollbackStageResult.Success(ResetStage.Config)

@@ -13,6 +13,7 @@ import com.phillipchin.webrtctunnel.model.TunnelError
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -218,59 +219,66 @@ class TunnelRepository(
     fun recentLogs(maxEvents: Int): LogsFetchResult {
         // P0-005: Log retrieval failure does not affect tunnel lifecycle state.
         // P1-007: Return typed result so ViewModel owns generation check for both logs and error.
-        return runCatching {
-            Json.decodeFromString<List<NativeLogEventDto>>(bridge.getRecentLogsJson(maxEvents))
-                .map { event ->
-                    SensitiveDataRedactor.redactLogEvent(
-                        LogEvent(
-                            unixMs = event.unixMs,
-                            level = event.level,
-                            message = event.message,
-                        ),
-                    )
-                }
-        }.fold(
-            onSuccess = { logs ->
-                LogsFetchResult(logs = logs, error = null)
-            },
-            onFailure = { error ->
-                _logsError.value =
-                    TunnelError(
-                        code = "log_decode_failed",
-                        message = "Native log retrieval failed",
-                        details = SensitiveDataRedactor.redactText(error.message ?: "unknown log retrieval error"),
-                    )
-                // Never return an empty list on failure — that reads as "no logs". Surface a
-                // synthetic error log entry so the log screen shows that retrieval failed.
-                LogsFetchResult(
-                    logs =
-                        listOf(
+        // Uses runCatching but explicitly rethrows CancellationException to avoid masking cancellation.
+        // Repository does NOT mutate _logsError — ViewModel applies it under generation guard.
+        val result =
+            runCatching {
+                val dtos = Json.decodeFromString<List<NativeLogEventDto>>(bridge.getRecentLogsJson(maxEvents))
+                val logs =
+                    dtos.map { event ->
+                        SensitiveDataRedactor.redactLogEvent(
                             LogEvent(
-                                unixMs = 0L,
-                                level = "error",
-                                message = "Native log retrieval failed; see logsError for details",
+                                unixMs = event.unixMs,
+                                level = event.level,
+                                message = event.message,
                             ),
-                        ),
-                    error = _logsError.value,
+                        )
+                    }
+                LogsFetchResult(logs = logs, error = null)
+            }
+        // Rethrow CancellationException to avoid masking coroutine cancellation.
+        if (result.exceptionOrNull() is CancellationException) {
+            throw result.exceptionOrNull()!!
+        }
+        return result.getOrElse {
+            val tunnelError =
+                TunnelError(
+                    code = "log_decode_failed",
+                    message = "Native log retrieval failed",
+                    details = SensitiveDataRedactor.redactText(it.message ?: "unknown log retrieval error"),
                 )
-            },
-        )
+            // Never return an empty list on failure — that reads as "no logs". Surface a
+            // synthetic error log entry so the log screen shows that retrieval failed.
+            LogsFetchResult(
+                logs =
+                    listOf(
+                        LogEvent(
+                            unixMs = 0L,
+                            level = "error",
+                            message = "Native log retrieval failed; see logsError for details",
+                        ),
+                    ),
+                error = tunnelError,
+            )
+        }
     }
 
     fun setPolicyBlocked(blockReason: String) {
         val redacted = SensitiveDataRedactor.redactText(blockReason)
         updateStatus { current ->
-            current.copy(
-                serviceState = ServiceState.PausedMeteredBlocked,
-                mqttConnected = false,
-                activeSessionCount = 0,
-                networkStatus =
-                    current.networkStatus.copy(
-                        tunnelAllowed = false,
-                        blockReason = redacted,
-                    ),
-                lastError = null,
-            )
+            current
+                .copy(
+                    serviceState = ServiceState.PausedMeteredBlocked,
+                    mqttConnected = false,
+                    activeSessionCount = 0,
+                    networkStatus =
+                        current.networkStatus.copy(
+                            tunnelAllowed = false,
+                            blockReason = redacted,
+                        ),
+                    lastError = null,
+                )
+                .withoutActivePeer()
         }
     }
 
@@ -287,23 +295,32 @@ class TunnelRepository(
                 details = details?.let(SensitiveDataRedactor::redactText),
             )
         updateStatus { current ->
-            current.copy(
-                serviceState = state,
-                mqttConnected = false,
-                activeSessionCount = 0,
-                lastError = error,
-                // "stop_failed"/"stop_status_verification_failed"/"start_verification_cleanup_failed"
-                // are the codes every tunnel-stop/cleanup failure site in TunnelForegroundService
-                // uses (P0-003); record it as sticky history (P1-005) rather than only in lastError,
-                // which a later successful stop's refreshStatus() would otherwise overwrite and
-                // silently erase.
-                lastCleanupError =
-                    if (isStickyCleanupCode(code)) {
-                        error
-                    } else {
-                        current.lastCleanupError
-                    },
-            )
+            // "stop_failed"/"stop_status_verification_failed"/"start_verification_cleanup_failed"
+            // are the codes every tunnel-stop/cleanup failure site in TunnelForegroundService
+            // uses (P0-003); record it as sticky history (P1-005) rather than only in lastError,
+            // which a later successful stop's refreshStatus() would otherwise overwrite and
+            // silently erase. Sticky codes are cleanup-related failures.
+            val isStickyCode =
+                code in
+                    setOf(
+                        "stop_failed",
+                        "stop_status_verification_failed",
+                        "start_verification_cleanup_failed",
+                    )
+            val updated =
+                current.copy(
+                    serviceState = state,
+                    mqttConnected = false,
+                    activeSessionCount = 0,
+                    lastError = error,
+                    lastCleanupError =
+                        if (isStickyCode) {
+                            error
+                        } else {
+                            current.lastCleanupError
+                        },
+                )
+            if (isTerminalState(state)) updated.withoutActivePeer() else updated
         }
     }
 
@@ -316,9 +333,6 @@ class TunnelRepository(
     }
 }
 
-private fun isStickyCleanupCode(code: String): Boolean =
-    code == "stop_failed" || code == "stop_status_verification_failed" || code == "start_verification_cleanup_failed"
-
 private fun isPolicyPausedState(state: ServiceState): Boolean =
     state == ServiceState.PausedMeteredBlocked || state == ServiceState.NoNetwork
 
@@ -329,6 +343,14 @@ private fun isTerminalState(state: ServiceState): Boolean =
         state == ServiceState.PausedMeteredBlocked ||
         state == ServiceState.NoNetwork ||
         state == ServiceState.ConfigInvalid
+
+// P1-007: Clears active peer for terminal states (no active connection).
+private fun TunnelStatus.withoutActivePeer(): TunnelStatus =
+    copy(
+        remotePeerId = null,
+        activeSessionCount = 0,
+        mqttConnected = false,
+    )
 
 // Truthful mapping: native "running" only means the daemon task is alive. Reserve
 // Connected for an actual active session/tunnel; otherwise show a listening/serving

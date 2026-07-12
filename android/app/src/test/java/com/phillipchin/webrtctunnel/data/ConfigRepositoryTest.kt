@@ -44,7 +44,7 @@ class ConfigRepositoryTest {
 
     @Test
     fun ensureDefaultConfigDoesNotOverwriteExistingFile() {
-        repository.writeConfig("existing")
+        runBlocking { repository.writeConfig("existing") }
         runBlocking {
             repository.ensureDefaultConfig("default")
         }
@@ -188,13 +188,13 @@ class ConfigRepositoryTest {
 
     @Test
     fun prepareActiveConfigForStartRewritesIceModeAndAddress() {
-        repository.writeConfig(
-            """
-            [webrtc]
-            android_ice_mode = "vnet_mux"
-            """.trimIndent(),
-        )
         runBlocking {
+            repository.writeConfig(
+                """
+                [webrtc]
+                android_ice_mode = "vnet_mux"
+                """.trimIndent(),
+            )
             repository.prepareActiveConfigForStart("native", "10.1.3.11")
         }
         val config = repository.readConfig()
@@ -220,7 +220,7 @@ class ConfigRepositoryTest {
     @Test
     fun writeAndReadConfigRoundTrip() {
         val contents = "format = \"p2ptunnel-config-v3\"\n[node]\npeer_id=\"x\""
-        repository.writeConfig(contents)
+        runBlocking { repository.writeConfig(contents) }
         assertEquals(contents, repository.readConfig())
         assertTrue(repository.configPath.startsWith(context.filesDir.absolutePath))
     }
@@ -275,16 +275,20 @@ class ConfigRepositoryTest {
 
     @Test
     fun latestWriteWins() {
-        repository.writeConfig("first")
-        repository.writeConfig("second")
+        runBlocking {
+            repository.writeConfig("first")
+            repository.writeConfig("second")
+        }
         assertEquals("second", repository.readConfig())
         assertFalse(repository.readConfig().contains("first"))
     }
 
     @Test
     fun atomicWriteReplacesConfig() {
-        repository.writeConfig("before")
-        runBlocking { repository.writeConfigAtomically("after") }
+        runBlocking {
+            repository.writeConfig("before")
+            repository.writeConfigAtomically("after")
+        }
         assertEquals("after", repository.readConfig())
     }
 

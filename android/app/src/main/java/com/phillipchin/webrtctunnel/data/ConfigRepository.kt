@@ -81,6 +81,12 @@ open class ConfigRepository(private val context: Context) {
     fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()
 
     /**
+     * P1-003: Check if config file exists (distinct from blank contents) for transactional
+     * reset snapshot accuracy.
+     */
+    internal val configFileExists: Boolean get() = configFile.exists()
+
+    /**
      * Prepare the active config for a tunnel start by surgically rewriting the two
      * network-dependent `[webrtc]` fields: `android_ice_mode` (the user's chosen [iceMode], or
      * the debug `getprop` override) and `advertised_local_ipv4` ([advertisedIpv4], or removed
@@ -88,32 +94,33 @@ open class ConfigRepository(private val context: Context) {
      * address). Each edit touches only its own line, so both are key-safe on an already-rendered
      * config. No-op when no config exists yet; changes take effect on the next engine build
      * (tunnel restart), since the ICE mode is fixed when the WebRTC engine is built.
+     *
+     * Returns [Result.success] on success, [Result.failure] if the config write fails,
+     * so startup can abort rather than proceeding with a stale or wrong config.
      */
     suspend fun prepareActiveConfigForStart(
         iceMode: String,
         advertisedIpv4: String?,
-    ) {
-        writeMutex.withLock {
+    ): Result<Unit> {
+        return writeMutex.withLock {
             val current = readConfig()
             if (current.isBlank()) {
-                return@withLock
+                return@withLock Result.success(Unit)
             }
             val withIceMode = upsertAndroidIceMode(current, resolveAndroidIceMode(iceMode))
             writeConfigAtomicallyLocked(
                 configFile,
                 upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4),
-            ).onFailure { error ->
-                // Config write failure is non-fatal for startup preparation
-                // (the tunnel will log the error but continue)
-                android.util.Log.w("ConfigRepository", "Failed to prepare active config", error)
-            }
+            )
         }
     }
 
-    fun writeConfig(contents: String) {
-        configFile.parentFile?.mkdirs()
-        configFile.writeText(contents)
-    }
+    /**
+     * Write config contents through the atomic writer so all writes are serialized.
+     * Routes through [writeConfigAtomically] to prevent direct file writes that bypass
+     * the mutex serialization (P1-007).
+     */
+    suspend fun writeConfig(contents: String): Result<Unit> = writeConfigAtomically(contents)
 
     /**
      * P1-007: Atomic write with unique temp file under [writeMutex].

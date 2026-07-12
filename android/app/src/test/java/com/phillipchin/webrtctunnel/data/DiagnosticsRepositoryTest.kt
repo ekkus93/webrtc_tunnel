@@ -30,13 +30,15 @@ class DiagnosticsRepositoryTest {
 
     @Test
     fun exportRedactedDiagnosticsRedactsSecretsAndCandidates() {
-        configRepository.writeConfig(
-            """
-            [broker]
-            username = "admin"
-            password_file = "/tmp/pass"
-            """.trimIndent(),
-        )
+        kotlinx.coroutines.runBlocking {
+            configRepository.writeConfig(
+                """
+                [broker]
+                username = "admin"
+                password_file = "/tmp/pass"
+                """.trimIndent(),
+            )
+        }
         val output = File(context.filesDir, "diag.txt")
         output.delete()
         val result =
