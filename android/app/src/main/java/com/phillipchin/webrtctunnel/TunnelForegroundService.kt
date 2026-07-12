@@ -270,6 +270,8 @@ class TunnelForegroundService
                     // P0-003: Stop coordinator processor before fallback cleanup.
                     coordinator.stop()
                     lifecycleMutex.withLock {
+                        // P0-002: Invalidate any pending retry on destroy before cleanup.
+                        invalidatePendingPolicyRetry()
                         lifecycleGeneration.incrementAndGet()
                         cancelStartupJobAndJoinLocked()
                         reporter.stopStatusPollingAndJoin()
@@ -825,6 +827,8 @@ class TunnelForegroundService
                     lifecycleGeneration.incrementAndGet()
                     cancelStartupJobAndJoinLocked()
                     reporter.stopStatusPollingAndJoin()
+                    // P0-002: Invalidate any pending retry when policy pauses.
+                    invalidatePendingPolicyRetry()
                     withContext(ioDispatcher) { repository.stop() }
                         .fold(
                             onSuccess = {
@@ -863,6 +867,8 @@ class TunnelForegroundService
                             // P0-005: Stop success path.
                             nativeStopVerified.set(true)
                             nativeRuntimeUncertain.set(false)
+                            // P0-002: Invalidate any pending retry on explicit stop success.
+                            invalidatePendingPolicyRetry()
                             notifications.show(
                                 notifications.buildStatusNotification(ServiceState.Stopped, "Tunnel stopped"),
                             )
