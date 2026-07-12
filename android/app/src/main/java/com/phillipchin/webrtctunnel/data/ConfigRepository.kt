@@ -21,6 +21,7 @@ import java.io.File
 import java.io.IOException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
@@ -98,7 +99,7 @@ open class ConfigRepository(private val context: Context) {
      * Returns [Result.success] on success, [Result.failure] if the config write fails,
      * so startup can abort rather than proceeding with a stale or wrong config.
      */
-    suspend fun prepareActiveConfigForStart(
+    open suspend fun prepareActiveConfigForStart(
         iceMode: String,
         advertisedIpv4: String?,
     ): Result<Unit> {
@@ -202,17 +203,19 @@ private fun writeConfigAtomicallyLocked(
     contents: String,
 ): Result<Unit> {
     configFile.parentFile?.mkdirs()
-    val temp =
-        Files.createTempFile(
-            configFile.parentFile?.toPath(),
-            "config.toml.tmp-",
-            ".partial",
-        )
+    var temp: Path? = null
     return try {
-        temp.toFile().writeText(contents)
+        temp =
+            Files.createTempFile(
+                configFile.parentFile?.toPath(),
+                "config.toml.tmp-",
+                ".partial",
+            )
+        val tempPath = temp ?: error("temp not assigned")
+        tempPath.toFile().writeText(contents)
         try {
             Files.move(
-                temp,
+                tempPath,
                 configFile.toPath(),
                 StandardCopyOption.ATOMIC_MOVE,
                 StandardCopyOption.REPLACE_EXISTING,
@@ -221,7 +224,7 @@ private fun writeConfigAtomicallyLocked(
             // Fallback when ATOMIC_MOVE is not supported on the filesystem
             android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", e)
             Files.move(
-                temp,
+                tempPath,
                 configFile.toPath(),
                 StandardCopyOption.REPLACE_EXISTING,
             )
@@ -233,7 +236,7 @@ private fun writeConfigAtomicallyLocked(
         Result.failure(error)
     } finally {
         // Clean up temp file if it still exists (move succeeded or failed)
-        Files.deleteIfExists(temp)
+        temp?.let { Files.deleteIfExists(it) }
     }
 }
 

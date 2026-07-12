@@ -52,6 +52,11 @@ class TunnelForegroundServiceStopFailureTest {
 
     @Before
     fun setUp() {
+        // P0-001: Reset all failure injection hooks before each test to prevent cross-test contamination.
+        TunnelForegroundServiceTestHooks.identityReadFailure.set(null)
+        TunnelForegroundServiceTestHooks.configPrepFailure.set(null)
+        TunnelForegroundServiceTestHooks.policyBlockReason.set(null)
+        TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
         service = controller.create().get()
     }
 
@@ -663,6 +668,167 @@ class TunnelForegroundServiceStopFailureTest {
             "PAUSE failure must leave tunnel in Error state",
             ServiceState.Error,
             deps.tunnelRepository.status.value.serviceState,
+        )
+    }
+
+    /**
+     * P0-001: Startup preparation — network policy blocks tunnel before native start.
+     *
+     * When the network policy evaluates to NoNetwork (or any blocked type), the startup
+     * preparation throws [StartupPolicyBlocked], which becomes [StartOutcome.PolicyBlocked],
+     * leaving the tunnel in a PausedMeteredBlocked state — never running.
+     */
+    @Test
+    fun networkPolicyBlockedPreventsStartup() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Inject network policy block before starting.
+        TunnelForegroundServiceTestHooks.policyBlockReason.set("No network available")
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Wait for startup preparation to complete.
+        // The tunnel must not start; native startOffer must never be called.
+        assertEquals(
+            "network policy block must prevent native start",
+            0,
+            bridge.startOfferCalls,
+        )
+        assertTrue(
+            "network policy block must leave tunnel in PausedMeteredBlocked state",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.PausedMeteredBlocked },
+        )
+        assertEquals(
+            "final state must be PausedMeteredBlocked",
+            ServiceState.PausedMeteredBlocked,
+            deps.tunnelRepository.status.value.serviceState,
+        )
+    }
+
+    /**
+     * P0-001: Startup preparation — identity read failure aborts startup.
+     *
+     * When identity decryption fails, the startup preparation calls abortStartup,
+     * which throws [StartupAborted], becoming [StartOutcome.Aborted].
+     */
+    @Test
+    fun identityReadFailureAbortsStartup() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Inject identity read failure before starting.
+        TunnelForegroundServiceTestHooks.identityReadFailure.set("injected identity decrypt failure")
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Wait for startup preparation to complete.
+        // The tunnel must not start; native startOffer must never be called.
+        assertEquals(
+            "identity read failure must prevent native start",
+            0,
+            bridge.startOfferCalls,
+        )
+        assertTrue(
+            "identity read failure must leave tunnel in Error state",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        // Error must have been published.
+        assertTrue(
+            "error must be published for identity read failure",
+            deps.tunnelRepository.status.value.lastError != null,
+        )
+    }
+
+    /**
+     * P0-001: Startup preparation — config preparation failure aborts startup.
+     *
+     * When configRepository.prepareActiveConfigForStart() returns Result.failure,
+     * the startup preparation calls abortStartup, which throws [StartupAborted],
+     * becoming [StartOutcome.Aborted].
+     */
+    @Test
+    fun configPrepFailureAbortsStartup() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Inject config preparation failure before starting.
+        TunnelForegroundServiceTestHooks.configPrepFailure.set("injected config prep failure")
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Wait for startup preparation to complete.
+        // The tunnel must not start; native startOffer must never be called.
+        assertEquals(
+            "config prep failure must prevent native start",
+            0,
+            bridge.startOfferCalls,
+        )
+        assertTrue(
+            "config prep failure must leave tunnel in Error state",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        // Error must have been published.
+        assertTrue(
+            "error must be published for config preparation failure",
+            deps.tunnelRepository.status.value.lastError != null,
+        )
+    }
+
+    /**
+     * P0-001: Startup preparation — config validation failure aborts startup.
+     *
+     * When identityValidation.validateConfigWithIdentity() returns invalid,
+     * the startup preparation calls abortStartup with [ServiceState.ConfigInvalid],
+     * which throws [StartupAborted], becoming [StartOutcome.Aborted].
+     */
+    @Test
+    fun configValidationFailureAbortsStartup() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Inject config validation failure before starting.
+        TunnelForegroundServiceTestHooks.configValidationFailure.set("injected config validation failure")
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Wait for startup preparation to complete.
+        // The tunnel must not start; native startOffer must never be called.
+        assertEquals(
+            "config validation failure must prevent native start",
+            0,
+            bridge.startOfferCalls,
+        )
+        assertTrue(
+            "config validation failure must leave tunnel in Error state",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        // Error must have been published.
+        assertTrue(
+            "error must be published for config validation failure",
+            deps.tunnelRepository.status.value.lastError != null,
+        )
+    }
+
+    /**
+     * P0-001: Startup preparation — successful startup proceeds through all preparation steps.
+     *
+     * When all preparation steps succeed, the startup proceeds to the native startOffer
+     * call and completes with [StartOutcome.VerifiedSuccess].
+     */
+    @Test
+    fun successfulStartupPreparesAndStarts() {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // No failure injection — happy path.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // The tunnel must start successfully.
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        assertEquals(
+            "successful startup must call native startOffer exactly once",
+            1,
+            bridge.startOfferCalls,
         )
     }
 }

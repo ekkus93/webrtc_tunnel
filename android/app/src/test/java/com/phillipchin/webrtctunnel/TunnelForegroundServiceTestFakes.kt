@@ -47,6 +47,19 @@ internal sealed interface FakeLifecycleEvent {
  */
 object TunnelForegroundServiceTestHooks {
     lateinit var bridge: FailableRecordingBridge
+
+    // P0-001: Failure injection points for startup preparation tests.
+    @get:JvmName("identityReadFailureMessage")
+    val identityReadFailure: AtomicReference<String?> = AtomicReference(null)
+
+    @get:JvmName("configPrepFailureMessage")
+    val configPrepFailure: AtomicReference<String?> = AtomicReference(null)
+
+    @get:JvmName("policyBlockReason")
+    val policyBlockReason: AtomicReference<String?> = AtomicReference(null)
+
+    @get:JvmName("configValidationFailureMessage")
+    val configValidationFailure: AtomicReference<String?> = AtomicReference(null)
 }
 
 class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies {
@@ -58,14 +71,36 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
         super.onCreate()
         val bridge = FailableRecordingBridge()
         TunnelForegroundServiceTestHooks.bridge = bridge
-        val configRepository = ConfigRepository(this)
+        // P0-001: Wire config preparation failure injection hook.
+        val configRepository =
+            object : ConfigRepository(this) {
+                override suspend fun prepareActiveConfigForStart(
+                    iceMode: String,
+                    advertisedIpv4: String?,
+                ): Result<Unit> {
+                    // Check for injected config preparation failure.
+                    val failure = TunnelForegroundServiceTestHooks.configPrepFailure.get()
+                    if (failure != null) {
+                        TunnelForegroundServiceTestHooks.configPrepFailure.set(null)
+                        return Result.failure(java.io.IOException(failure))
+                    }
+                    return super.prepareActiveConfigForStart(iceMode, advertisedIpv4)
+                }
+            }
         val identityRepository =
             IdentityRepository(
                 this,
                 object : IdentityCrypto {
                     override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
 
-                    override fun decrypt(payload: ByteArray): ByteArray = payload
+                    override fun decrypt(payload: ByteArray): ByteArray {
+                        // P0-001: Failure injection for identity read tests.
+                        val failure = TunnelForegroundServiceTestHooks.identityReadFailure.get()
+                        if (failure != null) {
+                            throw java.io.IOException(failure)
+                        }
+                        return payload
+                    }
                 },
             )
         identityRepository.storeEncryptedIdentity(
@@ -84,7 +119,14 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
                 configRepository = configRepository,
                 networkPolicyManager =
                     NetworkPolicyManager {
-                        com.phillipchin.webrtctunnel.model.NetworkType.UnmeteredWifi to false
+                        // P0-001: Check for injected policy block.
+                        val blockReason = TunnelForegroundServiceTestHooks.policyBlockReason.get()
+                        if (blockReason != null) {
+                            com.phillipchin.webrtctunnel.model.NetworkType.NoNetwork to false
+                        } else {
+                            // Default: UnmeteredWifi, metered not allowed, tunnel allowed.
+                            com.phillipchin.webrtctunnel.model.NetworkType.UnmeteredWifi to false
+                        }
                     },
                 identityRepository = identityRepository,
             )
@@ -278,7 +320,15 @@ class FailableRecordingBridge : TunnelNativeBridge {
     override fun validateConfigWithIdentity(
         configPath: String,
         identityBytes: ByteArray,
-    ): ValidationResult = ValidationResult(true, null)
+    ): ValidationResult {
+        // P0-001: Failure injection for config validation tests.
+        val failure = TunnelForegroundServiceTestHooks.configValidationFailure.get()
+        if (failure != null) {
+            TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
+            return ValidationResult(false, failure)
+        }
+        return ValidationResult(true, null)
+    }
 
     override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
         IdentityValidationResult(
