@@ -5,7 +5,7 @@ import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.ListenState
 import com.phillipchin.webrtctunnel.model.NativeLogEventDto
 import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -478,7 +478,7 @@ class TunnelRepositoryTest {
         )
 
         val latestNetworkStatus =
-            NetworkStatus(
+            NetworkPolicyStatus(
                 networkType = NetworkType.Cellular,
                 isMetered = true,
                 allowedByDefault = false,

@@ -6,7 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.model.LogEvent
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.TunnelError
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -68,7 +68,7 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
 
     fun exportDiagnostics(
         path: String,
-        networkStatus: NetworkStatus,
+        networkStatus: NetworkPolicyStatus,
     ) {
         if (_isBusy.value) return
         viewModelScope.launch {
@@ -96,7 +96,7 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
 
     fun exportDiagnosticsToUri(
         uri: Uri,
-        networkStatus: NetworkStatus,
+        networkStatus: NetworkPolicyStatus,
     ) {
         if (_isBusy.value) return
         viewModelScope.launch {
@@ -127,7 +127,7 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
         }
     }
 
-    suspend fun diagnosticsShareIntent(networkStatus: NetworkStatus): Intent {
+    suspend fun diagnosticsShareIntent(networkStatus: NetworkPolicyStatus): Intent {
         val status = deps.tunnelRepository.status.value
         val logs = _logs.value
         val payload =

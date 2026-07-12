@@ -28,7 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.phillipchin.webrtctunnel.R
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.TunnelError
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.TunnelStatus
@@ -68,10 +68,10 @@ internal fun TunnelStatusCard(
 
 @Composable
 internal fun HomeNetworkCard(
-    networkStatus: NetworkStatus,
+    networkStatus: NetworkPolicyStatus,
     allowMeteredForCurrentSession: Boolean,
 ) {
-    NetworkStatusCard {
+    NetworkPolicyStatusCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),

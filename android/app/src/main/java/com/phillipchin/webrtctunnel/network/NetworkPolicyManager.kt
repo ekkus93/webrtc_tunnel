@@ -5,7 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import kotlinx.coroutines.channels.ProducerScope
 import kotlinx.coroutines.channels.awaitClose
@@ -22,13 +22,13 @@ class NetworkPolicyManager internal constructor(
     constructor(context: Context) : this({ classifyCurrentNetwork(context) })
 
     private val _status = MutableStateFlow(evaluate(classifier(), allowMetered = false))
-    val status: StateFlow<NetworkStatus> = _status.asStateFlow()
+    val status: StateFlow<NetworkPolicyStatus> = _status.asStateFlow()
 
     fun refresh() {
         _status.value = evaluate(classifier(), allowMetered = false)
     }
 
-    fun evaluateWithPolicy(allowMetered: Boolean): NetworkStatus {
+    fun evaluateWithPolicy(allowMetered: Boolean): NetworkPolicyStatus {
         val evaluated = evaluate(classifier(), allowMetered)
         _status.value = evaluated
         return evaluated
@@ -38,7 +38,7 @@ class NetworkPolicyManager internal constructor(
         return evaluateWithPolicy(allowMetered).tunnelAllowed
     }
 
-    fun monitor(context: Context): Flow<NetworkStatus> =
+    fun monitor(context: Context): Flow<NetworkPolicyStatus> =
         callbackFlow {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val callback =
@@ -76,7 +76,7 @@ class NetworkPolicyManager internal constructor(
         /**
          * P1-005: Wraps trySend so delivery failures are visible (logged) rather than silently lost.
          */
-        private fun ProducerScope<NetworkStatus>.emitPolicyStatus(status: NetworkStatus) {
+        private fun ProducerScope<NetworkPolicyStatus>.emitPolicyStatus(status: NetworkPolicyStatus) {
             val result = trySend(status)
             if (result.isFailure) {
                 Log.w(TAG, "Network policy event delivery failed", result.exceptionOrNull())
@@ -102,7 +102,7 @@ class NetworkPolicyManager internal constructor(
         fun evaluate(
             snapshot: Pair<NetworkType, Boolean>,
             allowMetered: Boolean,
-        ): NetworkStatus {
+        ): NetworkPolicyStatus {
             val (networkType, isMetered) = snapshot
             val allowedByDefault = networkType == NetworkType.UnmeteredWifi
             val allowedByUserPolicy =
@@ -118,7 +118,7 @@ class NetworkPolicyManager internal constructor(
                     allowedByUserPolicy -> null
                     else -> "Tunnel blocked by policy"
                 }
-            return NetworkStatus(
+            return NetworkPolicyStatus(
                 networkType = networkType,
                 isMetered = isMetered,
                 allowedByDefault = allowedByDefault,

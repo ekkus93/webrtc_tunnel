@@ -24,7 +24,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.viewmodel.SetupStep
 import com.phillipchin.webrtctunnel.viewmodel.SetupViewModel
@@ -39,7 +39,7 @@ fun SetupWizardScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     val forwards by vm.forwards.collectAsStateWithLifecycle()
     val networkStatus by vm.networkStatus.collectAsStateWithLifecycle(
-        initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
+        initialValue = NetworkPolicyStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
     )
     var editingForward by remember { mutableStateOf<ForwardEditorState?>(null) }
     var showCancelConfirm by remember { mutableStateOf(false) }
@@ -100,7 +100,7 @@ private fun WizardStepContent(
     state: SetupWizardState,
     vm: SetupViewModel,
     forwards: List<ForwardConfig>,
-    networkStatus: NetworkStatus,
+    networkStatus: NetworkPolicyStatus,
     onEditForward: (ForwardEditorState?) -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current

@@ -79,7 +79,7 @@ fun StatusCard(content: @Composable () -> Unit) {
 }
 
 @Composable
-fun NetworkStatusCard(content: @Composable () -> Unit) = StatusCard(content = content)
+fun NetworkPolicyStatusCard(content: @Composable () -> Unit) = StatusCard(content = content)
 
 /**
  * Container/content color pair for a status chip. Both are set explicitly so chip

@@ -15,7 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.viewmodel.NetworkPolicyViewModel
 
@@ -25,7 +25,7 @@ fun NetworkPolicyScreen(
     vm: NetworkPolicyViewModel,
 ) {
     val status by vm.networkStatus.collectAsStateWithLifecycle(
-        initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
+        initialValue = NetworkPolicyStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
     )
     val prefs by vm.preferences.collectAsStateWithLifecycle(initialValue = AndroidAppPreferences())
     var showMeteredWarningDialog by remember { mutableStateOf(false) }
@@ -33,7 +33,7 @@ fun NetworkPolicyScreen(
     ScrollableScreenSurface(padding) {
         SectionHeader("Network Policy", "Current network and tunnel policy")
         Spacer(Modifier.height(8.dp))
-        NetworkStatusCard {
+        NetworkPolicyStatusCard {
             Text("Current network: ${mapNetworkTypeLabel(status.networkType)}")
             Text(if (status.isMetered) "High data usage (metered network)" else "Unmetered (Wi-Fi)")
             Text(

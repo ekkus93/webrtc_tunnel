@@ -7,7 +7,7 @@ import com.phillipchin.webrtctunnel.model.ListenState
 import com.phillipchin.webrtctunnel.model.LogEvent
 import com.phillipchin.webrtctunnel.model.NativeLogEventDto
 import com.phillipchin.webrtctunnel.model.NativeRuntimeStatusDto
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelError
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -307,7 +307,7 @@ class TunnelRepository(
         }
     }
 
-    fun updateNetworkStatus(networkStatus: NetworkStatus) {
+    fun updateNetworkStatus(networkStatus: NetworkPolicyStatus) {
         updateStatus { current -> current.copy(networkStatus = networkStatus) }
     }
 
@@ -327,7 +327,8 @@ private fun isTerminalState(state: ServiceState): Boolean =
     state == ServiceState.Stopped ||
         state == ServiceState.Error ||
         state == ServiceState.PausedMeteredBlocked ||
-        state == ServiceState.NoNetwork
+        state == ServiceState.NoNetwork ||
+        state == ServiceState.ConfigInvalid
 
 // Truthful mapping: native "running" only means the daemon task is alive. Reserve
 // Connected for an actual active session/tunnel; otherwise show a listening/serving
@@ -385,25 +386,30 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
     val stateValue = mapNativeServiceState(state, modeValue, activeSessionCount)
     val uptimeSeconds = calculateUptimeSeconds(stateValue, startedAtUnixMs)
     val mappedForwards = mapForwards()
-    return previous.copy(
-        serviceState = stateValue,
-        mode = modeValue,
-        remotePeerId =
-            if (isTerminalState(stateValue)) {
-                null
-            } else {
-                remotePeerId ?: previous.remotePeerId
-            },
-        mqttConnected = mqttConnected,
-        activeSessionCount = activeSessionCount,
-        sessionCapacity = sessionCapacity ?: previous.sessionCapacity,
-        uptimeSeconds = uptimeSeconds,
-        forwards = mappedForwards,
-        lastError =
-            lastError?.let {
-                TunnelError(code = "native_runtime_error", message = it, details = configPath)
-            },
-    )
+    val base =
+        previous.copy(
+            serviceState = stateValue,
+            mode = modeValue,
+            remotePeerId = remotePeerId ?: previous.remotePeerId,
+            mqttConnected = mqttConnected,
+            activeSessionCount = activeSessionCount,
+            sessionCapacity = sessionCapacity ?: previous.sessionCapacity,
+            uptimeSeconds = uptimeSeconds,
+            forwards = mappedForwards,
+            lastError =
+                lastError?.let {
+                    TunnelError(code = "native_runtime_error", message = it, details = configPath)
+                },
+        )
+    return if (isTerminalState(stateValue)) {
+        base.copy(
+            remotePeerId = null,
+            activeSessionCount = 0,
+            mqttConnected = false,
+        )
+    } else {
+        base
+    }
 }
 
 // P1-008: Resolve native mode, returning null for unknown modes.

@@ -1,7 +1,7 @@
 package com.phillipchin.webrtctunnel.data
 
 import com.phillipchin.webrtctunnel.model.LogEvent
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelError
@@ -438,7 +438,7 @@ class SensitiveDataRedactorTest {
             mode = TunnelMode.Offer,
             localPeerId = "offer-home",
             networkStatus =
-                NetworkStatus(
+                NetworkPolicyStatus(
                     networkType = NetworkType.NoNetwork,
                     isMetered = false,
                     allowedByDefault = false,

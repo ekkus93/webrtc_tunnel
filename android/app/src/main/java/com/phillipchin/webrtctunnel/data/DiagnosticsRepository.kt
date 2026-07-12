@@ -2,7 +2,7 @@ package com.phillipchin.webrtctunnel.data
 
 import android.content.Context
 import com.phillipchin.webrtctunnel.model.LogEvent
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -15,7 +15,7 @@ class DiagnosticsRepository(
     fun buildRedactedDiagnosticsPayload(
         status: TunnelStatus,
         logs: List<LogEvent>,
-        networkStatus: NetworkStatus,
+        networkStatus: NetworkPolicyStatus,
     ): String =
         buildString {
             appendLine("app_version=${context.packageManager.getPackageInfo(context.packageName, 0).versionName}")
@@ -30,7 +30,7 @@ class DiagnosticsRepository(
         outputPath: String,
         status: TunnelStatus,
         logs: List<LogEvent>,
-        networkStatus: NetworkStatus,
+        networkStatus: NetworkPolicyStatus,
     ): Result<Unit> =
         runCatching {
             val output = File(outputPath)

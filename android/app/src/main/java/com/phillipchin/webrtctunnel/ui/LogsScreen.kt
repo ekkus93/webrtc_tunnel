@@ -43,7 +43,7 @@ import com.phillipchin.webrtctunnel.R
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.LogEvent
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.viewmodel.LogsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.NetworkPolicyViewModel
@@ -73,7 +73,7 @@ fun LogsScreen(
 
     // Collect network status for export
     val networkStatus by networkVm.networkStatus.collectAsStateWithLifecycle(
-        initialValue = NetworkStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
+        initialValue = NetworkPolicyStatus(NetworkType.NoNetwork, false, false, false, false, "No network"),
     )
 
     val diagnosticsCreateDocumentLauncher =

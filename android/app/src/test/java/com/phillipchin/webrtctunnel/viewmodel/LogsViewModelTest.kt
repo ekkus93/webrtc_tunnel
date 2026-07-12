@@ -3,7 +3,7 @@ package com.phillipchin.webrtctunnel.viewmodel
 import android.net.Uri
 import android.os.Looper
 import com.phillipchin.webrtctunnel.data.AppDependencies
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import kotlinx.coroutines.delay
@@ -19,7 +19,7 @@ import org.robolectric.Shadows
 import java.io.File
 
 private val NO_NETWORK =
-    NetworkStatus(
+    NetworkPolicyStatus(
         networkType = NetworkType.NoNetwork,
         isMetered = false,
         allowedByDefault = false,

@@ -33,7 +33,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.viewmodel.SetupViewModel
 import com.phillipchin.webrtctunnel.viewmodel.SetupWizardState
 
@@ -328,7 +328,7 @@ internal fun ForwardsStepContent(
 internal fun PolicyStepContent(
     vm: SetupViewModel,
     state: SetupWizardState,
-    networkStatus: NetworkStatus,
+    networkStatus: NetworkPolicyStatus,
 ) {
     var showMeteredWarningDialog by remember { mutableStateOf(false) }
     StatusCard {

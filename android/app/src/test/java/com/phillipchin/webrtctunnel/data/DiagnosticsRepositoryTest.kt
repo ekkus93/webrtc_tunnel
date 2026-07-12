@@ -2,7 +2,7 @@ package com.phillipchin.webrtctunnel.data
 
 import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.model.LogEvent
-import com.phillipchin.webrtctunnel.model.NetworkStatus
+import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -49,7 +49,7 @@ class DiagnosticsRepositoryTest {
                         localPeerId = "android-phone",
                     ),
                 logs = listOf(LogEvent(1L, "info", "sdp=foo candidate=bar password=abc token=xyz")),
-                networkStatus = NetworkStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
+                networkStatus = NetworkPolicyStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
             )
         assertTrue(result.isSuccess)
         val text = output.readText()
@@ -69,7 +69,7 @@ class DiagnosticsRepositoryTest {
                         localPeerId = "android-phone",
                     ),
                 logs = listOf(LogEvent(1L, "error", "password=abc token=xyz")),
-                networkStatus = NetworkStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
+                networkStatus = NetworkPolicyStatus(NetworkType.UnmeteredWifi, false, true, true, true, null),
             )
         assertTrue(payload.contains("***REDACTED***"))
         assertFalse(payload.contains("password=abc"))

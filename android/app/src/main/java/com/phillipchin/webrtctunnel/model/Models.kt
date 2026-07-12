@@ -74,7 +74,7 @@ data class ForwardStatus(
 )
 
 @Serializable
-data class NetworkStatus(
+data class NetworkPolicyStatus(
     val networkType: NetworkType,
     val isMetered: Boolean,
     val allowedByDefault: Boolean,
@@ -171,8 +171,8 @@ data class TunnelStatus(
     val activeSessionCount: Int = 0,
     val sessionCapacity: Int? = null,
     val uptimeSeconds: Long? = null,
-    val networkStatus: NetworkStatus =
-        NetworkStatus(
+    val networkStatus: NetworkPolicyStatus =
+        NetworkPolicyStatus(
             networkType = NetworkType.NoNetwork,
             isMetered = false,
             allowedByDefault = false,
