@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -73,13 +74,8 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
 
             val testViewModel = NetworkPolicyViewModel(testDeps)
 
-            // Verify that savePreferences completes without throwing
+            // Verify that savePreferences completes without throwing — failure is handled
             testViewModel.savePreferences(AndroidAppPreferences())
-
-            // The snackbar should show an error message, but we don't verify the exact content
-            // due to flow collection timing issues in tests. The important thing is that the
-            // ViewModel handles the failure gracefully.
-            assertTrue(true)
         }
 
     @Test
@@ -107,10 +103,6 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
 
             // Verify that savePreferences completes without throwing
             testViewModel.savePreferences(AndroidAppPreferences())
-
-            // The snackbar should show an error message, not a success message.
-            // We verify the ViewModel handles the failure gracefully.
-            assertTrue(true)
         }
 
     @Test
