@@ -200,7 +200,7 @@ class TransactionalResetCoordinator(
     private suspend fun restoreConfig(snapshot: ConfigSnapshot): RollbackStageResult {
         return if (snapshot.existed) {
             // File existed — restore the exact contents (even if blank/whitespace).
-            configRepository.writeConfigAtomically(snapshot.contents ?: "").fold(
+            configRepository.writeConfigAtomically(snapshot.contents.orEmpty()).fold(
                 onSuccess = {
                     RollbackStageResult.Success(ResetStage.Config)
                 },
