@@ -553,15 +553,17 @@ class TunnelForegroundService
                 ) {
                     if (lifecycleGeneration.get() != generation) return
                     activeStartup = null
+                    if (outcome !is StartOutcome.VerifiedSuccess) {
+                        clearTemporaryMeteredAllowance()
+                    }
+                    invalidatePendingPolicyRetry()
                     when (outcome) {
                         StartOutcome.VerifiedSuccess -> {
                             pausedByPolicy.set(false)
-                            invalidatePendingPolicyRetry()
                             reporter.publishStatus()
                             reporter.startStatusPolling()
                         }
                         is StartOutcome.NativeFailure -> {
-                            clearTemporaryMeteredAllowance()
                             val pending = pendingPolicyResumeGeneration.getAndSet(null)
                             if (pending == generation) {
                                 submitLifecycleCommand(
@@ -587,28 +589,20 @@ class TunnelForegroundService
                                     reporter::publishError,
                                 ),
                             )
-                            clearTemporaryMeteredAllowance()
-                            invalidatePendingPolicyRetry()
                         }
                         is StartOutcome.UnexpectedFailure -> {
-                            clearTemporaryMeteredAllowance()
-                            invalidatePendingPolicyRetry()
                             reporter.publishError(
                                 outcome.error.message ?: "Unexpected startup failure",
                                 "startup_unexpected_failure",
                             )
                         }
                         is StartOutcome.PolicyBlocked -> {
-                            clearTemporaryMeteredAllowance()
                             pausedByPolicy.set(true)
                             nativeStopVerified.set(true)
-                            invalidatePendingPolicyRetry()
                             repository.setPolicyBlocked(outcome.reason)
                             reporter.publishStatus(outcome.reason)
                         }
                         is StartOutcome.Aborted -> {
-                            clearTemporaryMeteredAllowance()
-                            invalidatePendingPolicyRetry()
                             reporter.publishError(outcome.reason, "startup_aborted")
                         }
                     }
