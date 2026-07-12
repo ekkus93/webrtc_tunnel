@@ -523,3 +523,81 @@ async fn offer_idle_shutdown_releases_listener_port() {
 
     let _ = tokio::fs::remove_file(&status_path).await;
 }
+
+/// P0-002: Proves that no ordinary (non-terminal) state is emitted after the
+/// shutdown boundary, and that the terminal `Closed` state is emitted.
+///
+/// Uses the non-coalescing `StatusAuditLog` (not a `watch` channel) so the
+/// proof is exact — a `watch::Receiver` can coalesce intermediate states
+/// away, making the test pass even if an illegal intermediate write occurred.
+#[tokio::test]
+async fn offer_admits_no_ordinary_write_when_shutdown_lands_between_session_outcome_and_loop_top() {
+    // Create audit log and loop-top barrier for deterministic shutdown.
+    let audit = StatusAuditLog::default();
+    let (barrier, mut entered, release) = OfferLoopTopBarrier::new();
+
+    let mut config = sample_config();
+    let status_path = std::env::temp_dir()
+        .join(format!("p2ptunnel-daemon-status-offer-shutdown-audit-{}.json", SessionId::random()));
+    config.health.write_status_file = true;
+    config.health.status_file = status_path.clone();
+
+    let offer = generate_identity("offer-home").expect("offer identity");
+    let answer = generate_identity("answer-office").expect("answer identity");
+    let authorized_keys =
+        AuthorizedKeys::parse(&answer.public_identity.render()).expect("offer keys");
+
+    let (outcomes_tx, outcomes_rx) = mpsc::unbounded_channel();
+    let transport = ScriptedPollingTransport { outcomes: outcomes_rx };
+
+    let shutdown = ShutdownToken::default();
+    let daemon =
+        tokio::spawn(run_offer_daemon_with_loop_top_barrier_and_status_audit_and_shutdown(
+            config,
+            offer.identity,
+            authorized_keys,
+            transport,
+            barrier,
+            audit.clone(),
+            shutdown.clone(),
+        ));
+
+    // Wait for the daemon to enter the loop top, then request shutdown.
+    entered.wait().await;
+    let boundary = audit.len();
+    shutdown.request_shutdown();
+    release.release().await;
+
+    // Await daemon completion.
+    let result = timeout(Duration::from_secs(10), daemon)
+        .await
+        .expect("offer daemon should stop before the test timeout")
+        .expect("offer daemon task should not panic");
+    assert!(result.is_ok(), "graceful shutdown should return Ok, got {result:?}");
+
+    // Assert on the audit log after the boundary.
+    let events = audit.snapshot();
+    for status in &events[boundary..] {
+        assert!(
+            !matches!(
+                status.current_state,
+                DaemonState::WaitingForLocalClient
+                    | DaemonState::Serving
+                    | DaemonState::Negotiating
+                    | DaemonState::TunnelOpen
+            ),
+            "normal state emitted after shutdown boundary: {:?}",
+            status.current_state
+        );
+    }
+
+    // Terminal `Closed` must be emitted.
+    assert!(
+        events[boundary..].iter().any(|status| status.current_state == DaemonState::Closed),
+        "terminal Closed status was not emitted after shutdown"
+    );
+
+    let _ = tokio::fs::remove_file(&status_path).await;
+    // Drain the channel so the transport doesn't leak.
+    drop(outcomes_tx);
+}
