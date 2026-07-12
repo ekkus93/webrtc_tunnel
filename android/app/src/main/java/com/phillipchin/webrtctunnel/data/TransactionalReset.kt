@@ -6,6 +6,15 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
+ * Thrown when snapshot capture fails during transactional reset.
+ * Prevents partial mutation by failing before any stage executes.
+ */
+class SnapshotCaptureException(
+    message: String,
+    cause: Throwable?,
+) : Exception(message, cause)
+
+/**
  * Captures config file state during transactional reset snapshot.
  * Distinguishes between "file existed" and "file contents" so rollback
  * can restore an empty existing file differently from an absent file.
@@ -80,7 +89,15 @@ class TransactionalResetCoordinator(
     suspend fun resetConfiguration(): ResetResult {
         return resetMutex.withLock {
             // Step 1: capture exact prior state (P0-001 snapshot)
-            val snapshot = captureSnapshot()
+            val snapshot =
+                captureSnapshot().getOrElse { error ->
+                    // Snapshot capture failed — abort before any mutation
+                    return@withLock ResetResult.Failed(
+                        failedStage = ResetStage.Config,
+                        cause = error.message ?: "Snapshot capture failed",
+                        rollback = emptyList(),
+                    )
+                }
 
             // Step 2: perform reset stages in order, stopping on first failure
             val mutatedStages = mutableListOf<ResetStage>()
@@ -141,17 +158,29 @@ class TransactionalResetCoordinator(
                 )
         }
 
-    private fun captureSnapshot(): ResetSnapshot {
+    private fun captureSnapshot(): Result<ResetSnapshot> {
         val existed = configRepository.configFileExists
         val contents = configRepository.readConfig()
-        return ResetSnapshot(
-            config =
-                ConfigSnapshot(
-                    existed = existed,
-                    contents = contents,
-                ),
-            setupInput = configRepository.loadSetupInputResult().getOrDefault(SetupConfigInput()),
-            forwards = forwardsRepository.current(),
+        val setupInput =
+            configRepository.loadSetupInputResult().getOrElse { error ->
+                return Result.failure(
+                    SnapshotCaptureException(
+                        "Failed to read setup input",
+                        error,
+                    ),
+                )
+            }
+        val forwards = forwardsRepository.current()
+        return Result.success(
+            ResetSnapshot(
+                config =
+                    ConfigSnapshot(
+                        existed = existed,
+                        contents = contents,
+                    ),
+                setupInput = setupInput,
+                forwards = forwards,
+            ),
         )
     }
 
