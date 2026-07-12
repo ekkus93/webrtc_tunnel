@@ -295,7 +295,11 @@ class TransactionalResetCoordinatorTest {
             assertTrue("Reset should fail on corrupt setup input", result is ResetResult.Failed)
             val failed = result as ResetResult.Failed
             assertEquals("Failed stage should be Config (snapshot capture)", ResetStage.Config, failed.failedStage)
-            assertTrue("Cause should mention snapshot/setup failure", failed.cause.contains("setup", ignoreCase = true) || failed.cause.contains("Snapshot", ignoreCase = true))
+            assertTrue(
+                "Cause should mention snapshot/setup failure",
+                failed.cause.contains("setup", ignoreCase = true) ||
+                    failed.cause.contains("Snapshot", ignoreCase = true),
+            )
         }
 
     @Test

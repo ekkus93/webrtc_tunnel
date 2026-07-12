@@ -16,10 +16,29 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
 
-class NetworkPolicyManager internal constructor(
+/**
+ * Reports network policy event delivery failures for app-level diagnostics.
+ */
+interface NetworkPolicyEventReporter {
+    fun reportNetworkPolicyEventDeliveryFailed(cause: Throwable?)
+}
+
+/**
+ * Default no-op reporter — delivery failures are silently ignored.
+ */
+object NoopNetworkPolicyEventReporter : NetworkPolicyEventReporter {
+    override fun reportNetworkPolicyEventDeliveryFailed(cause: Throwable?) = Unit
+}
+
+class NetworkPolicyManager private constructor(
     private val classifier: () -> Pair<NetworkType, Boolean>,
+    private val reporter: NetworkPolicyEventReporter,
 ) {
-    constructor(context: Context) : this({ classifyCurrentNetwork(context) })
+    constructor(context: Context) : this({ classifyCurrentNetwork(context) }, NoopNetworkPolicyEventReporter)
+
+    /** Internal constructor for testing. */
+    internal constructor(classifier: () -> Pair<NetworkType, Boolean>) :
+        this(classifier, NoopNetworkPolicyEventReporter)
 
     private val _status = MutableStateFlow(evaluate(classifier(), allowMetered = false))
     val status: StateFlow<NetworkPolicyStatus> = _status.asStateFlow()
@@ -46,13 +65,13 @@ class NetworkPolicyManager internal constructor(
                     override fun onAvailable(network: android.net.Network) {
                         val current = evaluate(classifier(), allowMetered = false)
                         _status.value = current
-                        emitPolicyStatus(current)
+                        emitPolicyStatus(current, reporter)
                     }
 
                     override fun onLost(network: android.net.Network) {
                         val current = evaluate(classifier(), allowMetered = false)
                         _status.value = current
-                        emitPolicyStatus(current)
+                        emitPolicyStatus(current, reporter)
                     }
 
                     override fun onCapabilitiesChanged(
@@ -61,12 +80,12 @@ class NetworkPolicyManager internal constructor(
                     ) {
                         val current = evaluate(classifier(), allowMetered = false)
                         _status.value = current
-                        emitPolicyStatus(current)
+                        emitPolicyStatus(current, reporter)
                     }
                 }
             val request = NetworkRequest.Builder().build()
             cm.registerNetworkCallback(request, callback)
-            emitPolicyStatus(evaluate(classifier(), allowMetered = false))
+            emitPolicyStatus(evaluate(classifier(), allowMetered = false), reporter)
             awaitClose { cm.unregisterNetworkCallback(callback) }
         }.conflate()
 
@@ -74,14 +93,27 @@ class NetworkPolicyManager internal constructor(
         private const val TAG = "NetworkPolicyManager"
 
         /**
-         * P1-005: Wraps trySend so delivery failures are visible (logged) rather than silently lost.
+         * Wraps trySend so delivery failures are visible (logged) and reported
+         * through [reporter] for app-level diagnostics.
          */
-        private fun ProducerScope<NetworkPolicyStatus>.emitPolicyStatus(status: NetworkPolicyStatus) {
+        private fun ProducerScope<NetworkPolicyStatus>.emitPolicyStatus(
+            status: NetworkPolicyStatus,
+            reporter: NetworkPolicyEventReporter,
+        ) {
             val result = trySend(status)
             if (result.isFailure) {
-                Log.w(TAG, "Network policy event delivery failed", result.exceptionOrNull())
+                val cause = result.exceptionOrNull()
+                if (isExpectedChannelClose(cause)) {
+                    return
+                }
+                Log.w(TAG, "Network policy event delivery failed", cause)
+                reporter.reportNetworkPolicyEventDeliveryFailed(cause)
             }
         }
+
+        private fun isExpectedChannelClose(cause: Throwable?): Boolean =
+            cause is kotlinx.coroutines.CancellationException ||
+                cause is kotlinx.coroutines.channels.ClosedSendChannelException
 
         fun classifyCurrentNetwork(context: Context): Pair<NetworkType, Boolean> {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
