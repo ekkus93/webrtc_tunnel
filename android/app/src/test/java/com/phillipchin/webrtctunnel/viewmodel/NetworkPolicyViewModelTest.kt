@@ -10,7 +10,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -53,11 +55,10 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
     @Test
     fun savePreferencesFailureShowsErrorMessage() =
         runBlocking {
-            // Test that savePreferences handles failure gracefully without crashing
             val failingRepository =
                 object : ConfigRepository(app) {
                     override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
-                        return Result.failure(RuntimeException("simulated datastore failure"))
+                        return Result.failure(RuntimeException("disk full"))
                     }
                 }
 
@@ -72,15 +73,35 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
                 )
 
             val testViewModel = NetworkPolicyViewModel(testDeps)
+            val messages = mutableListOf<String>()
+            val job =
+                launch {
+                    testDeps.snackbar.messages.collect { messages.add(it) }
+                }
+            yield() // let the collector subscribe before emit
 
-            // Verify that savePreferences completes without throwing — failure is handled
             testViewModel.savePreferences(AndroidAppPreferences())
+
+            withTimeout(5_000) {
+                while (messages.isEmpty()) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    yield()
+                }
+            }
+
+            assertTrue(
+                "error must be shown when savePreferences fails",
+                messages.any {
+                    it.contains("disk full") || it.contains("Failed to update network policy")
+                },
+            )
+
+            job.cancel()
         }
 
     @Test
     fun savePreferencesFailureDoesNotShowSuccess() =
         runBlocking {
-            // Test that savePreferences handles failure gracefully without showing success message
             val failingRepository =
                 object : ConfigRepository(app) {
                     override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
@@ -99,9 +120,28 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
                 )
 
             val testViewModel = NetworkPolicyViewModel(testDeps)
+            val messages = mutableListOf<String>()
+            val job =
+                launch {
+                    testDeps.snackbar.messages.collect { messages.add(it) }
+                }
+            yield() // let the collector subscribe before emit
 
-            // Verify that savePreferences completes without throwing
             testViewModel.savePreferences(AndroidAppPreferences())
+
+            withTimeout(5_000) {
+                while (messages.isEmpty()) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    yield()
+                }
+            }
+
+            assertFalse(
+                "success must not be shown when savePreferences fails",
+                messages.any { it == "Network policy updated" },
+            )
+
+            job.cancel()
         }
 
     @Test
