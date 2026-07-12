@@ -588,9 +588,11 @@ class TunnelForegroundService
                                 ),
                             )
                             clearTemporaryMeteredAllowance()
+                            invalidatePendingPolicyRetry()
                         }
                         is StartOutcome.UnexpectedFailure -> {
                             clearTemporaryMeteredAllowance()
+                            invalidatePendingPolicyRetry()
                             reporter.publishError(
                                 outcome.error.message ?: "Unexpected startup failure",
                                 "startup_unexpected_failure",
@@ -606,6 +608,7 @@ class TunnelForegroundService
                         }
                         is StartOutcome.Aborted -> {
                             clearTemporaryMeteredAllowance()
+                            invalidatePendingPolicyRetry()
                             reporter.publishError(outcome.reason, "startup_aborted")
                         }
                     }
