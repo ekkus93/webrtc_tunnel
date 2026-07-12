@@ -132,6 +132,32 @@ class TunnelRepositoryTest {
     }
 
     @Test
+    fun unknownNativeModeReturnsSchemaError() {
+        // When the native status returns an unknown mode (e.g., future version),
+        // the repository should surface a schema error rather than crashing.
+        bridge.statusPayload =
+            """
+            {"state":"stopped","mode":"future_unknown_mode","active":false}
+            """.trimIndent()
+        repository.refreshStatus()
+        assertEquals(ServiceState.Error, repository.status.value.serviceState)
+        assertEquals("native_status_schema_error", repository.status.value.lastError?.code)
+    }
+
+    @Test
+    fun unknownNativeStateMapsToError() {
+        // When the native status returns an unknown runtime state,
+        // it should map to a safe Error state rather than crashing.
+        bridge.statusPayload =
+            """
+            {"state":"totally_unknown_state","mode":"offer","active":false}
+            """.trimIndent()
+        repository.refreshStatus()
+        // Unknown state should result in Error state (safe fallback)
+        assertEquals(ServiceState.Error, repository.status.value.serviceState)
+    }
+
+    @Test
     fun recentLogsParsesValidJson() {
         bridge.logsJson = Json.encodeToString(listOf(NativeLogEventDto(1L, "info", "ok")))
         val result = repository.recentLogs(10)
