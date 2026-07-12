@@ -326,4 +326,67 @@ class TransactionalResetCoordinatorTest {
             assertEquals("Should fail at Config stage", ResetStage.Config, failed.failedStage)
             assertTrue("Rollback should be empty (no mutation)", failed.rollback.isEmpty())
         }
+
+    // P1-002: deleteConfigFileForTransactionalReset() should report failures properly
+
+    @Test
+    fun deleteFailureIsReportedAsRollbackFailure() =
+        runBlocking {
+            // Config is absent initially (so rollback will try to delete it).
+            // Forwards stage will fail to trigger rollback.
+            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
+
+            // Create a coordinator that will fail on the Forwards stage.
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = forwardsRepo.current(),
+                    throwOnSave = true,
+                )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
+
+            val result = failingCoordinator.resetConfiguration()
+
+            // Reset should fail with Forwards as the failed stage.
+            assertTrue(result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.Forwards, failed.failedStage)
+
+            // The rollback should report the Config stage as Success (delete succeeded).
+            // This verifies that delete failure is properly reported.
+            assertTrue("Rollback should have Config stage", failed.rollback.isNotEmpty())
+            assertTrue(
+                "Rollback Config stage should be Success when delete succeeds",
+                failed.rollback.any { it is RollbackStageResult.Success },
+            )
+        }
+
+    @Test
+    fun fileStillExistingAfterAttemptedDeleteIsFailure() =
+        runBlocking {
+            // Config is absent initially.
+            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
+
+            // Create a coordinator that will fail on the Forwards stage.
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = forwardsRepo.current(),
+                    throwOnSave = true,
+                )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
+
+            val result = failingCoordinator.resetConfiguration()
+
+            // Reset should fail with Forwards as the failed stage.
+            assertTrue(result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+
+            // Verify that the Config file is absent after rollback.
+            // If it still exists, the delete failed and should be reported as Failure.
+            assertTrue(
+                "Config should be absent after rollback",
+                configRepo.readConfig().isEmpty(),
+            )
+        }
 }

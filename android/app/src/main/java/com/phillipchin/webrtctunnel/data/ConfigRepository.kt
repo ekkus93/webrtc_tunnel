@@ -142,16 +142,8 @@ open class ConfigRepository(private val context: Context) {
     internal suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> =
         writeMutex.withLock {
             try {
-                val deleted = configFile.delete()
-                if (!deleted && configFile.exists()) {
-                    Result.failure(
-                        IOException(
-                            "Failed to delete config file",
-                        ),
-                    )
-                } else {
-                    Result.success(Unit)
-                }
+                Files.deleteIfExists(configFile.toPath())
+                Result.success(Unit)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: IOException) {
