@@ -224,7 +224,7 @@ private fun writeConfigAtomicallyLocked(
         Result.success(Unit)
     } catch (cancelled: CancellationException) {
         throw cancelled
-    } catch (error: IOException) {
+    } catch (error: Throwable) {
         Result.failure(error)
     } finally {
         // Clean up temp file if it still exists (move succeeded or failed)

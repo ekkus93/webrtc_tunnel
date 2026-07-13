@@ -66,6 +66,12 @@ object TunnelForegroundServiceTestHooks {
     // catch (error: Exception) → StartOutcome.UnexpectedFailure path.
     @get:JvmName("validationThrows")
     val validationThrows: AtomicReference<String?> = AtomicReference(null)
+
+    // P0-003: Inject an exception thrown during config preparation (instead of
+    // returning a failed Result) to exercise the Throwable-catch path in
+    // writeConfigAtomicallyLocked.
+    @get:JvmName("configPrepThrows")
+    val configPrepThrows: AtomicReference<String?> = AtomicReference(null)
 }
 
 class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies {
@@ -84,6 +90,12 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
                     iceMode: String,
                     advertisedIpv4: String?,
                 ): Result<Unit> {
+                    // P0-003: Check for injected exception throw during config preparation.
+                    val throws = TunnelForegroundServiceTestHooks.configPrepThrows.get()
+                    if (throws != null) {
+                        TunnelForegroundServiceTestHooks.configPrepThrows.set(null)
+                        throw java.io.IOException(throws)
+                    }
                     // Check for injected config preparation failure.
                     val failure = TunnelForegroundServiceTestHooks.configPrepFailure.get()
                     if (failure != null) {

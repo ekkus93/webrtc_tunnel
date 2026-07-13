@@ -58,6 +58,8 @@ class TunnelForegroundServiceStopFailureTest {
         TunnelForegroundServiceTestHooks.policyBlockReason.set(null)
         TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
         TunnelForegroundServiceTestHooks.validationThrows.set(null)
+        // P0-003: Reset config preparation throw injection hook.
+        TunnelForegroundServiceTestHooks.configPrepThrows.set(null)
         service = controller.create().get()
     }
 
@@ -777,6 +779,135 @@ class TunnelForegroundServiceStopFailureTest {
     }
 
     /**
+     * P0-003: Active config write failure publishes startup completion with error.
+     *
+     * When [writeConfigAtomicallyLocked] fails during [prepareActiveConfigForStart],
+     * the startup must still submit a [LifecycleCommand.StartupCompleted] via the
+     * [StartOutcome.Aborted] path, not leave the startup in an indefinite state.
+     */
+    @Test
+    fun activeConfigWriteFailurePublishesStartupCompletion() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+
+        // Inject config preparation failure before starting.
+        TunnelForegroundServiceTestHooks.configPrepFailure.set("injected config write failure")
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Native start must never be called.
+        assertEquals(
+            "config write failure must prevent native start",
+            0,
+            TunnelForegroundServiceTestHooks.bridge.startOfferCalls,
+        )
+
+        // Startup must complete with an error (not hang indefinitely).
+        assertTrue(
+            "config write failure must leave tunnel in Error state",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        assertTrue(
+            "error must be published for config preparation failure",
+            deps.tunnelRepository.status.value.lastError != null,
+        )
+    }
+
+    /**
+     * P0-003: Active config write failure clears active startup.
+     *
+     * When [writeConfigAtomicallyLocked] fails during [prepareActiveConfigForStart],
+     * the startup completion clears the active startup state (no further start can
+     * race against this one).
+     */
+    @Test
+    fun activeConfigWriteFailureClearsActiveStartup() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+
+        // Inject config preparation failure before starting.
+        TunnelForegroundServiceTestHooks.configPrepFailure.set("injected config write failure")
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Startup must complete with an error, and any subsequent command proceeds
+        // without blocking on the previous startup.
+        assertTrue(
+            "config write failure must leave tunnel in Error state",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+
+        // Starting again should work (active startup was cleared).
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 2)
+        // The second start should complete (not hang indefinitely on the previous startup).
+        assertTrue(
+            "second start should complete after config failure",
+            waitForCondition {
+                val state = deps.tunnelRepository.status.value.serviceState
+                // Either connected (second start succeeds) or error (second start fails but completes)
+                state == ServiceState.Connected || state == ServiceState.Error
+            },
+        )
+    }
+
+    /**
+     * P0-003: Native start is not called after active config failure.
+     *
+     * When [writeConfigAtomicallyLocked] fails during [prepareActiveConfigForStart],
+     * the native [TunnelNativeBridge.startOffer] must never be invoked.
+     */
+    @Test
+    fun nativeStartNotCalledAfterActiveConfigFailure() {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Inject config preparation failure before starting.
+        TunnelForegroundServiceTestHooks.configPrepFailure.set("injected config write failure")
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Native start must never be called.
+        assertEquals(
+            "config write failure must prevent native start",
+            0,
+            bridge.startOfferCalls,
+        )
+    }
+
+    /**
+     * P0-003: Active config preparation failure (throw path) publishes startup completion.
+     *
+     * When [writeConfigAtomicallyLocked] throws an exception during
+     * [prepareActiveConfigForStart], the startup must still submit a
+     * [LifecycleCommand.StartupCompleted] via [StartOutcome.UnexpectedFailure], not
+     * leave the startup in an indefinite state.
+     */
+    @Test
+    fun activeConfigWriteFailureThrowsPublishesStartupCompletion() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+
+        // Inject an exception throw during config preparation (not a failed Result).
+        TunnelForegroundServiceTestHooks.configPrepThrows.set("injected config write exception")
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Native start must never be called.
+        assertEquals(
+            "config write exception must prevent native start",
+            0,
+            TunnelForegroundServiceTestHooks.bridge.startOfferCalls,
+        )
+
+        // Startup must complete with an unexpected failure.
+        assertTrue(
+            "config write exception must leave tunnel in Error state",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        assertEquals(
+            "error code must indicate unexpected startup failure",
+            "startup_unexpected_failure",
+            deps.tunnelRepository.status.value.lastError?.code,
+        )
+    }
+
+    /**
      * P0-001: Startup preparation — config validation failure aborts startup.
      *
      * When identityValidation.validateConfigWithIdentity() returns invalid,
@@ -949,6 +1080,7 @@ class PendingRetryInvalidationTest {
         TunnelForegroundServiceTestHooks.policyBlockReason.set(null)
         TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
         TunnelForegroundServiceTestHooks.validationThrows.set(null)
+        TunnelForegroundServiceTestHooks.configPrepThrows.set(null)
         service = controller.create().get()
     }
 
