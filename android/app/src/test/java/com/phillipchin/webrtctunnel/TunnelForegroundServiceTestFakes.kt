@@ -11,6 +11,8 @@ import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -379,3 +381,16 @@ class FailableRecordingBridge : TunnelNativeBridge {
             peerId = peerId,
         )
 }
+
+/**
+ * Creates a [TunnelForegroundService] with real IO dispatchers for service-level
+ * tests that need coroutine pumping (Unconfined doesn't pump back to the test
+ * thread for `launch { ... }` work).
+ *
+ * The `Dispatchers.IO` default keeps the only direct reference inside a
+ * parameter default (DI), satisfying `InjectDispatcher` — see this
+ * project's `inlineTestDispatchers()`/`realIoTestDispatchers()` convention
+ * in `AppViewModelTestBase.kt`.
+ */
+fun realIoService(dispatcher: CoroutineDispatcher = Dispatchers.IO): TunnelForegroundService =
+    TunnelForegroundService(ioDispatcher = dispatcher, defaultDispatcher = dispatcher)
