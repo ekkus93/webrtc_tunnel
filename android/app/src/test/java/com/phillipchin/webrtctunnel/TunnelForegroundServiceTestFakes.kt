@@ -60,6 +60,12 @@ object TunnelForegroundServiceTestHooks {
 
     @get:JvmName("configValidationFailureMessage")
     val configValidationFailure: AtomicReference<String?> = AtomicReference(null)
+
+    // P0-001: Inject an unexpected exception during validateConfigWithIdentity
+    // (throws instead of returning ValidationResult) to exercise the
+    // catch (error: Exception) → StartOutcome.UnexpectedFailure path.
+    @get:JvmName("validationThrows")
+    val validationThrows: AtomicReference<String?> = AtomicReference(null)
 }
 
 class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies {
@@ -321,6 +327,13 @@ class FailableRecordingBridge : TunnelNativeBridge {
         configPath: String,
         identityBytes: ByteArray,
     ): ValidationResult {
+        // P0-001: Unexpected exception injection (throws, not returns).
+        val throws = TunnelForegroundServiceTestHooks.validationThrows.get()
+        if (throws != null) {
+            TunnelForegroundServiceTestHooks.validationThrows.set(null)
+            throw java.io.IOException(throws)
+        }
+
         // P0-001: Failure injection for config validation tests.
         val failure = TunnelForegroundServiceTestHooks.configValidationFailure.get()
         if (failure != null) {

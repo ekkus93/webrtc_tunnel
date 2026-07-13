@@ -57,6 +57,7 @@ class TunnelForegroundServiceStopFailureTest {
         TunnelForegroundServiceTestHooks.configPrepFailure.set(null)
         TunnelForegroundServiceTestHooks.policyBlockReason.set(null)
         TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
+        TunnelForegroundServiceTestHooks.validationThrows.set(null)
         service = controller.create().get()
     }
 
@@ -831,6 +832,92 @@ class TunnelForegroundServiceStopFailureTest {
             bridge.startOfferCalls,
         )
     }
+
+    /**
+     * P0-001: Startup preparation — unexpected exception during preparation
+     * publishes startup completion as [StartOutcome.UnexpectedFailure].
+     *
+     * When an exception that is not [CancellationException], [StartupPolicyBlocked],
+     * or [StartupAborted] escapes from preparation, the coordinator still submits a
+     * [LifecycleCommand.StartupCompleted] and publishes an error, rather than leaving
+     * the startup in an indefinite state.
+     */
+    @Test
+    fun unexpectedPreparationFailurePublishesStartupCompletion() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Inject an unexpected exception that throws (not a controlled ValidationResult).
+        TunnelForegroundServiceTestHooks.validationThrows.set("unexpected validation error")
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        // Native start must never be called.
+        assertEquals(
+            "unexpected preparation failure must prevent native start",
+            0,
+            bridge.startOfferCalls,
+        )
+
+        // Error must be published with the unexpected-failure code.
+        assertTrue(
+            "unexpected preparation failure must leave tunnel in Error state",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        assertEquals(
+            "error code must indicate unexpected startup failure",
+            "startup_unexpected_failure",
+            deps.tunnelRepository.status.value.lastError?.code,
+        )
+    }
+
+    /**
+     * P0-001: Startup preparation — [CancellationException] propagates.
+     *
+     * When a startup is cancelled (PAUSE while startup is in flight), the
+     * [CancellationException] must be rethrown by [performStartupAttempt], not
+     * swallowed and returned as a [StartOutcome]. The coordinator submits a
+     * [LifecycleCommand.StartupCompleted], and the startup job must be cancelled.
+     */
+    @Test
+    fun startupPreparationCancellationPropagates() {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // Block the native start so startup is in-flight and cancellable.
+        bridge.blockNextStartOffer()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(
+            "startup must enter the blocked offer phase",
+            bridge.awaitStartOfferEntered(10_000),
+        )
+
+        // PAUSE cancels the startup job. The cancellation propagates through
+        // performStartupAttempt — CancellationException is rethrown, not wrapped.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 2)
+
+        // Wait for the PAUSE to complete (stop call + state change).
+        assertTrue(
+            "PAUSE must complete after cancelling the startup",
+            waitForCondition { bridge.stopCalls >= 1 },
+        )
+
+        // Release the blocked offer (no-op after cancellation, but avoids hanging).
+        bridge.releaseBlockedStartOffer()
+
+        // The tunnel must not be running — startup was cancelled, not started.
+        assertFalse(
+            "cancelled startup must not leave tunnel running",
+            bridge.state.isTunnelRunning(),
+        )
+
+        // Exactly one stop from the PAUSE, proving the startup job was cancelled
+        // (not started then stopped separately).
+        assertEquals(
+            "cancelled startup must not produce a separate stop call",
+            1,
+            bridge.stopCalls,
+        )
+    }
 }
 
 /**
@@ -861,6 +948,7 @@ class PendingRetryInvalidationTest {
         TunnelForegroundServiceTestHooks.configPrepFailure.set(null)
         TunnelForegroundServiceTestHooks.policyBlockReason.set(null)
         TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
+        TunnelForegroundServiceTestHooks.validationThrows.set(null)
         service = controller.create().get()
     }
 
