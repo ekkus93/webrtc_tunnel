@@ -236,25 +236,18 @@ class TunnelRepository(
             LogsFetchResult(logs = logs, error = null)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (error: RuntimeException) {
-            val tunnelError =
-                TunnelError(
-                    code = "log_decode_failed",
-                    message = "Native log retrieval failed",
-                    details = SensitiveDataRedactor.redactText(error.message ?: "unknown log retrieval error"),
-                )
-            // Never return an empty list on failure — that reads as "no logs". Surface a
-            // synthetic error log entry so the log screen shows that retrieval failed.
+        } catch (error: Throwable) {
             LogsFetchResult(
-                logs =
-                    listOf(
-                        LogEvent(
-                            unixMs = 0L,
-                            level = "error",
-                            message = "Native log retrieval failed; see logsError for details",
-                        ),
+                logs = emptyList(),
+                error =
+                    TunnelError(
+                        code = "logs_refresh_failed",
+                        message =
+                            SensitiveDataRedactor.redactText(
+                                error.message
+                                    ?: "Log refresh failed",
+                            ),
                     ),
-                error = tunnelError,
             )
         }
     }

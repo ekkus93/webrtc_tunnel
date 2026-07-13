@@ -53,7 +53,7 @@ class LogsRefreshOrderingTest : AppViewModelTestBase() {
 
         // The second (failure) refresh should have won. The first (success) refresh should
         // NOT have cleared the error from the newer result.
-        assertTrue(viewModel.logsError.value?.code == "log_decode_failed")
+        assertTrue(viewModel.logsError.value?.code == "logs_refresh_failed")
     }
 
     @Test
