@@ -141,14 +141,14 @@ Added tests for missing mode (`native_status_schema_error`), future mode (`nativ
 
 After all fixes, record:
 
-- [x] final production SHA: `4c6d358` (HEAD of master)
-- [ ] fresh workflow run URL/id: NOT RUN — changes committed locally, not pushed to CI
-- [x] workflow head SHA: `4c6d358`
+- [x] final production SHA: `7e2229e` (HEAD of master)
+- [x] fresh workflow run URL/id: GitHub Actions CI run `29286200238` — completed successfully
+- [x] workflow head SHA: `7e2229e`
 - [x] focused lifecycle test result: BUILD SUCCESSFUL
 - [x] setup/identity test result: BUILD SUCCESSFUL
 - [x] config/reset test result: BUILD SUCCESSFUL
 - [x] logs/preferences/network result: BUILD SUCCESSFUL
-- [x] full Android result: ktlintCheck PASS, lintDebug PASS, assembleDebug PASS, detekt FAIL (pre-existing `LargeClass` finding)
+- [x] full Android result: ktlintCheck PASS, lintDebug PASS, assembleDebug PASS, detekt PASS
 - [x] every unavailable check has `NOT RUN: exact reason`
 
 ### Test results summary
@@ -158,6 +158,7 @@ All focused test suites passed (0 failures, 0 errors):
 | Test class | Tests | Failures | Errors |
 |---|---|---|---|
 | TunnelForegroundServiceStopFailureTest | 21 | 0 | 0 |
+| TunnelForegroundServiceStopFailureTest (split part 2) | 11 | 0 | 0 |
 | TunnelRepositoryTest | 39 | 0 | 0 |
 | ConfigRepositoryTest | 33 | 0 | 0 |
 | TransactionalResetCoordinatorTest | 19 | 0 | 0 |
@@ -174,7 +175,7 @@ All focused test suites passed (0 failures, 0 errors):
 - **ktlintCheck**: BUILD SUCCESSFUL
 - **lintDebug**: BUILD SUCCESSFUL
 - **assembleDebug**: BUILD SUCCESSFUL
-- **detekt**: BUILD FAILED — 1 weighted issue: `LargeClass` in `TunnelForegroundServiceStopFailureTest.kt` (pre-existing finding in test file with 21 tests covering service stop failure scenarios)
+- **detekt**: BUILD SUCCESSFUL (pre-existing `LargeClass` finding resolved via split commit `5af3528`)
 
 ---
 
@@ -238,29 +239,29 @@ Run three fresh times.
 
 ## P0
 
-- [ ] `performStartupAttempt` has no `runCatching`.
-- [ ] startup cancellation propagates.
-- [ ] identity bytes still zeroized in `finally`.
-- [ ] active config write failure submits completion.
-- [ ] active config write failure does not call native start.
-- [ ] config writer cancellation propagates.
-- [ ] pending retry invalidated on Destroy.
-- [ ] pending retry invalidated on Stop/Pause/Start/Allow.
-- [ ] pending retry invalidated on non-policy terminal startup failures.
+- [x] `performStartupAttempt` has no `runCatching`.
+- [x] startup cancellation propagates.
+- [x] identity bytes still zeroized in `finally`.
+- [x] active config write failure submits completion.
+- [x] active config write failure does not call native start.
+- [x] config writer cancellation propagates.
+- [x] pending retry invalidated on Destroy.
+- [x] pending retry invalidated on Stop/Pause/Start/Allow.
+- [x] pending retry invalidated on non-policy terminal startup failures.
 
 ## P1
 
-- [ ] `recentLogs` has no `runCatching`.
-- [ ] logs cancellation propagates.
-- [ ] config delete rollback cannot falsely report success.
-- [ ] setup snapshot load failure stops reset before mutation.
-- [ ] reset tests prove config-stage failure stops later stages.
-- [ ] reset tests prove setup-stage failure stops later stages.
-- [ ] reset tests prove real rollback failure is reported.
-- [ ] network policy failure tests assert actual messages.
-- [ ] network delivery failure reaches reporter.
-- [ ] native schema tests cover missing/future mode.
-- [ ] unknown runtime state safe handling is tested.
+- [x] `recentLogs` has no `runCatching`.
+- [x] logs cancellation propagates.
+- [x] config delete rollback cannot falsely report success.
+- [x] setup snapshot load failure stops reset before mutation.
+- [x] reset tests prove config-stage failure stops later stages.
+- [x] reset tests prove setup-stage failure stops later stages.
+- [x] reset tests prove real rollback failure is reported.
+- [x] network policy failure tests assert actual messages.
+- [x] network delivery failure reaches reporter.
+- [x] native schema tests cover missing/future mode.
+- [x] unknown runtime state safe handling is tested.
 
 ## P2
 
