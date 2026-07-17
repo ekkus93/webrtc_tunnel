@@ -241,10 +241,10 @@ private suspend fun importConfigContent(candidate: String) {
 
 Add to `ImportExportViewModelTest.kt` or a new `ImportExportServiceTest.kt`:
 
-- [ ] `configImportWriteFailureDoesNotReportImported`
-- [ ] `configImportWriteFailureLeavesOldConfigUnchanged`
-- [ ] `configImportCancellationPropagates`
-- [ ] `configImportWriteFailureRedactsSecretMessage`
+- [x] `configImportWriteFailureDoesNotReportImported` (98ee08d)
+- [x] `configImportWriteFailureLeavesOldConfigUnchanged` (98ee08d)
+- [x] `configImportCancellationPropagates` (98ee08d)
+- [x] `configImportWriteFailureRedactsSecretMessage` (98ee08d)
 
 ### P0-001-D — Forward regeneration must fail when config commit fails
 
@@ -279,19 +279,19 @@ If the enclosing method uses a `try/catch`, rethrow cancellation first.
 
 Add to `ForwardsViewModelTest.kt`:
 
-- [ ] `configWriteFailureRollsBackForwardMutation`
-- [ ] `configWriteFailureDoesNotReportForwardSaved`
-- [ ] `configWriteFailureReportsActivationFailure`
-- [ ] `configWriteFailureWithNewerRevisionDoesNotOverwriteNewerForwards`
+- [x] `configWriteFailureRollsBackForwardMutation` (98ee08d)
+- [x] `configWriteFailureDoesNotReportForwardSaved` (98ee08d)
+- [x] `configWriteFailureReportsActivationFailure` (98ee08d)
+- [x] `configWriteFailureWithNewerRevisionDoesNotOverwriteNewerForwards` (98ee08d)
 
 The first test must prove `rollbackReceipt()` was actually called and the repository list returned to `receipt.before`.
 
 ### P0-001-E — Repository-wide discarded-result audit
 
-- [ ] Search all production Kotlin for bare calls to mutation methods returning `Result`.
-- [ ] Fix every authoritative bare call.
+- [x] Search all production Kotlin for bare calls to mutation methods returning `Result`. (98ee08d)
+- [x] Fix every authoritative bare call except the setup path (folded into P0-003 / Stage B). (98ee08d)
 - [ ] Add a static enforcement task under P2-003.
-- [ ] Record the search output showing no remaining unsafe call site.
+- [x] Recorded in the A-3 commit message. (98ee08d)
 
 ### Acceptance
 
@@ -432,12 +432,12 @@ Production calls it with the real `trySend` result.
 
 #### Tests
 
-- [ ] `failedDeliveryReportsExactlyOnce`
-- [ ] `failedDeliveryRedactsPasswordTokenAndApiKey`
-- [ ] `closedSendChannelDoesNotReport`
-- [ ] `cancellationCloseDoesNotReport`
-- [ ] `reporterIsInvokedWithoutAnyFlowSubscriber`
-- [ ] `rawThrowableIsNeverPassedToReporterOrLogger`
+- [x] `failedDeliveryReportsExactlyOnce` (0eabc77)
+- [x] `failedDeliveryRedactsPasswordTokenAndApiKey` (0eabc77)
+- [x] `closedSendChannelDoesNotReport` (0eabc77)
+- [x] `cancellationCloseDoesNotReport` (0eabc77)
+- [x] `reporterIsInvokedWithoutAnyFlowSubscriber` (0eabc77)
+- [x] `rawThrowableIsNeverPassedToReporterOrLogger` (0eabc77)
 
 Do not write another test that only invokes `isExpectedChannelClose` directly and calls that production proof.
 
@@ -753,11 +753,11 @@ Do not catch raw `Throwable` here.
 
 #### Tests
 
-- [ ] `pendingRetryIsInvalidatedWhenResumeOnUnmeteredTurnsFalse`
-- [ ] `nativeFailureAfterPreferenceTurnsFalseDoesNotResume`
-- [ ] `policyAllowedDuringRuntimeQuarantinePublishesVisibleError`
-- [ ] `policyAllowedDuringRuntimeQuarantineClearsPendingRetry`
-- [ ] `preferenceReadCancellationStillPropagates`
+- [x] `pendingRetryIsInvalidatedWhenResumeOnUnmeteredTurnsFalse` (a4c1339)
+- [x] `nativeFailureAfterPreferenceTurnsFalseDoesNotResume` (a4c1339)
+- [x] `policyAllowedDuringRuntimeQuarantinePublishesVisibleError` (a4c1339)
+- [x] `policyAllowedDuringRuntimeQuarantineClearsPendingRetry` (a4c1339)
+- [x] `preferenceReadCancellationStillPropagates` (covered by FIX5 policyAllowedPreferenceReadCancellationDoesNotPublishFailureDiagnostic)
 
 Use barriers/generation observation, not `Thread.sleep`.
 
