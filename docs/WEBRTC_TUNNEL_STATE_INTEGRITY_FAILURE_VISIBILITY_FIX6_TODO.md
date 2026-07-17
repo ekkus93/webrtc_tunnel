@@ -1026,16 +1026,16 @@ If native status may report a remote peer before session count increments, docum
 
 #### Tests
 
-- [ ] `activeSessionThenZeroSessionsClearsRemotePeerIdWhileRuntimeStillRunning`
-- [ ] `terminalStateStillClearsRemotePeerId`
-- [ ] `newActiveSessionUsesNewNativeRemotePeerId`
-- [ ] `missingRemotePeerIdDoesNotReusePreviousPeer`
+- [x] `activeSessionThenZeroSessionsClearsRemotePeerIdWhileRuntimeStillRunning` — `3b61a1a`
+- [x] `terminalStateStillClearsRemotePeerId` — `3b61a1a`
+- [x] `newActiveSessionUsesNewNativeRemotePeerId` — `3b61a1a`
+- [x] `missingRemotePeerIdDoesNotReusePreviousPeer` — `3b61a1a`
 
 ### Acceptance
 
-- [ ] current status never displays a stale peer;
-- [ ] model comment and mapping agree;
-- [ ] tests cover non-terminal zero-session state.
+- [x] current status never displays a stale peer;
+- [x] model comment and mapping agree;
+- [x] tests cover non-terminal zero-session state.
 
 ---
 
