@@ -1762,26 +1762,26 @@ TunnelForegroundServiceStopFailureTest.kt
 
 ### Required changes
 
-- [ ] Document explicit STOP as authoritative.
-- [ ] Keep destroy cleanup best effort.
-- [ ] Do not write persistent “stopped successfully” state solely because destroy cleanup was launched.
-- [ ] Preserve visible `destroy_fallback_stop_failed` on observed failure.
-- [ ] Ensure command processor is closed before in-flight startup completion can enqueue.
-- [ ] Ensure no process-state invariant depends on `pendingStop` finishing after `super.onDestroy()`.
+- [x] Document explicit STOP as authoritative. — `48504eb` (onDestroy KDoc)
+- [x] Keep destroy cleanup best effort. — `48504eb`
+- [x] Do not write persistent “stopped successfully” state solely because destroy cleanup was launched. — already true (`nativeStopVerified` set only on observed success)
+- [x] Preserve visible `destroy_fallback_stop_failed` on observed failure. — already present; now tested
+- [x] Ensure command processor is closed before in-flight startup completion can enqueue. — `coordinator.stop()` precedes `cancelStartupJobAndJoinLocked()` (hardened in P1-007)
+- [x] Ensure no process-state invariant depends on `pendingStop` finishing after `super.onDestroy()`. — documented in onDestroy KDoc
 
-If Android lifecycle constraints make awaiting cleanup impossible, state that limitation in code and tests rather than implying guaranteed completion.
+If Android lifecycle constraints make awaiting cleanup impossible, state that limitation in code and tests rather than implying guaranteed completion. — done: the onDestroy KDoc states Android may kill the process before pendingStop finishes.
 
 #### Tests
 
-- [ ] `explicitStopRemainsAuthoritativeBeforeDestroy`
-- [ ] `destroyFallbackFailureMarksRuntimeUncertainWhenObserved`
-- [ ] `lateStartupCompletionAfterDestroyCannotRestartOrCrash`
-- [ ] `destroyWithoutCleanupCompletionDoesNotPublishFalseVerifiedStop`
+- [x] `explicitStopRemainsAuthoritativeBeforeDestroy` — `48504eb`
+- [x] `destroyFallbackFailureMarksRuntimeUncertainWhenObserved` — `48504eb`
+- [x] `lateStartupCompletionAfterDestroyCannotRestartOrCrash` — covered by existing `pendingRetryThenDestroyDoesNotRestart` (destroy wins the race; a late trigger performs no native start and the service is not running)
+- [x] `destroyWithoutCleanupCompletionDoesNotPublishFalseVerifiedStop` — `48504eb`
 
 ### Acceptance
 
-- [ ] semantics are truthful and test-aligned;
-- [ ] no false guarantee is encoded in comments or state.
+- [x] semantics are truthful and test-aligned;
+- [x] no false guarantee is encoded in comments or state.
 
 ---
 
