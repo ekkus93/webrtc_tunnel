@@ -166,10 +166,10 @@ The minimum correction is `.getOrThrow()` on the write, but do not create duplic
 
 Add to `SetupSaveControllerTest.kt`:
 
-- [ ] `configWriteFailureDoesNotReportConfigurationSaved`
-- [ ] `configWriteFailureDoesNotPersistSetupInput`
-- [ ] `configWriteFailureDoesNotPersistPreferences`
-- [ ] `configWriteCancellationPropagatesAndDoesNotReportFailureOrSuccess`
+- [x] `configWriteFailureDoesNotReportConfigurationSaved` — `687665d`
+- [x] `configWriteFailureDoesNotPersistSetupInput` — `687665d`
+- [x] `configWriteFailureDoesNotPersistPreferences` — `687665d`
+- [x] `configWriteCancellationPropagatesAndDoesNotReportFailureOrSuccess` — `687665d`
 
 The fake config repository must return `Result.failure(IOException("disk full password=sentinel"))`. Assert the visible message is redacted and `saveResult == null`.
 
@@ -658,31 +658,40 @@ Always wipe plaintext identity bytes in `finally`.
 
 Create recording fakes and add:
 
-- [ ] `allStagesCommitInRequiredOrder`
-- [ ] `validationFailurePerformsNoPersistentMutation`
-- [ ] `identityFailureStopsBeforeAuthorizedKeysSetupPreferencesAndConfig`
-- [ ] `authorizedKeysFailureRollsBackIdentity`
-- [ ] `setupInputFailureRollsBackAuthorizedKeysAndIdentity`
-- [ ] `preferencesFailureRollsBackSetupInputAuthorizedKeysAndIdentity`
-- [ ] `configFailureRollsBackEveryEarlierStage`
-- [ ] `rollbackContinuesAfterOneRollbackFailure`
-- [ ] `rollbackFailureProducesSetupRollbackIncomplete`
-- [ ] `cancellationDuringAnyStagePropagates`
-- [ ] `plaintextIdentityIsWipedOnSuccessFailureAndCancellation`
-- [ ] `twoConcurrentSaveRequestsCannotOverlap`
-- [ ] `failedSaveNeverReportsConfigurationSaved`
+- [x] `allStagesCommitInRequiredOrder` — `638f32a`
+- [x] `validationFailurePerformsNoPersistentMutation` — `638f32a`
+- [x] `identityFailureStopsBeforeAuthorizedKeysSetupPreferencesAndConfig` — `638f32a`
+- [x] `authorizedKeysFailureRollsBackIdentity` — `638f32a`
+- [x] `setupInputFailureRollsBackAuthorizedKeysAndIdentity` — `638f32a`
+- [x] `preferencesFailureRollsBackSetupInputAuthorizedKeysAndIdentity` — `638f32a`
+- [x] `configFailureRollsBackEveryEarlierStage` — `638f32a`
+- [x] `rollbackContinuesAfterOneRollbackFailure` — `638f32a`
+- [x] `rollbackFailureProducesSetupRollbackIncomplete` — `638f32a`
+- [x] `cancellationDuringAnyStagePropagates` — `638f32a`
+- [x] `plaintextIdentityIsWipedOnSuccessFailureAndCancellation` — `638f32a`
+- [x] `twoConcurrentSaveRequestsCannotOverlap` — `638f32a`
+- [x] `failedSaveNeverReportsConfigurationSaved` — `638f32a`
 
 A rollback-failure test must configure the corresponding restore operation to fail. Do not substitute a forward-stage failure.
 
+> Implementation note: the P0-003-F cases are realized as coordinator-level tests in
+> `SetupPersistenceCoordinatorTest.kt` (deterministic seams: throwing crypto for Identity,
+> blank line for AuthorizedKeys, `open` `ConfigRepository` overrides for SetupInput/Config,
+> and an injectable preference lambda for Preferences stage/rollback failures). The
+> `rollbackFailureProducesSetupRollbackIncomplete` case fails the preference *restore*
+> (write #2), a genuine rollback-operation failure, not a forward-stage failure. The
+> controller-level rollback behaviour is additionally covered by the P0-001-B tests in
+> `SetupSaveControllerTest.kt`.
+
 ### Acceptance
 
-- [ ] setup validation causes no persistence;
-- [ ] config is committed last;
-- [ ] partial setup mutation is rolled back;
-- [ ] rollback failures are individually reported;
-- [ ] plaintext identity buffers are wiped;
-- [ ] concurrent saves cannot overlap;
-- [ ] success appears only after all stages commit.
+- [x] setup validation causes no persistence;
+- [x] config is committed last;
+- [x] partial setup mutation is rolled back;
+- [x] rollback failures are individually reported;
+- [x] plaintext identity buffers are wiped;
+- [x] concurrent saves cannot overlap;
+- [x] success appears only after all stages commit.
 
 ---
 
