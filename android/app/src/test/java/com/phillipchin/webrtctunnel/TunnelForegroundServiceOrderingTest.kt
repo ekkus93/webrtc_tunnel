@@ -12,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -451,6 +452,165 @@ class TunnelForegroundServiceOrderingTest {
         assertEquals(
             "a cancelled preference read must not trigger a resume/native start",
             startCallsBeforeCancellation,
+            bridge.startOfferCalls,
+        )
+    }
+
+    // FIX6 P0-004 / INV-006. The preference-read cancellation case
+    // (preferenceReadCancellationStillPropagates) is already covered above by
+    // policyAllowedPreferenceReadCancellationDoesNotPublishFailureDiagnostic.
+
+    // Drives a pending policy retry into existence: pause by policy, then two unmetered
+    // events while a resume start is blocked mid-flight so the second records a pending
+    // token. Returns the native start count captured with the token pending.
+    private fun arrangePendingPolicyRetry(
+        deps: com.phillipchin.webrtctunnel.data.AppDependencies,
+        bridge: com.phillipchin.webrtctunnel.FailableRecordingBridge,
+        shadowConnectivityManager: org.robolectric.shadows.ShadowConnectivityManager,
+        network: android.net.Network,
+    ): Int {
+        runBlocking { deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true)) }
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        runBlocking { service.offer.pauseForPolicy("policy pause before pending-retry setup") }
+        assertTrue(service.pausedByPolicy.get())
+
+        bridge.blockNextStartOffer()
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        assertTrue(bridge.awaitStartOfferEntered(5_000))
+        val startCallsWithPending = bridge.startOfferCalls
+
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        assertTrue(
+            "a pending retry must have been recorded while the resume start is in flight",
+            waitForCondition { service.pendingPolicyResumeGenerationForTest != null },
+        )
+        return startCallsWithPending
+    }
+
+    @Test
+    fun pendingRetryIsInvalidatedWhenResumeOnUnmeteredTurnsFalse() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        val shadowConnectivityManager =
+            Shadows.shadowOf(
+                ApplicationProvider.getApplicationContext<android.content.Context>()
+                    .getSystemService(ConnectivityManager::class.java),
+            )
+        val network = ShadowNetwork.newInstance(1)
+
+        arrangePendingPolicyRetry(deps, bridge, shadowConnectivityManager, network)
+
+        // The user turns auto-resume off after the token was recorded under true.
+        runBlocking { deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = false)) }
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+
+        assertTrue(
+            "a token recorded under resumeOnUnmetered=true must be invalidated once it is false",
+            waitForCondition { service.pendingPolicyResumeGenerationForTest == null },
+        )
+
+        // Clean up the still-blocked resume start.
+        bridge.failNextStartOffer()
+        bridge.releaseBlockedStartOffer()
+    }
+
+    @Test
+    fun nativeFailureAfterPreferenceTurnsFalseDoesNotResume() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        val shadowConnectivityManager =
+            Shadows.shadowOf(
+                ApplicationProvider.getApplicationContext<android.content.Context>()
+                    .getSystemService(ConnectivityManager::class.java),
+            )
+        val network = ShadowNetwork.newInstance(1)
+
+        val startCallsWithPending = arrangePendingPolicyRetry(deps, bridge, shadowConnectivityManager, network)
+
+        // Preference flips false and a PolicyAllowed invalidates the pending token.
+        runBlocking { deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = false)) }
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        assertTrue(waitForCondition { service.pendingPolicyResumeGenerationForTest == null })
+
+        // The in-flight start now fails. With no pending token, NativeFailure must publish a
+        // failure and must NOT resume — the review's race (stale token resuming against the
+        // user's new preference) is closed.
+        bridge.failNextStartOffer()
+        bridge.releaseBlockedStartOffer()
+
+        assertTrue(
+            "native failure with an invalidated token must publish, not resume",
+            waitForCondition { deps.tunnelRepository.status.value.lastError?.code == "native_start_failed" },
+        )
+        assertEquals(
+            "no resume may occur after the token was invalidated by the false preference",
+            startCallsWithPending,
+            bridge.startOfferCalls,
+        )
+    }
+
+    @Test
+    fun policyAllowedDuringRuntimeQuarantinePublishesVisibleError() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        // A failed STOP quarantines the runtime (nativeRuntimeUncertain) and keeps the
+        // service alive and foreground.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        bridge.failNextStop()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
+        assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error })
+
+        val shadowConnectivityManager =
+            Shadows.shadowOf(
+                ApplicationProvider.getApplicationContext<android.content.Context>()
+                    .getSystemService(ConnectivityManager::class.java),
+            )
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(ShadowNetwork.newInstance(1)) }
+
+        assertTrue(
+            "policy-allowed during quarantine must publish native_runtime_quarantined, not silently drop",
+            waitForCondition {
+                deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined"
+            },
+        )
+    }
+
+    @Test
+    fun policyAllowedDuringRuntimeQuarantineClearsPendingRetry() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        bridge.failNextStop()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
+        assertTrue(waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error })
+
+        val startCallsBeforeQuarantinedEvent = bridge.startOfferCalls
+        val shadowConnectivityManager =
+            Shadows.shadowOf(
+                ApplicationProvider.getApplicationContext<android.content.Context>()
+                    .getSystemService(ConnectivityManager::class.java),
+            )
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(ShadowNetwork.newInstance(1)) }
+        // Every quarantine-setting path (failed stop/pause) already invalidates the token, so
+        // a token cannot naturally survive into quarantine. This proves the handler's
+        // quarantine branch leaves no pending token and never resumes while quarantined.
+        assertTrue(
+            waitForCondition {
+                deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined"
+            },
+        )
+        assertNull(
+            "the quarantine path must leave no pending policy retry",
+            service.pendingPolicyResumeGenerationForTest,
+        )
+        assertEquals(
+            "quarantine must not resume the native runtime",
+            startCallsBeforeQuarantinedEvent,
             bridge.startOfferCalls,
         )
     }

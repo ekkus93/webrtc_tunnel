@@ -13,6 +13,7 @@ import com.phillipchin.webrtctunnel.data.CoordinatorOperations
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
 import com.phillipchin.webrtctunnel.data.LifecycleCommand
 import com.phillipchin.webrtctunnel.data.NativeFailureAfterStartupContext
+import com.phillipchin.webrtctunnel.data.PolicyAllowedResumeContext
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.StartOutcome
 import com.phillipchin.webrtctunnel.data.StopStatusVerificationException
@@ -22,6 +23,7 @@ import com.phillipchin.webrtctunnel.data.UnverifiedStartContext
 import com.phillipchin.webrtctunnel.data.classifyStartResult
 import com.phillipchin.webrtctunnel.data.cleanupUnverifiedStart
 import com.phillipchin.webrtctunnel.data.handleNativeFailureAfterStartup
+import com.phillipchin.webrtctunnel.data.resumeOnPolicyAllowedIfPreferred
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -186,6 +188,12 @@ class TunnelForegroundService
         // races the supersession and silently exercises the non-superseded path instead.
         internal val lifecycleGenerationForTest: Long
             get() = lifecycleGeneration.get()
+
+        // internal read-only (no mutator): FIX6 P0-004 tests assert a pending policy retry
+        // is invalidated (e.g. when resumeOnUnmetered turns false, or on quarantine). Only
+        // an observation hook — production still owns every write to the token.
+        internal val pendingPolicyResumeGenerationForTest: Long?
+            get() = pendingPolicyResumeGeneration.get()
 
         internal val lifecycleMutex = Mutex()
 
@@ -598,36 +606,37 @@ class TunnelForegroundService
                 }
 
                 override suspend fun handlePolicyAllowed() {
-                    if (requireRuntimeStartAllowed().isFailure || !pausedByPolicy.get()) {
+                    // FIX6 P0-004: quarantine (and not-yet-ready init) must be visible from
+                    // this path just as from manual start/resume, not silently swallowed.
+                    requireRuntimeStartAllowed().getOrElse { error ->
+                        invalidatePendingPolicyRetry()
+                        reporter.publishError(
+                            code = startBlockedCode(error),
+                            message =
+                                SensitiveDataRedactor.redactText(
+                                    error.message ?: "Runtime restart is blocked",
+                                ),
+                        )
+                        return
+                    }
+                    // Not policy-paused is not an error — just drop any stale token.
+                    if (!pausedByPolicy.get()) {
                         invalidatePendingPolicyRetry()
                         return
                     }
-                    val prefs =
-                        try {
-                            configRepository.preferences.first()
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: Throwable) {
-                            // P1-002: too quiet for lifecycle policy state as a Log.w-only
-                            // failure — publish a visible diagnostic, not just invalidate.
-                            invalidatePendingPolicyRetry()
-                            reporter.publishError(
-                                message =
-                                    SensitiveDataRedactor.redactText(
-                                        error.message ?: "Failed to read network policy preferences",
-                                    ),
-                                code = "policy_allowed_preference_read_failed",
-                            )
-                            return
-                        }
-                    if (prefs.resumeOnUnmetered) {
-                        if (activeStartup != null) {
-                            pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
-                        } else {
-                            invalidatePendingPolicyRetry()
-                            offer.resume()
-                        }
-                    }
+                    // The pref-read + resume decision lives in a top-level function (like
+                    // handleNativeFailureAfterStartup) so it costs no method budget against
+                    // this object, which is at detekt's TooManyFunctions limit.
+                    resumeOnPolicyAllowedIfPreferred(
+                        PolicyAllowedResumeContext(
+                            readPreferences = { configRepository.preferences.first() },
+                            invalidatePendingRetry = ::invalidatePendingPolicyRetry,
+                            publishError = { code, message -> reporter.publishError(message = message, code = code) },
+                            recordPendingRetry = { pendingPolicyResumeGeneration.set(lifecycleGeneration.get()) },
+                            hasActiveStartup = { activeStartup != null },
+                            resume = { offer.resume() },
+                        ),
+                    )
                 }
 
                 override suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
