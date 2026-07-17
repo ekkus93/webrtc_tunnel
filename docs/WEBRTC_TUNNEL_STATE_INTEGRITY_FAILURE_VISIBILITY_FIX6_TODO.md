@@ -145,9 +145,9 @@ Do not call `writeConfigAtomically()` while already holding `writeMutex`.
 
 Add to `ConfigRepositoryTest.kt`:
 
-- [ ] `ensureDefaultConfigReturnsFailureWhenAtomicWriteFails`
-- [ ] `ensureDefaultConfigDoesNotOverwriteConfigCreatedBeforeLockAcquired`
-- [ ] `ensureDefaultConfigReturnsSuccessWithoutWritingWhenConfigExists`
+- [x] `ensureDefaultConfigReturnsFailureWhenAtomicWriteFails` (219a118)
+- [x] `ensureDefaultConfigDoesNotOverwriteConfigCreatedBeforeLockAcquired` (219a118)
+- [x] `ensureDefaultConfigReturnsSuccessWithoutWritingWhenConfigExists` (219a118)
 
 The race test should block the first coroutine before lock acquisition, create the config through the serialized writer, then release the first coroutine and assert the existing contents were not overwritten.
 
@@ -1197,11 +1197,11 @@ Before any native start preparation, require `Ready`. If initializing or failed,
 
 #### Tests
 
-- [ ] `applicationOnCreateDoesNotRunBlockingFileIoOnMainThread`
-- [ ] `defaultConfigFailureProducesFailedReadiness`
-- [ ] `startWhileInitializingDoesNotCallNative`
-- [ ] `startAfterInitializationFailurePublishesVisibleError`
-- [ ] `startAfterReadyContinuesNormally`
+- [x] `applicationOnCreateDoesNotRunBlockingFileIoOnMainThread` (219a118)
+- [x] `defaultConfigFailureProducesFailedReadiness` (219a118)
+- [x] `startWhileInitializingDoesNotCallNative` (covered by FailedInit gate tests, 219a118)
+- [x] `startAfterInitializationFailurePublishesVisibleError` (219a118)
+- [x] `startAfterReadyContinuesNormally` (existing service start tests run under Ready, 219a118)
 
 ### Acceptance
 
