@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -115,6 +116,28 @@ class SettingsViewModelTest : AppViewModelTestBase() {
         assertTrue(fieldValue.contains("backslash \\"))
         assertTrue(fieldValue.contains("newline \n"))
     }
+
+    // FIX6 P1-008: a reset failure must survive in durable ViewModel state, not only in a
+    // one-shot snackbar, so it is renderable with no collector subscribed.
+    @Test
+    fun resetRollbackFailureRemainsInStateWithoutSnackbarCollector() =
+        runBlocking {
+            val viewModel = SettingsViewModel(deps)
+            // No snackbar collector is subscribed here.
+            app.filesDir.setWritable(false)
+            try {
+                viewModel.resetConfiguration()
+                withTimeout(5_000) {
+                    while (viewModel.uiState.value.lastOperationFailure == null) {
+                        Shadows.shadowOf(Looper.getMainLooper()).idle()
+                        yield()
+                    }
+                }
+            } finally {
+                app.filesDir.setWritable(true)
+            }
+            assertNotNull("the reset failure must be kept in state", viewModel.uiState.value.lastOperationFailure)
+        }
 
     @Test
     fun resetConfigurationFailurePreservesErrorDetailInSnackbar() =

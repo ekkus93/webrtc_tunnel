@@ -16,6 +16,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -275,6 +276,41 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
             failureVm.testLocalPort(failureForward)
             assertTrue(failureMessage.await()?.contains("failed") == true)
         }
+    }
+
+    // FIX6 P1-008: a forward mutation failure must survive in durable state even with no snackbar
+    // collector subscribed.
+    @Test
+    fun forwardMutationFailureRemainsInStateWithoutSnackbarCollector() {
+        val vm = ForwardsViewModel(deps)
+        recordingBridge.validationResult = ValidationResult(false, "bad config")
+        val forward =
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+
+        vm.saveForward(forward)
+
+        awaitMessage(vm) { it?.contains("bad config") == true }
+        val failure = vm.lastOperationFailure.value
+        assertNotNull("the failure must be kept in state, not only in a snackbar", failure)
+        assertTrue(failure!!.message.contains("bad config"))
+    }
+
+    @Test
+    fun successClearsPreviousOperationFailure() {
+        val vm = ForwardsViewModel(deps)
+        recordingBridge.validationResult = ValidationResult(false, "bad config")
+        vm.saveForward(
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true),
+        )
+        awaitMessage(vm) { it?.contains("bad config") == true }
+        assertNotNull(vm.lastOperationFailure.value)
+
+        recordingBridge.validationResult = ValidationResult(true, null)
+        vm.saveForward(
+            ForwardConfig(id = "web2", name = "web2", localPort = 9091, remoteForwardId = "web2", enabled = true),
+        )
+        awaitMessage(vm) { it == "Forward saved" }
+        assertNull("a successful mutation must clear the prior durable failure", vm.lastOperationFailure.value)
     }
 
     // FIX6 P1-005-C: two rapid forward mutations must not both run — the second must be rejected

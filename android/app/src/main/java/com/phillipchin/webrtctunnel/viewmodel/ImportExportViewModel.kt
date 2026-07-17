@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.OperationFailure
 import com.phillipchin.webrtctunnel.data.SnackbarController
 import com.phillipchin.webrtctunnel.data.mutationResult
 import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
@@ -26,6 +27,9 @@ data class ImportExportState(
     val diagnosticsExportPath: String = "",
     val resultMessage: String? = null,
     val isBusy: Boolean = false,
+    // P1-008: the last failed operation, kept in state so an import/export failure survives
+    // without a snackbar collector. Cleared on the next successful operation.
+    val lastOperationFailure: OperationFailure? = null,
 )
 
 class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
@@ -161,7 +165,11 @@ private class ImportExportOps(
                 val result = withContext(io) { mutationResult { block() } }
                 if (result.isSuccess) onSuccess()
                 val message = result.fold({ successMessage }, { it.message ?: failureFallback })
-                state.value = state.value.copy(isBusy = false, resultMessage = message)
+                // P1-008: on failure keep a durable copy in state (mirroring the snackbar/result
+                // message) so it survives without a collector; on success clear it.
+                val failure = result.exceptionOrNull()?.let { OperationFailure("import_export_failed", message) }
+                state.value =
+                    state.value.copy(isBusy = false, resultMessage = message, lastOperationFailure = failure)
                 snackbar.show(message)
             } finally {
                 operationMutex.unlock()

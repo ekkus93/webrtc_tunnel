@@ -87,6 +87,19 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
         assertNotNull(vm.state.value.resultMessage)
     }
 
+    // FIX6 P1-008: a config-import failure must survive in durable state with no snackbar collector.
+    @Test
+    fun configImportFailureRemainsInStateWithoutSnackbarCollector() {
+        val vm = ImportExportViewModel(deps)
+        val invalidFile = File(app.filesDir, "durable-invalid-import.toml").apply { writeText("not valid toml") }
+        vm.updateState { it.copy(configImportPath = invalidFile.absolutePath) }
+        recordingBridge.validationResult = ValidationResult(false, "invalid config")
+
+        vm.importConfig()
+
+        assertNotNull("the import failure must be kept in state", vm.state.value.lastOperationFailure)
+    }
+
     @Test
     fun importExportViewModelUsesIdentityAwareValidationWhenIdentityReadable() {
         deps.identityRepository.storeEncryptedIdentity("private-identity-bytes".toByteArray(), "canon-pub")

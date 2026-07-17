@@ -6,6 +6,7 @@ import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ForwardsMutationBlocked
 import com.phillipchin.webrtctunnel.data.ForwardsMutationReceipt
 import com.phillipchin.webrtctunnel.data.ForwardsRevisionMismatchException
+import com.phillipchin.webrtctunnel.data.OperationFailure
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.createCandidateFile
 import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
@@ -41,6 +42,11 @@ class ForwardsViewModel(
     val loadError: StateFlow<String?> = deps.forwardsRepository.loadError
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    // P1-008: the last failed mutation, kept in state so a forward failure survives without a
+    // snackbar collector. Cleared on the next successful mutation.
+    private val _lastOperationFailure = MutableStateFlow<OperationFailure?>(null)
+    val lastOperationFailure: StateFlow<OperationFailure?> = _lastOperationFailure.asStateFlow()
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
 
@@ -49,8 +55,18 @@ class ForwardsViewModel(
     // UI state only.
     private val operationMutex = Mutex()
 
-    /** Record a result for this screen and surface it through the app-wide snackbar. */
-    private fun report(message: String) {
+    /**
+     * Record a result and surface it through the app-wide snackbar. [failure] is the durable
+     * P1-008 copy: a non-null value on a failed mutation (surviving a missing snackbar collector)
+     * or null on success (clearing any prior failure). These messages are already redacted at
+     * their source — the config-write path redacts; the identity-unreadable diagnostic is kept
+     * verbatim by design — so this does not re-redact (expanding redaction is P1-009).
+     */
+    private fun report(
+        message: String,
+        failure: OperationFailure? = null,
+    ) {
+        _lastOperationFailure.value = failure
         _message.value = message
         deps.snackbar.show(message)
     }
@@ -62,7 +78,7 @@ class ForwardsViewModel(
     fun saveForward(forward: ForwardConfig) {
         viewModelScope.launch {
             if (!operationMutex.tryLock()) {
-                report("A forward operation is already in progress")
+                report("A forward operation is already in progress", _lastOperationFailure.value)
                 return@launch
             }
             _isBusy.value = true
@@ -70,7 +86,8 @@ class ForwardsViewModel(
                 // P1-001: Use receipt-based atomic upsert.
                 val receipt: ForwardsMutationReceipt =
                     deps.forwardsRepository.upsertWithReceipt(forward).getOrElse { error ->
-                        report(mapMutationError(error))
+                        val message = mapMutationError(error)
+                        report(message, OperationFailure("forward_mutation_failed", message))
                         return@launch
                     }
 
@@ -91,7 +108,7 @@ class ForwardsViewModel(
     fun deleteForward(forwardId: String) {
         viewModelScope.launch {
             if (!operationMutex.tryLock()) {
-                report("A forward operation is already in progress")
+                report("A forward operation is already in progress", _lastOperationFailure.value)
                 return@launch
             }
             _isBusy.value = true
@@ -99,7 +116,8 @@ class ForwardsViewModel(
                 // P1-001: Use receipt-based atomic delete.
                 val receipt: ForwardsMutationReceipt =
                     deps.forwardsRepository.deleteWithReceipt(forwardId).getOrElse { error ->
-                        report(mapMutationError(error))
+                        val message = mapMutationError(error)
+                        report(message, OperationFailure("forward_mutation_failed", message))
                         return@launch
                     }
 
@@ -136,23 +154,23 @@ class ForwardsViewModel(
     ) {
         deps.forwardsRepository.rollbackReceipt(receipt).fold(
             onSuccess = {
-                report(syncFailureMessage)
+                report(syncFailureMessage, OperationFailure("forward_activation_failed", syncFailureMessage))
             },
             onFailure = { rollbackError ->
                 when (rollbackError) {
                     is ForwardsRevisionMismatchException -> {
                         // Revision changed: newer mutation happened, don't overwrite it.
-                        report(
+                        val message =
                             "Activation failed. Automatic rollback was skipped because " +
-                                "forwards changed again. The newer changes were left untouched.",
-                        )
+                                "forwards changed again. The newer changes were left untouched."
+                        report(message, OperationFailure("forward_rollback_skipped", message))
                     }
                     else -> {
                         val rollbackMessage = describeForwardsFailure(rollbackError)
-                        report(
+                        val message =
                             "$syncFailureMessage. Rollback also failed; the forward change " +
-                                "remains saved but was not activated: $rollbackMessage",
-                        )
+                                "remains saved but was not activated: $rollbackMessage"
+                        report(message, OperationFailure("forward_rollback_incomplete", message))
                     }
                 }
             },

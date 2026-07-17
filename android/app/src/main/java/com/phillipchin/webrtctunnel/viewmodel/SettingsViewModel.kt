@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.OperationFailure
 import com.phillipchin.webrtctunnel.data.ResetResult
 import com.phillipchin.webrtctunnel.data.RollbackStageResult
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
@@ -41,6 +42,9 @@ data class SettingsUiState(
     val configValidationMessage: String? = null,
     val configValid: Boolean? = null,
     val isValidatingConfig: Boolean = false,
+    // P1-008: the last failed mutating operation, kept in state so it survives without a
+    // snackbar collector (e.g. across recreation). Cleared on the next successful operation.
+    val lastOperationFailure: OperationFailure? = null,
 )
 
 class SettingsViewModel(
@@ -87,9 +91,32 @@ class SettingsViewModel(
     fun savePreferences(updated: AndroidAppPreferences) {
         viewModelScope.launch {
             deps.configRepository.savePreferences(updated).fold(
-                onSuccess = { deps.snackbar.show("Preferences saved") },
-                onFailure = { error -> deps.snackbar.show("Preferences save failed: ${error.message}") },
+                onSuccess = {
+                    clearOperationFailure()
+                    deps.snackbar.show("Preferences saved")
+                },
+                onFailure = { error ->
+                    val message =
+                        "Preferences save failed: ${SensitiveDataRedactor.redactText(error.message ?: "unknown error")}"
+                    publishOperationFailure("preferences_save_failed", message)
+                },
             )
+        }
+    }
+
+    // P1-008: record a durable, redacted failure in state and mirror it to the snackbar. The
+    // snackbar is convenience only; the state copy survives a missing/late collector.
+    private fun publishOperationFailure(
+        code: String,
+        message: String,
+    ) {
+        _uiState.value = _uiState.value.copy(lastOperationFailure = OperationFailure(code, message))
+        deps.snackbar.show(message)
+    }
+
+    private fun clearOperationFailure() {
+        if (_uiState.value.lastOperationFailure != null) {
+            _uiState.value = _uiState.value.copy(lastOperationFailure = null)
         }
     }
 
@@ -149,6 +176,7 @@ class SettingsViewModel(
                 }
             when (result) {
                 is ResetResult.Success -> {
+                    clearOperationFailure()
                     deps.snackbar.show("Configuration reset")
                 }
                 is ResetResult.Failed -> {
@@ -169,7 +197,8 @@ class SettingsViewModel(
                         "[$code] Reset failed at ${result.failedStage.name}: ${result.cause}\n" +
                             "Rollback: $rollbackSummary"
                     Log.e("SettingsViewModel", summary)
-                    deps.snackbar.show(summary)
+                    // P1-008: durable, so the reset failure survives without a snackbar collector.
+                    publishOperationFailure(code, summary)
                 }
             }
         }
