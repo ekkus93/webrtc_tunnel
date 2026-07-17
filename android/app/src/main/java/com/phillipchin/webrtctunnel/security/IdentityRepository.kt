@@ -1,12 +1,32 @@
 package com.phillipchin.webrtctunnel.security
 
 import android.content.Context
+import android.util.Log
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import kotlinx.coroutines.CancellationException
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+
+private const val IDENTITY_TAG = "IdentityRepository"
+
+/** Thrown when identity persistence fails but the prior pair was fully restored. */
+class IdentityPersistenceException(
+    message: String,
+    cause: Throwable?,
+) : Exception(message, cause)
+
+/** Thrown when identity persistence fails AND rollback could not restore the prior pair. */
+class IdentityRollbackIncompleteException(
+    message: String,
+    cause: Throwable?,
+) : Exception(message, cause)
 
 /**
  * Snapshot of one identity-storage file for transactional rollback (FIX6 P0-003 / INV-011).
@@ -28,6 +48,9 @@ class IdentityStorageSnapshot internal constructor(
 class IdentityRepository(
     private val context: Context,
     private val crypto: IdentityCrypto = AndroidKeystoreIdentityCrypto(),
+    // P1-004-B: injectable atomic file replace so pair-commit rollback failure paths are
+    // testable without mocking the filesystem. Defaults to the real temp-file+move replace.
+    private val atomicReplace: (File, ByteArray) -> Unit = ::identityAtomicReplace,
 ) {
     private val identityFile = File(context.filesDir, "identity.enc")
     private val publicFile = File(context.filesDir, "identity.pub")
@@ -39,12 +62,44 @@ class IdentityRepository(
 
     fun hasEncryptedIdentity(): Boolean = identityFile.exists()
 
+    /**
+     * P1-004-C: commit the encrypted-identity + public-identity pair as one logical unit.
+     * Encrypt first, snapshot the prior pair, atomically replace the encrypted file, then the
+     * public file; if the public replace fails, restore BOTH prior files so the pair can never
+     * be left mismatched. Throws [IdentityPersistenceException] when the prior pair was restored,
+     * or [IdentityRollbackIncompleteException] when restoration itself failed (so the mismatch is
+     * visible, not silent). Only ciphertext ever reaches disk.
+     */
     fun storeEncryptedIdentity(
         privateIdentity: ByteArray,
         publicIdentity: String,
     ) = synchronized(storageLock) {
-        identityFile.writeBytes(crypto.encrypt(privateIdentity))
-        publicFile.writeText(publicIdentity)
+        val encrypted = crypto.encrypt(privateIdentity)
+        val priorEncrypted = snapshotOfFile(identityFile)
+        val priorPublic = snapshotOfFile(publicFile)
+        // Step 3: replace the encrypted file. A failure here leaves the prior pair untouched
+        // (atomic replace never corrupts the destination), so no rollback is needed.
+        atomicReplace(identityFile, encrypted)
+        try {
+            // Step 4: replace the public file.
+            atomicReplace(publicFile, publicIdentity.encodeToByteArray())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // Step 5: restore both files to the prior pair (through the same atomic replace).
+            val rolledBack =
+                runCatching {
+                    restorePairFile(identityFile, priorEncrypted, atomicReplace)
+                    restorePairFile(publicFile, priorPublic, atomicReplace)
+                }
+            if (rolledBack.isFailure) {
+                throw IdentityRollbackIncompleteException(
+                    "Failed to store identity pair and rollback was incomplete",
+                    error,
+                )
+            }
+            throw IdentityPersistenceException("Failed to store identity pair; prior pair restored", error)
+        }
     }
 
     /**
@@ -97,7 +152,9 @@ class IdentityRepository(
         runCatching {
             val trimmed = line.trim()
             require(trimmed.isNotEmpty()) { "Public identity line is empty" }
-            // INV-011: read-modify-write under the lock so a concurrent append cannot be lost.
+            // P1-004-D / INV-011: read-modify-write under the lock so a concurrent append cannot
+            // be lost, and the rewrite is atomic (unique temp file + move) so a crash mid-write
+            // cannot truncate the authorized-keys file.
             synchronized(storageLock) {
                 val existing =
                     if (authorizedKeysFile.exists()) {
@@ -106,8 +163,8 @@ class IdentityRepository(
                         mutableSetOf()
                     }
                 if (existing.add(trimmed)) {
-                    authorizedKeysFile.parentFile?.mkdirs()
-                    authorizedKeysFile.writeText(existing.toList().sorted().joinToString("\n"))
+                    val updated = existing.toList().sorted().joinToString("\n")
+                    atomicReplace(authorizedKeysFile, updated.encodeToByteArray())
                 }
             }
         }
@@ -166,6 +223,59 @@ private fun restoreFileFromSnapshot(
         file.writeBytes(snapshot.bytes ?: ByteArray(0))
     } else {
         file.delete()
+    }
+}
+
+// P1-004-C: restore one file of the identity pair during rollback — atomically replace it with
+// its prior bytes, or delete it if it was absent. Uses the same [atomicReplace] as the forward
+// write so an injected failure exercises the rollback-incomplete path.
+private fun restorePairFile(
+    file: File,
+    snapshot: StoredFileSnapshot,
+    atomicReplace: (File, ByteArray) -> Unit,
+) {
+    if (snapshot.existed) {
+        atomicReplace(file, snapshot.bytes ?: ByteArray(0))
+    } else {
+        file.delete()
+    }
+}
+
+/**
+ * P1-004-B: atomically replace [destination] with [bytes] via a unique same-directory temp file
+ * and an atomic move (falling back to a plain move where atomic move is unsupported), so a crash
+ * mid-write can never leave a truncated identity/authorized-keys file. Top-level to keep
+ * [IdentityRepository] under detekt's TooManyFunctions threshold. Callers hold the storage lock.
+ */
+private fun identityAtomicReplace(
+    destination: File,
+    bytes: ByteArray,
+) {
+    destination.parentFile?.mkdirs()
+    val temp = Files.createTempFile(destination.parentFile?.toPath(), "${destination.name}.tmp-", ".partial")
+    try {
+        Files.write(temp, bytes)
+        try {
+            Files.move(
+                temp,
+                destination.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        } catch (error: AtomicMoveNotSupportedException) {
+            Log.w(IDENTITY_TAG, "Atomic identity move unavailable; using replacement", error)
+            Files.move(temp, destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    } finally {
+        runCatching { Files.deleteIfExists(temp) }
+            .onFailure { cleanup ->
+                Log.w(
+                    IDENTITY_TAG,
+                    "Identity temp cleanup failed: ${
+                        SensitiveDataRedactor.redactText(cleanup.message ?: "unknown cleanup failure")
+                    }",
+                )
+            }
     }
 }
 
