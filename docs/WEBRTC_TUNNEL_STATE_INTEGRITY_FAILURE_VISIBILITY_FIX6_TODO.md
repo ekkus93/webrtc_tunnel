@@ -970,22 +970,31 @@ Inject `networkMonitorBackoff` or delay function for deterministic tests.
 
 ### Tests
 
-- [ ] `registerFailurePublishesAndBlocksTunnel`
-- [ ] `upstreamCollectionFailurePublishesAndBlocksTunnel`
-- [ ] `classifierFailureEmitsBlockedUnknownPolicy`
-- [ ] `unregisterFailurePublishesRedactedDiagnostic`
-- [ ] `monitorRetriesWithBoundedBackoff`
-- [ ] `successfulEventResetsBackoff`
-- [ ] `monitorCancellationDoesNotPublishFailureOrRetry`
-- [ ] `serviceDoesNotRemainRunningUnrestrictedAfterMonitorFailure`
+- [x] `registerFailurePublishesAndBlocksTunnel` — `f2d08f5`
+- [x] `upstreamCollectionFailurePublishesAndBlocksTunnel` — `f2d08f5`
+- [x] `classifierFailureEmitsBlockedUnknownPolicy` — `721a89d`
+- [x] `unregisterFailurePublishesRedactedDiagnostic` — `721a89d`
+- [x] `monitorRetriesWithBoundedBackoff` — `f2d08f5`
+- [x] `successfulEventResetsBackoff` — `f2d08f5`
+- [x] `monitorCancellationDoesNotPublishFailureOrRetry` — `f2d08f5`
+- [x] `serviceDoesNotRemainRunningUnrestrictedAfterMonitorFailure` — `f2d08f5`
+
+> Implementation note (Q1/Q5): P0-006-B is realized as a standalone
+> `NetworkMonitorSupervisor` (not methods on `TunnelForegroundService`, which is at the
+> detekt function limit), with injected `NetworkMonitorBackoff`/`delayFn` for virtual-time
+> tests. P0-006-A/C's classifier and unregister failures are covered in
+> `NetworkPolicyManagerTest.kt` (`reportUnregisterFailure` extracted as a testable seam); the
+> supervisor lifecycle cases are in `NetworkMonitorSupervisorTest.kt`. Fail-closed status
+> reuses `NetworkPolicyManager.evaluate(Unknown, allowMetered=false)` rather than a new
+> `blockedUnknown`/`blockedUnknownPolicy`.
 
 ### Acceptance
 
-- [ ] every monitor lifecycle failure is visible;
-- [ ] tunnel fails closed;
-- [ ] retry is bounded and testable;
-- [ ] cancellation exits immediately;
-- [ ] monitor cannot die while service silently continues unrestricted.
+- [x] every monitor lifecycle failure is visible;
+- [x] tunnel fails closed;
+- [x] retry is bounded and testable;
+- [x] cancellation exits immediately;
+- [x] monitor cannot die while service silently continues unrestricted.
 
 ---
 
