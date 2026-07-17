@@ -64,32 +64,49 @@ class NetworkPolicyManager(
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val callback =
                 object : ConnectivityManager.NetworkCallback() {
-                    override fun onAvailable(network: android.net.Network) {
-                        val current = evaluate(classifier(), allowMetered = false)
-                        _status.value = current
-                        emitPolicyStatus(current, reporter)
-                    }
+                    override fun onAvailable(network: android.net.Network) = evaluateAndEmit(reporter)
 
-                    override fun onLost(network: android.net.Network) {
-                        val current = evaluate(classifier(), allowMetered = false)
-                        _status.value = current
-                        emitPolicyStatus(current, reporter)
-                    }
+                    override fun onLost(network: android.net.Network) = evaluateAndEmit(reporter)
 
                     override fun onCapabilitiesChanged(
                         network: android.net.Network,
                         networkCapabilities: NetworkCapabilities,
-                    ) {
-                        val current = evaluate(classifier(), allowMetered = false)
-                        _status.value = current
-                        emitPolicyStatus(current, reporter)
-                    }
+                    ) = evaluateAndEmit(reporter)
                 }
             val request = NetworkRequest.Builder().build()
             cm.registerNetworkCallback(request, callback)
-            emitPolicyStatus(evaluate(classifier(), allowMetered = false), reporter)
-            awaitClose { cm.unregisterNetworkCallback(callback) }
+            evaluateAndEmit(reporter)
+            awaitClose {
+                // P0-006-C: awaitClose cannot suspend and must not throw raw callback exceptions
+                // out of cleanup; report a redacted diagnostic directly instead.
+                reportUnregisterFailure(reporter) { cm.unregisterNetworkCallback(callback) }
+            }
         }.conflate()
+
+    /**
+     * P0-006-A: classify the current network and emit its policy status, failing closed if
+     * classification throws. A classification failure reports a redacted diagnostic and emits a
+     * fail-closed [NetworkType.Unknown] status (whose `tunnelAllowed` is false) rather than
+     * letting an arbitrary exception escape an Android callback. Shared by every callback and the
+     * initial emission so all paths fail closed identically.
+     */
+    private fun ProducerScope<NetworkPolicyStatus>.evaluateAndEmit(reporter: NetworkPolicyDiagnosticReporter) {
+        val current =
+            try {
+                evaluate(classifier(), allowMetered = false)
+            } catch (error: Exception) {
+                reporter.report(
+                    code = "network_policy_classification_failed",
+                    message =
+                        SensitiveDataRedactor.redactText(
+                            error.message ?: "Network policy classification failed",
+                        ),
+                )
+                evaluate(NetworkType.Unknown to false, allowMetered = false)
+            }
+        _status.value = current
+        emitPolicyStatus(current, reporter)
+    }
 
     companion object {
         private const val TAG = "NetworkPolicyManager"
@@ -121,6 +138,28 @@ class NetworkPolicyManager(
                 code = "network_policy_event_delivery_failed",
                 message = message,
             )
+        }
+
+        /**
+         * P0-006-C: run [unregister] and, if it throws, report a redacted diagnostic instead of
+         * letting a raw callback exception escape `awaitClose` (which cannot suspend). Extracted
+         * so tests can drive a genuinely failing unregister without mocking ConnectivityManager.
+         */
+        internal fun reportUnregisterFailure(
+            reporter: NetworkPolicyDiagnosticReporter,
+            unregister: () -> Unit,
+        ) {
+            try {
+                unregister()
+            } catch (error: Exception) {
+                reporter.report(
+                    code = "network_policy_unregister_failed",
+                    message =
+                        SensitiveDataRedactor.redactText(
+                            error.message ?: "Failed to unregister network callback",
+                        ),
+                )
+            }
         }
 
         /**

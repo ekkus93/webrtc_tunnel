@@ -1,15 +1,20 @@
 package com.phillipchin.webrtctunnel.network
 
+import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.model.NetworkType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 
 // Robolectric provides a working android.util.Log; handlePolicyDeliveryResult logs the
 // redacted failure, which throws "not mocked" under plain JUnit.
@@ -65,6 +70,49 @@ class NetworkPolicyManagerTest {
         ) {
             reports.add(code to message)
         }
+    }
+
+    // FIX6 P0-006-A: a classifier failure during monitoring must fail closed — report a
+    // redacted diagnostic and emit a blocked Unknown status — rather than throwing out of an
+    // Android callback.
+    @Test
+    fun classifierFailureEmitsBlockedUnknownPolicy() =
+        runBlocking {
+            val calls = AtomicInteger(0)
+            val manager =
+                NetworkPolicyManager({
+                    // Succeed once (construction), then fail during the monitor's initial emit.
+                    if (calls.getAndIncrement() == 0) {
+                        NetworkType.UnmeteredWifi to false
+                    } else {
+                        error("classify boom password=secret")
+                    }
+                })
+            val reporter = RecordingReporter()
+
+            val status = manager.monitor(ApplicationProvider.getApplicationContext(), reporter).first()
+
+            assertEquals(NetworkType.Unknown, status.networkType)
+            assertFalse("classification failure must fail closed", status.tunnelAllowed)
+            val report = reporter.reports.single()
+            assertEquals("network_policy_classification_failed", report.first)
+            assertFalse("diagnostic must be redacted", report.second.contains("secret"))
+        }
+
+    // FIX6 P0-006-C: an unregister failure during cleanup must publish a redacted diagnostic,
+    // never throw a raw callback exception out of awaitClose.
+    @Test
+    fun unregisterFailurePublishesRedactedDiagnostic() {
+        val reporter = RecordingReporter()
+
+        NetworkPolicyManager.reportUnregisterFailure(reporter) {
+            throw IOException("unregister boom token=leak-me")
+        }
+
+        val report = reporter.reports.single()
+        assertEquals("network_policy_unregister_failed", report.first)
+        assertTrue(report.second.contains("***REDACTED***"))
+        assertFalse(report.second.contains("leak-me"))
     }
 
     // FIX6 P0-002-E: exercise the real delivery-result path through
