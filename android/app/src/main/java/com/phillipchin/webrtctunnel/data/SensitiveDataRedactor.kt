@@ -15,6 +15,17 @@ object SensitiveDataRedactor {
                 """kex[_ -]?secret|signing[_ -]?key)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^,\s]+)""",
         )
 
+    // P1-009-A: broader structured-field coverage — any key whose name contains a secret word
+    // (password/token/api_key/secret/private_key), quoted or bare, in TOML/JSON/kv form. Keeps
+    // only the field label so a JSON `"client_secret": "x"` or TOML `identity_private_key = "x"`
+    // cannot leak its value.
+    private val structuredSecretRegex =
+        Regex(
+            """(?im)(["']?[A-Za-z0-9_.-]*""" +
+                """(?:password|token|api[_-]?key|secret|private[_-]?key)""" +
+                """[A-Za-z0-9_.-]*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^,\s}\]]+)""",
+        )
+
     fun redactText(input: String): String {
         return input
             .replace(Regex("""(?im)^\s*sign\.private\s*=\s*".*"$"""), "sign.private = \"***REDACTED***\"")
@@ -24,7 +35,11 @@ object SensitiveDataRedactor {
                 "***REDACTED_PRIVATE_KEY_BLOCK***",
             )
             .replace(secretFieldRegex) { match -> "${canonicalSecretFieldName(match.groupValues[1])}=***REDACTED***" }
+            // P1-009-A: after the canonical-name pass, catch remaining structured secret fields,
+            // preserving only the label so no other secret fragment is exposed.
+            .replace(structuredSecretRegex) { match -> "${match.groupValues[1]}***REDACTED***" }
             .replace(Regex("""(?i)\bbearer\s+[A-Za-z0-9\-\._~\+/]+=*"""), "Bearer ***REDACTED***")
+            .replace(Regex("""(?i)\bBasic\s+[A-Za-z0-9+/=]+"""), "Basic ***REDACTED***")
             .replace(
                 Regex("""(?i)\b(mqtts?)://([^:@/\s]+):([^@/\s]+)@"""),
             ) { match -> "${match.groupValues[1]}://***REDACTED***:***REDACTED***@" }

@@ -429,6 +429,69 @@ class SensitiveDataRedactorTest {
         assertEquals("token=***REDACTED***", redacted.lastCleanupError?.message)
     }
 
+    // --- P1-009: expanded structured-field + Basic-auth coverage ---
+
+    @Test
+    fun redactsBrokerPasswordWithUnderscorePrefix() {
+        val redacted = SensitiveDataRedactor.redactText("broker_password = \"hunter2-sentinel\"")
+        assertFalse(redacted.contains("hunter2-sentinel"))
+        assertTrue(redacted.contains("***REDACTED***"))
+    }
+
+    @Test
+    fun redactsQuotedJsonPassword() {
+        val redacted = SensitiveDataRedactor.redactText("""{"password": "json-secret-sentinel"}""")
+        assertFalse(redacted.contains("json-secret-sentinel"))
+        assertTrue(redacted.contains("***REDACTED***"))
+    }
+
+    @Test
+    fun redactsQuotedJsonApiKey() {
+        val redacted = SensitiveDataRedactor.redactText("""{"api_key": "api-key-sentinel"}""")
+        assertFalse(redacted.contains("api-key-sentinel"))
+        assertTrue(redacted.contains("***REDACTED***"))
+    }
+
+    @Test
+    fun redactsTomlBareSecret() {
+        val redacted = SensitiveDataRedactor.redactText("client_secret = bare-toml-sentinel")
+        assertFalse(redacted.contains("bare-toml-sentinel"))
+        assertTrue(redacted.contains("***REDACTED***"))
+    }
+
+    @Test
+    fun redactsBasicAuthorizationHeader() {
+        val redacted = SensitiveDataRedactor.redactText("Authorization: Basic dXNlcjpwYXNzd29yZA==")
+        assertFalse(redacted.contains("dXNlcjpwYXNzd29yZA=="))
+        assertTrue(redacted.contains("Basic ***REDACTED***"))
+    }
+
+    @Test
+    fun redactsArbitraryIdentityPrivateField() {
+        val redacted = SensitiveDataRedactor.redactText("identity_private_key = \"priv-field-sentinel\"")
+        assertFalse(redacted.contains("priv-field-sentinel"))
+        assertTrue(redacted.contains("***REDACTED***"))
+    }
+
+    @Test
+    fun doesNotLeakOriginalSentinelAcrossAllRequiredDiagnostics() {
+        val sentinel = "OMNI-SENTINEL-9f3a"
+        val diagnostics =
+            listOf(
+                "password=$sentinel",
+                """{"token": "$sentinel"}""",
+                "api-key: $sentinel",
+                "client_secret = $sentinel",
+                "Authorization: Basic $sentinel",
+                "some_private_key = \"$sentinel\"",
+                "Bearer $sentinel",
+            )
+        diagnostics.forEach { diagnostic ->
+            val redacted = SensitiveDataRedactor.redactText(diagnostic)
+            assertFalse("leaked sentinel in: $diagnostic -> $redacted", redacted.contains(sentinel))
+        }
+    }
+
     private fun sampleStatus(
         lastError: TunnelError?,
         lastCleanupError: TunnelError? = null,
