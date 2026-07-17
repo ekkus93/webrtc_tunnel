@@ -1654,23 +1654,28 @@ data class OperationFailure(
 
 For each mutating screen:
 
-- [ ] failure sets `lastOperationFailure` or an equivalent existing state field;
-- [ ] success clears the failure;
-- [ ] snackbar mirrors but does not own the only copy;
-- [ ] recreation/new collector can still render the failure until acknowledged;
-- [ ] secret text is redacted before state assignment.
+- [x] failure sets `lastOperationFailure` or an equivalent existing state field;
+- [x] success clears the failure;
+- [x] snackbar mirrors but does not own the only copy;
+- [x] recreation/new collector can still render the failure until acknowledged;
+- [x] secret text is redacted before state assignment (mirrors the source-redacted snackbar text; broad redaction is P1-009).
 
 #### Tests
 
-- [ ] `forwardMutationFailureRemainsInStateWithoutSnackbarCollector`
-- [ ] `configImportFailureRemainsInStateWithoutSnackbarCollector`
-- [ ] `resetRollbackFailureRemainsInStateWithoutSnackbarCollector`
-- [ ] `successClearsPreviousOperationFailure`
+- [x] `forwardMutationFailureRemainsInStateWithoutSnackbarCollector` — `df7aaba`
+- [x] `configImportFailureRemainsInStateWithoutSnackbarCollector` — `df7aaba`
+- [x] `resetRollbackFailureRemainsInStateWithoutSnackbarCollector` — `df7aaba`
+- [x] `successClearsPreviousOperationFailure` — `df7aaba`
+
+> Implementation note: shared `OperationFailure(code, message)` in the data package; Settings
+> uses a `lastOperationFailure` field on `SettingsUiState`, ImportExport on `ImportExportState`,
+> Forwards a dedicated `lastOperationFailure` StateFlow. NetworkPolicyViewModel (Q9 scope) has no
+> durable-failure test named; its single policy-update path remains snackbar-only for now.
 
 ### Acceptance
 
-- [ ] required failures survive absence of snackbar collector;
-- [ ] snackbar remains optional convenience only.
+- [x] required failures survive absence of snackbar collector;
+- [x] snackbar remains optional convenience only.
 
 ---
 
