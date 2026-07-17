@@ -29,6 +29,7 @@ import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
 import com.phillipchin.webrtctunnel.network.LocalAddressResolver
+import com.phillipchin.webrtctunnel.network.NetworkMonitorSupervisor
 import com.phillipchin.webrtctunnel.network.NetworkPolicyDiagnosticReporter
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.notification.NotificationController
@@ -234,43 +235,46 @@ class TunnelForegroundService
                     reporter.publishError(message = message, code = code)
                 }
 
-            // Network monitor still collects network events, but submits commands
-            // through the same ordered queue instead of launching independent coroutines.
+            // P0-006-B: supervise the whole monitor lifecycle (register/upstream/unregister),
+            // not just per-event handling. On any monitor failure the supervisor reports it and
+            // fails closed (blocks the tunnel) before retrying with bounded backoff, so the
+            // service can never keep running unrestricted after the monitor dies. Signals still
+            // submit commands through the same ordered queue.
             networkMonitorJob =
                 serviceScope.launch {
-                    networkPolicyManager
-                        .monitor(this@TunnelForegroundService, networkPolicyReporter)
-                        .collect { _ ->
-                            val result =
-                                runCatching {
-                                    val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
-                                    val policy =
-                                        networkPolicyManager.evaluateWithPolicy(
-                                            prefs.allowMetered || allowMeteredForCurrentRun.get(),
-                                        )
-                                    repository.updateNetworkStatus(policy)
-                                    if (policy.networkType == NetworkType.UnmeteredWifi) {
-                                        // Policy allowed: submit through the ordered queue.
-                                        submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
-                                    } else if (!policy.tunnelAllowed) {
-                                        // Policy blocked: submit through the ordered queue.
-                                        submitLifecycleCommand(
-                                            LifecycleCommand.PolicyBlocked(
-                                                policy.blockReason
-                                                    ?: "Tunnel paused: network policy blocks metered/cellular",
-                                            ),
-                                        )
-                                    }
-                                }
-                            if (result.isFailure) {
-                                val error = result.exceptionOrNull()
-                                if (error is CancellationException) throw error
-                                reporter.publishError(
-                                    message = error?.message ?: "Network policy monitor failed",
-                                    code = "network_policy_monitor_failed",
+                    NetworkMonitorSupervisor(
+                        monitorFlow = {
+                            networkPolicyManager.monitor(this@TunnelForegroundService, networkPolicyReporter)
+                        },
+                        reporter = networkPolicyReporter,
+                        onSignal = {
+                            val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
+                            val policy =
+                                networkPolicyManager.evaluateWithPolicy(
+                                    prefs.allowMetered || allowMeteredForCurrentRun.get(),
+                                )
+                            repository.updateNetworkStatus(policy)
+                            if (policy.networkType == NetworkType.UnmeteredWifi) {
+                                submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
+                            } else if (!policy.tunnelAllowed) {
+                                submitLifecycleCommand(
+                                    LifecycleCommand.PolicyBlocked(
+                                        policy.blockReason
+                                            ?: "Tunnel paused: network policy blocks metered/cellular",
+                                    ),
                                 )
                             }
-                        }
+                        },
+                        onMonitorFailure = {
+                            // Q5: reuse the canonical evaluator for a fail-closed Unknown status.
+                            repository.updateNetworkStatus(
+                                NetworkPolicyManager.evaluate(NetworkType.Unknown to false, allowMetered = false),
+                            )
+                            submitLifecycleCommand(
+                                LifecycleCommand.PolicyBlocked("Tunnel paused: network policy monitor unavailable"),
+                            )
+                        },
+                    ).run()
                 }
         }
 
