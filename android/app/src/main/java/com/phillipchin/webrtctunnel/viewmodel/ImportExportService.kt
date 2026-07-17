@@ -1,7 +1,10 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import com.phillipchin.webrtctunnel.data.AppDependencies
-import java.io.File
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.data.createCandidateFile
+import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
+import java.io.IOException
 
 enum class ImportKind(val label: String) {
     Config("Config"),
@@ -28,19 +31,29 @@ class ImportExportService(private val deps: AppDependencies) {
     }
 
     private suspend fun importConfigContent(candidate: String) {
-        val temp = File(deps.context.cacheDir, "config-import-candidate.toml")
-        temp.parentFile?.mkdirs()
-        // Identity absence and identity-present-but-unreadable are different states: only the
-        // former may fall back to identity-less validation. A read/decrypt failure on a
-        // present identity must surface as a visible failure, not silently downgrade (P1-001).
-        val identity =
-            if (deps.identityRepository.hasEncryptedIdentity()) {
-                runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }
-                    .getOrElse { error("Identity exists but could not be loaded: ${it.message}") }
-            } else {
-                null
-            }
+        // Unique candidate file (FIX6 INV-012): the previous fixed name let a concurrent
+        // import overwrite/delete this operation's candidate. try/finally (no catch) lets
+        // cancellation and other failures propagate as visible failures while still wiping
+        // the identity buffer and removing the candidate.
+        val temp = createCandidateFile(deps.context.cacheDir, "import-config-")
+        var identity: ByteArray? = null
         try {
+            // Identity absence and identity-present-but-unreadable are different states:
+            // only the former falls back to identity-less validation. A present but
+            // unreadable identity surfaces as a visible failure rather than a silent
+            // downgrade. Explicit try/catch (not runCatching): readPrivateIdentityPlaintext
+            // is non-suspending, so this cannot encounter coroutine cancellation, and
+            // catching Exception keeps the specific, useful diagnostic.
+            identity =
+                if (deps.identityRepository.hasEncryptedIdentity()) {
+                    try {
+                        deps.identityRepository.readPrivateIdentityPlaintext()
+                    } catch (error: Exception) {
+                        error("Identity exists but could not be loaded: ${error.message}")
+                    }
+                } else {
+                    null
+                }
             temp.writeText(candidate)
             val validation =
                 if (identity != null) {
@@ -49,10 +62,21 @@ class ImportExportService(private val deps: AppDependencies) {
                     deps.identityValidation.validateConfig(temp.absolutePath)
                 }
             require(validation.valid) { validation.message ?: "Config validation failed" }
-            deps.configRepository.writeConfigAtomically(candidate)
+            // FIX6 P0-001-C: consume the write result. Discarding it reported "Config
+            // imported" even when the atomic write failed. The message is redacted at the
+            // throw site because a raw file-I/O message can carry secret-bearing paths.
+            deps.configRepository
+                .writeConfigAtomically(candidate)
+                .getOrElse { error ->
+                    throw IOException(
+                        SensitiveDataRedactor.redactText(
+                            error.message ?: "Failed to persist imported config",
+                        ),
+                    )
+                }
         } finally {
             identity?.fill(0)
-            temp.delete()
+            deleteCandidateFileSafely(temp)
         }
     }
 

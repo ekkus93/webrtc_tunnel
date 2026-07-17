@@ -209,10 +209,28 @@ class ForwardsViewModel(
                     } else {
                         deps.identityValidation.validateConfig(temp.absolutePath)
                     }
-                if (result.valid) {
-                    deps.configRepository.writeConfigAtomically(candidate)
+                // FIX6 P0-001-D: a failed config commit must invalidate the result so the
+                // caller rolls the forward mutation back via its receipt. Previously the
+                // write result was discarded, so a failed write still returned the valid
+                // validation and reported "Forward saved" while config.toml was unchanged.
+                if (!result.valid) {
+                    result
+                } else {
+                    deps.configRepository
+                        .writeConfigAtomically(candidate)
+                        .fold(
+                            onSuccess = { result },
+                            onFailure = { error ->
+                                ValidationResult(
+                                    valid = false,
+                                    message =
+                                        SensitiveDataRedactor.redactText(
+                                            error.message ?: "Failed to write active config",
+                                        ),
+                                )
+                            },
+                        )
                 }
-                result
             } finally {
                 // Wipe the plaintext identity buffer regardless of success/failure.
                 identity?.fill(0)
