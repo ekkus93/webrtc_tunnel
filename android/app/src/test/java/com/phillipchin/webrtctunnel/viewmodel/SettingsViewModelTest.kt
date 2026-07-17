@@ -1,6 +1,9 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import android.os.Looper
+import com.phillipchin.webrtctunnel.data.ResetResult
+import com.phillipchin.webrtctunnel.data.ResetStage
+import com.phillipchin.webrtctunnel.data.RollbackStageResult
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -137,9 +140,35 @@ class SettingsViewModelTest : AppViewModelTestBase() {
             collector.cancel()
 
             val message = messages.first()
-            assertTrue("expected a detailed failure message, got: $message", message.startsWith("Reset failed at"))
+            // A Config-stage write failure mutates nothing, so rollback is empty and the code is
+            // the cleanly-failed one (P1-002-D).
+            assertTrue("expected the visible reset code, got: $message", message.startsWith("[reset_failed]"))
+            assertTrue("the failure detail must be preserved", message.contains("Reset failed at"))
             assertTrue("the underlying failure reason must not be discarded", message.contains(":"))
         }
+
+    @Test
+    fun rollbackFailureUsesDistinctVisibleCode() {
+        val cleanFailure =
+            ResetResult.Failed(
+                failedStage = ResetStage.Config,
+                cause = "write failed",
+                rollback = listOf(RollbackStageResult.Success(ResetStage.SetupInput)),
+            )
+        val incompleteRollback =
+            ResetResult.Failed(
+                failedStage = ResetStage.Forwards,
+                cause = "forwards failed",
+                rollback =
+                    listOf(
+                        RollbackStageResult.Success(ResetStage.SetupInput),
+                        RollbackStageResult.Failure(ResetStage.Config, "delete failed"),
+                    ),
+            )
+
+        assertEquals("reset_failed", resetFailureVisibleCode(cleanFailure))
+        assertEquals("reset_rollback_incomplete", resetFailureVisibleCode(incompleteRollback))
+    }
 
     @Test
     fun redactedConfigReportsAnExplicitMarkerWhenNoConfigFileExistsYet() =

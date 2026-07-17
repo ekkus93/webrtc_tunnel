@@ -95,7 +95,7 @@ class TransactionalResetCoordinator(
                     // Snapshot capture failed — abort before any mutation
                     return@withLock ResetResult.Failed(
                         failedStage = ResetStage.Config,
-                        cause = error.message ?: "Snapshot capture failed",
+                        cause = safeResetReason(error, "Snapshot capture failed"),
                         rollback = emptyList(),
                     )
                 }
@@ -134,7 +134,7 @@ class TransactionalResetCoordinator(
                     onFailure = { error ->
                         ResetStageResult.Failure(
                             ResetStage.Config,
-                            error.message ?: "unknown",
+                            safeResetReason(error, "Failed to reset config"),
                         )
                     },
                 )
@@ -147,7 +147,7 @@ class TransactionalResetCoordinator(
                     onFailure = { error ->
                         ResetStageResult.Failure(
                             ResetStage.Forwards,
-                            error.message ?: "unknown",
+                            safeResetReason(error, "Failed to reset forwards"),
                         )
                     },
                 )
@@ -161,97 +161,93 @@ class TransactionalResetCoordinator(
             ResetStageResult.Success(ResetStage.SetupInput)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (error: Throwable) {
+        } catch (error: Exception) {
             ResetStageResult.Failure(
                 stage = ResetStage.SetupInput,
-                reason = SensitiveDataRedactor.redactText(error.message ?: "Failed to reset setup input"),
+                reason = safeResetReason(error, "Failed to reset setup input"),
             )
         }
     }
 
-    private fun captureSnapshot(): Result<ResetSnapshot> {
-        val existed = configRepository.configFileExists
-        val contents = configRepository.readConfig()
-        val setupInput =
-            configRepository.loadSetupInputResult().getOrElse { error ->
-                return Result.failure(
-                    SnapshotCaptureException(
-                        "Failed to read setup input",
-                        error,
-                    ),
-                )
-            }
-        val forwards = forwardsRepository.current()
-        return Result.success(
-            ResetSnapshot(
-                config =
-                    ConfigSnapshot(
-                        existed = existed,
-                        contents = contents,
-                    ),
-                setupInput = setupInput,
-                forwards = forwards,
-            ),
-        )
-    }
+    // P1-002-A: contain every snapshot read so a read failure aborts before any mutation
+    // instead of throwing out of the coordinator mid-reset. readConfig()/current() are not
+    // Result-returning, so the whole capture is guarded, not just the setup-input read.
+    private fun captureSnapshot(): Result<ResetSnapshot> =
+        try {
+            val existed = configRepository.configFileExists
+            val contents = configRepository.readConfig()
+            val setupInput = configRepository.loadSetupInputResult().getOrThrow()
+            val forwards = forwardsRepository.current()
+            Result.success(
+                ResetSnapshot(
+                    config = ConfigSnapshot(existed = existed, contents = contents),
+                    setupInput = setupInput,
+                    forwards = forwards,
+                ),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(SnapshotCaptureException("Failed to capture reset snapshot", error))
+        }
 
+    // P1-002-C: an explicit loop, so one restore stage throwing is recorded as a Failure and
+    // never suppresses the remaining rollback stages (asReversed().map would lose the results
+    // already computed and abort the whole rollback).
     private suspend fun rollbackFromSnapshot(
         snapshot: ResetSnapshot,
         mutatedStages: List<ResetStage>,
     ): List<RollbackStageResult> {
-        return mutatedStages.asReversed().map { stage ->
-            when (stage) {
-                ResetStage.Config -> restoreConfig(snapshot.config)
-                ResetStage.SetupInput -> restoreSetupInput(snapshot.setupInput)
-                ResetStage.Forwards -> restoreForwards(snapshot.forwards)
-            }
+        val results = mutableListOf<RollbackStageResult>()
+        for (stage in mutatedStages.asReversed()) {
+            val result =
+                try {
+                    restoreStage(stage, snapshot)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    RollbackStageResult.Failure(stage, safeResetReason(error, "Rollback failed"))
+                }
+            results += result
         }
+        return results
     }
+
+    private suspend fun restoreStage(
+        stage: ResetStage,
+        snapshot: ResetSnapshot,
+    ): RollbackStageResult =
+        when (stage) {
+            ResetStage.Config -> restoreConfig(snapshot.config)
+            ResetStage.SetupInput -> restoreSetupInput(snapshot.setupInput)
+            ResetStage.Forwards -> restoreForwards(snapshot.forwards)
+        }
 
     private suspend fun restoreConfig(snapshot: ConfigSnapshot): RollbackStageResult {
         return if (snapshot.existed) {
             // File existed — restore the exact contents (even if blank/whitespace).
             configRepository.writeConfigAtomically(snapshot.contents.orEmpty()).fold(
-                onSuccess = {
-                    RollbackStageResult.Success(ResetStage.Config)
-                },
+                onSuccess = { RollbackStageResult.Success(ResetStage.Config) },
                 onFailure = { error ->
-                    RollbackStageResult.Failure(
-                        ResetStage.Config,
-                        error.message ?: "unknown",
-                    )
+                    RollbackStageResult.Failure(ResetStage.Config, safeResetReason(error, "Failed to restore config"))
                 },
             )
         } else {
             // File was absent — must delete to restore absent state.
             configRepository.deleteConfigFileForTransactionalReset().fold(
-                onSuccess = {
-                    RollbackStageResult.Success(ResetStage.Config)
-                },
+                onSuccess = { RollbackStageResult.Success(ResetStage.Config) },
                 onFailure = { error ->
-                    RollbackStageResult.Failure(
-                        ResetStage.Config,
-                        error.message ?: "unknown",
-                    )
+                    RollbackStageResult.Failure(ResetStage.Config, safeResetReason(error, "Failed to restore config"))
                 },
             )
         }
     }
 
-    // P1-001: explicit try/catch (not runCatching) — rollback paths that can affect
-    // persistent state must rethrow cancellation rather than swallow it.
     private fun restoreSetupInput(input: SetupConfigInput): RollbackStageResult {
-        return try {
-            configRepository.saveSetupInput(input)
-            RollbackStageResult.Success(ResetStage.SetupInput)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            RollbackStageResult.Failure(
-                stage = ResetStage.SetupInput,
-                reason = SensitiveDataRedactor.redactText(error.message ?: "Failed to restore setup input"),
-            )
-        }
+        // No local try/catch: rollbackFromSnapshot's loop catches (and redacts) a thrown
+        // failure while rethrowing cancellation, so a throw here still continues the rollback.
+        configRepository.saveSetupInput(input)
+        return RollbackStageResult.Success(ResetStage.SetupInput)
     }
 
     private suspend fun restoreForwards(forwards: List<ForwardConfig>): RollbackStageResult {
@@ -262,10 +258,16 @@ class TransactionalResetCoordinator(
         } else {
             RollbackStageResult.Failure(
                 ResetStage.Forwards,
-                result.exceptionOrNull()?.message ?: "unknown",
+                safeResetReason(result.exceptionOrNull(), "Failed to restore forwards"),
             )
         }
     }
+
+    // P1-002-B: single redaction chokepoint for every reset/rollback reason.
+    private fun safeResetReason(
+        error: Throwable?,
+        fallback: String,
+    ): String = SensitiveDataRedactor.redactText(error?.message ?: fallback)
 }
 
 /**

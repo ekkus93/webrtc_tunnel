@@ -126,7 +126,9 @@ open class ConfigRepository(private val context: Context) {
                 ConfigRenderOptions(androidIceMode = resolveAndroidIceMode(DEFAULT_ANDROID_ICE_MODE)),
             )
 
-    fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()
+    // P1-002: open so tests can inject a snapshot-read failure/cancellation for the
+    // transactional-reset capture path without needing a filesystem-corruption scenario.
+    open fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()
 
     /**
      * P1-003: Check if config file exists (distinct from blank contents) for transactional

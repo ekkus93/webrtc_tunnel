@@ -161,8 +161,13 @@ class SettingsViewModel(
                                     "${it.stage.name}: ${it.reason}"
                             }
                         }
+                    // P1-002-D: partial rollback must be visibly distinct from a cleanly
+                    // rolled-back reset failure, so the user knows persistent state may be
+                    // inconsistent rather than restored.
+                    val code = resetFailureVisibleCode(result)
                     val summary =
-                        "Reset failed at ${result.failedStage.name}: ${result.cause}\nRollback: $rollbackSummary"
+                        "[$code] Reset failed at ${result.failedStage.name}: ${result.cause}\n" +
+                            "Rollback: $rollbackSummary"
                     Log.e("SettingsViewModel", summary)
                     deps.snackbar.show(summary)
                 }
@@ -183,3 +188,15 @@ class SettingsViewModel(
         }
     }
 }
+
+/**
+ * P1-002-D: the user-visible code for a failed reset. `reset_rollback_incomplete` when any
+ * rollback stage failed (persistent state may be inconsistent), otherwise `reset_failed` (the
+ * prior state was cleanly restored). Top-level so it is testable without the ViewModel harness.
+ */
+internal fun resetFailureVisibleCode(result: ResetResult.Failed): String =
+    if (result.rollback.any { it is RollbackStageResult.Failure }) {
+        "reset_rollback_incomplete"
+    } else {
+        "reset_failed"
+    }
