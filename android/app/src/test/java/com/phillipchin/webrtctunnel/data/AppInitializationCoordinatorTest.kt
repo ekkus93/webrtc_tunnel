@@ -1,6 +1,7 @@
 package com.phillipchin.webrtctunnel.data
 
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,12 +44,20 @@ class AppInitializationCoordinatorTest {
     ) = AppInitializationCoordinator(
         configRepository = repository,
         scope = scope,
-        ioDispatcher = Dispatchers.Unconfined,
+        ioDispatcher = unconfinedDispatcher(),
     )
+
+    // The only Dispatchers.Unconfined references live in these parameter defaults, per
+    // the module's InjectDispatcher convention (see inlineTestDispatchers/realIoTestDispatchers).
+    private fun unconfinedDispatcher(dispatcher: CoroutineDispatcher = Dispatchers.Unconfined): CoroutineDispatcher =
+        dispatcher
+
+    private fun unconfinedScope(dispatcher: CoroutineDispatcher = Dispatchers.Unconfined): CoroutineScope =
+        CoroutineScope(Job() + dispatcher)
 
     @Test
     fun readinessStartsAsInitializing() {
-        val scope = CoroutineScope(Job() + Dispatchers.Unconfined)
+        val scope = unconfinedScope()
         val coordinator = coordinatorFor(ConfigRepository(context), scope)
         assertEquals(AppInitializationState.Initializing, coordinator.state.value)
         scope.cancel()
@@ -57,7 +66,7 @@ class AppInitializationCoordinatorTest {
     @Test
     fun successfulDefaultConfigCreationProducesReady() =
         runBlocking {
-            val scope = CoroutineScope(Job() + Dispatchers.Unconfined)
+            val scope = unconfinedScope()
             val coordinator = coordinatorFor(ConfigRepository(context), scope)
 
             coordinator.initialize()
@@ -69,7 +78,7 @@ class AppInitializationCoordinatorTest {
     @Test
     fun defaultConfigFailureProducesFailedReadinessWithVisibleCode() =
         runBlocking {
-            val scope = CoroutineScope(Job() + Dispatchers.Unconfined)
+            val scope = unconfinedScope()
             val coordinator =
                 coordinatorFor(
                     FailingConfigRepository(context, IOException("disk full")),
@@ -87,7 +96,7 @@ class AppInitializationCoordinatorTest {
     @Test
     fun defaultConfigFailureMessageIsRedacted() =
         runBlocking {
-            val scope = CoroutineScope(Job() + Dispatchers.Unconfined)
+            val scope = unconfinedScope()
             val coordinator =
                 coordinatorFor(
                     FailingConfigRepository(context, IOException("write failed password=hunter2")),

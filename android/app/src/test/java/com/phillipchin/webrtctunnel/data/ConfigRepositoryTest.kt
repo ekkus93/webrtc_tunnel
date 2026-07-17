@@ -7,6 +7,7 @@ import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -41,6 +42,9 @@ class ConfigRepositoryTest {
             context.dataStore.edit { preferences -> preferences.clear() }
         }
     }
+
+    // Only Dispatchers reference lives in this parameter default (InjectDispatcher).
+    private fun ioDispatcher(dispatcher: CoroutineDispatcher = Dispatchers.IO): CoroutineDispatcher = dispatcher
 
     @Test
     fun ensureDefaultConfigCreatesFileWhenMissing() {
@@ -132,7 +136,7 @@ class ConfigRepositoryTest {
             val ensureStarted = CompletableDeferred<Unit>()
 
             val ensure =
-                launch(Dispatchers.IO) {
+                launch(ioDispatcher()) {
                     ensureStarted.complete(Unit)
                     gate.await()
                     repository.ensureDefaultConfig("default-should-not-win")
