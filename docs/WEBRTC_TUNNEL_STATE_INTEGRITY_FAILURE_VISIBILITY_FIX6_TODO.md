@@ -1,0 +1,1972 @@
+# WebRTC Tunnel State-Integrity and Failure-Visibility Recovery FIX6 TODO
+
+This TODO implements `WEBRTC_TUNNEL_STATE_INTEGRITY_FAILURE_VISIBILITY_FIX6_SPEC.md` against baseline archive `webrtc_tunnel-master_2807170551.zip`.
+
+The goal is to fix the reviewed defects without redesigning the tunnel protocol or Android product. Work in priority order. Do not mark a checkbox complete until the implementation and the named focused tests both exist and pass.
+
+---
+
+# 0. Work discipline
+
+For every task:
+
+```text
+1. inspect current production code and existing tests
+2. write or strengthen the exact negative-path test first
+3. implement the smallest coherent fix
+4. run the focused test class
+5. run ktlint/detekt for touched Kotlin
+6. commit one scoped change
+7. record the commit SHA beside the task
+```
+
+Hard rules:
+
+```text
+no discarded Result from persistence
+no runCatching that swallows CancellationException
+no false success UI
+no no-op required reporter
+no ignored tryEmit/trySend result
+no required error transported only by replay-zero SharedFlow
+no fixed candidate temp filename
+no raw secret-bearing Throwable in logs or diagnostics
+no rollback test unless rollback truly fails
+no Thread.sleep proof tests
+no unrelated cleanup in a task commit
+```
+
+Run this inventory before coding and preserve the output in the final evidence:
+
+```bash
+cd android
+rg -n 'writeConfigAtomically\(|savePreferences\(|saveForwards\(|storeEncryptedIdentity\(|appendAuthorizedPublicIdentity\(' \
+  app/src/main app/src/test
+
+rg -n 'runCatching' app/src/main/java/com/phillipchin/webrtctunnel
+rg -n 'MutableSharedFlow|tryEmit\(|trySend\(' app/src/main/java/com/phillipchin/webrtctunnel
+rg -n 'Thread\.sleep' app/src/test
+```
+
+---
+
+# P0 — Release blockers
+
+## P0-001 — Eliminate false success from discarded config-write results
+
+**Files:**
+
+```text
+ConfigRepository.kt
+SetupSaveController.kt
+ImportExportService.kt
+ForwardsViewModel.kt
+WebRtcTunnelApplication.kt
+related tests
+```
+
+### P0-001-A — Make `ensureDefaultConfig` return and preserve `Result`
+
+Current code checks existence outside the write mutex and discards the write result.
+
+Replace it with this target shape:
+
+```kotlin
+open suspend fun ensureDefaultConfig(contents: String): Result<Unit> =
+    writeMutex.withLock {
+        if (configFile.exists()) {
+            Result.success(Unit)
+        } else {
+            writeConfigAtomicallyLocked(
+                configFile = configFile,
+                contents = contents,
+            )
+        }
+    }
+```
+
+Do not call `writeConfigAtomically()` while already holding `writeMutex`.
+
+#### Tests
+
+Add to `ConfigRepositoryTest.kt`:
+
+- [ ] `ensureDefaultConfigReturnsFailureWhenAtomicWriteFails`
+- [ ] `ensureDefaultConfigDoesNotOverwriteConfigCreatedBeforeLockAcquired`
+- [ ] `ensureDefaultConfigReturnsSuccessWithoutWritingWhenConfigExists`
+
+The race test should block the first coroutine before lock acquisition, create the config through the serialized writer, then release the first coroutine and assert the existing contents were not overwritten.
+
+### P0-001-B — Setup write failure must stop later stages and prevent success
+
+Immediate minimum correction inside the current code:
+
+```kotlin
+deps.configRepository
+    .writeConfigAtomically(candidate)
+    .getOrThrow()
+```
+
+However, P0-003 replaces this method with the setup transaction. Do not create duplicate permanent logic. Use this task’s test to prove the bug, then satisfy it through P0-003.
+
+#### Tests
+
+Add to `SetupSaveControllerTest.kt`:
+
+- [ ] `configWriteFailureDoesNotReportConfigurationSaved`
+- [ ] `configWriteFailureDoesNotPersistSetupInput`
+- [ ] `configWriteFailureDoesNotPersistPreferences`
+- [ ] `configWriteCancellationPropagatesAndDoesNotReportFailureOrSuccess`
+
+The fake config repository must return `Result.failure(IOException("disk full password=sentinel"))`. Assert the visible message is redacted and `saveResult == null`.
+
+### P0-001-C — Config import must consume write result
+
+Replace the bare call:
+
+```kotlin
+deps.configRepository.writeConfigAtomically(candidate)
+```
+
+with:
+
+```kotlin
+deps.configRepository
+    .writeConfigAtomically(candidate)
+    .getOrThrow()
+```
+
+Use explicit cancellation-aware handling around the full import path; do not wrap the suspend write in a `runCatching` that converts cancellation.
+
+Target method shape:
+
+```kotlin
+private suspend fun importConfigContent(candidate: String) {
+    val temp = createCandidateFile("config-import-")
+    var identity: ByteArray? = null
+
+    try {
+        identity =
+            if (deps.identityRepository.hasEncryptedIdentity()) {
+                deps.identityRepository.readPrivateIdentityPlaintext()
+            } else {
+                null
+            }
+
+        temp.writeText(candidate)
+        val validation =
+            if (identity != null) {
+                deps.identityValidation.validateConfigWithIdentity(
+                    temp.absolutePath,
+                    identity,
+                )
+            } else {
+                deps.identityValidation.validateConfig(temp.absolutePath)
+            }
+
+        require(validation.valid) {
+            validation.message ?: "Config validation failed"
+        }
+
+        deps.configRepository
+            .writeConfigAtomically(candidate)
+            .getOrThrow()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } finally {
+        identity?.fill(0)
+        deleteCandidateFileSafely(temp)
+    }
+}
+```
+
+`createCandidateFile` and safe deletion are implemented in P1-005.
+
+#### Tests
+
+Add to `ImportExportViewModelTest.kt` or a new `ImportExportServiceTest.kt`:
+
+- [ ] `configImportWriteFailureDoesNotReportImported`
+- [ ] `configImportWriteFailureLeavesOldConfigUnchanged`
+- [ ] `configImportCancellationPropagates`
+- [ ] `configImportWriteFailureRedactsSecretMessage`
+
+### P0-001-D — Forward regeneration must fail when config commit fails
+
+Current code returns the successful validation result after ignoring a failed write.
+
+Replace the success branch with:
+
+```kotlin
+if (!validation.valid) {
+    return validation
+}
+
+return deps.configRepository
+    .writeConfigAtomically(candidate)
+    .fold(
+        onSuccess = { validation },
+        onFailure = { error ->
+            ValidationResult(
+                valid = false,
+                message =
+                    SensitiveDataRedactor.redactText(
+                        error.message ?: "Failed to write active config",
+                    ),
+            )
+        },
+    )
+```
+
+If the enclosing method uses a `try/catch`, rethrow cancellation first.
+
+#### Tests
+
+Add to `ForwardsViewModelTest.kt`:
+
+- [ ] `configWriteFailureRollsBackForwardMutation`
+- [ ] `configWriteFailureDoesNotReportForwardSaved`
+- [ ] `configWriteFailureReportsActivationFailure`
+- [ ] `configWriteFailureWithNewerRevisionDoesNotOverwriteNewerForwards`
+
+The first test must prove `rollbackReceipt()` was actually called and the repository list returned to `receipt.before`.
+
+### P0-001-E — Repository-wide discarded-result audit
+
+- [ ] Search all production Kotlin for bare calls to mutation methods returning `Result`.
+- [ ] Fix every authoritative bare call.
+- [ ] Add a static enforcement task under P2-003.
+- [ ] Record the search output showing no remaining unsafe call site.
+
+### Acceptance
+
+- [ ] no config/setup/import/forward operation reports success after failed config persistence;
+- [ ] the previous persisted state remains intact or rollback outcome is visible;
+- [ ] cancellation propagates;
+- [ ] every error message is redacted;
+- [ ] all named focused tests pass.
+
+---
+
+## P0-002 — Replace the lossy network diagnostic bus with a direct required reporter
+
+**Files:**
+
+```text
+DiagnosticEventBus.kt
+NetworkPolicyManager.kt
+TunnelForegroundService.kt
+AppDependencies.kt
+NetworkPolicyManagerTest.kt
+AppDependenciesNetworkPolicyWiringTest.kt
+```
+
+### Problem
+
+`AppDiagnosticEventBus` uses replay zero and ignores `tryEmit()`. Required diagnostics can disappear before service subscription or when the buffer is full.
+
+### P0-002-A — Add an explicit reporter contract
+
+Create near `NetworkPolicyManager`:
+
+```kotlin
+fun interface NetworkPolicyDiagnosticReporter {
+    fun report(
+        code: String,
+        message: String,
+    )
+}
+```
+
+The interface accepts a redacted `String`, never `Throwable`.
+
+### P0-002-B — Require reporter at `monitor` call
+
+Change the API to:
+
+```kotlin
+fun monitor(
+    context: Context,
+    reporter: NetworkPolicyDiagnosticReporter,
+): Flow<NetworkPolicyStatus> =
+    callbackFlow {
+        // existing callback registration
+    }.conflate()
+```
+
+There must be no default parameter and no no-op implementation.
+
+Pass `reporter` into `emitPolicyStatus`:
+
+```kotlin
+private fun ProducerScope<NetworkPolicyStatus>.emitPolicyStatus(
+    status: NetworkPolicyStatus,
+    reporter: NetworkPolicyDiagnosticReporter,
+) {
+    val result = trySend(status)
+    if (result.isSuccess) {
+        return
+    }
+
+    val cause = result.exceptionOrNull()
+    if (isExpectedChannelClose(cause)) {
+        return
+    }
+
+    val message = redactedDeliveryFailureMessage(cause)
+    Log.w(TAG, "Network policy event delivery failed: $message")
+    reporter.report(
+        code = "network_policy_event_delivery_failed",
+        message = message,
+    )
+}
+```
+
+Do not call `Log.w(TAG, message, cause)`.
+
+### P0-002-C — Wire service directly
+
+Remove the service coroutine that collects `networkPolicyManager.diagnosticEvents.events`.
+
+Use:
+
+```kotlin
+val networkPolicyReporter =
+    NetworkPolicyDiagnosticReporter { code, message ->
+        reporter.publishError(
+            code = code,
+            message = message,
+        )
+    }
+
+networkPolicyManager
+    .monitor(
+        context = this@TunnelForegroundService,
+        reporter = networkPolicyReporter,
+    )
+    .collect { /* existing policy handling */ }
+```
+
+### P0-002-D — Remove or demote the bus
+
+- [ ] Remove `diagnosticEvents` from `NetworkPolicyManager`.
+- [ ] Delete `AppDependenciesNetworkPolicyWiringTest` if it only proves the old bus.
+- [ ] Delete `AppDiagnosticEventBus` if no optional path uses it.
+- [ ] If retained for optional diagnostics, update comments to state explicitly that it is lossy and never authoritative.
+
+### P0-002-E — Test the actual delivery-result path
+
+Refactor only enough to make the production result handler testable. One acceptable target:
+
+```kotlin
+internal fun handlePolicyDeliveryResult(
+    result: ChannelResult<Unit>,
+    reporter: NetworkPolicyDiagnosticReporter,
+) {
+    if (result.isSuccess) return
+    val cause = result.exceptionOrNull()
+    if (isExpectedChannelClose(cause)) return
+    reporter.report(
+        code = "network_policy_event_delivery_failed",
+        message = redactedDeliveryFailureMessage(cause),
+    )
+}
+```
+
+Production calls it with the real `trySend` result.
+
+#### Tests
+
+- [ ] `failedDeliveryReportsExactlyOnce`
+- [ ] `failedDeliveryRedactsPasswordTokenAndApiKey`
+- [ ] `closedSendChannelDoesNotReport`
+- [ ] `cancellationCloseDoesNotReport`
+- [ ] `reporterIsInvokedWithoutAnyFlowSubscriber`
+- [ ] `rawThrowableIsNeverPassedToReporterOrLogger`
+
+Do not write another test that only invokes `isExpectedChannelClose` directly and calls that production proof.
+
+### Acceptance
+
+- [ ] no required network diagnostic depends on a `SharedFlow` collector;
+- [ ] no no-op reporter exists in the production path;
+- [ ] reporter receives redacted text directly;
+- [ ] actual failed delivery is tested;
+- [ ] expected close is tested through the same handler;
+- [ ] all named tests pass.
+
+---
+
+## P0-003 — Make setup persistence transactional
+
+**Files:**
+
+```text
+SetupSaveController.kt
+data/SetupPersistenceCoordinator.kt
+ConfigRepository.kt
+IdentityRepository.kt
+AppDependencies.kt
+SetupSaveControllerTest.kt
+data/SetupPersistenceCoordinatorTest.kt
+```
+
+### Problem
+
+Setup currently mutates identity and authorized keys during validation/resolution, then writes config/setup/preferences non-transactionally. A later failure leaves partial state.
+
+### P0-003-A — Separate validation from mutation
+
+Change private-identity import resolution so it does not call `storeEncryptedIdentity`.
+
+Target shape:
+
+```kotlin
+private fun resolveImportedPrivateIdentity(
+    deps: AppDependencies,
+    path: String,
+): ResolvedIdentity {
+    val source =
+        deps.identityRepository
+            .readPrivateIdentityFile(path)
+            .getOrThrow()
+
+    val validated = deps.identityValidation.validatePrivateIdentity(source)
+    require(validated.valid) {
+        validated.message ?: "Invalid private identity"
+    }
+
+    val canonicalPrivate = validated.canonicalPrivateIdentity ?: source
+    val canonicalPublic =
+        validated.canonicalPublicIdentity
+            ?: error("Missing canonical public identity")
+    val peerId = validated.peerId ?: error("Missing canonical peer id")
+
+    return ResolvedIdentity(
+        privateIdentity = canonicalPrivate.encodeToByteArray(),
+        publicIdentity = canonicalPublic,
+        peerId = peerId,
+        persistReplacement = true,
+    )
+}
+```
+
+Likewise, remote public identity validation must return a canonical line but not append it.
+
+### P0-003-B — Add exact snapshots
+
+Add repository snapshot types. Suggested target:
+
+```kotlin
+data class FileSnapshot(
+    val existed: Boolean,
+    val bytes: ByteArray?,
+)
+
+data class IdentityStorageSnapshot(
+    val encryptedIdentity: FileSnapshot,
+    val publicIdentity: FileSnapshot,
+    val authorizedKeys: FileSnapshot,
+)
+```
+
+Snapshots are internal, never logged, and restored under the same repository lock used for writes.
+
+Config repository also needs exact setup-input snapshot/restore helpers that distinguish absent from blank/corrupt.
+
+Preferences are snapshotted using the already-loaded `AndroidAppPreferences`.
+
+### P0-003-C — Add coordinator and typed stages
+
+Create:
+
+```kotlin
+enum class SetupPersistenceStage {
+    Snapshot,
+    Identity,
+    AuthorizedKeys,
+    SetupInput,
+    Preferences,
+    Config,
+}
+
+sealed interface SetupRollbackStageResult {
+    data class Success(val stage: SetupPersistenceStage) : SetupRollbackStageResult
+    data class Failure(
+        val stage: SetupPersistenceStage,
+        val reason: String,
+    ) : SetupRollbackStageResult
+}
+
+sealed interface SetupPersistenceResult {
+    data class Success(
+        val stages: List<SetupPersistenceStage>,
+    ) : SetupPersistenceResult
+
+    data class Failed(
+        val failedStage: SetupPersistenceStage,
+        val reason: String,
+        val rollback: List<SetupRollbackStageResult>,
+    ) : SetupPersistenceResult
+}
+```
+
+Coordinator stage order:
+
+```text
+Identity if replacement requested
+AuthorizedKeys if new key requested
+SetupInput
+Preferences
+Config LAST
+```
+
+Rollback order is the reverse of committed stages.
+
+### P0-003-D — Use explicit mutation helper
+
+Suggested coordinator skeleton:
+
+```kotlin
+class SetupPersistenceCoordinator(
+    private val configRepository: ConfigRepository,
+    private val identityRepository: IdentityRepository,
+    private val loadPreferences: suspend () -> AndroidAppPreferences,
+    private val persistPreferences: suspend (AndroidAppPreferences) -> Result<Unit>,
+) {
+    private val mutex = Mutex()
+
+    suspend fun persist(request: SetupPersistenceRequest): SetupPersistenceResult =
+        mutex.withLock {
+            val snapshot = captureSnapshot()
+                .getOrElse { error ->
+                    return@withLock SetupPersistenceResult.Failed(
+                        failedStage = SetupPersistenceStage.Snapshot,
+                        reason = safeReason(error, "Failed to capture setup snapshot"),
+                        rollback = emptyList(),
+                    )
+                }
+
+            val committed = mutableListOf<SetupPersistenceStage>()
+
+            for (stage in requestedStages(request)) {
+                val result = applyStage(stage, request)
+                if (result.isFailure) {
+                    return@withLock SetupPersistenceResult.Failed(
+                        failedStage = stage,
+                        reason = safeReason(
+                            result.exceptionOrNull(),
+                            "Failed to persist setup",
+                        ),
+                        rollback = rollback(snapshot, committed),
+                    )
+                }
+                committed += stage
+            }
+
+            SetupPersistenceResult.Success(committed)
+        }
+}
+```
+
+`applyStage` must rethrow cancellation. `rollback` must continue after individual non-cancellation failure.
+
+### P0-003-E — Update `SetupSaveController`
+
+`saveAndApplyConfigInternal()` performs validation and constructs `SetupPersistenceRequest`. It calls the coordinator exactly once. It shows `Configuration saved` only for `SetupPersistenceResult.Success`.
+
+Failure mapping:
+
+```kotlin
+when (val result = coordinator.persist(request)) {
+    is SetupPersistenceResult.Success -> {
+        // publish success
+    }
+
+    is SetupPersistenceResult.Failed -> {
+        val rollbackFailed =
+            result.rollback.any { it is SetupRollbackStageResult.Failure }
+        val code =
+            if (rollbackFailed) {
+                "setup_rollback_incomplete"
+            } else {
+                "setup_persistence_failed"
+            }
+        // durable state + optional snackbar, no success
+    }
+}
+```
+
+Always wipe plaintext identity bytes in `finally`.
+
+### P0-003-F — Tests
+
+Create recording fakes and add:
+
+- [ ] `allStagesCommitInRequiredOrder`
+- [ ] `validationFailurePerformsNoPersistentMutation`
+- [ ] `identityFailureStopsBeforeAuthorizedKeysSetupPreferencesAndConfig`
+- [ ] `authorizedKeysFailureRollsBackIdentity`
+- [ ] `setupInputFailureRollsBackAuthorizedKeysAndIdentity`
+- [ ] `preferencesFailureRollsBackSetupInputAuthorizedKeysAndIdentity`
+- [ ] `configFailureRollsBackEveryEarlierStage`
+- [ ] `rollbackContinuesAfterOneRollbackFailure`
+- [ ] `rollbackFailureProducesSetupRollbackIncomplete`
+- [ ] `cancellationDuringAnyStagePropagates`
+- [ ] `plaintextIdentityIsWipedOnSuccessFailureAndCancellation`
+- [ ] `twoConcurrentSaveRequestsCannotOverlap`
+- [ ] `failedSaveNeverReportsConfigurationSaved`
+
+A rollback-failure test must configure the corresponding restore operation to fail. Do not substitute a forward-stage failure.
+
+### Acceptance
+
+- [ ] setup validation causes no persistence;
+- [ ] config is committed last;
+- [ ] partial setup mutation is rolled back;
+- [ ] rollback failures are individually reported;
+- [ ] plaintext identity buffers are wiped;
+- [ ] concurrent saves cannot overlap;
+- [ ] success appears only after all stages commit.
+
+---
+
+## P0-004 — Fix stale policy retry and visible quarantine handling
+
+**Files:**
+
+```text
+TunnelForegroundService.kt
+TunnelForegroundServiceOrderingTest.kt
+```
+
+Replace `handlePolicyAllowed()` with this target shape:
+
+```kotlin
+override suspend fun handlePolicyAllowed() {
+    requireRuntimeStartAllowed()
+        .getOrElse { error ->
+            invalidatePendingPolicyRetry()
+            reporter.publishError(
+                code = "native_runtime_quarantined",
+                message =
+                    SensitiveDataRedactor.redactText(
+                        error.message ?: "Runtime restart is blocked",
+                    ),
+            )
+            return
+        }
+
+    if (!pausedByPolicy.get()) {
+        invalidatePendingPolicyRetry()
+        return
+    }
+
+    val prefs =
+        try {
+            configRepository.preferences.first()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            invalidatePendingPolicyRetry()
+            reporter.publishError(
+                code = "policy_allowed_preference_read_failed",
+                message =
+                    SensitiveDataRedactor.redactText(
+                        error.message
+                            ?: "Failed to read network policy preferences",
+                    ),
+            )
+            return
+        }
+
+    if (!prefs.resumeOnUnmetered) {
+        invalidatePendingPolicyRetry()
+        return
+    }
+
+    if (activeStartup != null) {
+        pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
+    } else {
+        invalidatePendingPolicyRetry()
+        offer.resume()
+    }
+}
+```
+
+Do not catch raw `Throwable` here.
+
+#### Tests
+
+- [ ] `pendingRetryIsInvalidatedWhenResumeOnUnmeteredTurnsFalse`
+- [ ] `nativeFailureAfterPreferenceTurnsFalseDoesNotResume`
+- [ ] `policyAllowedDuringRuntimeQuarantinePublishesVisibleError`
+- [ ] `policyAllowedDuringRuntimeQuarantineClearsPendingRetry`
+- [ ] `preferenceReadCancellationStillPropagates`
+
+Use barriers/generation observation, not `Thread.sleep`.
+
+### Acceptance
+
+- [ ] latest preference always wins;
+- [ ] stale pending token cannot resume;
+- [ ] quarantine is visible;
+- [ ] cancellation propagates;
+- [ ] no timing-sleep proof.
+
+---
+
+## P0-005 — Stop swallowing cancellation in persistent mutation paths
+
+**Files:**
+
+```text
+ForwardsRepository.kt
+SetupSaveController.kt
+ImportExportService.kt
+ImportExportViewModel.kt
+ForwardsViewModel.kt
+related tests
+```
+
+### P0-005-A — Add a cancellation-aware helper
+
+Place in an appropriate data utility file:
+
+```kotlin
+internal suspend inline fun <T> mutationResult(
+    crossinline block: suspend () -> T,
+): Result<T> =
+    try {
+        Result.success(block())
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(error)
+    }
+```
+
+Do not use this helper for code that needs custom rollback handling.
+
+### P0-005-B — Replace `runCatching` in `ForwardsRepository`
+
+Example for upsert:
+
+```kotlin
+return@withContext mutationResult {
+    store.saveForwards(after)
+    _forwards.value = after
+    revision += 1
+    ForwardsMutationReceipt(
+        before = before,
+        after = after,
+        committedRevision = revision,
+    )
+}
+```
+
+Apply the same rule to:
+
+- [ ] `upsertWithReceipt`
+- [ ] `deleteWithReceipt`
+- [ ] `rollbackReceipt`
+- [ ] `resetForwards`
+- [ ] `restoreForTransactionalReset`
+
+### P0-005-C — Remove cancellation-swallowing orchestration wrappers
+
+Replace broad `runCatching` around suspend operations with explicit `try/catch`:
+
+```kotlin
+try {
+    // suspend operation
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (error: Exception) {
+    // visible redacted operational failure
+}
+```
+
+Audit all `runCatching` results from the inventory command. Not every non-suspend parser/file helper must change; document why any remaining production `runCatching` cannot encounter coroutine cancellation.
+
+#### Tests
+
+Add to `ForwardsRepositoryTest.kt`:
+
+- [ ] `upsertCancellationPropagatesAndDoesNotPublish`
+- [ ] `deleteCancellationPropagatesAndDoesNotPublish`
+- [ ] `rollbackCancellationPropagatesAndDoesNotPublish`
+- [ ] `resetCancellationPropagatesAndDoesNotPublish`
+- [ ] `transactionalRestoreCancellationPropagatesAndDoesNotPublish`
+
+Add controller/ViewModel cancellation tests for setup/import/forward activation.
+
+### Acceptance
+
+- [ ] cancellation is never converted into normal failure in named paths;
+- [ ] save-then-publish remains intact;
+- [ ] no success or failure snackbar is emitted solely because the coroutine was cancelled;
+- [ ] all cancellation tests pass.
+
+---
+
+## P0-006 — Make network monitoring fail closed and recover visibly
+
+**Files:**
+
+```text
+NetworkPolicyManager.kt
+TunnelForegroundService.kt
+network policy/service tests
+```
+
+### P0-006-A — Catch callback classification failures
+
+Do not allow Android callback methods to throw arbitrary app exceptions.
+
+Create one helper used by `onAvailable`, `onLost`, `onCapabilitiesChanged`, and initial emission:
+
+```kotlin
+private fun ProducerScope<NetworkPolicyStatus>.evaluateAndEmit(
+    reporter: NetworkPolicyDiagnosticReporter,
+) {
+    val current =
+        try {
+            evaluate(classifier(), allowMetered = false)
+        } catch (error: Exception) {
+            reporter.report(
+                code = "network_policy_classification_failed",
+                message = SensitiveDataRedactor.redactText(
+                    error.message ?: "Network policy classification failed",
+                ),
+            )
+            NetworkPolicyStatus.blockedUnknown(
+                reason = "Network policy classification unavailable",
+            )
+        }
+
+    _status.value = current
+    emitPolicyStatus(current, reporter)
+}
+```
+
+Use an existing constructor/helper rather than adding `blockedUnknown` if one already fits. The state must be fail-closed.
+
+### P0-006-B — Wrap the entire monitor lifecycle in the service
+
+The current `runCatching` is inside `collect` and misses setup/upstream/unregister failures.
+
+Extract one method:
+
+```kotlin
+private suspend fun runNetworkMonitor() {
+    var retryAttempt = 0
+
+    while (currentCoroutineContext().isActive) {
+        try {
+            networkPolicyManager
+                .monitor(
+                    context = this,
+                    reporter = networkPolicyReporter,
+                )
+                .collect { onNetworkPolicySignal() }
+
+            error("Network policy monitor completed unexpectedly")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            val message =
+                SensitiveDataRedactor.redactText(
+                    error.message ?: "Network policy monitor failed",
+                )
+
+            reporter.publishError(
+                code = "network_policy_monitor_failed",
+                message = message,
+            )
+
+            repository.updateNetworkStatus(blockedUnknownPolicy(message))
+            submitLifecycleCommand(
+                LifecycleCommand.PolicyBlocked(
+                    "Tunnel paused: network policy monitor unavailable",
+                ),
+            )
+
+            delay(networkMonitorBackoff.delayFor(retryAttempt++))
+        }
+    }
+}
+```
+
+Inject `networkMonitorBackoff` or delay function for deterministic tests.
+
+### P0-006-C — Handle unregister failure
+
+`awaitClose` cannot suspend. Catch `unregisterNetworkCallback` failure, report a safe diagnostic directly, and do not throw raw callback exceptions out of cleanup.
+
+### Tests
+
+- [ ] `registerFailurePublishesAndBlocksTunnel`
+- [ ] `upstreamCollectionFailurePublishesAndBlocksTunnel`
+- [ ] `classifierFailureEmitsBlockedUnknownPolicy`
+- [ ] `unregisterFailurePublishesRedactedDiagnostic`
+- [ ] `monitorRetriesWithBoundedBackoff`
+- [ ] `successfulEventResetsBackoff`
+- [ ] `monitorCancellationDoesNotPublishFailureOrRetry`
+- [ ] `serviceDoesNotRemainRunningUnrestrictedAfterMonitorFailure`
+
+### Acceptance
+
+- [ ] every monitor lifecycle failure is visible;
+- [ ] tunnel fails closed;
+- [ ] retry is bounded and testable;
+- [ ] cancellation exits immediately;
+- [ ] monitor cannot die while service silently continues unrestricted.
+
+---
+
+# P1 — High-priority state and storage hardening
+
+## P1-001 — Clear stale current remote peer identity
+
+**Files:**
+
+```text
+TunnelRepository.kt
+TunnelRepositoryTest.kt
+Models.kt comments
+```
+
+Replace:
+
+```kotlin
+remotePeerId = remotePeerId ?: previous.remotePeerId
+```
+
+with:
+
+```kotlin
+remotePeerId = remotePeerId.takeIf { activeSessionCount > 0 }
+```
+
+If native status may report a remote peer before session count increments, document and test the intended contract. Do not preserve an old peer as current truth.
+
+#### Tests
+
+- [ ] `activeSessionThenZeroSessionsClearsRemotePeerIdWhileRuntimeStillRunning`
+- [ ] `terminalStateStillClearsRemotePeerId`
+- [ ] `newActiveSessionUsesNewNativeRemotePeerId`
+- [ ] `missingRemotePeerIdDoesNotReusePreviousPeer`
+
+### Acceptance
+
+- [ ] current status never displays a stale peer;
+- [ ] model comment and mapping agree;
+- [ ] tests cover non-terminal zero-session state.
+
+---
+
+## P1-002 — Harden transactional reset snapshot, redaction, and rollback continuation
+
+**Files:**
+
+```text
+TransactionalReset.kt
+TransactionalResetCoordinatorTest.kt
+SettingsViewModel.kt
+```
+
+### P1-002-A — Contain snapshot exceptions
+
+Replace the current unguarded body with:
+
+```kotlin
+private fun captureSnapshot(): Result<ResetSnapshot> =
+    try {
+        val existed = configRepository.configFileExists
+        val contents = configRepository.readConfig()
+        val setupInput = configRepository.loadSetupInputResult().getOrThrow()
+        val forwards = forwardsRepository.current()
+
+        Result.success(
+            ResetSnapshot(
+                config = ConfigSnapshot(existed, contents),
+                setupInput = setupInput,
+                forwards = forwards,
+            ),
+        )
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(
+            SnapshotCaptureException(
+                "Failed to capture reset snapshot",
+                error,
+            ),
+        )
+    }
+```
+
+### P1-002-B — Redact every reset reason
+
+Use one helper:
+
+```kotlin
+private fun safeResetReason(
+    error: Throwable?,
+    fallback: String,
+): String =
+    SensitiveDataRedactor.redactText(
+        error?.message ?: fallback,
+    )
+```
+
+Apply to config reset, forwards reset, config restore/delete, setup restore, forwards restore, and snapshot failure.
+
+### P1-002-C — Continue rollback after individual failure
+
+Replace `asReversed().map` with an explicit loop:
+
+```kotlin
+private suspend fun rollbackFromSnapshot(
+    snapshot: ResetSnapshot,
+    mutatedStages: List<ResetStage>,
+): List<RollbackStageResult> {
+    val results = mutableListOf<RollbackStageResult>()
+
+    for (stage in mutatedStages.asReversed()) {
+        val result =
+            try {
+                restoreStage(stage, snapshot)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                RollbackStageResult.Failure(
+                    stage = stage,
+                    reason = safeResetReason(error, "Rollback failed"),
+                )
+            }
+        results += result
+    }
+
+    return results
+}
+```
+
+### P1-002-D — Make partial rollback visibly distinct
+
+`SettingsViewModel` must expose/use `reset_rollback_incomplete` when any rollback result is failure. Do not show a generic success or generic reset failure that hides partial state.
+
+#### Tests
+
+- [ ] `configSnapshotReadExceptionAbortsBeforeMutation`
+- [ ] `setupSnapshotReadExceptionAbortsBeforeMutation`
+- [ ] `rollbackContinuesAfterConfigRestoreThrows`
+- [ ] `rollbackContinuesAfterSetupRestoreThrows`
+- [ ] `everyResetAndRollbackReasonIsRedacted`
+- [ ] `rollbackFailureUsesDistinctVisibleCode`
+- [ ] `snapshotCancellationPropagates`
+
+### Acceptance
+
+- [ ] snapshot failure performs zero mutation;
+- [ ] one rollback exception does not suppress later rollback stages;
+- [ ] all reasons are redacted;
+- [ ] partial rollback is visibly distinct.
+
+---
+
+## P1-003 — Replace main-thread silent default initialization with explicit readiness
+
+**Files:**
+
+```text
+WebRtcTunnelApplication.kt
+AppDependencies.kt or new AppInitializationCoordinator.kt
+TunnelForegroundService.kt
+startup tests
+```
+
+### P1-003-A — Add readiness state
+
+Suggested implementation:
+
+```kotlin
+sealed interface AppInitializationState {
+    data object Initializing : AppInitializationState
+    data object Ready : AppInitializationState
+    data class Failed(
+        val code: String,
+        val message: String,
+    ) : AppInitializationState
+}
+
+class AppInitializationCoordinator(
+    private val configRepository: ConfigRepository,
+    private val scope: CoroutineScope,
+    private val ioDispatcher: CoroutineDispatcher,
+) {
+    private val _state = MutableStateFlow<AppInitializationState>(
+        AppInitializationState.Initializing,
+    )
+    val state: StateFlow<AppInitializationState> = _state.asStateFlow()
+
+    fun start() {
+        scope.launch(ioDispatcher) {
+            _state.value =
+                configRepository
+                    .ensureDefaultConfig(configRepository.defaultConfigTemplate)
+                    .fold(
+                        onSuccess = { AppInitializationState.Ready },
+                        onFailure = { error ->
+                            AppInitializationState.Failed(
+                                code = "config_initialization_failed",
+                                message =
+                                    SensitiveDataRedactor.redactText(
+                                        error.message
+                                            ?: "Failed to initialize configuration",
+                                    ),
+                            )
+                        },
+                    )
+        }
+    }
+}
+```
+
+Use an application-owned scope with explicit cancellation only for process teardown/testing.
+
+### P1-003-B — Gate tunnel start
+
+Before any native start preparation, require `Ready`. If initializing or failed, publish a visible error and abort without native calls.
+
+#### Tests
+
+- [ ] `applicationOnCreateDoesNotRunBlockingFileIoOnMainThread`
+- [ ] `defaultConfigFailureProducesFailedReadiness`
+- [ ] `startWhileInitializingDoesNotCallNative`
+- [ ] `startAfterInitializationFailurePublishesVisibleError`
+- [ ] `startAfterReadyContinuesNormally`
+
+### Acceptance
+
+- [ ] no unbounded main-thread `runBlocking` initialization;
+- [ ] config initialization result is consumed;
+- [ ] native start is gated on readiness;
+- [ ] failure is visible and redacted.
+
+---
+
+## P1-004 — Make identity and authorized-key persistence atomic and concurrency-safe
+
+**Files:**
+
+```text
+IdentityRepository.kt
+IdentityRepositoryTest.kt
+```
+
+### P1-004-A — Add one repository lock
+
+To minimize API churn, a JVM lock is acceptable for the current synchronous methods:
+
+```kotlin
+private val storageLock = Any()
+```
+
+All identity pair and authorized-key reads-modify-writes involved in mutation occur inside `synchronized(storageLock)`.
+
+### P1-004-B — Add atomic replacement helper
+
+Use unique same-directory temp files:
+
+```kotlin
+private fun atomicReplace(
+    destination: File,
+    bytes: ByteArray,
+) {
+    destination.parentFile?.mkdirs()
+    val temp =
+        Files.createTempFile(
+            destination.parentFile.toPath(),
+            "${destination.name}.tmp-",
+            ".partial",
+        )
+
+    try {
+        Files.write(temp, bytes)
+        try {
+            Files.move(
+                temp,
+                destination.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        } catch (error: AtomicMoveNotSupportedException) {
+            Log.w(TAG, "Atomic identity move unavailable; using replacement")
+            Files.move(
+                temp,
+                destination.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
+    } finally {
+        runCatching { Files.deleteIfExists(temp) }
+            .onFailure { cleanup ->
+                Log.w(
+                    TAG,
+                    "Identity temp cleanup failed: ${
+                        SensitiveDataRedactor.redactText(
+                            cleanup.message ?: "unknown cleanup failure",
+                        )
+                    }",
+                )
+            }
+    }
+}
+```
+
+The production implementation must preserve a primary write failure if cleanup also fails; use the ConfigRepository cleanup pattern from P1-006 rather than blindly copying `runCatching` if this method returns `Result`.
+
+### P1-004-C — Treat identity pair as one logical commit
+
+Inside the lock:
+
+1. encrypt plaintext before modifying files;
+2. snapshot prior encrypted/private file presence+bytes and public file presence+bytes;
+3. atomically replace encrypted identity;
+4. atomically replace public identity;
+5. if step 4 fails, restore both prior snapshots;
+6. return/throw a failure that states whether rollback was incomplete.
+
+Do not place plaintext identity in a temp file.
+
+### P1-004-D — Serialize authorized-key append
+
+Inside the same lock:
+
+```kotlin
+val existing = readCanonicalAuthorizedKeys()
+val updated = (existing + trimmed).distinct().sorted()
+atomicReplace(
+    destination = authorizedKeysFile,
+    bytes = updated.joinToString("\n").encodeToByteArray(),
+)
+```
+
+### Tests
+
+- [ ] `publicIdentityWriteFailureRestoresPreviousEncryptedAndPublicPair`
+- [ ] `privateIdentityWriteFailureLeavesOldPairUntouched`
+- [ ] `newIdentityPairCommitsTogether`
+- [ ] `concurrentAuthorizedKeyAppendsPreserveBothKeys`
+- [ ] `duplicateAuthorizedKeyDoesNotRewriteOrDuplicate`
+- [ ] `authorizedKeyWriteFailureLeavesOldFileIntact`
+- [ ] `plaintextIdentityIsNotWrittenToDisk`
+- [ ] `identityRollbackFailureIsVisible`
+
+### Acceptance
+
+- [ ] identity pair cannot remain mismatched after a reported failure;
+- [ ] concurrent authorized-key append cannot lose data;
+- [ ] all mutation writes use unique temp files and replacement;
+- [ ] no plaintext private key reaches disk.
+
+---
+
+## P1-005 — Serialize user operations and use unique candidate files
+
+**Files:**
+
+```text
+SetupSaveController.kt
+ImportExportViewModel.kt / ImportExportService.kt
+ForwardsViewModel.kt
+candidate validation helpers
+tests
+```
+
+### P1-005-A — Add a unique candidate helper
+
+```kotlin
+internal fun createCandidateFile(
+    cacheDir: File,
+    prefix: String,
+): File =
+    Files.createTempFile(
+        cacheDir.toPath(),
+        prefix,
+        ".toml",
+    ).toFile()
+```
+
+Use distinct prefixes:
+
+```text
+setup-config-
+import-config-
+forwards-config-
+```
+
+### P1-005-B — Safe deletion
+
+```kotlin
+internal fun deleteCandidateFileSafely(file: File): Result<Unit> =
+    try {
+        Files.deleteIfExists(file.toPath())
+        Result.success(Unit)
+    } catch (error: IOException) {
+        Result.failure(error)
+    }
+```
+
+Cleanup failure must not overwrite the primary validation/write failure. Attach it as suppressed or report a separate redacted diagnostic.
+
+### P1-005-C — Add atomic busy guards
+
+Example reject-on-overlap shape:
+
+```kotlin
+private val operationMutex = Mutex()
+
+fun saveAndApplyConfig() {
+    scope.launch {
+        if (!operationMutex.tryLock()) {
+            access.applyState(
+                access.state().copy(
+                    errorMessage = "Configuration save is already in progress",
+                    saveResult = null,
+                ),
+            )
+            return@launch
+        }
+
+        try {
+            saveAndApplyConfigInternal()
+        } finally {
+            operationMutex.unlock()
+        }
+    }
+}
+```
+
+Capture current state after the lock is acquired.
+
+Apply an equivalent guard to config import and forward mutation/activation. Do not rely solely on a mutable UI `isBusy` read before launching.
+
+### Tests
+
+- [ ] `twoRapidSetupSavesOnlyOneOperationRuns`
+- [ ] `twoRapidConfigImportsCannotShareCandidateFile`
+- [ ] `twoRapidForwardMutationsCannotActivateStaleConfig`
+- [ ] `candidateFilesAreUnique`
+- [ ] `candidateCleanupFailureDoesNotHidePrimaryFailure`
+- [ ] `secondOperationIsRejectedVisiblyOrSerializesUsingFreshState`
+
+### Acceptance
+
+- [ ] no fixed candidate filename remains;
+- [ ] no check-before-launch busy race remains;
+- [ ] concurrent operations cannot overwrite each other’s candidate or stale state.
+
+---
+
+## P1-006 — Keep atomic config cleanup inside the `Result` contract
+
+**Files:**
+
+```text
+ConfigRepository.kt
+ConfigRepositoryTest.kt
+```
+
+Current `Files.deleteIfExists(temp)` in `finally` can throw outside the returned `Result`.
+
+Use this pattern:
+
+```kotlin
+private fun writeConfigAtomicallyLocked(
+    configFile: File,
+    contents: String,
+): Result<Unit> {
+    configFile.parentFile?.mkdirs()
+    val temp =
+        try {
+            Files.createTempFile(
+                configFile.parentFile.toPath(),
+                "config.toml.tmp-",
+                ".partial",
+            )
+        } catch (error: Exception) {
+            return Result.failure(error)
+        }
+
+    val primaryResult: Result<Unit> =
+        try {
+            temp.toFile().writeText(contents)
+            moveReplacing(temp, configFile.toPath())
+            Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            val cleanupError = deleteTempOrNull(temp)
+            cleanupError?.let(cancelled::addSuppressed)
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+
+    val cleanupError = deleteTempOrNull(temp)
+    if (cleanupError == null) {
+        return primaryResult
+    }
+
+    val primaryError = primaryResult.exceptionOrNull()
+    return if (primaryError != null) {
+        primaryError.addSuppressed(cleanupError)
+        primaryResult
+    } else {
+        Result.failure(cleanupError)
+    }
+}
+
+private fun deleteTempOrNull(temp: Path): IOException? =
+    try {
+        Files.deleteIfExists(temp)
+        null
+    } catch (error: IOException) {
+        error
+    }
+```
+
+Catch the narrowest practical exception types. Preserve the existing visible atomic-move fallback.
+
+#### Tests
+
+- [ ] `cleanupFailureAfterPrimaryFailurePreservesPrimaryAndSuppressesCleanup`
+- [ ] `cleanupFailureAfterSuccessfulMoveReturnsFailure`
+- [ ] `cancellationPreservesCancellationAndSuppressesCleanupFailure`
+- [ ] `atomicMoveFallbackStillReplacesDestination`
+
+A fake file-operations abstraction is acceptable and preferable to flaky filesystem permission tricks.
+
+### Acceptance
+
+- [ ] cleanup never escapes unexpectedly;
+- [ ] primary error identity is preserved;
+- [ ] cancellation remains cancellation;
+- [ ] tests simulate real cleanup failure.
+
+---
+
+## P1-007 — Make lifecycle processor exit close command acceptance
+
+**Files:**
+
+```text
+TunnelLifecycleCoordinator.kt
+TunnelLifecycleCoordinatorTest.kt
+TunnelForegroundService.kt
+```
+
+### P1-007-A — Add processor state
+
+```kotlin
+private val stopped = AtomicBoolean(false)
+```
+
+### P1-007-B — Close on processor exit
+
+```kotlin
+fun start() {
+    check(processorJob == null) {
+        "Lifecycle coordinator already started"
+    }
+    check(!stopped.get()) {
+        "Lifecycle coordinator cannot be restarted after stop"
+    }
+
+    processorJob =
+        scope.launch {
+            try {
+                processCommands()
+            } finally {
+                stopped.set(true)
+                commands.close()
+            }
+        }
+}
+
+fun trySubmit(command: LifecycleCommand): Boolean {
+    if (stopped.get()) {
+        return false
+    }
+    return commands.trySend(command).isSuccess
+}
+```
+
+`stop()` remains idempotent and sets `stopped` before/while closing.
+
+### P1-007-C — Catch recoverable `Exception`, not `Throwable`
+
+```kotlin
+private suspend fun processCommand(command: LifecycleCommand) {
+    try {
+        handleCommand(command)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        lifecycleOps.onError(
+            message =
+                SensitiveDataRedactor.redactText(
+                    error.message ?: "Lifecycle command failed",
+                ),
+            code = "lifecycle_command_failed",
+        )
+    }
+}
+```
+
+If `onError` throws, allow the processor to stop; the `finally` closes command acceptance. Do not swallow fatal `Error`.
+
+#### Tests
+
+- [ ] `handlerCancellationStopsProcessorAndRejectsLaterCommands`
+- [ ] `processorScopeCancellationRejectsLaterCommands`
+- [ ] `recoverableExceptionPublishesAndContinues`
+- [ ] `fatalErrorIsNotConvertedToLifecycleCommandFailed`
+- [ ] `errorReporterFailureStopsProcessorAndRejectsLaterCommands`
+- [ ] `stopIsIdempotent`
+
+Update the existing test that currently expects the channel to remain open after cancellation.
+
+### Acceptance
+
+- [ ] no command is accepted without a live processor;
+- [ ] recoverable exceptions remain visible;
+- [ ] fatal errors are not normalized;
+- [ ] teardown late-submit remains a benign visible drop.
+
+---
+
+## P1-008 — Make required operation errors durable, not snackbar-only
+
+**Files:**
+
+```text
+ForwardsViewModel.kt
+ImportExportViewModel.kt
+SettingsViewModel.kt
+other mutating ViewModels
+UI state models/tests
+```
+
+Add or reuse durable state:
+
+```kotlin
+data class OperationFailure(
+    val code: String,
+    val message: String,
+)
+```
+
+For each mutating screen:
+
+- [ ] failure sets `lastOperationFailure` or an equivalent existing state field;
+- [ ] success clears the failure;
+- [ ] snackbar mirrors but does not own the only copy;
+- [ ] recreation/new collector can still render the failure until acknowledged;
+- [ ] secret text is redacted before state assignment.
+
+#### Tests
+
+- [ ] `forwardMutationFailureRemainsInStateWithoutSnackbarCollector`
+- [ ] `configImportFailureRemainsInStateWithoutSnackbarCollector`
+- [ ] `resetRollbackFailureRemainsInStateWithoutSnackbarCollector`
+- [ ] `successClearsPreviousOperationFailure`
+
+### Acceptance
+
+- [ ] required failures survive absence of snackbar collector;
+- [ ] snackbar remains optional convenience only.
+
+---
+
+## P1-009 — Expand redaction and prefer safe fixed messages
+
+**Files:**
+
+```text
+SensitiveDataRedactor.kt
+SensitiveDataRedactorTest.kt
+all touched diagnostics
+```
+
+### P1-009-A — Add structured-field coverage
+
+One acceptable additional regex:
+
+```kotlin
+private val structuredSecretRegex =
+    Regex(
+        pattern =
+            """(?im)([\"']?[A-Za-z0-9_.-]*(?:password|token|api[_-]?key|secret|private[_-]?key)[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^,\s}\]]+)""",
+    )
+```
+
+Replacement preserves only the field label:
+
+```kotlin
+.replace(structuredSecretRegex) { match ->
+    "${match.groupValues[1]}***REDACTED***"
+}
+```
+
+Add Basic auth:
+
+```kotlin
+.replace(
+    Regex("""(?i)\bBasic\s+[A-Za-z0-9+/=]+"""),
+    "Basic ***REDACTED***",
+)
+```
+
+Review ordering so one replacement does not expose another secret fragment.
+
+### P1-009-B — Prefer fixed messages at boundaries
+
+For required errors, prefer:
+
+```kotlin
+reporter.publishError(
+    code = "config_write_failed",
+    message = "Failed to save active tunnel configuration",
+)
+```
+
+Use exception details only in a separately redacted diagnostic field if the model supports it.
+
+### Tests
+
+- [ ] `redactsBrokerPasswordWithUnderscorePrefix`
+- [ ] `redactsQuotedJsonPassword`
+- [ ] `redactsQuotedJsonApiKey`
+- [ ] `redactsTomlBareSecret`
+- [ ] `redactsBasicAuthorizationHeader`
+- [ ] `redactsArbitraryIdentityPrivateField`
+- [ ] `doesNotLeakOriginalSentinelAcrossAllRequiredDiagnostics`
+
+### Acceptance
+
+- [ ] all listed formats are covered;
+- [ ] required diagnostics use fixed safe messages where practical;
+- [ ] no raw secret sentinel appears in tests/log captures.
+
+---
+
+## P1-010 — Clarify and harden destroy-time cleanup semantics
+
+**Files:**
+
+```text
+TunnelForegroundService.kt
+TunnelForegroundServiceStopFailureTest.kt
+```
+
+### Required changes
+
+- [ ] Document explicit STOP as authoritative.
+- [ ] Keep destroy cleanup best effort.
+- [ ] Do not write persistent “stopped successfully” state solely because destroy cleanup was launched.
+- [ ] Preserve visible `destroy_fallback_stop_failed` on observed failure.
+- [ ] Ensure command processor is closed before in-flight startup completion can enqueue.
+- [ ] Ensure no process-state invariant depends on `pendingStop` finishing after `super.onDestroy()`.
+
+If Android lifecycle constraints make awaiting cleanup impossible, state that limitation in code and tests rather than implying guaranteed completion.
+
+#### Tests
+
+- [ ] `explicitStopRemainsAuthoritativeBeforeDestroy`
+- [ ] `destroyFallbackFailureMarksRuntimeUncertainWhenObserved`
+- [ ] `lateStartupCompletionAfterDestroyCannotRestartOrCrash`
+- [ ] `destroyWithoutCleanupCompletionDoesNotPublishFalseVerifiedStop`
+
+### Acceptance
+
+- [ ] semantics are truthful and test-aligned;
+- [ ] no false guarantee is encoded in comments or state.
+
+---
+
+# P2 — Test quality, enforcement, and secondary fixes
+
+## P2-001 — Replace sleep-based lifecycle proof tests
+
+**Files:**
+
+```text
+TunnelForegroundServiceOrderingTest.kt
+TunnelForegroundServiceStopFailureTest.kt
+test fakes/hooks
+```
+
+Replace every `Thread.sleep` used to prove absence/exactly-once in affected lifecycle tests.
+
+Preferred mechanisms:
+
+```kotlin
+val secondStartAttempt = CompletableDeferred<Unit>()
+val queueDrained = CompletableDeferred<Unit>()
+val stopCompleted = CompletableDeferred<Unit>()
+```
+
+or test scheduler advancement with no real dispatcher escape.
+
+Add a narrow read-only test hook for pending retry if necessary:
+
+```kotlin
+internal fun pendingPolicyResumeGenerationForTest(): Long? =
+    pendingPolicyResumeGeneration.get()
+```
+
+Do not add production mutation hooks solely for tests.
+
+#### Required conversions
+
+- [ ] exactly-once policy retry test;
+- [ ] pending retry destroy test;
+- [ ] stale generation cleanup test;
+- [ ] stop cleanup count tests;
+- [ ] any new monitor retry tests.
+
+### Acceptance
+
+- [ ] `rg -n 'Thread\.sleep'` returns no proof sleeps in affected tests;
+- [ ] tests wait on observable events, not elapsed time;
+- [ ] pending retry destroy test proves the token existed before destroy.
+
+---
+
+## P2-002 — Make Rust wall-clock failure behavior consistent
+
+**Files:**
+
+```text
+crates/p2p-mobile/src/runtime/state.rs
+crates/p2p-daemon/src/messages.rs
+shared time helper if appropriate
+Rust tests
+```
+
+Add a fallible helper:
+
+```rust
+pub(crate) fn unix_time_ms() -> Result<u64, std::time::SystemTimeError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+}
+```
+
+Replace:
+
+```rust
+.unwrap_or(0)
+```
+
+and:
+
+```rust
+.expect("system time is before unix epoch")
+```
+
+with controlled propagation or a safe diagnostic path.
+
+For Android diagnostics-only log timestamps, an acceptable target is to return an error from the caller or skip the optional log entry while preserving the primary runtime error. Do not invent timestamp zero.
+
+#### Tests
+
+Abstract the clock if needed and add:
+
+- [ ] `preEpochClockDoesNotPanic`
+- [ ] `preEpochClockDoesNotReturnZeroAsValidTimestamp`
+- [ ] `timestampFailurePreservesPrimaryRuntimeError`
+- [ ] `daemonMessageBuildSurfacesTimestampFailure`
+
+### Acceptance
+
+- [ ] no reviewed pre-epoch panic/fallback remains;
+- [ ] failure behavior is explicit and tested;
+- [ ] `cargo fmt`, Clippy, and tests pass.
+
+---
+
+## P2-003 — Add static enforcement for ignored mutation results
+
+**Files:**
+
+```text
+build configuration, lint/detekt config, or scripts/check_ignored_results.sh
+CI workflow
+```
+
+### Preferred option
+
+Annotate authoritative mutation methods with `@CheckResult` where Android lint recognizes it:
+
+```kotlin
+@CheckResult
+open suspend fun writeConfigAtomically(contents: String): Result<Unit>
+```
+
+Apply to other repository mutation methods returning `Result`.
+
+### Fallback option
+
+Add a focused script that fails on known bare calls. Example starting point:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${1:-android/app/src/main/java}"
+
+patterns=(
+  'writeConfigAtomically\('
+  'savePreferences\('
+  'resetForwards\('
+  'rollbackReceipt\('
+  'appendAuthorizedPublicIdentity\('
+)
+
+for pattern in "${patterns[@]}"; do
+  rg -n "$pattern" "$root"
+done
+```
+
+A real enforcement script must parse enough surrounding syntax to distinguish a consumed result from a bare expression. Do not ship a grep that only prints findings and always exits zero.
+
+#### Tests/CI
+
+- [ ] add one fixture with an ignored result and prove the rule fails;
+- [ ] add one consumed-result fixture and prove it passes;
+- [ ] run the rule in GitHub Actions and local `check` workflow.
+
+### Acceptance
+
+- [ ] future discarded authoritative results fail CI;
+- [ ] rule has positive and negative tests;
+- [ ] current production tree passes.
+
+---
+
+## P2-004 — Record final signoff evidence
+
+Record the exact results below in this file after implementation.
+
+### Commit state
+
+- [ ] `git rev-parse HEAD`:
+- [ ] `git status --short` is empty:
+- [ ] FIX6 task commits are scoped or any exception is explained:
+
+### Focused Android validation
+
+```bash
+cd android
+
+./gradlew --no-daemon testDebugUnitTest \
+  --tests 'com.phillipchin.webrtctunnel.viewmodel.SetupSaveControllerTest' \
+  --tests 'com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinatorTest' \
+  --tests 'com.phillipchin.webrtctunnel.viewmodel.ImportExportViewModelTest' \
+  --tests 'com.phillipchin.webrtctunnel.viewmodel.ForwardsViewModelTest' \
+  --tests 'com.phillipchin.webrtctunnel.data.ConfigRepositoryTest' \
+  --tests 'com.phillipchin.webrtctunnel.data.ForwardsRepositoryTest' \
+  --tests 'com.phillipchin.webrtctunnel.data.TransactionalResetCoordinatorTest' \
+  --tests 'com.phillipchin.webrtctunnel.data.TunnelLifecycleCoordinatorTest' \
+  --tests 'com.phillipchin.webrtctunnel.data.TunnelRepositoryTest' \
+  --tests 'com.phillipchin.webrtctunnel.network.NetworkPolicyManagerTest' \
+  --tests 'com.phillipchin.webrtctunnel.security.IdentityRepositoryTest' \
+  --tests 'com.phillipchin.webrtctunnel.TunnelForegroundService*' \
+  --rerun-tasks
+```
+
+- [ ] focused command result:
+
+### Full Android validation
+
+```bash
+./gradlew --no-daemon ktlintCheck
+./gradlew --no-daemon detekt
+./gradlew --no-daemon lintDebug
+./gradlew --no-daemon testDebugUnitTest
+./gradlew --no-daemon assembleDebug
+./gradlew --no-daemon check
+```
+
+- [ ] ktlint result:
+- [ ] detekt result:
+- [ ] lint result:
+- [ ] unit-test result:
+- [ ] assemble result:
+- [ ] check result:
+
+### Rust validation
+
+From repository root:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+```
+
+- [ ] fmt result:
+- [ ] clippy result:
+- [ ] test result:
+
+### CI evidence
+
+- [ ] GitHub Actions workflow URL/id, or `NOT RUN: exact reason`:
+- [ ] workflow head SHA, or `NOT RUN: exact reason`:
+- [ ] Android artifact/test report attached or path recorded:
+- [ ] Rust artifact/test report attached or path recorded:
+
+### Device/E2E evidence
+
+- [ ] Android emulator/physical-device startup test, or `NOT RUN: exact reason`:
+- [ ] metered-to-unmetered policy transition test, or `NOT RUN: exact reason`:
+- [ ] process-kill/destroy recovery test, or `NOT RUN: exact reason`:
+
+---
+
+# Completion checklist
+
+## P0
+
+- [ ] every authoritative config write result is consumed;
+- [ ] setup/config import/forward activation cannot produce false success;
+- [ ] required network diagnostics use direct reporter delivery;
+- [ ] setup persistence is transactional;
+- [ ] stale policy retry is invalidated when preference is false;
+- [ ] policy quarantine is visible;
+- [ ] cancellation propagates through persistent mutation paths;
+- [ ] network monitoring fails closed and retries visibly.
+
+## P1
+
+- [ ] stale current remote peer identity is cleared;
+- [ ] reset snapshot/rollback is exhaustive and redacted;
+- [ ] initialization is asynchronous/readiness-gated and failure-visible;
+- [ ] identity pair and authorized keys are atomic and serialized;
+- [ ] candidate files are unique and operations cannot overlap unsafely;
+- [ ] temp cleanup remains inside `Result` contract;
+- [ ] lifecycle processor exit closes command acceptance;
+- [ ] required UI failures are durable;
+- [ ] structured secret redaction tests pass;
+- [ ] destroy cleanup semantics are truthful.
+
+## P2
+
+- [ ] affected proof tests use deterministic synchronization;
+- [ ] Rust timestamps are fallible and consistent;
+- [ ] ignored mutation results fail static enforcement;
+- [ ] complete signoff evidence is recorded against one exact commit.
