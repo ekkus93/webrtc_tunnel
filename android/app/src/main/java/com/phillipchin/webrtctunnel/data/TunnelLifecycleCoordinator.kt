@@ -7,7 +7,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
-import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Lifecycle coordinator that owns the command processor lifetime.
@@ -24,23 +24,43 @@ class TunnelLifecycleCoordinator(
 
     private var processorJob: Job? = null
 
+    // P1-007-A: true once the processor has exited (normally, by cancellation, or because a
+    // handler/reporter failure tore it down). Guards restart; the processor's finally closes the
+    // channel before flipping this, so a late trySubmit is a benign drop, not acceptance.
+    private val stopped = AtomicBoolean(false)
+
     /**
-     * Starts the command processor. Must be called exactly once.
+     * Starts the command processor. Must be called exactly once, and never after [stop].
      */
     fun start() {
         check(processorJob == null) {
             "Lifecycle coordinator already started"
         }
+        check(!stopped.get()) {
+            "Lifecycle coordinator cannot be restarted after stop"
+        }
         processorJob =
             scope.launch {
-                processCommands()
+                try {
+                    processCommands()
+                } finally {
+                    // P1-007-B / Q14: close command acceptance the moment the processor exits —
+                    // whether it completed, was cancelled, or a handler/reporter failure killed
+                    // it — so no command is ever accepted without a live processor. Close before
+                    // setting the flag so trySubmit's trySend is the single source of truth for
+                    // acceptance.
+                    commands.close()
+                    stopped.set(true)
+                }
             }
     }
 
     /**
      * Stops the command processor by closing the channel and cancelling the processor.
+     * Idempotent: safe to call more than once.
      */
     suspend fun stop() {
+        stopped.set(true)
         commands.close()
         val job = processorJob
         processorJob = null
@@ -78,26 +98,13 @@ class TunnelLifecycleCoordinator(
             handleCommand(command)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (error: IllegalArgumentException) {
+        } catch (error: Exception) {
+            // P1-007-C: recoverable exceptions are published and processing continues. A fatal
+            // Error is NOT caught here — it propagates, the processor exits, and its finally
+            // closes command acceptance rather than normalizing the failure to a lifecycle error.
+            // If onError itself throws, that too propagates and stops the processor.
             lifecycleOps.onError(
-                error.message ?: "Lifecycle command failed",
-                "lifecycle_command_failed",
-            )
-        } catch (error: IllegalStateException) {
-            lifecycleOps.onError(
-                error.message ?: "Lifecycle command failed",
-                "lifecycle_command_failed",
-            )
-        } catch (error: IOException) {
-            lifecycleOps.onError(
-                error.message ?: "Lifecycle command failed",
-                "lifecycle_command_failed",
-            )
-        } catch (error: Throwable) {
-            // P1-003: an unanticipated handler bug must not silently kill the command
-            // processor without a visible lifecycle error — publish, then keep processing.
-            lifecycleOps.onError(
-                error.message ?: "Lifecycle command failed",
+                SensitiveDataRedactor.redactText(error.message ?: "Lifecycle command failed"),
                 "lifecycle_command_failed",
             )
         }

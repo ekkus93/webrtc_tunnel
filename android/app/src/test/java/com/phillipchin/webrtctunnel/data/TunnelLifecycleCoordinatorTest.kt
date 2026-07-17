@@ -2,7 +2,12 @@ package com.phillipchin.webrtctunnel.data
 
 import com.phillipchin.webrtctunnel.model.ServiceState
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -11,6 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * P1-003: TunnelLifecycleCoordinator.processCommand() must catch unexpected exceptions
@@ -120,7 +126,7 @@ class TunnelLifecycleCoordinatorTest {
         }
 
     @Test
-    fun cancellationExceptionFromHandlerStillStopsProcessorAndIsNotReportedAsFailure() =
+    fun handlerCancellationStopsProcessorAndRejectsLaterCommands() =
         runTest {
             val ops = RecordingCoordinatorOperations()
             ops.startOfferThrows = CancellationException("propagated cancellation")
@@ -135,17 +141,126 @@ class TunnelLifecycleCoordinatorTest {
                 ops.errors.isEmpty(),
             )
 
-            // The processor coroutine must have died from the propagated cancellation —
-            // a later command sits in the (still-open) channel with no active consumer.
+            // P1-007: the processor died from the propagated cancellation, so its finally closed
+            // command acceptance — a later submit is now refused, not merely left unprocessed.
             val callsAfterCancellation = ops.startOfferCalls.get()
-            coordinator.trySubmit(LifecycleCommand.StartOffer)
+            val accepted = coordinator.trySubmit(LifecycleCommand.StartOffer)
             advanceUntilIdle()
+            assertFalse("a submit after the processor exits must be refused", accepted)
             assertEquals(
                 "no later command may be processed once the processor has been killed by cancellation",
                 callsAfterCancellation,
                 ops.startOfferCalls.get(),
             )
             coordinator.stop()
+        }
+
+    @Test
+    fun processorScopeCancellationRejectsLaterCommands() =
+        runTest {
+            val ops = RecordingCoordinatorOperations()
+            val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+            val coordinator = TunnelLifecycleCoordinator(ops, scope)
+            coordinator.start()
+            advanceUntilIdle()
+
+            scope.cancel("service destroyed")
+            advanceUntilIdle()
+
+            val accepted = coordinator.trySubmit(LifecycleCommand.StartOffer)
+            advanceUntilIdle()
+            assertFalse("no command may be accepted after the processor scope is cancelled", accepted)
+            assertTrue(ops.handled.isEmpty())
+        }
+
+    @Test
+    fun recoverableExceptionPublishesAndContinues() =
+        runTest {
+            val ops = RecordingCoordinatorOperations()
+            ops.startOfferThrows = IllegalStateException("recoverable password=secret")
+            val coordinator = TunnelLifecycleCoordinator(ops, this)
+            coordinator.start()
+
+            coordinator.trySubmit(LifecycleCommand.StartOffer)
+            advanceUntilIdle()
+            assertEquals(1, ops.errors.size)
+            assertEquals("lifecycle_command_failed", ops.errors.single().second)
+            assertFalse("published message must be redacted", ops.errors.single().first.contains("secret"))
+
+            // A later command is still processed: a recoverable exception must not kill the loop.
+            ops.startOfferThrows = null
+            coordinator.trySubmit(LifecycleCommand.Pause)
+            advanceUntilIdle()
+            assertTrue(ops.handled.contains("pause"))
+            coordinator.stop()
+        }
+
+    @Test
+    fun fatalErrorIsNotConvertedToLifecycleCommandFailed() =
+        runTest {
+            val ops = RecordingCoordinatorOperations()
+            ops.startOfferThrows = OutOfMemoryError("fatal")
+            val caught = AtomicReference<Throwable?>(null)
+            val scope =
+                CoroutineScope(
+                    SupervisorJob() + StandardTestDispatcher(testScheduler) +
+                        CoroutineExceptionHandler { _, error -> caught.set(error) },
+                )
+            val coordinator = TunnelLifecycleCoordinator(ops, scope)
+            coordinator.start()
+
+            coordinator.trySubmit(LifecycleCommand.StartOffer)
+            advanceUntilIdle()
+
+            assertTrue("a fatal Error must not be normalized to lifecycle_command_failed", ops.errors.isEmpty())
+            assertTrue("the fatal Error must propagate out of the processor", caught.get() is OutOfMemoryError)
+            // The processor exited, so acceptance is closed.
+            assertFalse(coordinator.trySubmit(LifecycleCommand.Pause))
+        }
+
+    @Test
+    fun errorReporterFailureStopsProcessorAndRejectsLaterCommands() =
+        runTest {
+            val ops =
+                object : CoordinatorOperations by RecordingCoordinatorOperations() {
+                    override fun onError(
+                        message: String,
+                        code: String,
+                        state: ServiceState,
+                    ): Unit = error("reporter down")
+
+                    override suspend fun startOffer() = error("trigger onError")
+                }
+            val caught = AtomicReference<Throwable?>(null)
+            val scope =
+                CoroutineScope(
+                    SupervisorJob() + StandardTestDispatcher(testScheduler) +
+                        CoroutineExceptionHandler { _, error -> caught.set(error) },
+                )
+            val coordinator = TunnelLifecycleCoordinator(ops, scope)
+            coordinator.start()
+
+            coordinator.trySubmit(LifecycleCommand.StartOffer)
+            advanceUntilIdle()
+
+            assertTrue("a throwing reporter must stop the processor", caught.get() is IllegalStateException)
+            assertFalse(
+                "acceptance must be closed once the processor exits",
+                coordinator.trySubmit(LifecycleCommand.Pause),
+            )
+        }
+
+    @Test
+    fun stopIsIdempotent() =
+        runTest {
+            val ops = RecordingCoordinatorOperations()
+            val coordinator = TunnelLifecycleCoordinator(ops, this)
+            coordinator.start()
+
+            coordinator.stop()
+            coordinator.stop()
+
+            assertFalse(coordinator.trySubmit(LifecycleCommand.StartOffer))
         }
 
     @Test
