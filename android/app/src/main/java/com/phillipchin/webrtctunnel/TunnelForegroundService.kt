@@ -329,6 +329,21 @@ class TunnelForegroundService
 
         override fun onBind(intent: Intent?): IBinder? = null
 
+        /**
+         * P1-010: destroy-time cleanup is BEST EFFORT, not an authoritative stop.
+         *
+         * An explicit STOP (verified `repository.stop()`, which sets [nativeStopVerified]) is the
+         * only authoritative stop. Here we only run fallback cleanup when a verified stop has NOT
+         * already happened, and we set `nativeStopVerified = true` solely on an observed successful
+         * `repository.stop()` — never merely because cleanup was launched. An observed failure
+         * publishes the visible `destroy_fallback_stop_failed` and marks the runtime uncertain.
+         *
+         * The cleanup runs in a launched coroutine ([pendingStop]); Android may kill the process
+         * before it finishes, so NO process-state invariant may depend on [pendingStop] completing
+         * after [super.onDestroy]. `coordinator.stop()` closes command acceptance BEFORE the
+         * in-flight startup is cancelled, so a late `StartupCompleted` submit is a benign drop
+         * (see [submitLifecycleCommand]) and cannot restart the tunnel.
+         */
         override fun onDestroy() {
             val pendingStop =
                 serviceScope.launch {

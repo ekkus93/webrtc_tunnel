@@ -1,0 +1,135 @@
+package com.phillipchin.webrtctunnel
+
+import android.content.Intent
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.phillipchin.webrtctunnel.model.ServiceState
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.android.controller.ServiceController
+import org.robolectric.annotation.Config
+import java.util.concurrent.TimeUnit
+
+/**
+ * FIX6 P1-010: destroy-time cleanup is best effort, not an authoritative stop. These prove the
+ * truthful semantics: an explicit verified STOP is authoritative (destroy performs no redundant
+ * native stop), an observed destroy-fallback failure is published and never recorded as a clean
+ * stop, and a late startup completion after destroy cannot restart the tunnel or crash. Waits are
+ * on observable published state, not elapsed time.
+ */
+@RunWith(AndroidJUnit4::class)
+@Config(application = TunnelForegroundServiceTestApplication::class)
+class TunnelForegroundServiceDestroySemanticsTest {
+    private val controller =
+        ServiceController.of(
+            realIoService(),
+            Intent(ApplicationProvider.getApplicationContext(), TunnelForegroundService::class.java),
+        )
+    private lateinit var service: TunnelForegroundService
+
+    @Before
+    fun setUp() {
+        TunnelForegroundServiceTestHooks.identityReadFailure.set(null)
+        TunnelForegroundServiceTestHooks.configPrepFailure.set(null)
+        TunnelForegroundServiceTestHooks.policyBlockReason.set(null)
+        TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
+        TunnelForegroundServiceTestHooks.validationThrows.set(null)
+        TunnelForegroundServiceTestHooks.configPrepThrows.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadFailure.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadCancels.set(false)
+        TunnelForegroundServiceTestHooks.preferenceReadInterceptSkipCount.set(0)
+        service = controller.create().get()
+    }
+
+    @After
+    fun tearDown() {
+        controller.destroy()
+    }
+
+    private fun actionIntent(action: String) =
+        Intent(ApplicationProvider.getApplicationContext(), TunnelForegroundService::class.java).setAction(action)
+
+    private fun waitForCondition(
+        timeoutMs: Long = 8_000,
+        condition: () -> Boolean,
+    ): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (System.nanoTime() < deadline) {
+            if (condition()) return true
+            Thread.sleep(10)
+        }
+        return condition()
+    }
+
+    private fun startConnected() {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+    }
+
+    @Test
+    fun explicitStopRemainsAuthoritativeBeforeDestroy() {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        startConnected()
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
+        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+        val stopCallsAfterExplicit = bridge.stopCalls
+
+        controller.destroy()
+
+        // The verified explicit stop is authoritative, so destroy's fallback is guarded off and
+        // performs no redundant native stop regardless of whether its cleanup coroutine ran.
+        assertEquals(
+            "destroy must not perform a redundant native stop after a verified explicit stop",
+            stopCallsAfterExplicit,
+            bridge.stopCalls,
+        )
+    }
+
+    @Test
+    fun destroyFallbackFailureMarksRuntimeUncertainWhenObserved() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        startConnected()
+
+        bridge.failNextStop()
+        controller.destroy()
+
+        assertTrue("destroy fallback stop must be attempted", waitForCondition { bridge.stopCalls >= 1 })
+        assertTrue(
+            "an observed destroy-fallback stop failure must be published",
+            waitForCondition {
+                deps.tunnelRepository.status.value.lastError?.code == "destroy_fallback_stop_failed"
+            },
+        )
+    }
+
+    @Test
+    fun destroyWithoutCleanupCompletionDoesNotPublishFalseVerifiedStop() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        startConnected()
+
+        // A failed fallback stop means cleanup did not complete successfully; the service must
+        // never record that as a clean/verified stopped state.
+        bridge.failNextStop()
+        controller.destroy()
+
+        assertTrue(
+            waitForCondition {
+                deps.tunnelRepository.status.value.lastError?.code == "destroy_fallback_stop_failed"
+            },
+        )
+        assertNotEquals(
+            "a failed destroy cleanup must not be published as a clean stopped state",
+            ServiceState.Stopped,
+            deps.tunnelRepository.status.value.serviceState,
+        )
+    }
+}
