@@ -24,6 +24,7 @@ class IdentityRepositoryTest {
     fun setUp() {
         File(context.filesDir, "identity.enc").delete()
         File(context.filesDir, "identity.pub").delete()
+        File(context.filesDir, "authorized_keys").delete()
         repository = IdentityRepository(context, TestAesGcmCrypto())
     }
 
@@ -106,6 +107,53 @@ class IdentityRepositoryTest {
         assertTrue(repository.appendAuthorizedPublicIdentity(line).isSuccess)
         val file = File(context.filesDir, "authorized_keys")
         assertEquals(listOf(line), file.readLines())
+    }
+
+    // FIX6 P0-003 / INV-011: snapshot/restore of the identity-storage triplet, so a failed
+    // setup transaction can put every file back exactly as it was.
+
+    @Test
+    fun restoreStorageSnapshotRevertsIdentityPairMutation() {
+        repository.storeEncryptedIdentity("old-private".toByteArray(), "old-public")
+        repository.appendAuthorizedPublicIdentity("old-key peerA")
+        val snapshot = repository.captureStorageSnapshot()
+
+        repository.storeEncryptedIdentity("new-private".toByteArray(), "new-public")
+        repository.appendAuthorizedPublicIdentity("new-key peerB")
+
+        repository.restoreStorageSnapshot(snapshot)
+
+        assertArrayEquals("old-private".toByteArray(), repository.readPrivateIdentityPlaintext())
+        assertEquals("old-public", repository.readPublicIdentity())
+        assertEquals(listOf("old-key peerA"), File(context.filesDir, "authorized_keys").readLines())
+    }
+
+    @Test
+    fun restoreStorageSnapshotRecreatesAbsentFiles() {
+        // No identity stored: the snapshot records absence and restore must delete anything
+        // created in between, not leave a stale file.
+        val snapshot = repository.captureStorageSnapshot()
+        assertFalse(snapshot.encryptedIdentity.existed)
+
+        repository.storeEncryptedIdentity("created-later".toByteArray(), "pub")
+        repository.appendAuthorizedPublicIdentity("created-key peer")
+
+        repository.restoreStorageSnapshot(snapshot)
+
+        assertFalse("identity.enc must be absent again", repository.hasEncryptedIdentity())
+        assertEquals("", repository.readPublicIdentity())
+        assertFalse("authorized_keys must be absent again", File(context.filesDir, "authorized_keys").exists())
+    }
+
+    @Test
+    fun snapshotOfEncryptedIdentityCapturesCiphertextNotPlaintext() {
+        repository.storeEncryptedIdentity("secret-private".toByteArray(), "pub")
+        val snapshot = repository.captureStorageSnapshot()
+
+        // The captured bytes are the on-disk ciphertext, never the plaintext.
+        assertFalse(
+            snapshot.encryptedIdentity.bytes!!.toString(Charsets.ISO_8859_1).contains("secret-private"),
+        )
     }
 
     private class TestAesGcmCrypto : IdentityCrypto {

@@ -8,6 +8,23 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+/**
+ * Snapshot of one identity-storage file for transactional rollback (FIX6 P0-003 / INV-011).
+ * A plain class (not a data class) because it holds a [ByteArray]. The bytes are of the
+ * on-disk file, which for identity.enc is already ciphertext — no plaintext is captured.
+ */
+class StoredFileSnapshot internal constructor(
+    val existed: Boolean,
+    val bytes: ByteArray?,
+)
+
+/** Snapshot of the whole identity storage triplet, captured before a setup transaction. */
+class IdentityStorageSnapshot internal constructor(
+    val encryptedIdentity: StoredFileSnapshot,
+    val publicIdentity: StoredFileSnapshot,
+    val authorizedKeys: StoredFileSnapshot,
+)
+
 class IdentityRepository(
     private val context: Context,
     private val crypto: IdentityCrypto = AndroidKeystoreIdentityCrypto(),
@@ -16,15 +33,40 @@ class IdentityRepository(
     private val publicFile = File(context.filesDir, "identity.pub")
     private val authorizedKeysFile = File(context.filesDir, "authorized_keys")
 
+    // FIX6 INV-011: serialize identity-pair and authorized-key reads-modify-writes so a
+    // concurrent mutation cannot interleave with a snapshot/restore or with each other.
+    private val storageLock = Any()
+
     fun hasEncryptedIdentity(): Boolean = identityFile.exists()
 
     fun storeEncryptedIdentity(
         privateIdentity: ByteArray,
         publicIdentity: String,
-    ) {
+    ) = synchronized(storageLock) {
         identityFile.writeBytes(crypto.encrypt(privateIdentity))
         publicFile.writeText(publicIdentity)
     }
+
+    /**
+     * FIX6 P0-003: capture the exact prior state of the identity-storage files so a failed
+     * setup transaction can restore them. Serialized against mutations.
+     */
+    fun captureStorageSnapshot(): IdentityStorageSnapshot =
+        synchronized(storageLock) {
+            IdentityStorageSnapshot(
+                encryptedIdentity = snapshotOfFile(identityFile),
+                publicIdentity = snapshotOfFile(publicFile),
+                authorizedKeys = snapshotOfFile(authorizedKeysFile),
+            )
+        }
+
+    /** Restore identity storage to a captured [snapshot]. Serialized against mutations. */
+    fun restoreStorageSnapshot(snapshot: IdentityStorageSnapshot) =
+        synchronized(storageLock) {
+            restoreFileFromSnapshot(identityFile, snapshot.encryptedIdentity)
+            restoreFileFromSnapshot(publicFile, snapshot.publicIdentity)
+            restoreFileFromSnapshot(authorizedKeysFile, snapshot.authorizedKeys)
+        }
 
     /**
      * Returns plaintext private identity bytes. Never log, persist, or include in
@@ -51,36 +93,24 @@ class IdentityRepository(
 
     fun readPublicIdentity(): String = if (publicFile.exists()) publicFile.readText() else ""
 
-    fun readPrivateIdentityFile(path: String): Result<String> =
-        runCatching {
-            val source = File(path)
-            require(source.exists()) { "Identity file not found: $path" }
-            val value = source.readText()
-            require(value.isNotBlank()) { "Identity file is empty" }
-            value
-        }
-
     fun appendAuthorizedPublicIdentity(line: String): Result<Unit> =
         runCatching {
             val trimmed = line.trim()
             require(trimmed.isNotEmpty()) { "Public identity line is empty" }
-            val existing =
-                if (authorizedKeysFile.exists()) {
-                    authorizedKeysFile.readLines().map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
-                } else {
-                    mutableSetOf()
+            // INV-011: read-modify-write under the lock so a concurrent append cannot be lost.
+            synchronized(storageLock) {
+                val existing =
+                    if (authorizedKeysFile.exists()) {
+                        authorizedKeysFile.readLines().map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+                    } else {
+                        mutableSetOf()
+                    }
+                if (existing.add(trimmed)) {
+                    authorizedKeysFile.parentFile?.mkdirs()
+                    authorizedKeysFile.writeText(existing.toList().sorted().joinToString("\n"))
                 }
-            if (existing.add(trimmed)) {
-                authorizedKeysFile.parentFile?.mkdirs()
-                authorizedKeysFile.writeText(existing.toList().sorted().joinToString("\n"))
             }
         }
-
-    fun writeAuthorizedPublicIdentities(lines: List<String>) {
-        val unique = lines.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
-        authorizedKeysFile.parentFile?.mkdirs()
-        authorizedKeysFile.writeText(unique.joinToString("\n"))
-    }
 
     fun exportPrivateIdentity(
         outputPath: String,
@@ -102,6 +132,41 @@ class IdentityRepository(
             output.parentFile?.mkdirs()
             output.writeText(value)
         }
+}
+
+/**
+ * Reads and validates a private-identity file at [path]. Stateless (touches no repository
+ * state), so it lives at top level, which also keeps [IdentityRepository] under detekt's
+ * TooManyFunctions threshold.
+ */
+fun readPrivateIdentityFile(path: String): Result<String> =
+    runCatching {
+        val source = File(path)
+        require(source.exists()) { "Identity file not found: $path" }
+        val value = source.readText()
+        require(value.isNotBlank()) { "Identity file is empty" }
+        value
+    }
+
+// Top-level File helpers (not IdentityRepository members) to keep that class under detekt's
+// TooManyFunctions threshold. Callers hold the repository lock.
+private fun snapshotOfFile(file: File): StoredFileSnapshot =
+    if (file.exists()) {
+        StoredFileSnapshot(existed = true, bytes = file.readBytes())
+    } else {
+        StoredFileSnapshot(existed = false, bytes = null)
+    }
+
+private fun restoreFileFromSnapshot(
+    file: File,
+    snapshot: StoredFileSnapshot,
+) {
+    if (snapshot.existed) {
+        file.parentFile?.mkdirs()
+        file.writeBytes(snapshot.bytes ?: ByteArray(0))
+    } else {
+        file.delete()
+    }
 }
 
 interface IdentityCrypto {

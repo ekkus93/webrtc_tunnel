@@ -544,4 +544,34 @@ class ConfigRepositoryTest {
         File(context.filesDir, "setup_input.json").writeText("{ not valid json")
         assertTrue(repository.loadSetupInputResult().isFailure)
     }
+
+    // FIX6 P0-003: setup-input snapshot/restore for the setup transaction.
+
+    @Test
+    fun restoreSetupInputSnapshotRevertsToPriorContents() {
+        val setupInputFile = File(context.filesDir, "setup_input.json")
+        repository.saveSetupInput(SetupConfigInput(brokerHost = "prior.example"))
+        val snapshot = captureSetupInputSnapshot(setupInputFile)
+
+        repository.saveSetupInput(SetupConfigInput(brokerHost = "changed.example"))
+        restoreSetupInputSnapshot(setupInputFile, snapshot)
+
+        assertEquals("prior.example", repository.loadSetupInputResult().getOrThrow().brokerHost)
+    }
+
+    @Test
+    fun restoreSetupInputSnapshotRecreatesAbsentState() {
+        val setupInputFile = File(context.filesDir, "setup_input.json")
+        setupInputFile.delete()
+        val snapshot = captureSetupInputSnapshot(setupInputFile)
+        assertFalse(snapshot.existed)
+
+        repository.saveSetupInput(SetupConfigInput(brokerHost = "created.example"))
+        restoreSetupInputSnapshot(setupInputFile, snapshot)
+
+        assertFalse(
+            "setup_input.json must be absent again after restoring an absent snapshot",
+            setupInputFile.exists(),
+        )
+    }
 }

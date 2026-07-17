@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel.viewmodel
 
 import android.net.Uri
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,7 +36,7 @@ class SetupIdentityController(
             val resolved =
                 withContext(deps.dispatchers.io) {
                     runCatching {
-                        val privateIdentity = deps.identityRepository.readPrivateIdentityFile(trimmed).getOrThrow()
+                        val privateIdentity = readPrivateIdentityFile(trimmed).getOrThrow()
                         val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
                         require(validated.valid) { validated.message ?: "Invalid private identity" }
                         val peerId = validated.peerId ?: throw IllegalArgumentException("Missing identity peer id")

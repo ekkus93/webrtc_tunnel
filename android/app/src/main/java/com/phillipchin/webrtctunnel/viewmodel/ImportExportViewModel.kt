@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.SnackbarController
 import com.phillipchin.webrtctunnel.data.mutationResult
+import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,8 +54,7 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
             _state.value = _state.value.copy(privateIdentityImportPath = "")
         }) {
             val privateIdentity =
-                deps.identityRepository
-                    .readPrivateIdentityFile(_state.value.privateIdentityImportPath.trim())
+                readPrivateIdentityFile(_state.value.privateIdentityImportPath.trim())
                     .getOrThrow()
             importService.importContent(ImportKind.PrivateIdentity, privateIdentity)
         }

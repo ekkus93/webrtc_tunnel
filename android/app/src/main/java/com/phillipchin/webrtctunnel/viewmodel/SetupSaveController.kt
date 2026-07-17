@@ -9,6 +9,7 @@ import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -252,7 +253,7 @@ private fun importPrivateIdentity(
     path: String,
 ): Result<ResolvedIdentity> =
     runCatching {
-        val privateIdentity = deps.identityRepository.readPrivateIdentityFile(path).getOrThrow()
+        val privateIdentity = readPrivateIdentityFile(path).getOrThrow()
         val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
         require(validated.valid) { validated.message ?: "Invalid private identity" }
         val canonicalPrivate = validated.canonicalPrivateIdentity ?: privateIdentity

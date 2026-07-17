@@ -26,6 +26,40 @@ import java.nio.file.StandardCopyOption
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
 
+/**
+ * Snapshot of the setup-input file for transactional rollback (FIX6 P0-003). Distinguishes
+ * an absent file from a blank/present one so restore can recreate the exact prior state.
+ */
+data class SetupInputSnapshot(
+    val existed: Boolean,
+    val contents: String?,
+)
+
+/**
+ * FIX6 P0-003: capture the exact prior setup-input file state (distinguishing absent from
+ * blank/corrupt) so a failed setup transaction can restore it precisely. Top-level (not a
+ * [ConfigRepository] member) to keep that class under detekt's TooManyFunctions threshold.
+ */
+fun captureSetupInputSnapshot(setupInputFile: File): SetupInputSnapshot =
+    if (setupInputFile.exists()) {
+        SetupInputSnapshot(existed = true, contents = setupInputFile.readText())
+    } else {
+        SetupInputSnapshot(existed = false, contents = null)
+    }
+
+/** Restore setup-input to a captured [snapshot], recreating the absent state exactly. */
+fun restoreSetupInputSnapshot(
+    setupInputFile: File,
+    snapshot: SetupInputSnapshot,
+) {
+    if (snapshot.existed) {
+        setupInputFile.parentFile?.mkdirs()
+        setupInputFile.writeText(snapshot.contents.orEmpty())
+    } else {
+        setupInputFile.delete()
+    }
+}
+
 open class ConfigRepository(private val context: Context) {
     private val configFile: File get() = File(context.filesDir, "config.toml")
     private val setupInputFile: File get() = File(context.filesDir, "setup_input.json")
@@ -176,6 +210,10 @@ open class ConfigRepository(private val context: Context) {
         setupInputFile.parentFile?.mkdirs()
         setupInputFile.writeText(Json.encodeToString(input))
     }
+
+    // FIX6 P0-003: exposed so the top-level setup-input snapshot/restore helpers (below)
+    // can capture and restore it. internal, and the file is app-private.
+    internal val setupInputFileForSnapshot: File get() = setupInputFile
 
     /**
      * Load the saved setup draft, distinguishing a corrupt file (failure) from a
