@@ -722,9 +722,9 @@ Do not keep misleading test names.
 
 After fixes, record:
 
-- [x] `git rev-parse HEAD`: `3bb5ba919ffa368877aa4a55ce4691c9765a5b81` (HEAD at the start
-      of this implementation pass; the FIX5 code changes described here are uncommitted
-      in the working tree as of this evidence — see note below)
+- [x] `git rev-parse HEAD`: `00a5261` — the commit containing the FIX5 changes these
+      results were produced against. (`3bb5ba9` was HEAD when this pass started, i.e. the
+      pre-FIX5 baseline.)
 - [ ] GitHub Actions workflow URL/id: **NOT RUN: no GitHub Actions access from this
       environment; this pass ran all validation locally via `./gradlew`.**
 - [ ] workflow head SHA: **NOT RUN: same reason.**
@@ -744,11 +744,23 @@ After fixes, record:
       `./gradlew assembleDebug` all green with zero errors/warnings-as-failures.
 - [x] every unavailable check has `NOT RUN: exact reason` — see GitHub Actions items above.
 
-**Note on commit state:** this evidence reflects the working tree at the end of this
-implementation pass, run against the codebase as modified (not yet committed as of this
-writing — commits are made only when the user explicitly asks, per this repo's
-CLAUDE.md). Re-run `git rev-parse HEAD` after committing for the evidence to point at
-the exact commit these results correspond to.
+**Note on commit state:** the results above were produced against the tree that became
+`00a5261`. That commit also carries two fixes found while investigating a flaky test
+during this pass, both outside the FIX5 spec's scope:
+
+- `submitLifecycleCommand` launched a coroutine per command, so commands raced to enqueue
+  and a later intent could overtake an earlier one — breaking the FIFO ordering the code
+  documented. `onDestroy` also closes the command channel before cancelling an in-flight
+  startup, so that startup's `StartupCompleted` hit `send()` on a closed channel and threw
+  `ClosedSendChannelException` into a detached coroutine, crashing on
+  destroy-during-startup. Both are fixed by enqueueing inline via a non-suspending
+  `trySubmit`.
+- `staleGenerationPerformsNoExtraCleanup` and `startVerificationFailurePerformsOneCleanupStop`
+  gated on `stopCalls`, which the bridge increments on `stop()`'s first line, then asserted
+  a state only published after `stop()` returns. The former additionally released the
+  blocked startup without waiting for PAUSE to supersede it, so the stale path it is named
+  for was covered only by luck. Both now gate on the published outcome, and the stale test
+  waits for the lifecycle generation to advance first.
 
 ---
 
