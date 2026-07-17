@@ -1820,17 +1820,17 @@ Do not add production mutation hooks solely for tests.
 
 #### Required conversions
 
-- [ ] exactly-once policy retry test;
-- [ ] pending retry destroy test;
-- [ ] stale generation cleanup test;
-- [ ] stop cleanup count tests;
-- [ ] any new monitor retry tests.
+- [x] exactly-once policy retry test; — `4f0a7ff` (STOP-barrier)
+- [x] pending retry destroy test; — `4f0a7ff` (coordinator-stopped + state-convergence wait)
+- [x] stale generation cleanup test; — `4f0a7ff` (the pending-retry/native-failure conversions cover the stale-generation paths)
+- [x] stop cleanup count tests; — `4f0a7ff` (STOP-barrier replaces the count-proof sleeps)
+- [x] any new monitor retry tests. — N/A: the P0-006 `NetworkMonitorSupervisor` retry tests use an injected virtual-time `delayFn`, never real sleeps.
 
 ### Acceptance
 
-- [ ] `rg -n 'Thread\.sleep'` returns no proof sleeps in affected tests;
-- [ ] tests wait on observable events, not elapsed time;
-- [ ] pending retry destroy test proves the token existed before destroy.
+- [x] `rg -n 'Thread\.sleep'` returns no proof sleeps in affected tests (only `Thread.sleep(10)` polling inside `waitForCondition` remains);
+- [x] tests wait on observable events, not elapsed time;
+- [x] pending retry destroy test proves the token existed before destroy (establishes the pending retry via the in-flight-startup race before destroying).
 
 ---
 
