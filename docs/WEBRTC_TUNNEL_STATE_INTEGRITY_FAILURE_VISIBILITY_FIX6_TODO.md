@@ -1602,21 +1602,21 @@ If `onError` throws, allow the processor to stop; the `finally` closes command a
 
 #### Tests
 
-- [ ] `handlerCancellationStopsProcessorAndRejectsLaterCommands`
-- [ ] `processorScopeCancellationRejectsLaterCommands`
-- [ ] `recoverableExceptionPublishesAndContinues`
-- [ ] `fatalErrorIsNotConvertedToLifecycleCommandFailed`
-- [ ] `errorReporterFailureStopsProcessorAndRejectsLaterCommands`
-- [ ] `stopIsIdempotent`
+- [x] `handlerCancellationStopsProcessorAndRejectsLaterCommands` — `6a05c30` (renamed from the prior cancellation test, now asserting rejection)
+- [x] `processorScopeCancellationRejectsLaterCommands` — `6a05c30`
+- [x] `recoverableExceptionPublishesAndContinues` — `6a05c30`
+- [x] `fatalErrorIsNotConvertedToLifecycleCommandFailed` — `6a05c30`
+- [x] `errorReporterFailureStopsProcessorAndRejectsLaterCommands` — `6a05c30`
+- [x] `stopIsIdempotent` — `6a05c30`
 
-Update the existing test that currently expects the channel to remain open after cancellation.
+Update the existing test that currently expects the channel to remain open after cancellation. — done: the prior `cancellationExceptionFromHandlerStillStopsProcessorAndIsNotReportedAsFailure` became `handlerCancellationStopsProcessorAndRejectsLaterCommands`, now asserting a post-exit submit is refused.
 
 ### Acceptance
 
-- [ ] no command is accepted without a live processor;
-- [ ] recoverable exceptions remain visible;
-- [ ] fatal errors are not normalized;
-- [ ] teardown late-submit remains a benign visible drop.
+- [x] no command is accepted without a live processor;
+- [x] recoverable exceptions remain visible;
+- [x] fatal errors are not normalized;
+- [x] teardown late-submit remains a benign visible drop.
 
 ---
 
