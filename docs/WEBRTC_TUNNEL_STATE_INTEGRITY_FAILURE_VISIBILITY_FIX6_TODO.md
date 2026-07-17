@@ -1132,20 +1132,26 @@ private suspend fun rollbackFromSnapshot(
 
 #### Tests
 
-- [ ] `configSnapshotReadExceptionAbortsBeforeMutation`
-- [ ] `setupSnapshotReadExceptionAbortsBeforeMutation`
-- [ ] `rollbackContinuesAfterConfigRestoreThrows`
-- [ ] `rollbackContinuesAfterSetupRestoreThrows`
-- [ ] `everyResetAndRollbackReasonIsRedacted`
-- [ ] `rollbackFailureUsesDistinctVisibleCode`
-- [ ] `snapshotCancellationPropagates`
+- [x] `configSnapshotReadExceptionAbortsBeforeMutation` — `c244987`
+- [x] `setupSnapshotReadExceptionAbortsBeforeMutation` — `c244987`
+- [x] `rollbackContinuesAfterConfigRestoreThrows` — `c244987`
+- [x] `rollbackContinuesAfterSetupRestoreThrows` — `c244987`
+- [x] `everyResetAndRollbackReasonIsRedacted` — `c244987`
+- [x] `rollbackFailureUsesDistinctVisibleCode` — `c244987` (in `SettingsViewModelTest` via `resetFailureVisibleCode`)
+- [x] `snapshotCancellationPropagates` — `c244987`
+
+> Implementation note: the P1-002 coordinator cases live in the new
+> `TransactionalResetHardeningTest.kt` (splitting them out kept
+> `TransactionalResetCoordinatorTest` under detekt's LargeClass limit). Config-read
+> seams use an `open readConfig()` override; `rollbackContinues*` force a genuine restore
+> throw via an Nth-call-throwing repo, not a forward-stage failure.
 
 ### Acceptance
 
-- [ ] snapshot failure performs zero mutation;
-- [ ] one rollback exception does not suppress later rollback stages;
-- [ ] all reasons are redacted;
-- [ ] partial rollback is visibly distinct.
+- [x] snapshot failure performs zero mutation;
+- [x] one rollback exception does not suppress later rollback stages;
+- [x] all reasons are redacted;
+- [x] partial rollback is visibly distinct.
 
 ---
 
