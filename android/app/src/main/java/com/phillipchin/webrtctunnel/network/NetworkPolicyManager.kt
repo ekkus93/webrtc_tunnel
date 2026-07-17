@@ -5,12 +5,10 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
-import com.phillipchin.webrtctunnel.data.AppDiagnosticEventBus
-import com.phillipchin.webrtctunnel.data.DiagnosticEvent
-import com.phillipchin.webrtctunnel.data.DiagnosticEventReporter
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
+import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.channels.ProducerScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -20,15 +18,26 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
 
+/**
+ * Direct, required reporter for network-policy diagnostics (FIX6 P0-002 / INV-004).
+ *
+ * A `fun interface` taking only a redacted [String], never a `Throwable`. It replaces the
+ * previous `AppDiagnosticEventBus`, whose replay-zero `SharedFlow` + ignored `tryEmit`
+ * dropped a required diagnostic when no subscriber was registered — the exact silent
+ * discard P0-003 was meant to eliminate. There is no default/no-op implementation:
+ * `monitor` requires a reporter, so a caller cannot forget to supply one.
+ */
+fun interface NetworkPolicyDiagnosticReporter {
+    fun report(
+        code: String,
+        message: String,
+    )
+}
+
 class NetworkPolicyManager(
     private val classifier: () -> Pair<NetworkType, Boolean>,
 ) {
     constructor(context: Context) : this({ classifyCurrentNetwork(context) })
-
-    // P0-003: always-owned diagnostic bus — delivery failures are never silently
-    // discarded, since there is no separate no-op/production reporter split to
-    // misconfigure. TunnelForegroundService collects from this while alive.
-    val diagnosticEvents: AppDiagnosticEventBus = AppDiagnosticEventBus()
 
     private val _status = MutableStateFlow(evaluate(classifier(), allowMetered = false))
     val status: StateFlow<NetworkPolicyStatus> = _status.asStateFlow()
@@ -47,7 +56,10 @@ class NetworkPolicyManager(
         return evaluateWithPolicy(allowMetered).tunnelAllowed
     }
 
-    fun monitor(context: Context): Flow<NetworkPolicyStatus> =
+    fun monitor(
+        context: Context,
+        reporter: NetworkPolicyDiagnosticReporter,
+    ): Flow<NetworkPolicyStatus> =
         callbackFlow {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val callback =
@@ -55,13 +67,13 @@ class NetworkPolicyManager(
                     override fun onAvailable(network: android.net.Network) {
                         val current = evaluate(classifier(), allowMetered = false)
                         _status.value = current
-                        emitPolicyStatus(current, diagnosticEvents)
+                        emitPolicyStatus(current, reporter)
                     }
 
                     override fun onLost(network: android.net.Network) {
                         val current = evaluate(classifier(), allowMetered = false)
                         _status.value = current
-                        emitPolicyStatus(current, diagnosticEvents)
+                        emitPolicyStatus(current, reporter)
                     }
 
                     override fun onCapabilitiesChanged(
@@ -70,41 +82,45 @@ class NetworkPolicyManager(
                     ) {
                         val current = evaluate(classifier(), allowMetered = false)
                         _status.value = current
-                        emitPolicyStatus(current, diagnosticEvents)
+                        emitPolicyStatus(current, reporter)
                     }
                 }
             val request = NetworkRequest.Builder().build()
             cm.registerNetworkCallback(request, callback)
-            emitPolicyStatus(evaluate(classifier(), allowMetered = false), diagnosticEvents)
+            emitPolicyStatus(evaluate(classifier(), allowMetered = false), reporter)
             awaitClose { cm.unregisterNetworkCallback(callback) }
         }.conflate()
 
     companion object {
         private const val TAG = "NetworkPolicyManager"
 
-        /**
-         * Wraps trySend so delivery failures are visible (logged) and reported
-         * through [diagnostics] for app-level diagnostics.
-         */
         private fun ProducerScope<NetworkPolicyStatus>.emitPolicyStatus(
             status: NetworkPolicyStatus,
-            diagnostics: DiagnosticEventReporter,
+            reporter: NetworkPolicyDiagnosticReporter,
+        ) = handlePolicyDeliveryResult(trySend(status), reporter)
+
+        /**
+         * Handles the real [trySend] result (P0-002-E). Extracted so tests can drive the
+         * actual delivery-result path — a genuinely failed `trySend`, an expected close —
+         * rather than only exercising the [isExpectedChannelClose] classifier.
+         *
+         * The reporter receives a redacted [String]; the raw `Throwable` is never passed to
+         * it or to `Log.w(tag, msg, throwable)`, whose stack-trace header would print the
+         * unredacted message.
+         */
+        internal fun handlePolicyDeliveryResult(
+            result: ChannelResult<Unit>,
+            reporter: NetworkPolicyDiagnosticReporter,
         ) {
-            val result = trySend(status)
-            if (result.isFailure) {
-                val cause = result.exceptionOrNull()
-                if (isExpectedChannelClose(cause)) {
-                    return
-                }
-                val message = redactedDeliveryFailureMessage(cause)
-                Log.w(TAG, "Network policy event delivery failed: $message")
-                diagnostics.reportDiagnosticEvent(
-                    DiagnosticEvent(
-                        code = "network_policy_event_delivery_failed",
-                        message = message,
-                    ),
-                )
-            }
+            if (result.isSuccess) return
+            val cause = result.exceptionOrNull()
+            if (isExpectedChannelClose(cause)) return
+            val message = redactedDeliveryFailureMessage(cause)
+            Log.w(TAG, "Network policy event delivery failed: $message")
+            reporter.report(
+                code = "network_policy_event_delivery_failed",
+                message = message,
+            )
         }
 
         /**

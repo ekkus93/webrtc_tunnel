@@ -2,12 +2,18 @@ package com.phillipchin.webrtctunnel.network
 
 import com.phillipchin.webrtctunnel.model.NetworkType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+// Robolectric provides a working android.util.Log; handlePolicyDeliveryResult logs the
+// redacted failure, which throws "not mocked" under plain JUnit.
+@RunWith(RobolectricTestRunner::class)
 class NetworkPolicyManagerTest {
     @Test
     fun blocksMeteredAndUnknownByDefault() {
@@ -50,32 +56,105 @@ class NetworkPolicyManagerTest {
         assertEquals("Unknown network", status.blockReason)
     }
 
+    private class RecordingReporter : NetworkPolicyDiagnosticReporter {
+        val reports = mutableListOf<Pair<String, String>>()
+
+        override fun report(
+            code: String,
+            message: String,
+        ) {
+            reports.add(code to message)
+        }
+    }
+
+    // FIX6 P0-002-E: exercise the real delivery-result path through
+    // handlePolicyDeliveryResult using genuine ChannelResult values from real channels,
+    // not just the isExpectedChannelClose classifier. The reporter is a direct fun
+    // interface, so these do not depend on any flow subscriber.
+
     @Test
-    fun eachInstanceOwnsItsOwnDiagnosticEventBus() {
-        // P0-003: every NetworkPolicyManager always has a live diagnostic bus — there is
-        // no no-op/production reporter split left to misconfigure.
-        val first = NetworkPolicyManager({ NetworkType.UnmeteredWifi to false })
-        val second = NetworkPolicyManager({ NetworkType.UnmeteredWifi to false })
-        assertTrue(first.diagnosticEvents !== second.diagnosticEvents)
+    fun failedDeliveryReportsExactlyOnce() {
+        // A rendezvous channel with no receiver makes trySend fail for real.
+        val failed = Channel<Unit>(Channel.RENDEZVOUS).trySend(Unit)
+        assertTrue(failed.isFailure)
+        val reporter = RecordingReporter()
+
+        NetworkPolicyManager.handlePolicyDeliveryResult(failed, reporter)
+
+        assertEquals(1, reporter.reports.size)
+        assertEquals("network_policy_event_delivery_failed", reporter.reports.single().first)
     }
 
     @Test
-    fun expectedCloseCancellationExceptionDoesNotReport() {
-        val cause = CancellationException("cancelled")
-        assertTrue(NetworkPolicyManager.isExpectedChannelClose(cause))
+    fun failedDeliveryRedactsPasswordTokenAndApiKey() {
+        val channel = Channel<Unit>(capacity = 1)
+        channel.close(RuntimeException("delivery failed password=secret token=abc api_key=xyz"))
+        val reporter = RecordingReporter()
+
+        NetworkPolicyManager.handlePolicyDeliveryResult(channel.trySend(Unit), reporter)
+
+        val message = reporter.reports.single().second
+        assertTrue(message.contains("***REDACTED***"))
+        assertFalse(message.contains("secret"))
+        assertFalse(message.contains("abc"))
+        assertFalse(message.contains("xyz"))
     }
 
     @Test
-    fun expectedCloseClosedSendChannelDoesNotReport() {
-        val cause = ClosedSendChannelException("channel closed")
-        assertTrue(NetworkPolicyManager.isExpectedChannelClose(cause))
+    fun closedSendChannelDoesNotReport() {
+        // Closing without a cause makes trySend's exceptionOrNull a ClosedSendChannelException.
+        val channel = Channel<Unit>(capacity = 1)
+        channel.close()
+        val reporter = RecordingReporter()
+
+        NetworkPolicyManager.handlePolicyDeliveryResult(channel.trySend(Unit), reporter)
+
+        assertTrue("an expected channel close must not be reported", reporter.reports.isEmpty())
     }
 
     @Test
-    fun activeFailedDeliveryReportsDiagnostic() {
-        // Non-expected causes should be reported
-        val cause = RuntimeException("delivery failed")
-        assertFalse(NetworkPolicyManager.isExpectedChannelClose(cause))
+    fun cancellationCloseDoesNotReport() {
+        val channel = Channel<Unit>(capacity = 1)
+        channel.close(CancellationException("cancelled"))
+        val reporter = RecordingReporter()
+
+        NetworkPolicyManager.handlePolicyDeliveryResult(channel.trySend(Unit), reporter)
+
+        assertTrue("a cancellation close must not be reported", reporter.reports.isEmpty())
+    }
+
+    @Test
+    fun reporterIsInvokedWithoutAnyFlowSubscriber() {
+        // No SharedFlow, no subscriber: the direct reporter is called synchronously, which
+        // is the whole point of replacing the replay-zero bus.
+        val failed = Channel<Unit>(Channel.RENDEZVOUS).trySend(Unit)
+        val reporter = RecordingReporter()
+
+        NetworkPolicyManager.handlePolicyDeliveryResult(failed, reporter)
+
+        assertEquals(1, reporter.reports.size)
+    }
+
+    @Test
+    fun rawThrowableIsNeverPassedToReporterOrLogger() {
+        // The reporter interface only accepts strings, and the delivered message must be
+        // the redacted form — a raw secret-bearing throwable message can never reach it.
+        val channel = Channel<Unit>(capacity = 1)
+        channel.close(RuntimeException("token=leak-me"))
+        val reporter = RecordingReporter()
+
+        NetworkPolicyManager.handlePolicyDeliveryResult(channel.trySend(Unit), reporter)
+
+        val message = reporter.reports.single().second
+        assertFalse(message.contains("leak-me"))
+        assertTrue(message.contains("***REDACTED***"))
+    }
+
+    @Test
+    fun expectedCloseClassifierCoversCancellationAndClosedSend() {
+        assertTrue(NetworkPolicyManager.isExpectedChannelClose(CancellationException("cancelled")))
+        assertTrue(NetworkPolicyManager.isExpectedChannelClose(ClosedSendChannelException("closed")))
+        assertFalse(NetworkPolicyManager.isExpectedChannelClose(RuntimeException("real failure")))
     }
 
     @Test

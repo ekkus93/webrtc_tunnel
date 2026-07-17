@@ -27,6 +27,7 @@ import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
 import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
 import com.phillipchin.webrtctunnel.network.LocalAddressResolver
+import com.phillipchin.webrtctunnel.network.NetworkPolicyDiagnosticReporter
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.notification.NotificationController
 import com.phillipchin.webrtctunnel.security.IdentityRepository
@@ -217,51 +218,51 @@ class TunnelForegroundService
             coordinator = TunnelLifecycleCoordinator(coordinatorOps, serviceScope)
             coordinator.start()
 
-            // P0-003: Relay NetworkPolicyManager's diagnostic events (e.g. delivery
-            // failures) into this service's own visible error/notification reporter while
-            // the service is alive. Cancelled implicitly with serviceScope on destroy — no
-            // ordering constraint requires an explicit cancel-and-join like networkMonitorJob.
-            serviceScope.launch {
-                networkPolicyManager.diagnosticEvents.events.collect { event ->
-                    reporter.publishError(message = event.message, code = event.code)
+            // FIX6 P0-002: a direct required reporter — delivery failures reach the visible
+            // StatusReporter synchronously, with no replay-zero SharedFlow and no
+            // service-start subscription race. The reporter takes only a redacted string.
+            val networkPolicyReporter =
+                NetworkPolicyDiagnosticReporter { code, message ->
+                    reporter.publishError(message = message, code = code)
                 }
-            }
 
             // Network monitor still collects network events, but submits commands
             // through the same ordered queue instead of launching independent coroutines.
             networkMonitorJob =
                 serviceScope.launch {
-                    networkPolicyManager.monitor(this@TunnelForegroundService).collect { _ ->
-                        val result =
-                            runCatching {
-                                val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
-                                val policy =
-                                    networkPolicyManager.evaluateWithPolicy(
-                                        prefs.allowMetered || allowMeteredForCurrentRun.get(),
-                                    )
-                                repository.updateNetworkStatus(policy)
-                                if (policy.networkType == NetworkType.UnmeteredWifi) {
-                                    // Policy allowed: submit through the ordered queue.
-                                    submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
-                                } else if (!policy.tunnelAllowed) {
-                                    // Policy blocked: submit through the ordered queue.
-                                    submitLifecycleCommand(
-                                        LifecycleCommand.PolicyBlocked(
-                                            policy.blockReason
-                                                ?: "Tunnel paused: network policy blocks metered/cellular",
-                                        ),
-                                    )
+                    networkPolicyManager
+                        .monitor(this@TunnelForegroundService, networkPolicyReporter)
+                        .collect { _ ->
+                            val result =
+                                runCatching {
+                                    val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
+                                    val policy =
+                                        networkPolicyManager.evaluateWithPolicy(
+                                            prefs.allowMetered || allowMeteredForCurrentRun.get(),
+                                        )
+                                    repository.updateNetworkStatus(policy)
+                                    if (policy.networkType == NetworkType.UnmeteredWifi) {
+                                        // Policy allowed: submit through the ordered queue.
+                                        submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
+                                    } else if (!policy.tunnelAllowed) {
+                                        // Policy blocked: submit through the ordered queue.
+                                        submitLifecycleCommand(
+                                            LifecycleCommand.PolicyBlocked(
+                                                policy.blockReason
+                                                    ?: "Tunnel paused: network policy blocks metered/cellular",
+                                            ),
+                                        )
+                                    }
                                 }
+                            if (result.isFailure) {
+                                val error = result.exceptionOrNull()
+                                if (error is CancellationException) throw error
+                                reporter.publishError(
+                                    message = error?.message ?: "Network policy monitor failed",
+                                    code = "network_policy_monitor_failed",
+                                )
                             }
-                        if (result.isFailure) {
-                            val error = result.exceptionOrNull()
-                            if (error is CancellationException) throw error
-                            reporter.publishError(
-                                message = error?.message ?: "Network policy monitor failed",
-                                code = "network_policy_monitor_failed",
-                            )
                         }
-                    }
                 }
         }
 
