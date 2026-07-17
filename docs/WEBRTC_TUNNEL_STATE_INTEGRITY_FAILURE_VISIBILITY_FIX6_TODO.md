@@ -1735,19 +1735,19 @@ Use exception details only in a separately redacted diagnostic field if the mode
 
 ### Tests
 
-- [ ] `redactsBrokerPasswordWithUnderscorePrefix`
-- [ ] `redactsQuotedJsonPassword`
-- [ ] `redactsQuotedJsonApiKey`
-- [ ] `redactsTomlBareSecret`
-- [ ] `redactsBasicAuthorizationHeader`
-- [ ] `redactsArbitraryIdentityPrivateField`
-- [ ] `doesNotLeakOriginalSentinelAcrossAllRequiredDiagnostics`
+- [x] `redactsBrokerPasswordWithUnderscorePrefix` — `3ba776e`
+- [x] `redactsQuotedJsonPassword` — `3ba776e`
+- [x] `redactsQuotedJsonApiKey` — `3ba776e`
+- [x] `redactsTomlBareSecret` — `3ba776e`
+- [x] `redactsBasicAuthorizationHeader` — `3ba776e`
+- [x] `redactsArbitraryIdentityPrivateField` — `3ba776e`
+- [x] `doesNotLeakOriginalSentinelAcrossAllRequiredDiagnostics` — `3ba776e`
 
 ### Acceptance
 
-- [ ] all listed formats are covered;
-- [ ] required diagnostics use fixed safe messages where practical;
-- [ ] no raw secret sentinel appears in tests/log captures.
+- [x] all listed formats are covered;
+- [x] required diagnostics use fixed safe messages where practical (P1-009-B: required boundary errors already carry stable codes; the structured redactor covers detail fields);
+- [x] no raw secret sentinel appears in tests/log captures.
 
 ---
 
