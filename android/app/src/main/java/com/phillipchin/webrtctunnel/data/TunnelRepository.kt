@@ -401,7 +401,10 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
         previous.copy(
             serviceState = stateValue,
             mode = modeValue,
-            remotePeerId = remotePeerId ?: previous.remotePeerId,
+            // P1-001: the current remote peer is only truthful while a session is active. Never
+            // fall back to the previous peer — a zero-session status (even a non-terminal
+            // "running" that maps to Listening) must clear it, not display a stale peer.
+            remotePeerId = remotePeerId.takeIf { activeSessionCount > 0 },
             mqttConnected = mqttConnected,
             activeSessionCount = activeSessionCount,
             sessionCapacity = sessionCapacity ?: previous.sessionCapacity,

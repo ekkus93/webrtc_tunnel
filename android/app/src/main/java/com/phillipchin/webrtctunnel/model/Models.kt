@@ -166,6 +166,9 @@ data class TunnelStatus(
     val serviceState: ServiceState,
     val mode: TunnelMode,
     val localPeerId: String,
+    // P1-001: the peer of the CURRENT active session, or null when no session is active. Never a
+    // stale/previous peer — the mapping clears it whenever activeSessionCount == 0, including
+    // non-terminal zero-session states.
     val remotePeerId: String? = null,
     val mqttConnected: Boolean = false,
     val activeSessionCount: Int = 0,

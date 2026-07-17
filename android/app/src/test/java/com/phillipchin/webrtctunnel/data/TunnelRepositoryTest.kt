@@ -15,6 +15,7 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -116,6 +117,69 @@ class TunnelRepositoryTest {
         bridge.statusPayload = "{bad-json"
         repository.refreshStatus()
         assertEquals(ServiceState.Error, repository.status.value.serviceState)
+    }
+
+    // P1-001: the current remote peer must reflect only the active session, never a stale one.
+
+    private fun runningWithPeer(
+        sessions: Int,
+        peer: String?,
+    ): String =
+        Json.encodeToString(
+            NativeRuntimeStatusDto(
+                state = "running",
+                mode = "offer",
+                active = true,
+                activeSessionCount = sessions,
+                remotePeerId = peer,
+            ),
+        )
+
+    @Test
+    fun activeSessionThenZeroSessionsClearsRemotePeerIdWhileRuntimeStillRunning() {
+        bridge.statusPayload = runningWithPeer(sessions = 1, peer = "peer-1")
+        repository.refreshStatus()
+        assertEquals("peer-1", repository.status.value.remotePeerId)
+
+        // Still running (non-terminal Listening) but the session ended: the peer must clear.
+        bridge.statusPayload = runningWithPeer(sessions = 0, peer = "peer-1")
+        repository.refreshStatus()
+        assertEquals(ServiceState.Listening, repository.status.value.serviceState)
+        assertNull(repository.status.value.remotePeerId)
+    }
+
+    @Test
+    fun terminalStateStillClearsRemotePeerId() {
+        bridge.statusPayload = runningWithPeer(sessions = 1, peer = "peer-1")
+        repository.refreshStatus()
+        assertEquals("peer-1", repository.status.value.remotePeerId)
+
+        bridge.statusPayload = Json.encodeToString(NativeRuntimeStatusDto(state = "stopped", mode = "offer"))
+        repository.refreshStatus()
+        assertNull(repository.status.value.remotePeerId)
+    }
+
+    @Test
+    fun newActiveSessionUsesNewNativeRemotePeerId() {
+        bridge.statusPayload = runningWithPeer(sessions = 1, peer = "peer-1")
+        repository.refreshStatus()
+        assertEquals("peer-1", repository.status.value.remotePeerId)
+
+        bridge.statusPayload = runningWithPeer(sessions = 1, peer = "peer-2")
+        repository.refreshStatus()
+        assertEquals("peer-2", repository.status.value.remotePeerId)
+    }
+
+    @Test
+    fun missingRemotePeerIdDoesNotReusePreviousPeer() {
+        bridge.statusPayload = runningWithPeer(sessions = 1, peer = "peer-1")
+        repository.refreshStatus()
+        assertEquals("peer-1", repository.status.value.remotePeerId)
+
+        // Native reports an active session but no peer id: must not fall back to peer-1.
+        bridge.statusPayload = runningWithPeer(sessions = 2, peer = null)
+        repository.refreshStatus()
+        assertNull(repository.status.value.remotePeerId)
     }
 
     @Test
