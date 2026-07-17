@@ -1,23 +1,60 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
+import android.os.Looper
 import com.phillipchin.webrtctunnel.TunnelNativeBridge
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 class ImportExportViewModelTest : AppViewModelTestBase() {
+    @Test
+    fun importCancellationIsNotReportedAsFailure() {
+        // FIX6 P0-005: the op runner wraps a suspend block; a cancellation must propagate,
+        // not fall through to a failure snackbar/resultMessage as though it were an error.
+        val cancellingConfigRepo =
+            object : ConfigRepository(app) {
+                override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+                    throw CancellationException("cancelled during import write")
+            }
+        val cancellingDeps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = { recordingBridge },
+                configRepository = cancellingConfigRepo,
+                networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                identityRepository = deps.identityRepository,
+                dispatchers = inlineTestDispatchers(),
+            )
+        val vm = ImportExportViewModel(cancellingDeps)
+        val importFile = File(app.filesDir, "cancel-import-config.toml").apply { writeText("format = \"x\"\n") }
+        vm.updateState { it.copy(configImportPath = importFile.absolutePath) }
+        recordingBridge.validationResult = ValidationResult(true, null)
+
+        vm.importConfig()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        assertNull(
+            "a cancelled import must not produce a failure result message",
+            vm.state.value.resultMessage,
+        )
+    }
+
     @Test
     fun importExportViewModelRequiresConfirmationForRawConfigExport() {
         val vm = ImportExportViewModel(deps)

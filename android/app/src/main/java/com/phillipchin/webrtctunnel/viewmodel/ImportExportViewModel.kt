@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.SnackbarController
+import com.phillipchin.webrtctunnel.data.mutationResult
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -148,7 +149,10 @@ private class ImportExportOps(
         if (state.value.isBusy) return
         scope.launch {
             state.value = state.value.copy(isBusy = true, resultMessage = null)
-            val result = withContext(io) { runCatching { block() } }
+            // FIX6 P0-005: mutationResult (not runCatching) so a cancelled operation — e.g.
+            // the ViewModel being cleared mid-import — propagates instead of falling through
+            // to a stale failure snackbar as though it were an ordinary error.
+            val result = withContext(io) { mutationResult { block() } }
             if (result.isSuccess) onSuccess()
             val message = result.fold({ successMessage }, { it.message ?: failureFallback })
             state.value = state.value.copy(isBusy = false, resultMessage = message)

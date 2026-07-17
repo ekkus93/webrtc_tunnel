@@ -39,6 +39,10 @@ data class ForwardsMutationReceipt(
  * If the persisted file is corrupt at startup there is no valid baseline, so mutations
  * are blocked (rather than overwriting the user's file with an empty list) and
  * [loadError] is surfaced; a later successful [refresh] clears that state.
+ *
+ * FIX6 P0-005: mutations wrap their persistence in [mutationResult] rather than
+ * `runCatching`, so a `CancellationException` propagates instead of being turned into a
+ * `Result.failure` that could drive rollback or a stale user message.
  */
 class ForwardsRepository(
     private val store: ForwardsStore,
@@ -108,7 +112,7 @@ class ForwardsRepository(
                 if (error != null) {
                     return@withContext Result.failure(ForwardsMutationBlocked(error))
                 }
-                runCatching {
+                mutationResult {
                     store.saveForwards(after)
                     _forwards.value = after
                     revision += 1
@@ -134,7 +138,7 @@ class ForwardsRepository(
                 }
                 val before = _forwards.value
                 val after = before.filterNot { it.id == forwardId }
-                runCatching {
+                mutationResult {
                     store.saveForwards(after)
                     _forwards.value = after
                     revision += 1
@@ -159,7 +163,7 @@ class ForwardsRepository(
                 )
             }
             withContext(dispatchers.io) {
-                runCatching {
+                mutationResult {
                     store.saveForwards(receipt.before)
                     _forwards.value = receipt.before
                     revision += 1
@@ -174,7 +178,7 @@ class ForwardsRepository(
     suspend fun resetForwards(): Result<Unit> =
         mutex.withLock {
             withContext(dispatchers.io) {
-                runCatching {
+                mutationResult {
                     store.saveForwards(emptyList())
                     _forwards.value = emptyList()
                     _loadError.value = null
@@ -193,7 +197,7 @@ class ForwardsRepository(
     internal suspend fun restoreForTransactionalReset(forwards: List<ForwardConfig>): Result<Unit> =
         mutex.withLock {
             withContext(dispatchers.io) {
-                runCatching {
+                mutationResult {
                     store.saveForwards(forwards)
                     _forwards.value = forwards
                     revision += 1

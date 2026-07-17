@@ -16,6 +16,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -326,6 +327,28 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
                 dispatchers = inlineTestDispatchers(),
             ),
         )
+
+    @Test
+    fun configWriteCancellationDuringActivationIsNotReportedAsFailure() {
+        // FIX6 P0-005: a cancellation during the config write (which regenerateActiveConfig
+        // wraps) must propagate, not be converted into an invalid ValidationResult that
+        // drives a rollback and a user-visible "activation failed" message.
+        val vm =
+            forwardsViewModelWith(
+                WriteFailingConfigRepository(app) { throw kotlinx.coroutines.CancellationException("cancelled") },
+            )
+        recordingBridge.validationResult = ValidationResult(true, null)
+
+        vm.saveForward(
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true),
+        )
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        assertNull(
+            "a cancelled activation must not produce a user-facing failure message",
+            vm.message.value,
+        )
+    }
 
     @Test
     fun configWriteFailureRollsBackForwardMutation() {

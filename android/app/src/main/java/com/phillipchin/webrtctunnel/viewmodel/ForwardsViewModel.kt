@@ -11,6 +11,7 @@ import com.phillipchin.webrtctunnel.data.describeForwardsFailure
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -189,14 +190,18 @@ class ForwardsViewModel(
                 prefs.androidIceMode,
             )
         val temp = File(deps.context.cacheDir, "config-forwards-candidate.toml")
-        return runCatching {
-            // Identity absence and identity-present-but-unreadable are different states: only
-            // the former may fall back to identity-less validation. A read/decrypt failure on a
-            // present identity must surface as a visible failure, not silently downgrade (P1-001).
+        // FIX6 P0-005: explicit try/catch (not runCatching) — it wraps the suspend
+        // writeConfigAtomically, so a cancellation must propagate, not become an invalid result.
+        return try {
+            // Identity absent vs. present-but-unreadable differ: only the former falls back to
+            // identity-less validation; an unreadable present identity is a visible failure (P1-001).
             val identity =
                 if (deps.identityRepository.hasEncryptedIdentity()) {
-                    runCatching { deps.identityRepository.readPrivateIdentityPlaintext() }
-                        .getOrElse { error("Identity exists but could not be loaded: ${it.message}") }
+                    try {
+                        deps.identityRepository.readPrivateIdentityPlaintext()
+                    } catch (error: Exception) {
+                        error("Identity exists but could not be loaded: ${error.message}")
+                    }
                 } else {
                     null
                 }
@@ -209,33 +214,39 @@ class ForwardsViewModel(
                     } else {
                         deps.identityValidation.validateConfig(temp.absolutePath)
                     }
-                // FIX6 P0-001-D: a failed config commit must invalidate the result so the
-                // caller rolls the forward mutation back via its receipt. Previously the
-                // write result was discarded, so a failed write still returned the valid
-                // validation and reported "Forward saved" while config.toml was unchanged.
-                if (!result.valid) {
-                    result
-                } else {
-                    deps.configRepository
-                        .writeConfigAtomically(candidate)
-                        .fold(
-                            onSuccess = { result },
-                            onFailure = { error ->
-                                ValidationResult(
-                                    valid = false,
-                                    message =
-                                        SensitiveDataRedactor.redactText(
-                                            error.message ?: "Failed to write active config",
-                                        ),
-                                )
-                            },
-                        )
-                }
+                commitRegeneratedConfig(candidate, result)
             } finally {
                 // Wipe the plaintext identity buffer regardless of success/failure.
                 identity?.fill(0)
                 temp.delete()
             }
-        }.getOrElse { ValidationResult(false, it.message) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // Message kept as-is to preserve existing behavior (e.g. the identity-unreadable
+            // diagnostic); holistic redaction of these ViewModel messages is P1-009. The
+            // write-failure path already redacts its own message.
+            ValidationResult(false, error.message ?: "Failed to regenerate config")
+        }
     }
+
+    // FIX6 P0-001-D: a failed config commit invalidates the result so the caller rolls the
+    // forward mutation back, rather than reporting a false "saved".
+    private suspend fun commitRegeneratedConfig(
+        candidate: String,
+        validation: ValidationResult,
+    ): ValidationResult =
+        if (!validation.valid) {
+            validation
+        } else {
+            deps.configRepository.writeConfigAtomically(candidate).fold(
+                onSuccess = { validation },
+                onFailure = { error ->
+                    ValidationResult(
+                        valid = false,
+                        message = SensitiveDataRedactor.redactText(error.message ?: "Failed to write active config"),
+                    )
+                },
+            )
+        }
 }

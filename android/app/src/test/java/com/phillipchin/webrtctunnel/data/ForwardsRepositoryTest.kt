@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.data
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.model.ForwardConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -219,4 +220,84 @@ class ForwardsRepositoryTest {
             assertTrue(repo.current().isEmpty())
             assertTrue(repo.loadError.value == null)
         }
+
+    // FIX6 P0-005-B: mutations must rethrow CancellationException, not convert it into a
+    // Result.failure. A store whose saveForwards throws CancellationException simulates
+    // cancellation landing inside the mutation block: the old runCatching would have
+    // swallowed it into a failure value, mutationResult rethrows it.
+
+    private class CancellingSaveStore(
+        private val initial: List<ForwardConfig> = emptyList(),
+    ) : ForwardsStore {
+        override fun loadForwardsResult(): Result<List<ForwardConfig>> = Result.success(initial)
+
+        override fun saveForwards(forwards: List<ForwardConfig>): Unit =
+            throw CancellationException("cancelled during save")
+
+        override fun validateForwards(forwards: List<ForwardConfig>): String? = null
+    }
+
+    private fun cancellingRepo(initial: List<ForwardConfig> = emptyList()): ForwardsRepository =
+        ForwardsRepository(CancellingSaveStore(initial), AppDispatchers())
+
+    private inline fun assertCancellationPropagates(block: () -> Unit) {
+        var caught: CancellationException? = null
+        try {
+            block()
+        } catch (cancelled: CancellationException) {
+            caught = cancelled
+        }
+        assertTrue("CancellationException must propagate, not be converted to a failure", caught != null)
+    }
+
+    @Test
+    fun upsertCancellationPropagatesAndDoesNotPublish() {
+        val cancelling = cancellingRepo()
+        assertCancellationPropagates {
+            runBlocking { cancelling.upsertWithReceipt(forward("web", 9090)) }
+        }
+        assertTrue("a cancelled upsert must not publish", cancelling.current().isEmpty())
+    }
+
+    @Test
+    fun deleteCancellationPropagatesAndDoesNotPublish() {
+        val cancelling = cancellingRepo(listOf(forward("web", 9090)))
+        assertCancellationPropagates {
+            runBlocking { cancelling.deleteWithReceipt("web") }
+        }
+        assertTrue(
+            "a cancelled delete must not publish the removal",
+            cancelling.current().any { it.id == "web" },
+        )
+    }
+
+    @Test
+    fun rollbackCancellationPropagatesAndDoesNotPublish() {
+        val cancelling = cancellingRepo(listOf(forward("web", 9090)))
+        // committedRevision 0 matches the repo's initial revision, so it passes the
+        // revision guard and reaches the cancelling save.
+        val receipt = ForwardsMutationReceipt(before = emptyList(), after = emptyList(), committedRevision = 0)
+        assertCancellationPropagates {
+            runBlocking { cancelling.rollbackReceipt(receipt) }
+        }
+        assertTrue(cancelling.current().any { it.id == "web" })
+    }
+
+    @Test
+    fun resetCancellationPropagatesAndDoesNotPublish() {
+        val cancelling = cancellingRepo(listOf(forward("web", 9090)))
+        assertCancellationPropagates {
+            runBlocking { cancelling.resetForwards() }
+        }
+        assertTrue("a cancelled reset must not publish the empty list", cancelling.current().any { it.id == "web" })
+    }
+
+    @Test
+    fun transactionalRestoreCancellationPropagatesAndDoesNotPublish() {
+        val cancelling = cancellingRepo(listOf(forward("web", 9090)))
+        assertCancellationPropagates {
+            runBlocking { cancelling.restoreForTransactionalReset(listOf(forward("api", 9091))) }
+        }
+        assertFalse("a cancelled restore must not publish", cancelling.current().any { it.id == "api" })
+    }
 }
