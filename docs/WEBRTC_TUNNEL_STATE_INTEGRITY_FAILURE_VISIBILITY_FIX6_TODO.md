@@ -2,7 +2,56 @@
 
 This TODO implements `WEBRTC_TUNNEL_STATE_INTEGRITY_FAILURE_VISIBILITY_FIX6_SPEC.md` against baseline archive `webrtc_tunnel-master_2807170551.zip`.
 
-The goal is to fix the reviewed defects without redesigning the tunnel protocol or Android product. Work in priority order. Do not mark a checkbox complete until the implementation and the named focused tests both exist and pass.
+The goal is to fix the reviewed defects without redesigning the tunnel protocol or Android product. Do not mark a checkbox complete until the implementation and the named focused tests both exist and pass.
+
+---
+
+# 0-A. Execution order (supersedes document order)
+
+Resolved in `WEBRTC_TUNNEL_STATE_INTEGRITY_FAILURE_VISIBILITY_FIX6_RESPONSES.md`. As written, this TODO is **not executable in document order** — two dependency inversions would force red commits, which the work discipline forbids:
+
+- P0-001-C's target code calls `createCandidateFile()` / `deleteCandidateFileSafely()`, which the document only introduces later in P1-005 (**a P0 task depending on a P1 task**).
+- P0-001-B says its own fix is superseded by P0-003, so its named tests **cannot pass** until P0-003 lands.
+
+Per RESPONSES Q3/Q12/Q13, the binding order is below. Every commit must be green; no `@Ignore`, no knowingly-failing commits, no placeholder proof tests.
+
+## Stage A — truthfulness and direct diagnostics
+
+1. **A-1 (new prerequisite)** — candidate-file helpers (`createCandidateFile`, `deleteCandidateFileSafely`) and the cancellation-aware `mutationResult` helper (P0-005-A). P1-005 later **reuses and extends** these rather than introducing them.
+2. **A-2** — P0-001-A **folded with P1-003** (Q12): one change covering `ensureDefaultConfig` returning `Result<Unit>`, removal of `runBlocking` from `Application.onCreate()`, initialization readiness, and start-gating. Do not add an interim `onCreate()` result consumer that P1-003 immediately deletes.
+3. **A-3** — P0-001-C, P0-001-D, P0-001-E audit.
+4. **A-4** — P0-002 direct reporter; delete the lossy bus (Q8).
+5. **A-5** — P0-004 stale policy retry and visible quarantine.
+
+## Stage B — setup transaction
+
+- P0-003 **with P0-001-B folded in** (Q3): they are one transaction change and land together.
+- Remaining P0-005 cancellation fixes for persistence paths.
+
+## Stage C — network monitor integrity
+
+- P0-006, implemented via an extracted `NetworkMonitorSupervisor` (Q1). Do **not** add these methods to `TunnelForegroundService`: it sits at 10 functions against detekt's limit of 11, and P0-006-B as drafted would push it to 12–13. Suppressions and threshold raises are forbidden.
+
+## Stage D — storage/lifecycle/UI hardening
+
+- P1 tasks in dependency order, reusing helpers from Stage A.
+
+## Stage E — secondary enforcement and signoff
+
+- P2 deterministic tests, Rust clock handling, static enforcement, final evidence.
+
+Stage A is a review checkpoint only. The app is not release-ready until all P0 stages complete.
+
+## Binding decisions from RESPONSES
+
+- **Q1** — extract `NetworkMonitorSupervisor`; inject the backoff policy so tests use virtual time. Use the FIX6 name `NetworkPolicyDiagnosticReporter` (the RESPONSES sketch says `NetworkPolicyEventReporter`, which is the FIX5 interface deleted by P0-002).
+- **Q2** — new coordinators are `by lazy` **body vals** on `AppDependencies`, never constructor params (it is at 6/6; a 7th fails `LongParameterList`). `SetupPersistenceCoordinator` takes `(configRepository, identityRepository, loadPreferences, persistPreferences)` per §7.2 — setup persistence never mutates forwards, so the RESPONSES sketch's `forwardsRepository` is omitted.
+- **Q5** — reuse `NetworkPolicyManager.evaluate(NetworkType.Unknown to false, allowMetered = false)` for fail-closed status. Do **not** add `blockedUnknown`/`blockedUnknownPolicy`; neither exists and the evaluator is already canonical.
+- **Q6** — only the ~4 genuine absence-proof sleeps are in scope for P2-001. Bounded `waitForCondition` polling for a positive condition may remain.
+- **Q7** — `@CheckResult` + Android lint, **after** proving with a temporary deliberate bare call that lint actually flags an ignored Kotlin/suspend `Result`; a focused custom detekt rule is the sanctioned fallback. The example script in P2-003 is deleted (its exit logic was inverted).
+- **Q9** — P1-008 scope is exactly `ForwardsViewModel`, `ImportExportViewModel`, `SettingsViewModel`, `NetworkPolicyViewModel`.
+- **Q11** — audit and replace **every** production `catch (…: Throwable)`, not only FIX6's named examples. The `detekt.yml` `TooGenericExceptionCaught` fix is **explicitly approved** as a scoped commit with a regression fixture.
+- **Q14** — `trySubmit` is `commands.trySend(command).isSuccess` with no `stopped` pre-check; the processor's `finally` closes the channel **before** setting `stopped`.
 
 ---
 
@@ -67,6 +116,11 @@ related tests
 
 ### P0-001-A — Make `ensureDefaultConfig` return and preserve `Result`
 
+> **Sequencing (RESPONSES Q12): folded into P1-003 and delivered as Stage A-2.** Its only
+> caller is `WebRtcTunnelApplication.onCreate()`'s `runBlocking`, which P1-003 deletes, so
+> shipping A alone would mean writing a `Result` consumer that the next commit throws away.
+> Implement both together; the tests named here and in P1-003 must pass in that one commit.
+
 Current code checks existence outside the write mutex and discards the write result.
 
 Replace it with this target shape:
@@ -99,15 +153,14 @@ The race test should block the first coroutine before lock acquisition, create t
 
 ### P0-001-B — Setup write failure must stop later stages and prevent success
 
-Immediate minimum correction inside the current code:
+> **Sequencing (RESPONSES Q3): folded into P0-003 and delivered in Stage B.** The original
+> wording ("use this task’s test to prove the bug, then satisfy it through P0-003") would
+> leave the four tests below red until P0-003 lands, which the work discipline forbids.
+> They are one transaction change: implement and land them together, green.
 
-```kotlin
-deps.configRepository
-    .writeConfigAtomically(candidate)
-    .getOrThrow()
-```
+The bug this proves is real and confirmed in the current tree: `SetupSaveController.persistConfig` (`SetupSaveController.kt:179`) discards the `writeConfigAtomically` result and then persists setup input and preferences regardless, so a failed disk write still reports `Configuration saved`. Its enclosing `runCatching` additionally converts `CancellationException` into a visible save error.
 
-However, P0-003 replaces this method with the setup transaction. Do not create duplicate permanent logic. Use this task’s test to prove the bug, then satisfy it through P0-003.
+The minimum correction is `.getOrThrow()` on the write, but do not create duplicate permanent logic — satisfy it through P0-003’s coordinator.
 
 #### Tests
 
@@ -180,7 +233,9 @@ private suspend fun importConfigContent(candidate: String) {
 }
 ```
 
-`createCandidateFile` and safe deletion are implemented in P1-005.
+> **Sequencing (RESPONSES Q3):** `createCandidateFile` and `deleteCandidateFileSafely` are
+> introduced by the **Stage A-1 prerequisite task**, not by P1-005 — a P0 task cannot depend
+> on a P1 task. P1-005 reuses and extends those helpers.
 
 #### Tests
 
@@ -1819,30 +1874,15 @@ open suspend fun writeConfigAtomically(contents: String): Result<Unit>
 
 Apply to other repository mutation methods returning `Result`.
 
+### Verify the primary option first
+
+Android lint's `CheckResult` detector must be *proven* to flag an ignored Kotlin/suspend `Result` in this project before relying on it (RESPONSES Q7). Add a temporary deliberate bare call, confirm `lintDebug` fails, record that output as evidence, then remove the deliberate violation.
+
 ### Fallback option
 
-Add a focused script that fails on known bare calls. Example starting point:
+If lint does not flag the deliberate Kotlin call, the sanctioned fallback is a **focused custom detekt rule** with positive and negative rule tests.
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-root="${1:-android/app/src/main/java}"
-
-patterns=(
-  'writeConfigAtomically\('
-  'savePreferences\('
-  'resetForwards\('
-  'rollbackReceipt\('
-  'appendAuthorizedPublicIdentity\('
-)
-
-for pattern in "${patterns[@]}"; do
-  rg -n "$pattern" "$root"
-done
-```
-
-A real enforcement script must parse enough surrounding syntax to distinguish a consumed result from a bare expression. Do not ship a grep that only prints findings and always exits zero.
+Do **not** ship a regex/`rg` script. The example previously drafted here was removed: with `set -euo pipefail`, `rg` exits 1 when it finds nothing, so it **failed on a clean tree and passed on a dirty one** — the exact inversion of the intended gate, and worse than the "always exits zero" grep the task itself prohibits. A real enforcement rule must parse enough syntax to distinguish a consumed result from a bare expression; do not fall back to grep-based syntax guessing.
 
 #### Tests/CI
 
