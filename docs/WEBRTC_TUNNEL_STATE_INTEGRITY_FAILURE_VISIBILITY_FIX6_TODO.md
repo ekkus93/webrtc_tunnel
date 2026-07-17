@@ -1335,21 +1335,26 @@ atomicReplace(
 
 ### Tests
 
-- [ ] `publicIdentityWriteFailureRestoresPreviousEncryptedAndPublicPair`
-- [ ] `privateIdentityWriteFailureLeavesOldPairUntouched`
-- [ ] `newIdentityPairCommitsTogether`
-- [ ] `concurrentAuthorizedKeyAppendsPreserveBothKeys`
-- [ ] `duplicateAuthorizedKeyDoesNotRewriteOrDuplicate`
-- [ ] `authorizedKeyWriteFailureLeavesOldFileIntact`
-- [ ] `plaintextIdentityIsNotWrittenToDisk`
-- [ ] `identityRollbackFailureIsVisible`
+- [x] `publicIdentityWriteFailureRestoresPreviousEncryptedAndPublicPair` — `6c66c9b`
+- [x] `privateIdentityWriteFailureLeavesOldPairUntouched` — `6c66c9b`
+- [x] `newIdentityPairCommitsTogether` — `6c66c9b`
+- [x] `concurrentAuthorizedKeyAppendsPreserveBothKeys` — `6c66c9b`
+- [x] `duplicateAuthorizedKeyDoesNotRewriteOrDuplicate` — `6c66c9b`
+- [x] `authorizedKeyWriteFailureLeavesOldFileIntact` — `6c66c9b`
+- [x] `plaintextIdentityIsNotWrittenToDisk` — `6c66c9b`
+- [x] `identityRollbackFailureIsVisible` — `6c66c9b`
+
+> Implementation note: tests live in the new `IdentityPersistenceAtomicityTest.kt`. The
+> atomic replace is a constructor-injected `(File, ByteArray) -> Unit` (default `::identityAtomicReplace`),
+> and rollback restores through the same seam, so a call-counting injected replace drives both
+> the clean-rollback and rollback-incomplete paths deterministically.
 
 ### Acceptance
 
-- [ ] identity pair cannot remain mismatched after a reported failure;
-- [ ] concurrent authorized-key append cannot lose data;
-- [ ] all mutation writes use unique temp files and replacement;
-- [ ] no plaintext private key reaches disk.
+- [x] identity pair cannot remain mismatched after a reported failure;
+- [x] concurrent authorized-key append cannot lose data;
+- [x] all mutation writes use unique temp files and replacement;
+- [x] no plaintext private key reaches disk.
 
 ---
 
