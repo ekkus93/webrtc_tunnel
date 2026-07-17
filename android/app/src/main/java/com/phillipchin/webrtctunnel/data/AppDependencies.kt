@@ -8,7 +8,6 @@ import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.first
 
 class AppDependencies(
     context: Context,
@@ -52,16 +51,6 @@ class AppDependencies(
             configRepository = configRepository,
             scope = appScope,
             ioDispatcher = dispatchers.io,
-        )
-    }
-
-    // FIX6 P0-003: transactional setup save. Body val (Q2), tests construct directly.
-    val setupPersistenceCoordinator: SetupPersistenceCoordinator by lazy {
-        SetupPersistenceCoordinator(
-            configRepository = configRepository,
-            identityRepository = identityRepository,
-            loadPreferences = { configRepository.preferences.first() },
-            persistPreferences = { configRepository.savePreferences(it) },
         )
     }
 

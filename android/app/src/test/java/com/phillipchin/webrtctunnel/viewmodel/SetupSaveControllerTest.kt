@@ -10,8 +10,13 @@ import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -19,6 +24,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import java.io.File
+import java.io.IOException
 
 /**
  * P0-002: sentinel tests proving plaintext identity byte-array zeroization.
@@ -307,6 +313,117 @@ class SetupSaveControllerTest {
         assertTrue(state.saveResult != null)
     }
 
+    // -- P0-001-B / P0-003: config write is the last stage; its failure must roll back --
+
+    /** Config write always fails with a secret-bearing message, to prove redaction + rollback. */
+    private class DiskFullConfig(app: android.app.Application) : ConfigRepository(app) {
+        override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+            Result.failure(IOException("disk full password=sentinel"))
+    }
+
+    /** Config write is cancelled, to prove cancellation propagates rather than being reported. */
+    private class CancellingConfig(app: android.app.Application) : ConfigRepository(app) {
+        override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+            throw CancellationException("config write cancelled")
+    }
+
+    /**
+     * Builds a wizard whose save passes every validation step and reaches the config-write
+     * stage, backed by [configRepo]. Uses the imported-identity path so identity, authorized
+     * keys, setup input and preferences all commit before the config write.
+     */
+    private fun wizardReachingConfigWrite(configRepo: ConfigRepository): Pair<SetupViewModel, ConfigRepository> {
+        listOf("setup_input.json", "config.toml", "authorized_keys").forEach { File(app.filesDir, it).delete() }
+        val identityFile =
+            File(app.filesDir, "import_sentinel.toml").apply {
+                writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
+            }
+        val bridge =
+            RecordingBridge().apply {
+                privateIdentityValidationResult =
+                    IdentityValidationResult(
+                        valid = true,
+                        message = null,
+                        peerId = "android-phone",
+                        canonicalPublicIdentity = "canon-pub",
+                        canonicalPrivateIdentity = "canon-private",
+                    )
+                validationResult = ValidationResult(true, null)
+            }
+        val deps = createDeps(bridge = bridge, configRepo = configRepo)
+        val viewModel = SetupViewModel(deps)
+        viewModel.setImportIdentityPath(identityFile.absolutePath)
+        viewModel.setInput(
+            viewModel.state.value.input.copy(
+                brokerHost = "broker.local",
+                remotePeerId = "remote-peer",
+                allowMetered = true,
+            ),
+        )
+        setupValidState(viewModel, deps)
+        return viewModel to configRepo
+    }
+
+    @Test
+    fun configWriteFailureDoesNotReportConfigurationSaved() {
+        val (viewModel, _) = wizardReachingConfigWrite(DiskFullConfig(app))
+
+        viewModel.save.saveAndApplyConfig()
+
+        val state = awaitState(viewModel) { it.errorMessage != null }
+        assertTrue(state.errorMessage != null)
+        assertFalse("secret must be redacted", state.errorMessage!!.contains("sentinel"))
+        assertEquals(null, state.saveResult)
+    }
+
+    @Test
+    fun configWriteFailureDoesNotPersistSetupInput() {
+        val (viewModel, _) = wizardReachingConfigWrite(DiskFullConfig(app))
+
+        viewModel.save.saveAndApplyConfig()
+        awaitState(viewModel) { it.errorMessage != null }
+
+        assertFalse(
+            "setup input written before the failed config commit must be rolled back",
+            File(app.filesDir, "setup_input.json").exists(),
+        )
+    }
+
+    @Test
+    fun configWriteFailureDoesNotPersistPreferences() {
+        val (viewModel, configRepo) = wizardReachingConfigWrite(DiskFullConfig(app))
+        val before = runBlocking { configRepo.preferences.first() }
+
+        viewModel.save.saveAndApplyConfig()
+        awaitState(viewModel) { it.errorMessage != null }
+
+        val after = runBlocking { configRepo.preferences.first() }
+        assertEquals("preferences must be rolled back to their prior value", before, after)
+    }
+
+    @Test
+    fun configWriteCancellationPropagatesAndDoesNotReportFailureOrSuccess() {
+        val (viewModel, _) = wizardReachingConfigWrite(CancellingConfig(app))
+
+        viewModel.save.saveAndApplyConfig()
+        // Let the cancelled save settle; it must report neither success nor failure.
+        runBlocking {
+            repeat(SETTLE_CYCLES) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                delay(SETTLE_DELAY_MS)
+            }
+        }
+
+        val state = viewModel.state.value
+        assertEquals(null, state.errorMessage)
+        assertEquals(null, state.saveResult)
+    }
+
+    private companion object {
+        const val SETTLE_CYCLES = 20
+        const val SETTLE_DELAY_MS = 5L
+    }
+
     // -- Helpers --
 
     /**
@@ -331,12 +448,13 @@ class SetupSaveControllerTest {
     private fun createDeps(
         identityRepo: IdentityRepository? = null,
         bridge: RecordingBridge,
+        configRepo: ConfigRepository = configRepository,
     ): AppDependencies {
         val identityRepoFinal = identityRepo ?: createTrackedIdentityRepo(byteArrayOf()).first
         return AppDependencies(
             context = app,
             nativeBridgeFactory = { bridge },
-            configRepository = configRepository,
+            configRepository = configRepo,
             networkPolicyManager =
                 NetworkPolicyManager {
                     NetworkType.UnmeteredWifi to false

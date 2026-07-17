@@ -4,7 +4,12 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.phillipchin.webrtctunnel.TunnelForegroundService
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.IdentityReplacement
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinator
+import com.phillipchin.webrtctunnel.data.SetupPersistenceRequest
+import com.phillipchin.webrtctunnel.data.SetupPersistenceResult
+import com.phillipchin.webrtctunnel.data.SetupRollbackStageResult
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
@@ -47,6 +52,16 @@ class SetupSaveController(
     private val access: WizardStateAccess,
     private val ioDispatcher: CoroutineDispatcher = deps.dispatchers.io,
 ) {
+    // FIX6 P0-003: commit the setup save transactionally. Built from the injected preference
+    // lambdas (not deps') so preference-persistence test seams still drive the Preferences stage.
+    private val persistence =
+        SetupPersistenceCoordinator(
+            configRepository = deps.configRepository,
+            identityRepository = deps.identityRepository,
+            loadPreferences = loadPreferences,
+            persistPreferences = persistPreferences,
+        )
+
     fun testBrokerConnection() {
         val current = access.state()
         val host = current.input.brokerHost.trim()
@@ -91,43 +106,16 @@ class SetupSaveController(
 
     private suspend fun saveAndApplyConfigInternal(): Boolean {
         val current = access.state()
-        val input = current.input
-        val enabledForwards = access.forwards().filter { it.enabled }
+        // P0-001-B: rethrow CancellationException rather than folding it into a visible save
+        // error (the old enclosing runCatching reported cancellation as a failure). Only real
+        // errors become an errorMessage; a cancelled save reports neither success nor failure.
         val outcome =
-            runCatching {
-                validateStep(deps, SetupStep.Review, current)?.let { saveError(it, redact = false) }
-                val identity = resolveSaveIdentity(current)
-                try {
-                    if (identity.peerId != input.localPeerId) {
-                        saveError(
-                            "Local peer ID must match private identity peer ID (${identity.peerId})",
-                            redact = true,
-                        )
-                    }
-                    if (current.importPublicIdentity.isNotBlank()) {
-                        importPublicIdentity(deps, current.importPublicIdentity, input.remotePeerId)
-                            .getOrElse { saveError(it.message ?: "Failed importing public identity", redact = true) }
-                    }
-                    val prefs = deps.configRepository.preferences.first()
-                    val candidate =
-                        deps.configRepository.renderOfferConfig(
-                            input,
-                            enabledForwards,
-                            prefs.debugLogsEnabled,
-                            prefs.androidIceMode,
-                        )
-                    val validation =
-                        withContext(ioDispatcher) { validateCandidateConfig(deps, candidate, identity.privateIdentity) }
-                    if (!validation.valid) {
-                        saveError(validation.message ?: "Config validation failed", redact = false)
-                    }
-                    persistConfig(candidate, input)
-                    identity
-                } finally {
-                    // Wipe the plaintext identity buffer; only the public id/peer id are
-                    // used after this point.
-                    identity.privateIdentity.fill(0)
-                }
+            try {
+                Result.success(validateAndCommit(current))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
             }
         return outcome.fold(
             onSuccess = { identity ->
@@ -151,6 +139,53 @@ class SetupSaveController(
         )
     }
 
+    /**
+     * Validate the review state and, if valid, commit the whole save through the transactional
+     * coordinator. Throws [SaveError] on any validation/persistence failure and always wipes the
+     * plaintext identity buffer. Returns the resolved identity for the success path.
+     */
+    private suspend fun validateAndCommit(current: SetupWizardState): ResolvedIdentity {
+        val input = current.input
+        val enabledForwards = access.forwards().filter { it.enabled }
+        validateStep(deps, SetupStep.Review, current)?.let { saveError(it, redact = false) }
+        // P0-003: resolve/validate identity WITHOUT persisting it — the coordinator performs
+        // every persistent mutation atomically below.
+        val identity = resolveSaveIdentity(current)
+        try {
+            if (identity.peerId != input.localPeerId) {
+                saveError(
+                    "Local peer ID must match private identity peer ID (${identity.peerId})",
+                    redact = true,
+                )
+            }
+            val authorizedLine =
+                if (current.importPublicIdentity.isNotBlank()) {
+                    validatePublicIdentityForImport(deps, current.importPublicIdentity, input.remotePeerId)
+                        .getOrElse { saveError(it.message ?: "Failed importing public identity", redact = true) }
+                } else {
+                    null
+                }
+            val prefs = deps.configRepository.preferences.first()
+            val candidate =
+                deps.configRepository.renderOfferConfig(
+                    input,
+                    enabledForwards,
+                    prefs.debugLogsEnabled,
+                    prefs.androidIceMode,
+                )
+            val validation =
+                withContext(ioDispatcher) { validateCandidateConfig(deps, candidate, identity.privateIdentity) }
+            if (!validation.valid) {
+                saveError(validation.message ?: "Config validation failed", redact = false)
+            }
+            commitSetup(input, candidate, identity, authorizedLine)
+            return identity
+        } finally {
+            // Wipe the plaintext identity buffer; only the public id/peer id are used afterward.
+            identity.privateIdentity.fill(0)
+        }
+    }
+
     private suspend fun resolveSaveIdentity(current: SetupWizardState): ResolvedIdentity {
         val resolved =
             if (current.importIdentityPath.isNotBlank()) {
@@ -171,49 +206,67 @@ class SetupSaveController(
         return resolved
     }
 
-    private suspend fun persistConfig(
-        candidate: String,
+    /**
+     * P0-003: commit the whole setup save through the transactional coordinator. The identity
+     * is stored only when it came from an import ([ResolvedIdentity.fromImport]); a
+     * pre-existing stored identity needs no Identity stage. A failure leaves no partial state:
+     * [SetupPersistenceResult.Failed] reports whether rollback fully restored the prior state
+     * (setup_persistence_failed) or could not (setup_rollback_incomplete).
+     */
+    private suspend fun commitSetup(
         input: SetupConfigInput,
+        candidate: String,
+        identity: ResolvedIdentity,
+        authorizedLine: String?,
     ) {
-        runCatching {
-            withContext(ioDispatcher) {
-                deps.configRepository.writeConfigAtomically(candidate)
-                deps.configRepository.saveSetupInput(input)
-                val existing = loadPreferences()
-                persistPreferences(
+        val existing = loadPreferences()
+        val request =
+            SetupPersistenceRequest(
+                configContents = candidate,
+                setupInput = input,
+                preferences =
                     existing.copy(
                         allowMetered = input.allowMetered,
                         resumeOnUnmetered = input.resumeOnUnmetered,
                     ),
-                ).getOrElse { error ->
-                    throw PreferencePersistenceException(
-                        error.message
-                            ?: "Failed to save preferences",
-                        error,
-                    )
+                replacementIdentity =
+                    if (identity.fromImport) {
+                        IdentityReplacement(identity.privateIdentity, identity.publicIdentity)
+                    } else {
+                        null
+                    },
+                authorizedPublicIdentityToAdd = authorizedLine,
+            )
+        val result = withContext(ioDispatcher) { persistence.persist(request) }
+        if (result is SetupPersistenceResult.Failed) {
+            val rollbackIncomplete = result.rollback.any { it is SetupRollbackStageResult.Failure }
+            val message =
+                if (rollbackIncomplete) {
+                    "Saving configuration failed and could not be fully rolled back " +
+                        "(setup_rollback_incomplete): ${result.reason}"
+                } else {
+                    "Saving configuration failed and was rolled back " +
+                        "(setup_persistence_failed): ${result.reason}"
                 }
-            }
-        }.getOrElse { saveError(it.message ?: "Failed saving configuration", redact = true) }
+            // result.reason is already redacted by the coordinator.
+            saveError(message, redact = false)
+        }
     }
 }
 
 /**
- * Thrown when preference persistence fails during setup save.
- * This allows the caller to distinguish between config write failures and preference write failures.
- */
-private class PreferencePersistenceException(
-    message: String,
-    cause: Throwable? = null,
-) : RuntimeException(message, cause)
-
-/**
  * P0-002: Named type for resolved identity components.
  * Replaces raw Triple for safer ownership semantics.
+ *
+ * [fromImport] is true when the identity was resolved from a user-supplied import file and must
+ * therefore be persisted by the setup transaction; false when it was read from the already-stored
+ * identity (which the transaction leaves in place).
  */
 private data class ResolvedIdentity(
     val privateIdentity: ByteArray,
     val publicIdentity: String,
     val peerId: String,
+    val fromImport: Boolean,
 )
 
 private fun saveError(
@@ -236,7 +289,7 @@ private suspend fun resolveStoredIdentity(
             val publicIdentity =
                 validated.canonicalPublicIdentity ?: deps.identityRepository.readPublicIdentity()
             transferred = true
-            ResolvedIdentity(bytes, publicIdentity, peerId)
+            ResolvedIdentity(bytes, publicIdentity, peerId, fromImport = false)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Throwable) {
@@ -248,6 +301,11 @@ private suspend fun resolveStoredIdentity(
         }
     }
 
+/**
+ * P0-003: validate an imported private identity and return its canonical material WITHOUT
+ * persisting it. The returned [ResolvedIdentity] is marked [ResolvedIdentity.fromImport] so the
+ * setup transaction stores it atomically alongside the config.
+ */
 private fun importPrivateIdentity(
     deps: AppDependencies,
     path: String,
@@ -261,11 +319,14 @@ private fun importPrivateIdentity(
             validated.canonicalPublicIdentity
                 ?: throw IllegalArgumentException("Missing canonical public identity")
         val peerId = validated.peerId ?: throw IllegalArgumentException("Missing canonical peer id")
-        deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
-        ResolvedIdentity(canonicalPrivate.toByteArray(), canonicalPublic, peerId)
+        ResolvedIdentity(canonicalPrivate.toByteArray(), canonicalPublic, peerId, fromImport = true)
     }
 
-private fun importPublicIdentity(
+/**
+ * P0-003: validate an imported public identity and return the canonical authorized-keys line
+ * WITHOUT appending it. The setup transaction appends it atomically (AuthorizedKeys stage).
+ */
+private fun validatePublicIdentityForImport(
     deps: AppDependencies,
     line: String,
     expectedRemotePeerId: String,
@@ -277,10 +338,7 @@ private fun importPublicIdentity(
         require(peerId == expectedRemotePeerId) {
             "Remote peer ID must match imported public identity peer ID ($peerId)"
         }
-        deps.identityRepository.appendAuthorizedPublicIdentity(
-            validated.canonicalPublicIdentity ?: line.trim(),
-        ).getOrThrow()
-        peerId
+        validated.canonicalPublicIdentity ?: line.trim()
     }
 
 private fun validateCandidateConfig(
