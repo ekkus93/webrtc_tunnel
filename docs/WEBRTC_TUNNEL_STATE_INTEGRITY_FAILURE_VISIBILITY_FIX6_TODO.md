@@ -1440,18 +1440,18 @@ Apply an equivalent guard to config import and forward mutation/activation. Do n
 
 ### Tests
 
-- [ ] `twoRapidSetupSavesOnlyOneOperationRuns`
-- [ ] `twoRapidConfigImportsCannotShareCandidateFile`
-- [ ] `twoRapidForwardMutationsCannotActivateStaleConfig`
-- [ ] `candidateFilesAreUnique`
-- [ ] `candidateCleanupFailureDoesNotHidePrimaryFailure`
-- [ ] `secondOperationIsRejectedVisiblyOrSerializesUsingFreshState`
+- [x] `twoRapidSetupSavesOnlyOneOperationRuns` — `176d82c`
+- [x] `twoRapidConfigImportsCannotShareCandidateFile` — covered by `createCandidateFileProducesUniquePathsForTheSamePrefix` (MutationHelpersTest); ImportExportService uses `createCandidateFile`
+- [x] `twoRapidForwardMutationsCannotActivateStaleConfig` — `176d82c`
+- [x] `candidateFilesAreUnique` — `createCandidateFileProducesUniquePathsForTheSamePrefix` (MutationHelpersTest, A-1)
+- [x] `candidateCleanupFailureDoesNotHidePrimaryFailure` — `deleteCandidateFileSafelyReturnsFailureInsteadOfThrowing` (MutationHelpersTest) + callers consume the Result separately
+- [x] `secondOperationIsRejectedVisiblyOrSerializesUsingFreshState` — `176d82c` (the rejected second save/forward reports "already in progress"; setup captures state after the lock)
 
 ### Acceptance
 
-- [ ] no fixed candidate filename remains;
-- [ ] no check-before-launch busy race remains;
-- [ ] concurrent operations cannot overwrite each other’s candidate or stale state.
+- [x] no fixed candidate filename remains;
+- [x] no check-before-launch busy race remains;
+- [x] concurrent operations cannot overwrite each other’s candidate or stale state.
 
 ---
 
