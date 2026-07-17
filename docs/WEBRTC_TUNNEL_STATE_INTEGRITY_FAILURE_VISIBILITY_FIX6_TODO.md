@@ -1525,19 +1525,19 @@ Catch the narrowest practical exception types. Preserve the existing visible ato
 
 #### Tests
 
-- [ ] `cleanupFailureAfterPrimaryFailurePreservesPrimaryAndSuppressesCleanup`
-- [ ] `cleanupFailureAfterSuccessfulMoveReturnsFailure`
-- [ ] `cancellationPreservesCancellationAndSuppressesCleanupFailure`
-- [ ] `atomicMoveFallbackStillReplacesDestination`
+- [x] `cleanupFailureAfterPrimaryFailurePreservesPrimaryAndSuppressesCleanup` — `027514e`
+- [x] `cleanupFailureAfterSuccessfulMoveReturnsFailure` — `027514e`
+- [x] `cancellationPreservesCancellationAndSuppressesCleanupFailure` — `027514e`
+- [x] `atomicMoveFallbackStillReplacesDestination` — `027514e`
 
-A fake file-operations abstraction is acceptable and preferable to flaky filesystem permission tricks.
+A fake file-operations abstraction is acceptable and preferable to flaky filesystem permission tricks. — done: `AtomicConfigFileOps` fake in the new `AtomicConfigWriteTest.kt`.
 
 ### Acceptance
 
-- [ ] cleanup never escapes unexpectedly;
-- [ ] primary error identity is preserved;
-- [ ] cancellation remains cancellation;
-- [ ] tests simulate real cleanup failure.
+- [x] cleanup never escapes unexpectedly;
+- [x] primary error identity is preserved;
+- [x] cancellation remains cancellation;
+- [x] tests simulate real cleanup failure.
 
 ---
 
