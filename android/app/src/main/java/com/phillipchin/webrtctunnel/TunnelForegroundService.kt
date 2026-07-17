@@ -196,6 +196,11 @@ class TunnelForegroundService
         internal val pendingPolicyResumeGenerationForTest: Long?
             get() = pendingPolicyResumeGeneration.get()
 
+        // P2-001: read-only signal so lifecycle tests can wait for the command processor to exit
+        // (e.g. after a handler cancellation) instead of proving absence with a fixed sleep.
+        internal val coordinatorStoppedForTest: Boolean
+            get() = coordinator.isStoppedForTest
+
         internal val lifecycleMutex = Mutex()
 
         // Notification + status-polling slice; accesses the shared lifecycle fields directly.

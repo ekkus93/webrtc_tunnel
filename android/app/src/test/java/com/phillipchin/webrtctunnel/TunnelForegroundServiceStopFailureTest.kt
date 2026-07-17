@@ -459,20 +459,27 @@ class PendingRetryInvalidationTest {
             waitForCondition { bridge.stopCalls >= 1 },
         )
 
-        // A late trigger after destroy must not resume — the coordinator's command
-        // channel is closed and serviceScope is cancelled, so there is no path left by
-        // which a pending retry (even if it had survived) could still fire.
+        // P2-001: destroy cancels-and-joins the network monitor and then stops the command
+        // processor. Wait for that deterministic exit (the processor is stopped) instead of a
+        // fixed sleep — by then the monitor is cancelled and command acceptance is closed, so a
+        // late trigger has no path left to resume.
+        assertTrue(
+            "destroy must stop the command processor",
+            waitForCondition { service.coordinatorStoppedForTest },
+        )
         shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
-        Thread.sleep(200)
 
+        // The destroy fallback stop is destroy's terminal action, so the state converges to
+        // not-running; wait for that convergence rather than sampling a transient in-flight
+        // value. Once it holds, no further start can occur (processor stopped, monitor cancelled).
+        assertTrue(
+            "the service must not end up running after destroy",
+            waitForCondition { !bridge.state.isTunnelRunning() },
+        )
         assertEquals(
             "no native start may occur once destroy has invalidated the pending retry",
             startCallsBeforeDestroy,
             bridge.startOfferCalls,
-        )
-        assertFalse(
-            "the service must not end up running after destroy",
-            bridge.state.isTunnelRunning(),
         )
     }
 

@@ -29,6 +29,10 @@ class TunnelLifecycleCoordinator(
     // channel before flipping this, so a late trySubmit is a benign drop, not acceptance.
     private val stopped = AtomicBoolean(false)
 
+    // P2-001: read-only test signal — true once the command processor has exited (e.g. a handler
+    // cancellation tore it down), so tests wait on this deterministic event instead of a sleep.
+    internal val isStoppedForTest: Boolean get() = stopped.get()
+
     /**
      * Starts the command processor. Must be called exactly once, and never after [stop].
      */

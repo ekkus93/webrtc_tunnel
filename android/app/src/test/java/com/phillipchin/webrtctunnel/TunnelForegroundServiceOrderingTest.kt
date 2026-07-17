@@ -73,6 +73,19 @@ class TunnelForegroundServiceOrderingTest {
         return condition()
     }
 
+    // P2-001: a deterministic FIFO-queue barrier. The command queue drains strictly in order, so
+    // once an explicit STOP has been processed (observed via stopCalls), any spurious command
+    // enqueued before it must already have run — no fixed sleep needed to "give it a chance".
+    private fun drainQueueWithStopBarrier(startId: Int) {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        val stopCallsBefore = bridge.stopCalls
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, startId)
+        assertTrue(
+            "the STOP barrier must be processed so the queue is provably drained",
+            waitForCondition { bridge.stopCalls >= stopCallsBefore + 1 },
+        )
+    }
+
     @Test
     fun startThenPauseOrderingPreserved() {
         val deps = (service.applicationContext as HasAppDependencies).deps
@@ -288,9 +301,9 @@ class TunnelForegroundServiceOrderingTest {
         )
         assertFalse(service.pausedByPolicy.get())
 
-        // Give a spurious extra retry a chance to fire before asserting the final count —
-        // proves the retry ran exactly once, not repeatedly.
-        Thread.sleep(200)
+        // P2-001: drain the FIFO queue with a STOP barrier instead of sleeping — any spurious
+        // extra retry enqueued during the race would have run before STOP, proving exactly once.
+        drainQueueWithStopBarrier(startId = 2)
         assertEquals(startCallsAtRaceStart + 1, bridge.startOfferCalls)
     }
 
@@ -311,7 +324,7 @@ class TunnelForegroundServiceOrderingTest {
             deps.tunnelRepository.status.value.lastError?.code,
         )
 
-        Thread.sleep(200)
+        drainQueueWithStopBarrier(startId = 2)
         assertEquals(
             "no pending retry means no automatic retry attempt",
             1,
@@ -362,7 +375,7 @@ class TunnelForegroundServiceOrderingTest {
             waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
         )
 
-        Thread.sleep(200)
+        drainQueueWithStopBarrier(startId = 2)
         assertEquals(
             "pending retry without pausedByPolicy must not trigger an automatic retry",
             startCallsAtRaceStart,
@@ -405,7 +418,7 @@ class TunnelForegroundServiceOrderingTest {
             },
         )
 
-        Thread.sleep(200)
+        drainQueueWithStopBarrier(startId = 2)
         assertEquals(
             "preference-read failure must not trigger a resume/native start",
             startCallsBeforeFailure,
@@ -440,9 +453,13 @@ class TunnelForegroundServiceOrderingTest {
         val network = ShadowNetwork.newInstance(1)
         shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
 
-        // Give the cancellation time to propagate; there is nothing to waitForCondition on
-        // since a genuinely propagated cancellation produces no diagnostic at all.
-        Thread.sleep(300)
+        // P2-001: a propagated cancellation from handlePolicyAllowed tears down the command
+        // processor (P1-007), so wait on that deterministic exit instead of a fixed sleep — by
+        // the time the processor has stopped, the cancelled PolicyAllowed has fully unwound.
+        assertTrue(
+            "the cancelled handler must tear down the command processor",
+            waitForCondition { service.coordinatorStoppedForTest },
+        )
 
         assertFalse(
             "cancellation must not be reported through the preference-read-failure " +
