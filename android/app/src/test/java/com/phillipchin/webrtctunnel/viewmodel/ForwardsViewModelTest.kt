@@ -277,6 +277,40 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
         }
     }
 
+    // FIX6 P1-005-C: two rapid forward mutations must not both run — the second must be rejected
+    // (an atomic operation lock), so it cannot race the first's config regeneration and activate
+    // a stale config.
+    @Test
+    fun twoRapidForwardMutationsCannotActivateStaleConfig() {
+        val realIoDeps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = { recordingBridge },
+                configRepository = configRepository,
+                networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                identityRepository = deps.identityRepository,
+                dispatchers = realIoTestDispatchers(),
+            )
+        val vm = ForwardsViewModel(realIoDeps)
+        val forward =
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+
+        // First mutation blocks in validation while holding the operation lock.
+        recordingBridge.blockNextValidateConfig()
+        vm.saveForward(forward)
+        awaitCondition { recordingBridge.validateConfigEnteredNow() }
+
+        // A second mutation arriving mid-flight must be rejected, not run concurrently.
+        vm.deleteForward("ssh")
+        awaitMessage(vm) { it?.contains("already in progress") == true }
+        assertTrue(vm.message.value!!.contains("already in progress"))
+
+        recordingBridge.releaseBlockedValidateConfig(ValidationResult(true, null))
+        awaitMessage(vm) { it == "Forward saved" }
+        // The rejected delete never ran: the seeded "ssh" forward is still present.
+        assertTrue(realIoDeps.forwardsRepository.current().any { it.id == "ssh" })
+    }
+
     // Drive the Robolectric main looper while waiting for an async save result, so
     // viewModelScope coroutines actually run instead of sitting queued.
     private fun awaitMessage(

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 
 data class ImportExportState(
@@ -140,23 +141,31 @@ private class ImportExportOps(
     private val io: CoroutineDispatcher,
     private val snackbar: SnackbarController,
 ) {
+    // P1-005-C: an atomic busy guard so two rapid imports cannot both pass a check-before-launch
+    // isBusy read and share/clobber the same candidate file. isBusy remains for UI state.
+    private val operationMutex = Mutex()
+
     fun run(
         successMessage: String,
         failureFallback: String,
         onSuccess: () -> Unit = {},
         block: suspend () -> Unit,
     ) {
-        if (state.value.isBusy) return
         scope.launch {
+            if (!operationMutex.tryLock()) return@launch
             state.value = state.value.copy(isBusy = true, resultMessage = null)
-            // FIX6 P0-005: mutationResult (not runCatching) so a cancelled operation — e.g.
-            // the ViewModel being cleared mid-import — propagates instead of falling through
-            // to a stale failure snackbar as though it were an ordinary error.
-            val result = withContext(io) { mutationResult { block() } }
-            if (result.isSuccess) onSuccess()
-            val message = result.fold({ successMessage }, { it.message ?: failureFallback })
-            state.value = state.value.copy(isBusy = false, resultMessage = message)
-            snackbar.show(message)
+            try {
+                // FIX6 P0-005: mutationResult (not runCatching) so a cancelled operation — e.g.
+                // the ViewModel being cleared mid-import — propagates instead of falling through
+                // to a stale failure snackbar as though it were an ordinary error.
+                val result = withContext(io) { mutationResult { block() } }
+                if (result.isSuccess) onSuccess()
+                val message = result.fold({ successMessage }, { it.message ?: failureFallback })
+                state.value = state.value.copy(isBusy = false, resultMessage = message)
+                snackbar.show(message)
+            } finally {
+                operationMutex.unlock()
+            }
         }
     }
 }

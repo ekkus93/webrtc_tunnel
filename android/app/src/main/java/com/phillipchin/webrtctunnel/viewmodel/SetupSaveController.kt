@@ -10,6 +10,8 @@ import com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinator
 import com.phillipchin.webrtctunnel.data.SetupPersistenceRequest
 import com.phillipchin.webrtctunnel.data.SetupPersistenceResult
 import com.phillipchin.webrtctunnel.data.SetupRollbackStageResult
+import com.phillipchin.webrtctunnel.data.createCandidateFile
+import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
@@ -20,8 +22,8 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -61,6 +63,10 @@ class SetupSaveController(
             loadPreferences = loadPreferences,
             persistPreferences = persistPreferences,
         )
+
+    // P1-005-C: an atomic busy guard, not a check-before-launch read — two rapid saves cannot
+    // overlap and clobber each other's candidate/state. A rejected save is visibly reported.
+    private val operationMutex = Mutex()
 
     fun testBrokerConnection() {
         val current = access.state()
@@ -105,6 +111,26 @@ class SetupSaveController(
     }
 
     private suspend fun saveAndApplyConfigInternal(): Boolean {
+        // P1-005-C: reject an overlapping save visibly instead of racing on a mutable busy flag.
+        if (!operationMutex.tryLock()) {
+            access.applyState(
+                access.state().copy(
+                    errorMessage = "Configuration save is already in progress",
+                    saveResult = null,
+                ),
+            )
+            return false
+        }
+        try {
+            return runSaveAndApply()
+        } finally {
+            operationMutex.unlock()
+        }
+    }
+
+    private suspend fun runSaveAndApply(): Boolean {
+        // Capture the current state only after the lock is held, so a serialized second save
+        // works from fresh state rather than a snapshot taken before the first finished.
         val current = access.state()
         // P0-001-B: rethrow CancellationException rather than folding it into a visible save
         // error (the old enclosing runCatching reported cancellation as a failure). Only real
@@ -346,12 +372,19 @@ private fun validateCandidateConfig(
     candidate: String,
     identityBytes: ByteArray,
 ): ValidationResult {
-    val temp = File(deps.context.cacheDir, "config-candidate.toml")
+    // P1-005: a unique candidate file per validation so two concurrent operations can never
+    // share (and clobber) one fixed "config-candidate.toml".
+    val temp = createCandidateFile(deps.context.cacheDir, "setup-config-")
     return runCatching {
-        temp.parentFile?.mkdirs()
         temp.writeText(candidate)
         deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identityBytes)
     }.getOrElse { ValidationResult(false, it.message) }.also {
-        temp.delete()
+        // Cleanup failure must not mask the validation result; it is reported separately.
+        deleteCandidateFileSafely(temp).onFailure { cleanup ->
+            android.util.Log.w(
+                "SetupSaveController",
+                "Candidate cleanup failed: ${SensitiveDataRedactor.redactText(cleanup.message ?: "unknown")}",
+            )
+        }
     }
 }

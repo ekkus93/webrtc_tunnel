@@ -23,6 +23,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
 class SetupViewModelTest : AppViewModelTestBase() {
@@ -142,6 +143,35 @@ class SetupViewModelTest : AppViewModelTestBase() {
         val state = awaitSetupState(viewModel) { it.errorMessage != null }
         assertTrue(state.errorMessage?.contains("prefs save failed") == true)
         assertEquals(null, Shadows.shadowOf(app).nextStartedService)
+    }
+
+    // FIX6 P1-005-C: two rapid setup saves must not overlap — the second is rejected visibly
+    // (atomic operation lock), so only one save runs the persistence.
+    @Test
+    fun twoRapidSetupSavesOnlyOneOperationRuns() {
+        val gate = CompletableDeferred<Unit>()
+        val prefsWrites = AtomicInteger(0)
+        val viewModel =
+            SetupViewModel(
+                deps,
+                persistPreferences = {
+                    prefsWrites.incrementAndGet()
+                    gate.await()
+                    deps.configRepository.savePreferences(it)
+                },
+            )
+        prepareValidReviewState(viewModel)
+
+        viewModel.save.saveAndApplyConfig() // acquires the lock, blocks at the gated preference write
+        viewModel.save.saveAndApplyConfig() // must be rejected while the first is in flight
+
+        val rejected = awaitSetupState(viewModel) { it.errorMessage?.contains("already in progress") == true }
+        assertTrue(rejected.errorMessage!!.contains("already in progress"))
+
+        gate.complete(Unit)
+        val done = awaitSetupState(viewModel) { it.saveResult == "Configuration saved" }
+        assertEquals("Configuration saved", done.saveResult)
+        assertEquals("only one save may run the persistence", 1, prefsWrites.get())
     }
 
     @Test

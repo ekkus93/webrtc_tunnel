@@ -7,6 +7,8 @@ import com.phillipchin.webrtctunnel.data.ForwardsMutationBlocked
 import com.phillipchin.webrtctunnel.data.ForwardsMutationReceipt
 import com.phillipchin.webrtctunnel.data.ForwardsRevisionMismatchException
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.data.createCandidateFile
+import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
 import com.phillipchin.webrtctunnel.data.describeForwardsFailure
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.TunnelStatus
@@ -18,8 +20,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -42,6 +44,11 @@ class ForwardsViewModel(
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
 
+    // P1-005-C: an atomic busy guard so two rapid mutations cannot both pass a check-before-launch
+    // busy read, race their config regeneration, and activate a stale config. _isBusy remains for
+    // UI state only.
+    private val operationMutex = Mutex()
+
     /** Record a result for this screen and surface it through the app-wide snackbar. */
     private fun report(message: String) {
         _message.value = message
@@ -53,8 +60,11 @@ class ForwardsViewModel(
     }
 
     fun saveForward(forward: ForwardConfig) {
-        if (_isBusy.value) return
         viewModelScope.launch {
+            if (!operationMutex.tryLock()) {
+                report("A forward operation is already in progress")
+                return@launch
+            }
             _isBusy.value = true
             try {
                 // P1-001: Use receipt-based atomic upsert.
@@ -73,13 +83,17 @@ class ForwardsViewModel(
                 }
             } finally {
                 _isBusy.value = false
+                operationMutex.unlock()
             }
         }
     }
 
     fun deleteForward(forwardId: String) {
-        if (_isBusy.value) return
         viewModelScope.launch {
+            if (!operationMutex.tryLock()) {
+                report("A forward operation is already in progress")
+                return@launch
+            }
             _isBusy.value = true
             try {
                 // P1-001: Use receipt-based atomic delete.
@@ -98,6 +112,7 @@ class ForwardsViewModel(
                 }
             } finally {
                 _isBusy.value = false
+                operationMutex.unlock()
             }
         }
     }
@@ -189,7 +204,9 @@ class ForwardsViewModel(
                 prefs.debugLogsEnabled,
                 prefs.androidIceMode,
             )
-        val temp = File(deps.context.cacheDir, "config-forwards-candidate.toml")
+        // P1-005: a unique candidate file per validation so two concurrent forward mutations
+        // can never share (and clobber) one fixed candidate path.
+        val temp = createCandidateFile(deps.context.cacheDir, "forwards-config-")
         // FIX6 P0-005: explicit try/catch (not runCatching) — it wraps the suspend
         // writeConfigAtomically, so a cancellation must propagate, not become an invalid result.
         return try {
@@ -218,7 +235,7 @@ class ForwardsViewModel(
             } finally {
                 // Wipe the plaintext identity buffer regardless of success/failure.
                 identity?.fill(0)
-                temp.delete()
+                deleteCandidateFileSafely(temp)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
