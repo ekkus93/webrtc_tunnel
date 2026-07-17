@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.data
 import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -327,66 +328,62 @@ class TransactionalResetCoordinatorTest {
             assertTrue("Rollback should be empty (no mutation)", failed.rollback.isEmpty())
         }
 
-    // P1-002: deleteConfigFileForTransactionalReset() should report failures properly
+    // P1-006: deleteConfigFileForTransactionalReset() rollback-failure coverage. The two
+    // tests below previously claimed to cover delete *failure* but never actually made
+    // deleteConfigFileForTransactionalReset() fail — both asserted the success path
+    // (delete succeeding) despite their names. They now force a genuine failure via a
+    // fake repository, per the Fix 5 review's "no misleading test names" rule.
+
+    private class ConfigDeleteFailureRepository(
+        context: android.content.Context,
+        private val deleteError: Throwable,
+    ) : ConfigRepository(context) {
+        override suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> = Result.failure(deleteError)
+    }
 
     @Test
-    fun deleteFailureIsReportedAsRollbackFailure() =
+    fun deleteFailureIsReportedAsRollbackStageFailure() =
         runBlocking {
-            // Config is absent initially (so rollback will try to delete it).
-            // Forwards stage will fail to trigger rollback.
+            // Config absent initially — Config's own reset stage creates the file, so
+            // rollback must delete it to restore the absent state. Forwards fails to
+            // trigger rollback.
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
 
-            // Create a coordinator that will fail on the Forwards stage.
-            val fakeStore =
-                FakeForwardsStore(
-                    initialForwards = forwardsRepo.current(),
-                    throwOnSave = true,
-                )
+            val failingConfigRepo = ConfigDeleteFailureRepository(context, IOException("delete failed"))
+            val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
-            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
+            val failingCoordinator = TransactionalResetCoordinator(failingConfigRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
 
-            // Reset should fail with Forwards as the failed stage.
             assertTrue(result is ResetResult.Failed)
             val failed = result as ResetResult.Failed
             assertEquals(ResetStage.Forwards, failed.failedStage)
-
-            // The rollback should report the Config stage as Success (delete succeeded).
-            // This verifies that delete failure is properly reported.
-            assertTrue("Rollback should have Config stage", failed.rollback.isNotEmpty())
             assertTrue(
-                "Rollback Config stage should be Success when delete succeeds",
-                failed.rollback.any { it is RollbackStageResult.Success },
+                "rollback must report Config as a genuine Failure when delete itself fails",
+                failed.rollback.any {
+                    it is RollbackStageResult.Failure && it.stage == ResetStage.Config
+                },
             )
         }
 
     @Test
-    fun fileStillExistingAfterAttemptedDeleteIsFailure() =
+    fun fileStillExistsAfterFailedDeleteDuringRollback() =
         runBlocking {
-            // Config is absent initially.
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
 
-            // Create a coordinator that will fail on the Forwards stage.
-            val fakeStore =
-                FakeForwardsStore(
-                    initialForwards = forwardsRepo.current(),
-                    throwOnSave = true,
-                )
+            val failingConfigRepo = ConfigDeleteFailureRepository(context, IOException("delete failed"))
+            val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
-            val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
+            val failingCoordinator = TransactionalResetCoordinator(failingConfigRepo, fakeForwardsRepo)
 
-            val result = failingCoordinator.resetConfiguration()
+            failingCoordinator.resetConfiguration()
 
-            // Reset should fail with Forwards as the failed stage.
-            assertTrue(result is ResetResult.Failed)
-            val failed = result as ResetResult.Failed
-
-            // Verify that the Config file is absent after rollback.
-            // If it still exists, the delete failed and should be reported as Failure.
+            // The reset stage created config.toml; since the rollback delete genuinely
+            // failed (not merely reported failure), the file must still physically exist.
             assertTrue(
-                "Config should be absent after rollback",
-                configRepo.readConfig().isEmpty(),
+                "config.toml must still exist on disk when its rollback delete failed",
+                File(context.filesDir, "config.toml").exists(),
             )
         }
 
@@ -499,10 +496,14 @@ class TransactionalResetCoordinatorTest {
             )
         }
 
-    // P1-005: real rollback failure tests — verify rollback stages can genuinely fail
+    // P1-005: rollback-reporting tests. The next three prove rollback stages are
+    // reported when they *succeed* (renamed from names that claimed to test failure,
+    // per the Fix 5 review — none of them ever made a rollback operation itself fail).
+    // configRollbackFailureIsReportedAsRollbackStageFailure below is the true
+    // rollback-failure test: it forces the Config rollback write itself to fail.
 
     @Test
-    fun configRestoreFailureIsReportedAsRollbackFailure() =
+    fun configRestoreSucceedsAndIsReportedInRollback() =
         runBlocking {
             // Seed a config that will need to be restored during rollback
             val priorConfig = "format = \"prior-v3\"\n[node]\npeer_id = \"android-phone\""
@@ -547,7 +548,7 @@ class TransactionalResetCoordinatorTest {
         }
 
     @Test
-    fun setupInputRestoreFailureIsReportedAsRollbackFailure() =
+    fun setupInputRestoreSucceedsAndIsReportedInRollback() =
         runBlocking {
             // Create a coordinator where SetupInput stage succeeds but Forwards fails,
             // triggering rollback of Config and SetupInput.
@@ -589,7 +590,7 @@ class TransactionalResetCoordinatorTest {
         }
 
     @Test
-    fun forwardsRollbackFailureIsReported() =
+    fun forwardsIsExcludedFromRollbackWhenItIsTheFailingStage() =
         runBlocking {
             // Create a scenario where Forwards stage fails during reset,
             // so Forwards is NOT in the mutated stages. But Config and SetupInput are.
@@ -623,6 +624,253 @@ class TransactionalResetCoordinatorTest {
             assertTrue(
                 "Forwards should not be in rollback (it was the failing stage)",
                 ResetStage.Forwards !in rollbackStages,
+            )
+        }
+
+    // P1-001: TransactionalReset setup-input mutation/rollback must use explicit
+    // try/catch (not runCatching) — cancellation propagates, failures are reported.
+
+    /**
+     * A [ConfigRepository] whose [saveSetupInput] throws [error] on the
+     * [failOnCallNumber]th call (1-based) and delegates to the real implementation on
+     * every other call, so a specific reset-vs-rollback call can be targeted precisely.
+     */
+    private class ThrowingSetupInputConfigRepository(
+        context: android.content.Context,
+        private val failOnCallNumber: Int,
+        private val error: Throwable,
+    ) : ConfigRepository(context) {
+        private var callCount = 0
+
+        override fun saveSetupInput(input: SetupConfigInput) {
+            callCount++
+            if (callCount == failOnCallNumber) throw error
+            super.saveSetupInput(input)
+        }
+    }
+
+    @Test
+    fun setupResetFailureReturnsResetStageFailure() =
+        runBlocking {
+            val throwingConfigRepo =
+                ThrowingSetupInputConfigRepository(
+                    context,
+                    failOnCallNumber = 1,
+                    error = IOException("disk full"),
+                )
+            val coordinator = TransactionalResetCoordinator(throwingConfigRepo, forwardsRepo)
+
+            val result = coordinator.resetConfiguration()
+
+            assertTrue("reset must fail when setup-input reset throws", result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.SetupInput, failed.failedStage)
+            assertTrue("failure reason must be reported, not swallowed", failed.cause.contains("disk full"))
+        }
+
+    @Test
+    fun setupRollbackFailureReturnsRollbackStageFailure() =
+        runBlocking {
+            // Call 1 = SetupInput reset (succeeds). Call 2 = SetupInput rollback,
+            // triggered once the Forwards stage below fails (fails).
+            val throwingConfigRepo =
+                ThrowingSetupInputConfigRepository(
+                    context,
+                    failOnCallNumber = 2,
+                    error = IOException("rollback write failed"),
+                )
+            val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val coordinator = TransactionalResetCoordinator(throwingConfigRepo, fakeForwardsRepo)
+
+            val result = coordinator.resetConfiguration()
+
+            assertTrue("reset must fail on the Forwards stage", result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.Forwards, failed.failedStage)
+            assertTrue(
+                "rollback must report SetupInput as a Failure when its restore throws",
+                failed.rollback.any {
+                    it is RollbackStageResult.Failure && it.stage == ResetStage.SetupInput
+                },
+            )
+        }
+
+    @Test
+    fun cancellationDuringSetupResetPropagates() {
+        val throwingConfigRepo =
+            ThrowingSetupInputConfigRepository(
+                context,
+                failOnCallNumber = 1,
+                error = CancellationException("cancelled during setup reset"),
+            )
+        val coordinator = TransactionalResetCoordinator(throwingConfigRepo, forwardsRepo)
+
+        var caught: CancellationException? = null
+        try {
+            runBlocking { coordinator.resetConfiguration() }
+        } catch (cancelled: CancellationException) {
+            caught = cancelled
+        }
+        assertTrue(
+            "CancellationException during setup-input reset must propagate, not be " +
+                "converted into a ResetStageResult.Failure",
+            caught != null,
+        )
+    }
+
+    @Test
+    fun cancellationDuringSetupRollbackPropagates() {
+        val throwingConfigRepo =
+            ThrowingSetupInputConfigRepository(
+                context,
+                failOnCallNumber = 2,
+                error = CancellationException("cancelled during setup rollback"),
+            )
+        val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
+        val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+        val coordinator = TransactionalResetCoordinator(throwingConfigRepo, fakeForwardsRepo)
+
+        var caught: CancellationException? = null
+        try {
+            runBlocking { coordinator.resetConfiguration() }
+        } catch (cancelled: CancellationException) {
+            caught = cancelled
+        }
+        assertTrue(
+            "CancellationException during setup-input rollback must propagate, not be " +
+                "converted into a RollbackStageResult.Failure",
+            caught != null,
+        )
+    }
+
+    // P1-004: true early-stage failure tests — every prior test that claimed to prove
+    // "stops immediately" actually only failed on the final (Forwards) stage. These
+    // force failure at the Config and SetupInput stages specifically.
+
+    private class ThrowingConfigWriteRepository(
+        context: android.content.Context,
+        private val failOnCallNumber: Int,
+        private val error: Throwable,
+    ) : ConfigRepository(context) {
+        private var callCount = 0
+
+        override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+            callCount++
+            if (callCount == failOnCallNumber) return Result.failure(error)
+            return super.writeConfigAtomically(contents)
+        }
+    }
+
+    @Test
+    fun resetStopsImmediatelyWhenConfigStageFails() =
+        runBlocking {
+            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "prior-setup-input"))
+            val priorSetupInput = configRepo.loadSetupInputResult().getOrThrow()
+
+            val failingConfigRepo =
+                ThrowingConfigWriteRepository(context, failOnCallNumber = 1, error = IOException("disk full"))
+            val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(failingConfigRepo, fakeForwardsRepo)
+
+            val result = failingCoordinator.resetConfiguration()
+
+            assertTrue("reset must fail when the Config stage fails", result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.Config, failed.failedStage)
+            assertEquals(
+                "SetupInput must never be reset once the Config stage has already failed",
+                priorSetupInput,
+                failingConfigRepo.loadSetupInputResult().getOrThrow(),
+            )
+            assertEquals(
+                "Forwards must never be touched once the Config stage has already failed",
+                0,
+                fakeStore.saveCallCount,
+            )
+        }
+
+    @Test
+    fun resetStopsImmediatelyWhenSetupStageFails() =
+        runBlocking {
+            configRepo.writeConfig("format = \"prior\"\n")
+
+            // Call 1 = SetupInput reset, forced to fail. Config's own reset (a separate
+            // method, writeConfigAtomically) runs and succeeds normally first.
+            val failingConfigRepo =
+                ThrowingSetupInputConfigRepository(context, failOnCallNumber = 1, error = IOException("disk full"))
+            val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val failingCoordinator = TransactionalResetCoordinator(failingConfigRepo, fakeForwardsRepo)
+
+            val result = failingCoordinator.resetConfiguration()
+
+            assertTrue("reset must fail when the SetupInput stage fails", result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.SetupInput, failed.failedStage)
+            assertEquals(
+                "Forwards must never be touched once the SetupInput stage has already failed",
+                0,
+                fakeStore.saveCallCount,
+            )
+        }
+
+    // P1-005: true rollback-failure test — forces the rollback operation itself
+    // (Config's restore write) to fail, per the answered RESPONSES Q4 (fake repository,
+    // not a real file-permission scenario).
+
+    private class ConfigRollbackFailureRepository(
+        context: android.content.Context,
+        private val writeFailOnCallNumber: Int,
+        private val writeError: Throwable,
+    ) : ConfigRepository(context) {
+        private var writeCallCount = 0
+
+        override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+            writeCallCount++
+            if (writeCallCount == writeFailOnCallNumber) return Result.failure(writeError)
+            return super.writeConfigAtomically(contents)
+        }
+
+        // Always fails — SetupInput's own reset must fail unconditionally to trigger
+        // rollback, per the required scenario (config reset succeeds, setup reset
+        // fails, config rollback is attempted and fails).
+        override fun saveSetupInput(input: SetupConfigInput) {
+            throw IOException("setup reset failed")
+        }
+    }
+
+    @Test
+    fun configRollbackFailureIsReportedAsRollbackStageFailure() =
+        runBlocking {
+            val priorConfig = "format = \"prior-rollback-failure-test\"\n"
+            configRepo.writeConfig(priorConfig)
+            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "prior"))
+
+            val failingRepo =
+                ConfigRollbackFailureRepository(
+                    context,
+                    // Call 1 = Config's own reset (succeeds normally).
+                    // Call 2 = Config's rollback restore, triggered once SetupInput's
+                    // reset fails below (fails).
+                    writeFailOnCallNumber = 2,
+                    writeError = IOException("rollback write failed"),
+                )
+            val failingCoordinator = TransactionalResetCoordinator(failingRepo, forwardsRepo)
+
+            val result = failingCoordinator.resetConfiguration()
+
+            assertTrue("reset must fail when the SetupInput stage fails", result is ResetResult.Failed)
+            val failed = result as ResetResult.Failed
+            assertEquals(ResetStage.SetupInput, failed.failedStage)
+
+            assertTrue(
+                "rollback must report Config as a genuine Failure — the rollback " +
+                    "write itself failed, not just the forward reset",
+                failed.rollback.any {
+                    it is RollbackStageResult.Failure && it.stage == ResetStage.Config
+                },
             )
         }
 }

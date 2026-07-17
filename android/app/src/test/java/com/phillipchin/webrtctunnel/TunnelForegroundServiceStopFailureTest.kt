@@ -1,8 +1,10 @@
 package com.phillipchin.webrtctunnel
 
 import android.content.Intent
+import android.net.ConnectivityManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.isTunnelRunning
 import kotlinx.coroutines.runBlocking
@@ -13,8 +15,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows
 import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowNetwork
 import java.util.concurrent.TimeUnit
 
 /**
@@ -53,6 +57,9 @@ class TunnelForegroundServiceStopFailureTest {
         TunnelForegroundServiceTestHooks.validationThrows.set(null)
         // P0-003: Reset config preparation throw injection hook.
         TunnelForegroundServiceTestHooks.configPrepThrows.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadFailure.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadCancels.set(false)
+        TunnelForegroundServiceTestHooks.preferenceReadInterceptSkipCount.set(0)
         service = controller.create().get()
     }
 
@@ -374,6 +381,9 @@ class PendingRetryInvalidationTest {
         TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
         TunnelForegroundServiceTestHooks.validationThrows.set(null)
         TunnelForegroundServiceTestHooks.configPrepThrows.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadFailure.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadCancels.set(false)
+        TunnelForegroundServiceTestHooks.preferenceReadInterceptSkipCount.set(0)
         service = controller.create().get()
     }
 
@@ -400,20 +410,70 @@ class PendingRetryInvalidationTest {
     /**
      * P0-002: pending retry then Destroy does not restart.
      *
-     * Simulates a pending policy retry (generation set), then destroys the service.
-     * The retry must not fire.
+     * Establishes a genuine pending policy retry — a PolicyAllowed event arriving while
+     * a startup is already in flight (the same race P0-001 fixes the resume side of) —
+     * then destroys the service while that startup is still unresolved. Proves destroy's
+     * invalidation wins the race: no extra native start ever occurs, and a late trigger
+     * that would otherwise have consumed the pending retry does nothing.
      */
     @Test
     fun pendingRetryThenDestroyDoesNotRestart() {
-        // Start the tunnel normally to establish a valid generation.
-        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
-        assertTrue(waitForCondition { TunnelForegroundServiceTestHooks.bridge.state == ServiceState.Connected })
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
 
-        // Verify that onDestroy does not trigger a restart.
+        runBlocking {
+            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+        }
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        runBlocking { service.offer.pauseForPolicy("policy pause before destroy race") }
+        assertTrue(service.pausedByPolicy.get())
+
+        val connectivityManager =
+            ApplicationProvider.getApplicationContext<android.content.Context>()
+                .getSystemService(ConnectivityManager::class.java)
+        val shadowConnectivityManager = Shadows.shadowOf(connectivityManager)
+        val network = ShadowNetwork.newInstance(1)
+
+        // First event resumes immediately (activeStartup was null); block it mid-native-start.
+        bridge.blockNextStartOffer()
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        assertTrue(bridge.awaitStartOfferEntered(5_000))
+        val startCallsBeforeDestroy = bridge.startOfferCalls
+
+        // Second event while the resume is still in flight: this is what would become a
+        // pending retry (consumed by the NativeFailure branch, per P0-001) if destroy did
+        // not win the race.
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+
         controller.destroy()
-        // After destroy, the pending retry must have been invalidated.
-        // The service should be cleanly destroyed without triggering a restart.
-        assertTrue("destroy should complete without triggering retry restart", true)
+        // Unblock the in-flight native start immediately (rather than waiting out the
+        // fake bridge's internal 5s block timeout) so destroy's cancelAndJoin resolves
+        // quickly; the coroutine notices cancellation and unwinds without ever posting
+        // StartupCompleted, so this does not itself consume the pending retry.
+        bridge.releaseBlockedStartOffer()
+
+        assertTrue(
+            "destroy's fallback cleanup stop must complete",
+            waitForCondition { bridge.stopCalls >= 1 },
+        )
+
+        // A late trigger after destroy must not resume — the coordinator's command
+        // channel is closed and serviceScope is cancelled, so there is no path left by
+        // which a pending retry (even if it had survived) could still fire.
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        Thread.sleep(200)
+
+        assertEquals(
+            "no native start may occur once destroy has invalidated the pending retry",
+            startCallsBeforeDestroy,
+            bridge.startOfferCalls,
+        )
+        assertFalse(
+            "the service must not end up running after destroy",
+            bridge.state.isTunnelRunning(),
+        )
     }
 
     /**

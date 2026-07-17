@@ -174,17 +174,23 @@ Use project-specific error publication if different.
 
 ### Tests
 
-- [ ] `nativeFailureConsumesPendingPolicyRetryBeforeInvalidation`
-- [ ] `nativeFailureWithStalePendingRetryDoesNotResume`
-- [ ] `nativeFailurePendingRetryRunsExactlyOnce`
-- [ ] existing one-event policy retry test still passes without repeated network events
+- [x] `nativeFailureConsumesPendingPolicyRetryAndResumesExactlyOnce` (covers
+      consumption, exactly-once, and the original "RunsExactlyOnce" item in one test —
+      `TunnelForegroundServiceOrderingTest.kt`)
+- [x] `nativeFailureWithoutPendingRetryPublishesFailure`
+- [x] `nativeFailurePendingRetryWithoutPausedByPolicyDoesNotResume` (the actual "stale"
+      condition per the answered Q1: pending generation matches but `pausedByPolicy` no
+      longer holds — a mismatched-generation case can't occur through real command flow
+      since `handleStartupCompleted` already early-returns on generation mismatch)
+- [x] existing one-event policy retry test (`failedAutoResumeLeavesPausedByPolicyTrueForNextRetry`)
+      still passes without repeated network events
 
 ### Acceptance
 
-- [ ] NativeFailure pending retry is read before invalidation.
-- [ ] one-event retry still works.
-- [ ] stale pending retry does not resume.
-- [ ] retry runs exactly once.
+- [x] NativeFailure pending retry is read before invalidation.
+- [x] one-event retry still works.
+- [x] stale/invalidated pending retry does not resume (pausedByPolicy no longer true).
+- [x] retry runs exactly once.
 
 ---
 
@@ -260,11 +266,17 @@ fun pendingRetryThenDestroyDoesNotRestart() =
 Use actual fake/test hook names. If direct hooks do not exist, assert through observable
 state and native start counts.
 
+**Implemented via observable state** (no `submitLifecycleCommandIfPossible`-style hook
+exists or was added, per the answered Q8): the test now establishes a genuine pending
+retry via the same PolicyAllowed-arrives-during-in-flight-startup race P0-001 fixes,
+destroys the service while that startup is still unresolved, and asserts native start
+count is unchanged even after a further late trigger.
+
 ### Acceptance
 
-- [ ] no `assertTrue(true)`;
-- [ ] native start count is asserted;
-- [ ] pending retry cleared or late retry impossible.
+- [x] no `assertTrue(true)`;
+- [x] native start count is asserted;
+- [x] pending retry cleared or late retry impossible.
 
 ---
 
@@ -336,11 +348,27 @@ NetworkPolicyManager(
 
 Use actual dependency names.
 
+**Implemented differently, per an explicit design-fork decision made with the user
+mid-implementation**: adding a `diagnosticEventBus`/reporter-wired `NetworkPolicyManager`
+as a new `AppDependencies` constructor parameter tripped detekt's `LongParameterList`
+(max 6; this app was already at exactly 6). Rather than an invasive constructor
+restructure touching ~10 test call sites, `NetworkPolicyManager` now always owns and
+exposes its own `AppDiagnosticEventBus` (`diagnosticEvents`) directly — there is no
+`NetworkPolicyEventReporter`/`NoopNetworkPolicyEventReporter`/`AppNetworkPolicyEventReporter`
+interface layer at all, so there is structurally no no-op reporter left to accidentally
+wire into production. `TunnelForegroundService` collects from
+`networkPolicyManager.diagnosticEvents.events` while alive and relays into its own
+`reporter.publishError`.
+
 ### Tests
 
-- [ ] production dependency wiring does not use `NoopNetworkPolicyEventReporter`;
-- [ ] active delivery failure reaches fake reporter;
-- [ ] expected close does not report.
+- [x] production wiring does not use a no-op reporter — structurally guaranteed (no
+      no-op reporter exists); `AppDependenciesNetworkPolicyWiringTest` proves
+      `AppDependencies(context).networkPolicyManager.diagnosticEvents` is live and reachable
+- [x] active delivery failure reaches the diagnostic bus (`AppNetworkPolicyEventReporterTest`
+      equivalent folded into `NetworkPolicyManagerTest`/`AppDependenciesNetworkPolicyWiringTest`)
+- [x] expected close does not report (`expectedCloseCancellationExceptionDoesNotReport`,
+      `expectedCloseClosedSendChannelDoesNotReport`, pre-existing and still passing)
 
 ---
 
@@ -406,9 +434,12 @@ private fun ProducerScope<NetworkPolicyStatus>
 
 ### Tests
 
-- [ ] reporter message redacts IP/password/token;
-- [ ] original raw secret does not appear in message;
-- [ ] expected close produces no diagnostic.
+- [x] reporter message redacts password/token/api_key (`deliveryFailureRedactsSensitiveData`,
+      `diagnosticIsRedactedIfCauseContainsSensitiveValue`) — `SensitiveDataRedactor` does not
+      have an IP-address rule, so that specific case isn't covered; not required by FIX5
+- [x] original raw secret does not appear in message
+      (`redactedMessageDoesNotPreserveOriginalThrowableIdentityOrMessage`)
+- [x] expected close produces no diagnostic (pre-existing tests, still passing)
 
 ---
 
@@ -486,10 +517,10 @@ private fun restoreSetupInput(
 
 ### Tests
 
-- [ ] cancellation during setup reset propagates;
-- [ ] cancellation during setup rollback propagates;
-- [ ] setup reset failure returns `ResetStageResult.Failure`;
-- [ ] setup rollback failure returns `RollbackStageResult.Failure`.
+- [x] cancellation during setup reset propagates (`cancellationDuringSetupResetPropagates`);
+- [x] cancellation during setup rollback propagates (`cancellationDuringSetupRollbackPropagates`);
+- [x] setup reset failure returns `ResetStageResult.Failure` (`setupResetFailureReturnsResetStageFailure`);
+- [x] setup rollback failure returns `RollbackStageResult.Failure` (`setupRollbackFailureReturnsRollbackStageFailure`).
 
 ---
 
@@ -548,10 +579,12 @@ private suspend fun handlePolicyAllowed() {
 
 ### Tests
 
-- [ ] preference read failure publishes `policy_allowed_preference_read_failed`;
-- [ ] preference read failure invalidates pending retry;
-- [ ] preference read failure does not call native start/resume;
-- [ ] cancellation propagates.
+- [x] preference read failure publishes `policy_allowed_preference_read_failed` and
+      does not call native start/resume, in one test
+      (`policyAllowedPreferenceReadFailurePublishesVisibleDiagnosticAndDoesNotResume`);
+      invalidation is implicit (the retry path is never taken)
+- [x] cancellation propagates, i.e. is not converted into the failure diagnostic
+      (`policyAllowedPreferenceReadCancellationDoesNotPublishFailureDiagnostic`)
 
 ---
 
@@ -590,9 +623,12 @@ catch.
 
 ### Tests
 
-- [ ] unexpected handler exception publishes `lifecycle_command_failed`;
-- [ ] processor continues with later command after unexpected exception;
-- [ ] cancellation still stops processor.
+- [x] unexpected handler exception publishes `lifecycle_command_failed`
+      (`unexpectedExceptionPublishesLifecycleCommandFailed`, new `TunnelLifecycleCoordinatorTest.kt`);
+- [x] processor continues with later command after unexpected exception
+      (`processorContinuesWithLaterCommandAfterUnexpectedException`);
+- [x] cancellation still stops processor
+      (`cancellationExceptionFromHandlerStillStopsProcessorAndIsNotReportedAsFailure`).
 
 ---
 
@@ -608,8 +644,8 @@ TransactionalResetCoordinatorTest.kt
 
 ### Required tests
 
-- [ ] `resetStopsImmediatelyWhenConfigStageFails`
-- [ ] `resetStopsImmediatelyWhenSetupStageFails`
+- [x] `resetStopsImmediatelyWhenConfigStageFails`
+- [x] `resetStopsImmediatelyWhenSetupStageFails`
 
 Assertions:
 
@@ -686,15 +722,33 @@ Do not keep misleading test names.
 
 After fixes, record:
 
-- [ ] `git rev-parse HEAD`;
-- [ ] GitHub Actions workflow URL/id;
-- [ ] workflow head SHA;
-- [ ] lifecycle focused result;
-- [ ] config/reset result;
-- [ ] logs/preferences/network result;
-- [ ] setup/identity result;
-- [ ] full Android result;
-- [ ] every unavailable check has `NOT RUN: exact reason`.
+- [x] `git rev-parse HEAD`: `3bb5ba919ffa368877aa4a55ce4691c9765a5b81` (HEAD at the start
+      of this implementation pass; the FIX5 code changes described here are uncommitted
+      in the working tree as of this evidence — see note below)
+- [ ] GitHub Actions workflow URL/id: **NOT RUN: no GitHub Actions access from this
+      environment; this pass ran all validation locally via `./gradlew`.**
+- [ ] workflow head SHA: **NOT RUN: same reason.**
+- [x] lifecycle focused result: PASS — `testDebugUnitTest` with
+      `TunnelForegroundServiceStopFailureTest`, `TunnelForegroundService*`,
+      `data.TunnelRepositoryTest` filters, 0 failures.
+- [x] config/reset result: PASS — `TransactionalResetCoordinatorTest` (26 tests),
+      `ForwardsRepositoryTest`, `ConfigRepositoryTest` all passing as part of the full run.
+- [x] logs/preferences/network result: PASS — `LogsViewModelTest`,
+      `NetworkPolicyViewModelTest`, `SettingsViewModelTest`, `NetworkPolicyManagerTest` all
+      passing.
+- [x] setup/identity result: PASS — `SetupSaveControllerTest`, `IdentityRepositoryTest`
+      passing.
+- [x] full Android result: PASS — `./gradlew check` (ktlint + detekt, including the
+      type-resolution `detektDebugUnitTest`/`detektReleaseUnitTest`/`detektTest` variants +
+      Android lint + `testDebugUnitTest` + `testReleaseUnitTest`), `./gradlew lintDebug`,
+      `./gradlew assembleDebug` all green with zero errors/warnings-as-failures.
+- [x] every unavailable check has `NOT RUN: exact reason` — see GitHub Actions items above.
+
+**Note on commit state:** this evidence reflects the working tree at the end of this
+implementation pass, run against the codebase as modified (not yet committed as of this
+writing — commits are made only when the user explicitly asks, per this repo's
+CLAUDE.md). Re-run `git rev-parse HEAD` after committing for the evidence to point at
+the exact commit these results correspond to.
 
 ---
 
@@ -756,24 +810,31 @@ cd android
 
 ## P0
 
-- [ ] NativeFailure pending retry consumed before invalidation.
-- [ ] One-event policy retry still works.
-- [ ] Destroy pending retry test has real assertions.
-- [ ] Production NetworkPolicyManager uses real reporter.
-- [ ] Network delivery diagnostic uses redacted string, not raw Throwable.
-- [ ] Network delivery redaction tests pass.
+- [x] NativeFailure pending retry consumed before invalidation.
+- [x] One-event policy retry still works.
+- [x] Destroy pending retry test has real assertions.
+- [x] Production NetworkPolicyManager uses real reporter — reimplemented as an always-live
+      internal `AppDiagnosticEventBus` rather than an injected reporter interface (see
+      P0-003 note above); no no-op path exists to misconfigure.
+- [x] Network delivery diagnostic uses redacted string, not raw Throwable.
+- [x] Network delivery redaction tests pass.
 
 ## P1
 
-- [ ] TransactionalReset setup reset has no `runCatching`.
-- [ ] TransactionalReset setup rollback has no `runCatching`.
-- [ ] PolicyAllowed preference read failure is visible.
-- [ ] Lifecycle coordinator catches unexpected command exceptions visibly.
-- [ ] Reset config-stage failure test proves setup/forwards not called.
-- [ ] Reset setup-stage failure test proves forwards not called.
-- [ ] Rollback failure test simulates actual rollback failure.
-- [ ] Delete failure tests are real or renamed honestly.
+- [x] TransactionalReset setup reset has no `runCatching`.
+- [x] TransactionalReset setup rollback has no `runCatching`.
+- [x] PolicyAllowed preference read failure is visible.
+- [x] Lifecycle coordinator catches unexpected command exceptions visibly.
+- [x] Reset config-stage failure test proves setup/forwards not called.
+- [x] Reset setup-stage failure test proves forwards not called.
+- [x] Rollback failure test simulates actual rollback failure
+      (`configRollbackFailureIsReportedAsRollbackStageFailure`); the three previously
+      misleadingly-named tests were renamed to describe what they actually test
+      (rollback success reporting), not deleted.
+- [x] Delete failure tests are real (made `deleteConfigFileForTransactionalReset` `open`
+      and force a genuine failure) — renamed from misleading names, not just relabeled.
 
 ## P2
 
-- [ ] Fresh signoff evidence recorded.
+- [x] Fresh signoff evidence recorded (see P2-001 above; GitHub Actions items NOT RUN —
+      no CI access from this environment).

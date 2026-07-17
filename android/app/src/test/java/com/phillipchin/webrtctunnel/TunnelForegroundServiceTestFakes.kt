@@ -74,6 +74,50 @@ object TunnelForegroundServiceTestHooks {
     // writeConfigAtomicallyLocked.
     @get:JvmName("configPrepThrows")
     val configPrepThrows: AtomicReference<String?> = AtomicReference(null)
+
+    // P1-002: Inject a preferences-read failure/cancellation for
+    // handlePolicyAllowed() diagnostic-coverage tests. configRepository.preferences is
+    // read by several independent callers (the network monitor loop, prepareOfferIdentity,
+    // handlePolicyAllowed) — preferenceReadInterceptSkipCount lets a test let the first N
+    // reads succeed normally and only fail/cancel the specific read it's targeting.
+    @get:JvmName("preferenceReadFailure")
+    val preferenceReadFailure: AtomicReference<String?> = AtomicReference(null)
+
+    @get:JvmName("preferenceReadCancels")
+    val preferenceReadCancels: AtomicBoolean = AtomicBoolean(false)
+
+    @get:JvmName("preferenceReadInterceptSkipCount")
+    val preferenceReadInterceptSkipCount: AtomicInteger = AtomicInteger(0)
+}
+
+/**
+ * P1-002: decides whether a `ConfigRepository.preferences` read should be intercepted
+ * (failed/cancelled) or passed through to [real]. `configRepository.preferences` is read
+ * by several independent callers (the network monitor loop, prepareOfferIdentity,
+ * handlePolicyAllowed), so [TunnelForegroundServiceTestHooks.preferenceReadInterceptSkipCount]
+ * lets a test allow the first N reads through and only intercept the one it's targeting.
+ * Top-level (not nested inside `TunnelForegroundServiceTestApplication.onCreate()`) so
+ * that onCreate stays under detekt's LongMethod/ReturnCount thresholds.
+ */
+private fun interceptPreferenceReadHook(
+    real: kotlinx.coroutines.flow.Flow<AndroidAppPreferences>,
+): kotlinx.coroutines.flow.Flow<AndroidAppPreferences> {
+    val hooks = TunnelForegroundServiceTestHooks
+    val armed = hooks.preferenceReadCancels.get() || hooks.preferenceReadFailure.get() != null
+    val skipping = armed && hooks.preferenceReadInterceptSkipCount.get() > 0
+    if (skipping) {
+        hooks.preferenceReadInterceptSkipCount.decrementAndGet()
+    }
+    val failure = hooks.preferenceReadFailure.get()
+    return when {
+        skipping -> real
+        hooks.preferenceReadCancels.get() ->
+            kotlinx.coroutines.flow.flow {
+                throw kotlinx.coroutines.CancellationException("injected preference read cancellation")
+            }
+        failure != null -> kotlinx.coroutines.flow.flow { throw java.io.IOException(failure) }
+        else -> real
+    }
 }
 
 class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies {
@@ -88,6 +132,13 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
         // P0-001: Wire config preparation failure injection hook.
         val configRepository =
             object : ConfigRepository(this) {
+                // P1-002: preferences-read failure/cancellation injection (see
+                // interceptPreferenceReadHook for the actual decision logic, kept
+                // top-level to keep this onCreate() under detekt's LongMethod/ReturnCount
+                // thresholds).
+                override val preferences: kotlinx.coroutines.flow.Flow<AndroidAppPreferences>
+                    get() = interceptPreferenceReadHook(super.preferences)
+
                 override suspend fun prepareActiveConfigForStart(
                     iceMode: String,
                     advertisedIpv4: String?,

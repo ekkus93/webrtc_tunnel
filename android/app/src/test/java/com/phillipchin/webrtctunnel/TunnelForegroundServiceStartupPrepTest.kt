@@ -44,6 +44,9 @@ class TunnelForegroundServiceStartupPrepTest {
         TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
         TunnelForegroundServiceTestHooks.validationThrows.set(null)
         TunnelForegroundServiceTestHooks.configPrepThrows.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadFailure.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadCancels.set(false)
+        TunnelForegroundServiceTestHooks.preferenceReadInterceptSkipCount.set(0)
         service = controller.create().get()
     }
 

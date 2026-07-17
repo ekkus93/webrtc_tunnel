@@ -46,6 +46,9 @@ class TunnelForegroundServiceOrderingTest {
         TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
         TunnelForegroundServiceTestHooks.validationThrows.set(null)
         TunnelForegroundServiceTestHooks.configPrepThrows.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadFailure.set(null)
+        TunnelForegroundServiceTestHooks.preferenceReadCancels.set(false)
+        TunnelForegroundServiceTestHooks.preferenceReadInterceptSkipCount.set(0)
         service = controller.create().get()
     }
 
@@ -224,6 +227,231 @@ class TunnelForegroundServiceOrderingTest {
         assertTrue(
             "a successful resume must leave the tunnel running, not paused/errored",
             waitForCondition { deps.tunnelRepository.status.value.serviceState.isTunnelRunning() },
+        )
+    }
+
+    // P0-001: handleStartupCompleted() previously invalidated the pending policy retry
+    // unconditionally before the NativeFailure branch could read it, making this race
+    // unreachable. These tests drive the exact race — a PolicyAllowed event arriving
+    // while a startup is already in flight (activeStartup != null) — through the real
+    // command queue and native-bridge fake, not through any new test-only hook.
+
+    @Test
+    fun nativeFailureConsumesPendingPolicyRetryAndResumesExactlyOnce() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        runBlocking {
+            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+        }
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        runBlocking { service.offer.pauseForPolicy("policy pause before pending-retry race") }
+        assertTrue(service.pausedByPolicy.get())
+
+        val connectivityManager =
+            ApplicationProvider.getApplicationContext<android.content.Context>()
+                .getSystemService(ConnectivityManager::class.java)
+        val shadowConnectivityManager = Shadows.shadowOf(connectivityManager)
+        val network = ShadowNetwork.newInstance(1)
+
+        // First unmetered event: activeStartup is null, so this resumes immediately —
+        // block it mid-native-start so the second event below races against it.
+        bridge.blockNextStartOffer()
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        assertTrue(
+            "the immediate resume attempt must reach the blocked native start",
+            bridge.awaitStartOfferEntered(5_000),
+        )
+        val startCallsAtRaceStart = bridge.startOfferCalls
+        assertTrue(service.pausedByPolicy.get())
+
+        // Second unmetered event while the first resume is still in flight: activeStartup
+        // != null here, so this must be recorded as a pending retry, not acted on directly.
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+
+        // Let the blocked native start fail. The NativeFailure branch must consume the
+        // pending retry recorded above (rather than finding it already cleared) and
+        // submit exactly one RetryPolicyResume.
+        bridge.failNextStartOffer()
+        bridge.releaseBlockedStartOffer()
+
+        assertTrue(
+            "the pending retry recorded during the race must trigger exactly one more native start",
+            waitForCondition { bridge.startOfferCalls == startCallsAtRaceStart + 1 },
+        )
+        assertTrue(
+            "the retried start must succeed and leave the tunnel running",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState.isTunnelRunning() },
+        )
+        assertFalse(service.pausedByPolicy.get())
+
+        // Give a spurious extra retry a chance to fire before asserting the final count —
+        // proves the retry ran exactly once, not repeatedly.
+        Thread.sleep(200)
+        assertEquals(startCallsAtRaceStart + 1, bridge.startOfferCalls)
+    }
+
+    @Test
+    fun nativeFailureWithoutPendingRetryPublishesFailure() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        bridge.failNextStartOffer()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        assertTrue(
+            "a native failure with no pending retry must publish an error",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+        assertEquals(
+            "native_start_failed",
+            deps.tunnelRepository.status.value.lastError?.code,
+        )
+
+        Thread.sleep(200)
+        assertEquals(
+            "no pending retry means no automatic retry attempt",
+            1,
+            bridge.startOfferCalls,
+        )
+    }
+
+    @Test
+    fun nativeFailurePendingRetryWithoutPausedByPolicyDoesNotResume() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        runBlocking {
+            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+        }
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        runBlocking { service.offer.pauseForPolicy("policy pause before stale-pause race") }
+        assertTrue(service.pausedByPolicy.get())
+
+        val connectivityManager =
+            ApplicationProvider.getApplicationContext<android.content.Context>()
+                .getSystemService(ConnectivityManager::class.java)
+        val shadowConnectivityManager = Shadows.shadowOf(connectivityManager)
+        val network = ShadowNetwork.newInstance(1)
+
+        bridge.blockNextStartOffer()
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        assertTrue(bridge.awaitStartOfferEntered(5_000))
+        val startCallsAtRaceStart = bridge.startOfferCalls
+
+        // Records the pending retry while activeStartup is still in flight, exactly as in
+        // the resume-succeeds test above.
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+
+        // Unlike the resume-succeeds test: pausedByPolicy flips false before the native
+        // failure is processed (e.g. some other path already resumed/cleared it). Per the
+        // Fix 5 review, the pending generation match alone must not be sufficient to
+        // resume — pausedByPolicy must also still be true at completion time.
+        service.pausedByPolicy.set(false)
+
+        bridge.failNextStartOffer()
+        bridge.releaseBlockedStartOffer()
+
+        assertTrue(
+            "a native failure must publish an error when pausedByPolicy no longer holds",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
+        )
+
+        Thread.sleep(200)
+        assertEquals(
+            "pending retry without pausedByPolicy must not trigger an automatic retry",
+            startCallsAtRaceStart,
+            bridge.startOfferCalls,
+        )
+    }
+
+    // P1-002: handlePolicyAllowed() preference-read failure must publish a visible
+    // diagnostic (not just invalidate the pending retry silently), and cancellation
+    // must propagate rather than being treated as a normal failure.
+
+    @Test
+    fun policyAllowedPreferenceReadFailurePublishesVisibleDiagnosticAndDoesNotResume() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        runBlocking { service.offer.pauseForPolicy("policy pause before preference-read failure") }
+        assertTrue(service.pausedByPolicy.get())
+        val startCallsBeforeFailure = bridge.startOfferCalls
+
+        // Skip 1 read: the network monitor loop's own preferences.first() call (to
+        // evaluate policy before it decides to submit PolicyAllowed) must succeed so the
+        // failure below actually targets handlePolicyAllowed()'s own read.
+        TunnelForegroundServiceTestHooks.preferenceReadInterceptSkipCount.set(1)
+        TunnelForegroundServiceTestHooks.preferenceReadFailure.set("preferences datastore unavailable")
+
+        val connectivityManager =
+            ApplicationProvider.getApplicationContext<android.content.Context>()
+                .getSystemService(ConnectivityManager::class.java)
+        val shadowConnectivityManager = Shadows.shadowOf(connectivityManager)
+        val network = ShadowNetwork.newInstance(1)
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+
+        assertTrue(
+            "preference-read failure must publish a visible diagnostic error code",
+            waitForCondition {
+                deps.tunnelRepository.status.value.lastError?.code == "policy_allowed_preference_read_failed"
+            },
+        )
+
+        Thread.sleep(200)
+        assertEquals(
+            "preference-read failure must not trigger a resume/native start",
+            startCallsBeforeFailure,
+            bridge.startOfferCalls,
+        )
+        assertFalse(
+            "the tunnel must not end up running after a preference-read failure",
+            bridge.state.isTunnelRunning(),
+        )
+    }
+
+    @Test
+    fun policyAllowedPreferenceReadCancellationDoesNotPublishFailureDiagnostic() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        runBlocking { service.offer.pauseForPolicy("policy pause before preference-read cancellation") }
+        assertTrue(service.pausedByPolicy.get())
+        val startCallsBeforeCancellation = bridge.startOfferCalls
+
+        // Skip 1 read: the network monitor loop's own preferences.first() call must
+        // succeed so the cancellation below actually targets handlePolicyAllowed()'s read.
+        TunnelForegroundServiceTestHooks.preferenceReadInterceptSkipCount.set(1)
+        TunnelForegroundServiceTestHooks.preferenceReadCancels.set(true)
+
+        val connectivityManager =
+            ApplicationProvider.getApplicationContext<android.content.Context>()
+                .getSystemService(ConnectivityManager::class.java)
+        val shadowConnectivityManager = Shadows.shadowOf(connectivityManager)
+        val network = ShadowNetwork.newInstance(1)
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+
+        // Give the cancellation time to propagate; there is nothing to waitForCondition on
+        // since a genuinely propagated cancellation produces no diagnostic at all.
+        Thread.sleep(300)
+
+        assertFalse(
+            "cancellation must not be reported through the preference-read-failure " +
+                "diagnostic path — it must propagate, not be converted into a failure",
+            deps.tunnelRepository.status.value.lastError?.code == "policy_allowed_preference_read_failed",
+        )
+        assertEquals(
+            "a cancelled preference read must not trigger a resume/native start",
+            startCallsBeforeCancellation,
+            bridge.startOfferCalls,
         )
     }
 }

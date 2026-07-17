@@ -49,11 +49,23 @@ class TunnelLifecycleCoordinator(
 
     /**
      * Submit a lifecycle command. Commands are processed in FIFO order.
-     * Critical commands (STOP, PAUSE, StartupCompleted) are never dropped.
+     * Critical commands (STOP, PAUSE, StartupCompleted) are never dropped while running.
+     *
+     * Deliberately non-suspending, and callers must invoke it inline rather than from a
+     * coroutine launched per command. [commands] is UNLIMITED so an enqueue can never need
+     * to wait, and enqueueing inline is what actually makes execution order match the order
+     * the caller accepted the intents: a `launch { submit(cmd) }` per command produces
+     * independent coroutines that race to enqueue on a multi-threaded dispatcher, so a
+     * later command can overtake an earlier one (e.g. STOP overtaking START) even though
+     * the processor itself drains strictly FIFO.
+     *
+     * Returns false once [stop] has closed the channel, making a late submit during
+     * teardown a benign, reportable drop instead of a ClosedSendChannelException thrown
+     * into a detached coroutine — [stop] closes the channel before the caller cancels any
+     * in-flight startup, so that startup's StartupCompleted can legitimately arrive here
+     * after shutdown has begun.
      */
-    suspend fun submit(command: LifecycleCommand) {
-        commands.send(command)
-    }
+    fun trySubmit(command: LifecycleCommand): Boolean = commands.trySend(command).isSuccess
 
     private suspend fun processCommands() {
         for (command in commands) {
@@ -77,6 +89,13 @@ class TunnelLifecycleCoordinator(
                 "lifecycle_command_failed",
             )
         } catch (error: IOException) {
+            lifecycleOps.onError(
+                error.message ?: "Lifecycle command failed",
+                "lifecycle_command_failed",
+            )
+        } catch (error: Throwable) {
+            // P1-003: an unanticipated handler bug must not silently kill the command
+            // processor without a visible lifecycle error — publish, then keep processing.
             lifecycleOps.onError(
                 error.message ?: "Lifecycle command failed",
                 "lifecycle_command_failed",

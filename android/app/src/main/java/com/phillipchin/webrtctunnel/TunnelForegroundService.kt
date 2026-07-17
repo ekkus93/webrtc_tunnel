@@ -10,6 +10,7 @@ import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.CoordinatorOperations
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
 import com.phillipchin.webrtctunnel.data.LifecycleCommand
+import com.phillipchin.webrtctunnel.data.NativeFailureAfterStartupContext
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.StartOutcome
 import com.phillipchin.webrtctunnel.data.StopStatusVerificationException
@@ -18,6 +19,7 @@ import com.phillipchin.webrtctunnel.data.TunnelRepository
 import com.phillipchin.webrtctunnel.data.UnverifiedStartContext
 import com.phillipchin.webrtctunnel.data.classifyStartResult
 import com.phillipchin.webrtctunnel.data.cleanupUnverifiedStart
+import com.phillipchin.webrtctunnel.data.handleNativeFailureAfterStartup
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
@@ -70,8 +72,10 @@ private fun stopFailureCode(error: Throwable): String =
 
 // P0-001: All accepted lifecycle intentions flow through one ordered stream.
 // onStartCommand only submits; network policy also only submits.
-// The command processor drains in FIFO order, so command execution order
-// matches the order Android delivered the intents.
+// The command processor drains in FIFO order, and submitLifecycleCommand enqueues inline
+// rather than from a coroutine launched per command, so command execution order matches
+// the order Android delivered the intents. Enqueueing from a per-command coroutine would
+// break that: the processor would still drain FIFO, but the *enqueue* order would race.
 // LifecycleCommand is imported from TunnelLifecycleCoordinator.
 
 class TunnelForegroundService
@@ -152,6 +156,16 @@ class TunnelForegroundService
         // holding lifecycleMutex without risking a deadlock against a startup coroutine that
         // might otherwise need the same lock to check its own generation (P0-001).
         private val lifecycleGeneration = AtomicLong(0)
+
+        // internal (not private): the stale-generation regression test must wait for a
+        // superseding command to have actually taken effect (this counter advancing) before
+        // it releases a startup blocked mid-native-start. A superseding command increments
+        // this *before* it blocks in cancelStartupJobAndJoinLocked(), so the value is
+        // observable while the supersession is still in progress. Without that wait the test
+        // races the supersession and silently exercises the non-superseded path instead.
+        internal val lifecycleGenerationForTest: Long
+            get() = lifecycleGeneration.get()
+
         internal val lifecycleMutex = Mutex()
 
         // Notification + status-polling slice; accesses the shared lifecycle fields directly.
@@ -181,6 +195,16 @@ class TunnelForegroundService
             // P0-003: Service owns coordinator scope; coordinator cannot outlive service.
             coordinator = TunnelLifecycleCoordinator(coordinatorOps, serviceScope)
             coordinator.start()
+
+            // P0-003: Relay NetworkPolicyManager's diagnostic events (e.g. delivery
+            // failures) into this service's own visible error/notification reporter while
+            // the service is alive. Cancelled implicitly with serviceScope on destroy — no
+            // ordering constraint requires an explicit cancel-and-join like networkMonitorJob.
+            serviceScope.launch {
+                networkPolicyManager.diagnosticEvents.events.collect { event ->
+                    reporter.publishError(message = event.message, code = event.code)
+                }
+            }
 
             // Network monitor still collects network events, but submits commands
             // through the same ordered queue instead of launching independent coroutines.
@@ -249,11 +273,22 @@ class TunnelForegroundService
         }
 
         // P0-001: Submit a lifecycle command through the ordered queue.
-        // P0-003: Callback paths hand off to service scope for suspending submit.
+        //
+        // Enqueued inline (not via serviceScope.launch): the queue drains FIFO, so the
+        // enqueue order *is* the execution order, and launching a coroutine per command
+        // made that order racy — two independently dispatched coroutines could reach the
+        // channel out of order, letting a later intent overtake an earlier one (e.g. STOP
+        // overtaking START) despite the FIFO processor. trySubmit cannot suspend (the
+        // channel is UNLIMITED), so this is safe to call from onStartCommand's thread and
+        // from inside a command handler alike.
         private fun submitLifecycleCommand(command: LifecycleCommand) {
-            serviceScope.launch {
-                coordinator.submit(command)
-            }
+            if (coordinator.trySubmit(command)) return
+            // Only reachable after onDestroy has stopped the coordinator, which closes the
+            // channel before cancelling an in-flight startup — so that startup's
+            // StartupCompleted can still land here. Dropping is correct (onDestroy owns the
+            // remaining cleanup) but must not be silent. Logs the command type only: a
+            // command can carry a policy reason or error text, which must not be logged raw.
+            Log.w(tag, "Dropped lifecycle command after coordinator shutdown: ${command.javaClass.simpleName}")
         }
 
         // Removed: publishError was a thin wrapper; callers use reporter.publishError directly.
@@ -444,6 +479,15 @@ class TunnelForegroundService
 
         private val coordinatorOps: CoordinatorOperations =
             object : CoordinatorOperations {
+                // P0-001: submits the retry once the NativeFailure branch of
+                // handleStartupCompleted has confirmed the pending policy retry is live.
+                // A property (not a function) so it doesn't count against this object's
+                // detekt function budget, and it keeps handleStartupCompleted short enough
+                // for detekt's LongMethod check.
+                val resumeAfterNativeFailurePendingRetry: (Long) -> Unit = { gen ->
+                    submitLifecycleCommand(LifecycleCommand.RetryPolicyResume(expectedGeneration = gen))
+                }
+
                 override fun onError(
                     message: String,
                     code: String,
@@ -516,19 +560,30 @@ class TunnelForegroundService
                         invalidatePendingPolicyRetry()
                         return
                     }
-                    runCatching {
-                        val prefs = configRepository.preferences.first()
-                        if (prefs.resumeOnUnmetered) {
-                            if (activeStartup != null) {
-                                pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
-                            } else {
-                                invalidatePendingPolicyRetry()
-                                offer.resume()
-                            }
-                        }
-                    }.onFailure { error ->
-                        if (error !is CancellationException) {
+                    val prefs =
+                        try {
+                            configRepository.preferences.first()
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Throwable) {
+                            // P1-002: too quiet for lifecycle policy state as a Log.w-only
+                            // failure — publish a visible diagnostic, not just invalidate.
                             invalidatePendingPolicyRetry()
+                            reporter.publishError(
+                                message =
+                                    SensitiveDataRedactor.redactText(
+                                        error.message ?: "Failed to read network policy preferences",
+                                    ),
+                                code = "policy_allowed_preference_read_failed",
+                            )
+                            return
+                        }
+                    if (prefs.resumeOnUnmetered) {
+                        if (activeStartup != null) {
+                            pendingPolicyResumeGeneration.set(lifecycleGeneration.get())
+                        } else {
+                            invalidatePendingPolicyRetry()
+                            offer.resume()
                         }
                     }
                 }
@@ -558,7 +613,12 @@ class TunnelForegroundService
                     if (outcome !is StartOutcome.VerifiedSuccess) {
                         clearTemporaryMeteredAllowance()
                     }
-                    invalidatePendingPolicyRetry()
+                    // P0-001: every branch except NativeFailure invalidates unconditionally.
+                    // NativeFailure must consume the pending retry first — invalidating here
+                    // too would clear it before that branch could read it.
+                    if (outcome !is StartOutcome.NativeFailure) {
+                        invalidatePendingPolicyRetry()
+                    }
                     when (outcome) {
                         StartOutcome.VerifiedSuccess -> {
                             pausedByPolicy.set(false)
@@ -566,17 +626,16 @@ class TunnelForegroundService
                             reporter.startStatusPolling()
                         }
                         is StartOutcome.NativeFailure -> {
-                            val pending = pendingPolicyResumeGeneration.getAndSet(null)
-                            if (pending == generation) {
-                                submitLifecycleCommand(
-                                    LifecycleCommand.RetryPolicyResume(expectedGeneration = generation),
-                                )
-                            } else {
-                                reporter.publishError(
-                                    outcome.error.message ?: "Unable to start tunnel",
-                                    "native_start_failed",
-                                )
-                            }
+                            handleNativeFailureAfterStartup(
+                                NativeFailureAfterStartupContext(
+                                    outcome.error,
+                                    generation,
+                                    pendingPolicyResumeGeneration,
+                                    pausedByPolicy,
+                                    resumeAfterNativeFailurePendingRetry,
+                                    reporter::publishError,
+                                ),
+                            )
                         }
                         is StartOutcome.VerificationFailure -> {
                             cleanupUnverifiedStart(

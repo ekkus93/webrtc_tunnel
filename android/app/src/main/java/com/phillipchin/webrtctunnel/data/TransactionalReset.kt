@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel.data
 
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -138,13 +139,7 @@ class TransactionalResetCoordinator(
                     },
                 )
 
-            ResetStage.SetupInput ->
-                runCatching {
-                    configRepository.saveSetupInput(SetupConfigInput())
-                    ResetStageResult.Success(ResetStage.SetupInput)
-                }.getOrElse {
-                    ResetStageResult.Failure(ResetStage.SetupInput, it.message ?: "unknown")
-                }
+            ResetStage.SetupInput -> resetSetupInputStage()
 
             ResetStage.Forwards ->
                 forwardsRepository.resetForwards().fold(
@@ -157,6 +152,22 @@ class TransactionalResetCoordinator(
                     },
                 )
         }
+
+    // P1-001: explicit try/catch (not runCatching) — mutation paths that can affect
+    // persistent state must rethrow cancellation rather than swallow it.
+    private fun resetSetupInputStage(): ResetStageResult {
+        return try {
+            configRepository.saveSetupInput(SetupConfigInput())
+            ResetStageResult.Success(ResetStage.SetupInput)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            ResetStageResult.Failure(
+                stage = ResetStage.SetupInput,
+                reason = SensitiveDataRedactor.redactText(error.message ?: "Failed to reset setup input"),
+            )
+        }
+    }
 
     private fun captureSnapshot(): Result<ResetSnapshot> {
         val existed = configRepository.configFileExists
@@ -227,12 +238,19 @@ class TransactionalResetCoordinator(
         }
     }
 
+    // P1-001: explicit try/catch (not runCatching) — rollback paths that can affect
+    // persistent state must rethrow cancellation rather than swallow it.
     private fun restoreSetupInput(input: SetupConfigInput): RollbackStageResult {
-        return runCatching {
+        return try {
             configRepository.saveSetupInput(input)
             RollbackStageResult.Success(ResetStage.SetupInput)
-        }.getOrElse {
-            RollbackStageResult.Failure(ResetStage.SetupInput, it.message ?: "unknown")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            RollbackStageResult.Failure(
+                stage = ResetStage.SetupInput,
+                reason = SensitiveDataRedactor.redactText(error.message ?: "Failed to restore setup input"),
+            )
         }
     }
 

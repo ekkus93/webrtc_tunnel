@@ -34,10 +34,13 @@ open class ConfigRepository(private val context: Context) {
     private val writeMutex = Mutex()
     val configPath: String get() = configFile.absolutePath
 
-    val preferences: Flow<AndroidAppPreferences> =
-        context.dataStore.data.map { prefs ->
-            prefs.toAppPreferences()
-        }
+    // P1-002: open so tests can inject a preference-read failure (e.g. for
+    // TunnelForegroundService.handlePolicyAllowed() diagnostic coverage).
+    open val preferences: Flow<AndroidAppPreferences>
+        get() =
+            context.dataStore.data.map { prefs ->
+                prefs.toAppPreferences()
+            }
 
     // P1-016: Wrap preference writes so failures are visible.
     open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
@@ -127,8 +130,11 @@ open class ConfigRepository(private val context: Context) {
      * P1-007: Atomic write with unique temp file under [writeMutex].
      * All config writers go through this single serialized boundary.
      * Returns Result.success(Unit) on success, Result.failure(...) on failure.
+     *
+     * P1-004/P1-005: open so tests can inject a transactional-reset Config-stage
+     * reset/rollback failure without needing a real filesystem-permission scenario.
      */
-    suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+    open suspend fun writeConfigAtomically(contents: String): Result<Unit> =
         writeMutex.withLock {
             writeConfigAtomicallyLocked(configFile, contents)
         }
@@ -138,8 +144,11 @@ open class ConfigRepository(private val context: Context) {
      * Used when the config file was absent before reset and a later stage failed,
      * so rollback must restore the absent state (not leave a stale config behind).
      * Returns Result.success(Unit) on success, Result.failure(...) on failure.
+     *
+     * P1-006: open so tests can inject a genuine transactional-reset delete-rollback
+     * failure instead of only ever exercising the success path.
      */
-    internal suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> =
+    internal open suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> =
         writeMutex.withLock {
             try {
                 Files.deleteIfExists(configFile.toPath())
@@ -151,7 +160,9 @@ open class ConfigRepository(private val context: Context) {
             }
         }
 
-    fun saveSetupInput(input: SetupConfigInput) {
+    // P1-001: open so tests can inject a failure/cancellation for transactional-reset
+    // setup-input mutation/rollback path coverage.
+    open fun saveSetupInput(input: SetupConfigInput) {
         setupInputFile.parentFile?.mkdirs()
         setupInputFile.writeText(Json.encodeToString(input))
     }
