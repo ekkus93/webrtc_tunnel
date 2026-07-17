@@ -59,9 +59,8 @@ class TestWebRtcTunnelApplication : Application(), HasAppDependencies {
                     },
                 identityRepository = identityRepository,
             )
-        runBlocking {
-            configRepository.ensureDefaultConfig(configRepository.defaultConfigTemplate)
-        }
+        // FIX6 INV-010: reach Ready inline so the service's readiness gate lets starts run.
+        runBlocking { appDependencies.appInitializationCoordinator.initialize() }
     }
 }
 

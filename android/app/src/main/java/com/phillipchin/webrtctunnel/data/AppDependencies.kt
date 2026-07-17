@@ -6,6 +6,8 @@ import com.phillipchin.webrtctunnel.TunnelNativeBridge
 import com.phillipchin.webrtctunnel.network.LocalAddressResolver
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 
 class AppDependencies(
     context: Context,
@@ -36,6 +38,21 @@ class AppDependencies(
     // Transactional reset coordinator for atomic multi-file configuration resets (P2-003).
     val transactionalResetCoordinator: TransactionalResetCoordinator =
         TransactionalResetCoordinator(configRepository, forwardsRepository)
+
+    // Application-scoped work that must outlive any single service/ViewModel (currently
+    // initialization). Cancelled only at process teardown, so no explicit cancel here.
+    private val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + dispatchers.default)
+
+    // FIX6 Q2: a body val, not a constructor parameter — this class already sits at
+    // detekt's LongParameterList limit, and a 7th constructor parameter fails the build.
+    // Tests construct AppInitializationCoordinator directly with fakes instead.
+    val appInitializationCoordinator: AppInitializationCoordinator by lazy {
+        AppInitializationCoordinator(
+            configRepository = configRepository,
+            scope = appScope,
+            ioDispatcher = dispatchers.io,
+        )
+    }
 
     // TunnelRepository (runtime/status) and IdentityValidationClient (config/identity
     // validation) are separate collaborators that must share a single native bridge,

@@ -66,14 +66,24 @@ open class ConfigRepository(private val context: Context) {
     }
 
     /**
-     * P1-007: Ensures a default config exists by writing through the serialized atomic
-     * writer so the first write cannot race with a later [writeConfigAtomically] call.
+     * Ensures a default config exists, returning the outcome (FIX6 P0-001-A / INV-010).
+     *
+     * The existence check and the write happen under the same [writeMutex]. Previously the
+     * check sat outside the lock, so another writer could create the config between the
+     * check and the write and have the default overwrite it — the serialization comment
+     * claimed a guarantee the code did not provide.
+     *
+     * Calls [writeConfigAtomicallyLocked] directly rather than [writeConfigAtomically]:
+     * the latter takes [writeMutex], which is not reentrant and would deadlock here.
      */
-    suspend fun ensureDefaultConfig(contents: String) {
-        if (!configFile.exists()) {
-            writeConfigAtomically(contents)
+    open suspend fun ensureDefaultConfig(contents: String): Result<Unit> =
+        writeMutex.withLock {
+            if (configFile.exists()) {
+                Result.success(Unit)
+            } else {
+                writeConfigAtomicallyLocked(configFile, contents)
+            }
         }
-    }
 
     val defaultConfigTemplate: String
         get() =

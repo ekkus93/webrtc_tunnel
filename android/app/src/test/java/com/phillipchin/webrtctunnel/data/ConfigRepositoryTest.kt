@@ -6,11 +6,15 @@ import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,8 +31,12 @@ class ConfigRepositoryTest {
     fun setUp() {
         repository = ConfigRepository(context)
         forwardsStore = ForwardsConfigStore(context)
-        File(context.filesDir, "config.toml").delete()
-        File(context.filesDir, "forwards.json").delete()
+        // deleteRecursively, not delete: a test that puts a non-empty directory at this
+        // path to force a write failure would otherwise leak it into the next test, where
+        // exists() reports true and ensureDefaultConfig short-circuits.
+        File(context.filesDir, "config.toml").deleteRecursively()
+        File(context.filesDir, "forwards.json").deleteRecursively()
+        context.filesDir.setWritable(true)
         runBlocking {
             context.dataStore.edit { preferences -> preferences.clear() }
         }
@@ -37,7 +45,7 @@ class ConfigRepositoryTest {
     @Test
     fun ensureDefaultConfigCreatesFileWhenMissing() {
         runBlocking {
-            repository.ensureDefaultConfig("abc")
+            assertTrue(repository.ensureDefaultConfig("abc").isSuccess)
         }
         assertEquals("abc", repository.readConfig())
     }
@@ -50,6 +58,97 @@ class ConfigRepositoryTest {
         }
         assertEquals("existing", repository.readConfig())
     }
+
+    // FIX6 P0-001-A: the write result is returned rather than discarded, and the existence
+    // check happens under the same write mutex as the write.
+
+    @Test
+    fun ensureDefaultConfigReturnsFailureWhenAtomicWriteFails() =
+        runBlocking {
+            // The write only runs when config.toml is absent, so the failure has to come
+            // from the write itself rather than from an obstruction at that path (a
+            // directory there would make exists() true and short-circuit to success).
+            // Making filesDir read-only fails Files.createTempFile inside the writer.
+            val filesDir = context.filesDir
+            assertTrue("precondition: filesDir starts writable", filesDir.canWrite())
+            filesDir.setWritable(false)
+            try {
+                // A root/permission-ignoring filesystem would silently make this a
+                // false-pass, so state that as a precondition rather than asserting into
+                // a writable directory and calling it proof.
+                assumeTrue("filesystem honours the read-only bit", !filesDir.canWrite())
+
+                val result = repository.ensureDefaultConfig("default")
+
+                assertTrue("a failed default-config write must be reported, not discarded", result.isFailure)
+            } finally {
+                filesDir.setWritable(true)
+            }
+        }
+
+    @Test
+    fun ensureDefaultConfigDoesNotRouteThroughTheMutexTakingWriter() =
+        runBlocking {
+            // ensureDefaultConfig holds writeMutex, which is not reentrant: calling the
+            // public writeConfigAtomically from inside it would deadlock. This proves it
+            // uses writeConfigAtomicallyLocked instead.
+            var publicWriterCalled = false
+            val repo =
+                object : ConfigRepository(context) {
+                    override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+                        publicWriterCalled = true
+                        return super.writeConfigAtomically(contents)
+                    }
+                }
+
+            assertTrue(repo.ensureDefaultConfig("default").isSuccess)
+
+            assertFalse(
+                "ensureDefaultConfig must not call the mutex-taking writer while holding the mutex",
+                publicWriterCalled,
+            )
+            assertEquals("default", repo.readConfig())
+        }
+
+    @Test
+    fun ensureDefaultConfigReturnsSuccessWithoutWritingWhenConfigExists() =
+        runBlocking {
+            repository.writeConfig("existing")
+
+            val result = repository.ensureDefaultConfig("default")
+
+            assertTrue(result.isSuccess)
+            assertEquals("existing", repository.readConfig())
+        }
+
+    @Test
+    fun ensureDefaultConfigDoesNotOverwriteConfigCreatedBeforeLockAcquired() =
+        runBlocking {
+            // The old code checked existence *outside* writeMutex, so a writer could create
+            // the config between the check and the write and have the default clobber it.
+            // Holding the mutex while another coroutine writes proves the check now happens
+            // under the same lock: ensureDefaultConfig cannot observe the pre-write absence.
+            val gate = CompletableDeferred<Unit>()
+            val ensureStarted = CompletableDeferred<Unit>()
+
+            val ensure =
+                launch(Dispatchers.IO) {
+                    ensureStarted.complete(Unit)
+                    gate.await()
+                    repository.ensureDefaultConfig("default-should-not-win")
+                }
+
+            ensureStarted.await()
+            repository.writeConfig("written-by-another-writer")
+            gate.complete(Unit)
+            ensure.join()
+
+            assertEquals(
+                "the default must not overwrite a config another writer already committed",
+                "written-by-another-writer",
+                repository.readConfig(),
+            )
+        }
 
     @Test
     fun defaultTemplateContainsRequiredSections() {

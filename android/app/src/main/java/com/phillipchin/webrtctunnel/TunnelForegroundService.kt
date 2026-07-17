@@ -6,6 +6,8 @@ import android.content.Intent
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.phillipchin.webrtctunnel.data.AppInitializationCoordinator
+import com.phillipchin.webrtctunnel.data.AppInitializationState
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.CoordinatorOperations
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
@@ -56,6 +58,23 @@ internal class NativeRuntimeQuarantinedException(
     message: String,
 ) : IllegalStateException(message)
 
+// FIX6 INV-010: start blocked because app initialization has not succeeded. Carries its
+// own visible code so the guard can report why the start was refused.
+internal class AppInitializationIncompleteException(
+    val code: String,
+    message: String,
+) : IllegalStateException(message)
+
+// Maps a start-guard failure to its visible diagnostic code. Top-level (not a class
+// member) for the same reason as stopFailureCode: it costs no function budget against
+// this file's already-at-threshold classes.
+private fun startBlockedCode(error: Throwable): String =
+    if (error is AppInitializationIncompleteException) {
+        error.code
+    } else {
+        "native_runtime_quarantined"
+    }
+
 // Distinguishes an outright native stop failure from a stop that JNI reported as successful
 // but whose final state could not be verified as Stopped (P0-003), so TunnelRepository's
 // sticky lastCleanupError history can retain both categories. Top-level (not a class member)
@@ -91,6 +110,7 @@ class TunnelForegroundService
         private lateinit var configRepository: ConfigRepository
         private lateinit var identityRepository: IdentityRepository
         private lateinit var networkPolicyManager: NetworkPolicyManager
+        private lateinit var appInitialization: AppInitializationCoordinator
         private lateinit var localAddressResolver: LocalAddressResolver
         private lateinit var coordinator: TunnelLifecycleCoordinator
         private val serviceScope = CoroutineScope(SupervisorJob() + defaultDispatcher)
@@ -187,6 +207,7 @@ class TunnelForegroundService
             identityValidation = deps.identityValidation
             identityRepository = deps.identityRepository
             networkPolicyManager = deps.networkPolicyManager
+            appInitialization = deps.appInitializationCoordinator
             localAddressResolver = deps.localAddressResolver
             repository.updateSessionMeteredAllowance(false)
 
@@ -465,16 +486,36 @@ class TunnelForegroundService
             }
         }
 
-        // P0-002: Canonical quarantine guard — blocks all start/resume when runtime uncertain.
+        // P0-002: Canonical start guard — blocks all start/resume when the app has not
+        // finished initializing (FIX6 INV-010) or the native runtime is uncertain.
+        // Extends the existing guard rather than adding a second one: all start/resume
+        // paths already route through here, and this class is at detekt's function limit.
+        // Single-return `when` because ReturnCount caps at 2.
         private fun requireRuntimeStartAllowed(): Result<Unit> {
-            if (nativeRuntimeUncertain.get()) {
-                return Result.failure(
-                    NativeRuntimeQuarantinedException(
-                        "Native runtime state is uncertain; explicit STOP is required before restart.",
-                    ),
-                )
+            val readiness = appInitialization.state.value
+            return when {
+                readiness is AppInitializationState.Failed ->
+                    Result.failure(
+                        AppInitializationIncompleteException(readiness.code, readiness.message),
+                    )
+
+                readiness !is AppInitializationState.Ready ->
+                    Result.failure(
+                        AppInitializationIncompleteException(
+                            "app_initialization_failed",
+                            "App initialization has not completed yet.",
+                        ),
+                    )
+
+                nativeRuntimeUncertain.get() ->
+                    Result.failure(
+                        NativeRuntimeQuarantinedException(
+                            "Native runtime state is uncertain; explicit STOP is required before restart.",
+                        ),
+                    )
+
+                else -> Result.success(Unit)
             }
-            return Result.success(Unit)
         }
 
         private val coordinatorOps: CoordinatorOperations =
@@ -504,7 +545,7 @@ class TunnelForegroundService
                                     SensitiveDataRedactor.redactText(
                                         error.message ?: "Runtime restart is blocked",
                                     ),
-                                code = "native_runtime_quarantined",
+                                code = startBlockedCode(error),
                             )
                             return
                         }
@@ -525,7 +566,7 @@ class TunnelForegroundService
                                     SensitiveDataRedactor.redactText(
                                         error.message ?: "Runtime restart is blocked",
                                     ),
-                                code = "native_runtime_quarantined",
+                                code = startBlockedCode(error),
                             )
                             return
                         }
@@ -544,7 +585,7 @@ class TunnelForegroundService
                                     SensitiveDataRedactor.redactText(
                                         error.message ?: "Runtime restart is blocked",
                                     ),
-                                code = "native_runtime_quarantined",
+                                code = startBlockedCode(error),
                             )
                             return
                         }

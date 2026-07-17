@@ -201,7 +201,10 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
                     },
                 identityRepository = identityRepository,
             )
-        runBlocking { configRepository.ensureDefaultConfig(configRepository.defaultConfigTemplate) }
+        // FIX6 INV-010: drive initialization to a terminal Ready state inline. The service
+        // now gates start on readiness, and initialize() (rather than start()) keeps that
+        // deterministic instead of racing a launched coroutine.
+        runBlocking { appDependencies.appInitializationCoordinator.initialize() }
         // Pin resumeOnUnmetered = false regardless of any residual preference left on
         // disk by an earlier Robolectric test sharing this JVM's real DataStore file:
         // the fake NetworkPolicyManager below always reports UnmeteredWifi, so leaving
