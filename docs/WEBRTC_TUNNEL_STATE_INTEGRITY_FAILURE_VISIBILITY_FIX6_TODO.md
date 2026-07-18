@@ -1875,16 +1875,16 @@ For Android diagnostics-only log timestamps, an acceptable target is to return a
 
 Abstract the clock if needed and add:
 
-- [ ] `preEpochClockDoesNotPanic`
-- [ ] `preEpochClockDoesNotReturnZeroAsValidTimestamp`
-- [ ] `timestampFailurePreservesPrimaryRuntimeError`
-- [ ] `daemonMessageBuildSurfacesTimestampFailure`
+- [x] `preEpochClockDoesNotPanic` — `16c3526` as `resolve_unix_ms_reuses_last_known_value_on_failure_instead_of_zero` (the `None`/failure branch returns a value, never panics)
+- [x] `preEpochClockDoesNotReturnZeroAsValidTimestamp` — `16c3526` (same test: failure reuses the last known-good value, not zero)
+- [x] `timestampFailurePreservesPrimaryRuntimeError` — `16c3526`: the clock is abstracted via `resolve_unix_ms(Option, &AtomicU64)`; on failure the caller logs and reuses the last timestamp, leaving `state.last_error`/`status()` untouched (diagnostics-only degradation)
+- [x] `daemonMessageBuildSurfacesTimestampFailure` — `16c3526`: `current_time_ms()` logs the `SystemTimeError` via `tracing::error!` instead of panicking, then degrades
 
 ### Acceptance
 
-- [ ] no reviewed pre-epoch panic/fallback remains;
-- [ ] failure behavior is explicit and tested;
-- [ ] `cargo fmt`, Clippy, and tests pass.
+- [x] no reviewed pre-epoch panic/fallback remains (daemon `.expect` and mobile `.unwrap_or(0)` both replaced);
+- [x] failure behavior is explicit and tested (via the `resolve_unix_ms` seam);
+- [x] `cargo fmt`, Clippy, and tests pass.
 
 ---
 
