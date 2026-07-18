@@ -4,7 +4,6 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.phillipchin.webrtctunnel.TunnelForegroundService
 import com.phillipchin.webrtctunnel.data.AppDependencies
-import com.phillipchin.webrtctunnel.data.IdentityReplacement
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinator
 import com.phillipchin.webrtctunnel.data.SetupPersistenceRequest
@@ -20,6 +19,7 @@ import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -174,9 +174,13 @@ class SetupSaveController(
         val input = current.input
         val enabledForwards = access.forwards().filter { it.enabled }
         validateStep(deps, SetupStep.Review, current)?.let { saveError(it, redact = false) }
-        // P0-003: resolve/validate identity WITHOUT persisting it — the coordinator performs
-        // every persistent mutation atomically below.
         val identity = resolveSaveIdentity(current)
+        // P0-003 + authorized-keys validation: the native config validator requires the
+        // identity and authorized_keys FILES to exist (the config references authorized_keys by
+        // path), so they must be written before validation. Snapshot identity storage first and
+        // restore it on ANY failure below, so a failed save still leaves no partial identity
+        // state — the transactional guarantee, achieved by rollback rather than by never writing.
+        val identitySnapshot = deps.identityRepository.captureStorageSnapshot()
         try {
             if (identity.peerId != input.localPeerId) {
                 saveError(
@@ -191,6 +195,14 @@ class SetupSaveController(
                 } else {
                     null
                 }
+            withContext(ioDispatcher) {
+                if (identity.fromImport) {
+                    deps.identityRepository.storeEncryptedIdentity(identity.privateIdentity, identity.publicIdentity)
+                }
+                if (authorizedLine != null) {
+                    deps.identityRepository.appendAuthorizedPublicIdentity(authorizedLine).getOrThrow()
+                }
+            }
             val prefs = deps.configRepository.preferences.first()
             val candidate =
                 deps.configRepository.renderOfferConfig(
@@ -204,8 +216,18 @@ class SetupSaveController(
             if (!validation.valid) {
                 saveError(validation.message ?: "Config validation failed", redact = false)
             }
-            commitSetup(input, candidate, identity, authorizedLine)
+            // Identity + authorized_keys are already committed; the coordinator persists only the
+            // remaining resources (setup input, preferences, config) transactionally.
+            commitSetup(input, candidate)
             return identity
+        } catch (cancelled: CancellationException) {
+            withContext(
+                NonCancellable,
+            ) { runCatching { deps.identityRepository.restoreStorageSnapshot(identitySnapshot) } }
+            throw cancelled
+        } catch (error: Exception) {
+            runCatching { deps.identityRepository.restoreStorageSnapshot(identitySnapshot) }
+            throw error
         } finally {
             // Wipe the plaintext identity buffer; only the public id/peer id are used afterward.
             identity.privateIdentity.fill(0)
@@ -233,17 +255,17 @@ class SetupSaveController(
     }
 
     /**
-     * P0-003: commit the whole setup save through the transactional coordinator. The identity
-     * is stored only when it came from an import ([ResolvedIdentity.fromImport]); a
-     * pre-existing stored identity needs no Identity stage. A failure leaves no partial state:
+     * P0-003: commit the setup save's remaining resources (setup input, preferences, config)
+     * through the transactional coordinator, config last. Identity and authorized_keys are
+     * already committed by [validateAndCommit] (they must exist before config validation) under
+     * its own snapshot/restore, so they are not stages here. A failure leaves no partial state:
+     * the coordinator rolls back its stages, and [validateAndCommit] restores identity storage.
      * [SetupPersistenceResult.Failed] reports whether rollback fully restored the prior state
      * (setup_persistence_failed) or could not (setup_rollback_incomplete).
      */
     private suspend fun commitSetup(
         input: SetupConfigInput,
         candidate: String,
-        identity: ResolvedIdentity,
-        authorizedLine: String?,
     ) {
         val existing = loadPreferences()
         val request =
@@ -255,13 +277,8 @@ class SetupSaveController(
                         allowMetered = input.allowMetered,
                         resumeOnUnmetered = input.resumeOnUnmetered,
                     ),
-                replacementIdentity =
-                    if (identity.fromImport) {
-                        IdentityReplacement(identity.privateIdentity, identity.publicIdentity)
-                    } else {
-                        null
-                    },
-                authorizedPublicIdentityToAdd = authorizedLine,
+                replacementIdentity = null,
+                authorizedPublicIdentityToAdd = null,
             )
         val result = withContext(ioDispatcher) { persistence.persist(request) }
         if (result is SetupPersistenceResult.Failed) {

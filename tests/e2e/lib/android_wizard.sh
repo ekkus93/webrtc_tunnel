@@ -45,6 +45,23 @@ editext_center() {
 
 tap_xy() { $ADB shell input tap "$1" "$2"; }
 
+# Reliably type a long string (e.g. a ~140-char base64 identity): `adb input text`
+# silently drops characters on long fast input, so type word-by-word in small chunks and
+# emit real spaces via KEYCODE_SPACE (62) rather than the fragile `%s` space-escape.
+input_text_reliable() {
+  local s="$1" first=1 w i
+  for w in $s; do
+    [ "$first" = 0 ] && $ADB shell input keyevent 62
+    first=0
+    i=0
+    while [ "$i" -lt "${#w}" ]; do
+      $ADB shell input text "${w:$i:8}"
+      i=$((i + 8))
+      sleep 0.12
+    done
+  done
+}
+
 tap_text() {
   dump
   local xy; xy="$(bounds_of_text "$1")"
@@ -179,7 +196,9 @@ android_run_wizard_to_listening() {
   $ADB shell input text "$REMOTE_PEER"; hide_kbd; sleep 1
   dump
   local PUBXY; PUBXY="$(editext_center 2)"; tap_xy $PUBXY; sleep 1
-  $ADB shell input text "$PUB_INPUT"; hide_kbd; sleep 1
+  # PUB has real spaces; input_text_reliable handles spaces + avoids long-string char drops
+  # (a single `input text` of the ~140-char identity corrupts it -> base64 padding errors).
+  input_text_reliable "$PUB"; hide_kbd; sleep 1
   # Validation is optional for advancing (the step gates only on both fields being
   # non-blank; the identity is also validated at save). Tap it best-effort — there is
   # no on-Peer-step success banner to wait for (the "validated" text is on Review).

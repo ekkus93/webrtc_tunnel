@@ -115,11 +115,17 @@ class RecordingBridge : TunnelNativeBridge {
         return validationResultAfterOptionalBlock()
     }
 
+    // FIX6 regression seam: a filesystem-aware validation hook so a test can mirror the native
+    // validator's requirement that the config's referenced files (e.g. authorized_keys) exist at
+    // validation time. When set, it replaces the canned result.
+    var validateConfigWithIdentityHook: (() -> ValidationResult)? = null
+
     override fun validateConfigWithIdentity(
         configPath: String,
         identityBytes: ByteArray,
     ): ValidationResult {
         validateConfigWithIdentityCallsAtomic.incrementAndGet()
+        validateConfigWithIdentityHook?.let { return it() }
         return validationResultAfterOptionalBlock()
     }
 
