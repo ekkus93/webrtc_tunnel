@@ -1,6 +1,7 @@
 package com.phillipchin.webrtctunnel.data
 
 import android.content.Context
+import androidx.annotation.CheckResult
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -148,6 +149,7 @@ open class ConfigRepository(private val context: Context) {
      * Returns [Result.success] on success, [Result.failure] if the config write fails,
      * so startup can abort rather than proceeding with a stale or wrong config.
      */
+    @CheckResult
     open suspend fun prepareActiveConfigForStart(
         iceMode: String,
         advertisedIpv4: String?,
@@ -180,6 +182,7 @@ open class ConfigRepository(private val context: Context) {
      * P1-004/P1-005: open so tests can inject a transactional-reset Config-stage
      * reset/rollback failure without needing a real filesystem-permission scenario.
      */
+    @CheckResult
     open suspend fun writeConfigAtomically(contents: String): Result<Unit> =
         writeMutex.withLock {
             writeConfigAtomicallyLocked(configFile, contents)
@@ -194,6 +197,7 @@ open class ConfigRepository(private val context: Context) {
      * P1-006: open so tests can inject a genuine transactional-reset delete-rollback
      * failure instead of only ever exercising the success path.
      */
+    @CheckResult
     internal open suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> =
         writeMutex.withLock {
             try {

@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel.security
 
 import android.content.Context
 import android.util.Log
+import androidx.annotation.CheckResult
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import kotlinx.coroutines.CancellationException
 import java.io.File
@@ -148,6 +149,7 @@ class IdentityRepository(
 
     fun readPublicIdentity(): String = if (publicFile.exists()) publicFile.readText() else ""
 
+    @CheckResult
     fun appendAuthorizedPublicIdentity(line: String): Result<Unit> =
         runCatching {
             val trimmed = line.trim()
@@ -169,6 +171,7 @@ class IdentityRepository(
             }
         }
 
+    @CheckResult
     fun exportPrivateIdentity(
         outputPath: String,
         confirmRisk: Boolean,
@@ -181,6 +184,7 @@ class IdentityRepository(
             usePrivateIdentityPlaintext { output.writeBytes(it) }
         }
 
+    @CheckResult
     fun exportPublicIdentity(outputPath: String): Result<Unit> =
         runCatching {
             val value = readPublicIdentity()

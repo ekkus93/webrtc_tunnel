@@ -25,6 +25,13 @@ android {
         buildConfig = true
     }
 
+    lint {
+        // FIX6 P2-003 (Q7): Android lint's CheckResult detector flags an ignored Kotlin/suspend
+        // Result (verified by a temporary deliberate bare call). Promote it from warning to a
+        // build-failing error so a discarded authoritative @CheckResult mutation result fails CI.
+        error += "CheckResult"
+    }
+
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.15"
     }

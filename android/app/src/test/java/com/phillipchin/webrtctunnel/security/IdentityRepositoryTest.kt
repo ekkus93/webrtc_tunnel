@@ -115,11 +115,11 @@ class IdentityRepositoryTest {
     @Test
     fun restoreStorageSnapshotRevertsIdentityPairMutation() {
         repository.storeEncryptedIdentity("old-private".toByteArray(), "old-public")
-        repository.appendAuthorizedPublicIdentity("old-key peerA")
+        repository.appendAuthorizedPublicIdentity("old-key peerA").getOrThrow()
         val snapshot = repository.captureStorageSnapshot()
 
         repository.storeEncryptedIdentity("new-private".toByteArray(), "new-public")
-        repository.appendAuthorizedPublicIdentity("new-key peerB")
+        repository.appendAuthorizedPublicIdentity("new-key peerB").getOrThrow()
 
         repository.restoreStorageSnapshot(snapshot)
 
@@ -136,7 +136,7 @@ class IdentityRepositoryTest {
         assertFalse(snapshot.encryptedIdentity.existed)
 
         repository.storeEncryptedIdentity("created-later".toByteArray(), "pub")
-        repository.appendAuthorizedPublicIdentity("created-key peer")
+        repository.appendAuthorizedPublicIdentity("created-key peer").getOrThrow()
 
         repository.restoreStorageSnapshot(snapshot)
 
