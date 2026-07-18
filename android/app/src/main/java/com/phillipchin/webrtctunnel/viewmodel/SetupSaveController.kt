@@ -318,7 +318,7 @@ private suspend fun resolveStoredIdentity(
             ResolvedIdentity(bytes, publicIdentity, peerId, fromImport = false)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Throwable) {
+        } catch (_: Exception) {
             null
         } finally {
             if (!transferred) {

@@ -9,15 +9,16 @@ naming:
     ignoreAnnotated: ['Composable']
 
 # TooGenericExceptionCaught: Flag `catch (e: Throwable)` but allow
-# `catch (e: Exception)`. We catch Throwable in boundaries where we want to
-# propagate CancellationException separately, then catch any other error.
-# Catching Exception is sufficient — catching Throwable would also catch
-# OOM/ControlThrowable which we explicitly don't want to handle.
+# `catch (e: Exception)`. We catch Exception in boundaries where we want to
+# propagate CancellationException separately (rethrown first), then catch any
+# other error. Catching Throwable would also catch OOM/ControlThrowable, which
+# we explicitly do not want to handle.
 exceptions:
   TooGenericExceptionCaught:
-    # Only flag 'Throwable' catches — 'Exception' catches are acceptable.
-    # By default, detekt flags both Throwable and Exception. We only want to
-    # flag Throwable catches because Exception is the correct boundary for
-    # our try/catch patterns where we explicitly re-throw CancellationException.
+    # FIX6 Q11: detekt matches the caught type's *simple* name, so the previous
+    # `java.lang.Throwable` never matched Kotlin's `kotlin.Throwable` and the rule
+    # was silently inert — every `catch (Throwable)` slipped through. Use the
+    # simple name `Throwable` so the rule actually flags it while still allowing
+    # `catch (Exception)`.
     exceptionNames:
-      - java.lang.Throwable
+      - Throwable
