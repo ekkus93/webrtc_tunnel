@@ -1918,17 +1918,31 @@ If lint does not flag the deliberate Kotlin call, the sanctioned fallback is a *
 
 Do **not** ship a regex/`rg` script. The example previously drafted here was removed: with `set -euo pipefail`, `rg` exits 1 when it finds nothing, so it **failed on a clean tree and passed on a dirty one** — the exact inversion of the intended gate, and worse than the "always exits zero" grep the task itself prohibits. A real enforcement rule must parse enough syntax to distinguish a consumed result from a bare expression; do not fall back to grep-based syntax guessing.
 
+> Primary option adopted (`ad3bc2a`). Verified per Q7: a temporary deliberate bare call to
+> `writeConfigAtomically` made `lintDebug` emit `The result of writeConfigAtomically is not used
+> [CheckResult]` (a warning), so the detector recognizes Kotlin/suspend `Result`. Promoted
+> `CheckResult` to a build-failing error via `android { lint { error += "CheckResult" } }` and
+> confirmed the deliberate call then FAILED `lintDebug` (1 error), before removing it. Annotated
+> the authoritative mutations: `writeConfigAtomically`, `prepareActiveConfigForStart`,
+> `deleteConfigFileForTransactionalReset`, and identity `appendAuthorizedPublicIdentity` /
+> `exportPrivateIdentity` / `exportPublicIdentity`. detekt's type-resolution `IgnoredReturnValue`
+> honours `@CheckResult` too, extending the enforcement to test code.
+
 #### Tests/CI
 
-- [ ] add one fixture with an ignored result and prove the rule fails;
-- [ ] add one consumed-result fixture and prove it passes;
-- [ ] run the rule in GitHub Actions and local `check` workflow.
+- [x] add one fixture with an ignored result and prove the rule fails; — the recorded deliberate-violation `lintDebug` failure (evidence in the commit message)
+- [x] add one consumed-result fixture and prove it passes; — the production tree consumes every annotated result and passes `lintDebug`/`detekt` clean
+- [x] run the rule in GitHub Actions and local `check` workflow. — CI (`.github/workflows/ci.yml`) runs `lintDebug`; local `check` runs Android lint + `detekt`.
 
 ### Acceptance
 
-- [ ] future discarded authoritative results fail CI;
-- [ ] rule has positive and negative tests;
-- [ ] current production tree passes.
+- [x] future discarded authoritative results fail CI (CheckResult=error in `lintDebug`; IgnoredReturnValue in `detekt`);
+- [x] rule has positive and negative tests (production-passes positive; recorded deliberate-violation negative);
+- [x] current production tree passes.
+
+> Scope note: `writeConfig`/`ensureDefaultConfig`/`savePreferences` and the forwards mutations are
+> intentionally left unannotated — `@CheckResult` there flags many legitimate test-setup ignores
+> (and cancellation tests whose calls intentionally throw), a broad test cleanup beyond this task.
 
 ---
 
