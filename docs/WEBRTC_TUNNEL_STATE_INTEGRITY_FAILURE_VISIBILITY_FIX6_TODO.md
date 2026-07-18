@@ -290,16 +290,16 @@ The first test must prove `rollbackReceipt()` was actually called and the reposi
 
 - [x] Search all production Kotlin for bare calls to mutation methods returning `Result`. (98ee08d)
 - [x] Fix every authoritative bare call except the setup path (folded into P0-003 / Stage B). (98ee08d)
-- [ ] Add a static enforcement task under P2-003.
+- [x] Add a static enforcement task under P2-003.
 - [x] Recorded in the A-3 commit message. (98ee08d)
 
 ### Acceptance
 
-- [ ] no config/setup/import/forward operation reports success after failed config persistence;
-- [ ] the previous persisted state remains intact or rollback outcome is visible;
-- [ ] cancellation propagates;
-- [ ] every error message is redacted;
-- [ ] all named focused tests pass.
+- [x] no config/setup/import/forward operation reports success after failed config persistence;
+- [x] the previous persisted state remains intact or rollback outcome is visible;
+- [x] cancellation propagates;
+- [x] every error message is redacted;
+- [x] all named focused tests pass.
 
 ---
 
@@ -404,10 +404,10 @@ networkPolicyManager
 
 ### P0-002-D — Remove or demote the bus
 
-- [ ] Remove `diagnosticEvents` from `NetworkPolicyManager`.
-- [ ] Delete `AppDependenciesNetworkPolicyWiringTest` if it only proves the old bus.
-- [ ] Delete `AppDiagnosticEventBus` if no optional path uses it.
-- [ ] If retained for optional diagnostics, update comments to state explicitly that it is lossy and never authoritative.
+- [x] Remove `diagnosticEvents` from `NetworkPolicyManager`.
+- [x] Delete `AppDependenciesNetworkPolicyWiringTest` if it only proves the old bus.
+- [x] Delete `AppDiagnosticEventBus` if no optional path uses it.
+- [x] If retained for optional diagnostics, update comments to state explicitly that it is lossy and never authoritative.
 
 ### P0-002-E — Test the actual delivery-result path
 
@@ -443,12 +443,12 @@ Do not write another test that only invokes `isExpectedChannelClose` directly an
 
 ### Acceptance
 
-- [ ] no required network diagnostic depends on a `SharedFlow` collector;
-- [ ] no no-op reporter exists in the production path;
-- [ ] reporter receives redacted text directly;
-- [ ] actual failed delivery is tested;
-- [ ] expected close is tested through the same handler;
-- [ ] all named tests pass.
+- [x] no required network diagnostic depends on a `SharedFlow` collector;
+- [x] no no-op reporter exists in the production path;
+- [x] reporter receives redacted text directly;
+- [x] actual failed delivery is tested;
+- [x] expected close is tested through the same handler;
+- [x] all named tests pass.
 
 ---
 
@@ -772,11 +772,11 @@ Use barriers/generation observation, not `Thread.sleep`.
 
 ### Acceptance
 
-- [ ] latest preference always wins;
-- [ ] stale pending token cannot resume;
-- [ ] quarantine is visible;
-- [ ] cancellation propagates;
-- [ ] no timing-sleep proof.
+- [x] latest preference always wins;
+- [x] stale pending token cannot resume;
+- [x] quarantine is visible;
+- [x] cancellation propagates;
+- [x] no timing-sleep proof.
 
 ---
 
@@ -831,11 +831,11 @@ return@withContext mutationResult {
 
 Apply the same rule to:
 
-- [ ] `upsertWithReceipt`
-- [ ] `deleteWithReceipt`
-- [ ] `rollbackReceipt`
-- [ ] `resetForwards`
-- [ ] `restoreForTransactionalReset`
+- [x] `upsertWithReceipt`
+- [x] `deleteWithReceipt`
+- [x] `rollbackReceipt`
+- [x] `resetForwards`
+- [x] `restoreForTransactionalReset`
 
 ### P0-005-C — Remove cancellation-swallowing orchestration wrappers
 
@@ -857,20 +857,20 @@ Audit all `runCatching` results from the inventory command. Not every non-suspen
 
 Add to `ForwardsRepositoryTest.kt`:
 
-- [ ] `upsertCancellationPropagatesAndDoesNotPublish`
-- [ ] `deleteCancellationPropagatesAndDoesNotPublish`
-- [ ] `rollbackCancellationPropagatesAndDoesNotPublish`
-- [ ] `resetCancellationPropagatesAndDoesNotPublish`
-- [ ] `transactionalRestoreCancellationPropagatesAndDoesNotPublish`
+- [x] `upsertCancellationPropagatesAndDoesNotPublish`
+- [x] `deleteCancellationPropagatesAndDoesNotPublish`
+- [x] `rollbackCancellationPropagatesAndDoesNotPublish`
+- [x] `resetCancellationPropagatesAndDoesNotPublish`
+- [x] `transactionalRestoreCancellationPropagatesAndDoesNotPublish`
 
 Add controller/ViewModel cancellation tests for setup/import/forward activation.
 
 ### Acceptance
 
-- [ ] cancellation is never converted into normal failure in named paths;
-- [ ] save-then-publish remains intact;
-- [ ] no success or failure snackbar is emitted solely because the coroutine was cancelled;
-- [ ] all cancellation tests pass.
+- [x] cancellation is never converted into normal failure in named paths;
+- [x] save-then-publish remains intact;
+- [x] no success or failure snackbar is emitted solely because the coroutine was cancelled;
+- [x] all cancellation tests pass.
 
 ---
 
@@ -1229,10 +1229,10 @@ Before any native start preparation, require `Ready`. If initializing or failed,
 
 ### Acceptance
 
-- [ ] no unbounded main-thread `runBlocking` initialization;
-- [ ] config initialization result is consumed;
-- [ ] native start is gated on readiness;
-- [ ] failure is visible and redacted.
+- [x] no unbounded main-thread `runBlocking` initialization;
+- [x] config initialization result is consumed;
+- [x] native start is gated on readiness;
+- [x] failure is visible and redacted.
 
 ---
 
@@ -2030,31 +2030,31 @@ cargo test --workspace --all-features
 
 ## P0
 
-- [ ] every authoritative config write result is consumed;
-- [ ] setup/config import/forward activation cannot produce false success;
-- [ ] required network diagnostics use direct reporter delivery;
-- [ ] setup persistence is transactional;
-- [ ] stale policy retry is invalidated when preference is false;
-- [ ] policy quarantine is visible;
-- [ ] cancellation propagates through persistent mutation paths;
-- [ ] network monitoring fails closed and retries visibly.
+- [x] every authoritative config write result is consumed;
+- [x] setup/config import/forward activation cannot produce false success;
+- [x] required network diagnostics use direct reporter delivery;
+- [x] setup persistence is transactional;
+- [x] stale policy retry is invalidated when preference is false;
+- [x] policy quarantine is visible;
+- [x] cancellation propagates through persistent mutation paths;
+- [x] network monitoring fails closed and retries visibly.
 
 ## P1
 
-- [ ] stale current remote peer identity is cleared;
-- [ ] reset snapshot/rollback is exhaustive and redacted;
-- [ ] initialization is asynchronous/readiness-gated and failure-visible;
-- [ ] identity pair and authorized keys are atomic and serialized;
-- [ ] candidate files are unique and operations cannot overlap unsafely;
-- [ ] temp cleanup remains inside `Result` contract;
-- [ ] lifecycle processor exit closes command acceptance;
-- [ ] required UI failures are durable;
-- [ ] structured secret redaction tests pass;
-- [ ] destroy cleanup semantics are truthful.
+- [x] stale current remote peer identity is cleared;
+- [x] reset snapshot/rollback is exhaustive and redacted;
+- [x] initialization is asynchronous/readiness-gated and failure-visible;
+- [x] identity pair and authorized keys are atomic and serialized;
+- [x] candidate files are unique and operations cannot overlap unsafely;
+- [x] temp cleanup remains inside `Result` contract;
+- [x] lifecycle processor exit closes command acceptance;
+- [x] required UI failures are durable;
+- [x] structured secret redaction tests pass;
+- [x] destroy cleanup semantics are truthful.
 
 ## P2
 
-- [ ] affected proof tests use deterministic synchronization;
-- [ ] Rust timestamps are fallible and consistent;
-- [ ] ignored mutation results fail static enforcement;
-- [ ] complete signoff evidence is recorded against one exact commit.
+- [x] affected proof tests use deterministic synchronization;
+- [x] Rust timestamps are fallible and consistent;
+- [x] ignored mutation results fail static enforcement;
+- [x] complete signoff evidence is recorded against one exact commit.
