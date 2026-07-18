@@ -2,6 +2,7 @@ pub mod config;
 pub mod error;
 pub mod ids;
 pub mod protocol;
+pub mod time;
 
 pub use config::{
     AndroidIceMode, AppConfig, BrokerConfig, BrokerTlsConfig,
@@ -24,3 +25,4 @@ pub use protocol::{
     DATA_CHANNEL_RELIABLE, DaemonState, END_OF_CANDIDATES_MESSAGE_TYPE, FRAME_VERSION, FailureCode,
     MessageType, PROTOCOL_MAGIC, PROTOCOL_SUITE, PROTOCOL_VERSION, TunnelFrameType,
 };
+pub use time::{resolve_unix_ms, unix_time_ms};

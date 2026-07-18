@@ -2,8 +2,9 @@
 //! maintain it: overlaying the live daemon status onto the lifecycle snapshot,
 //! clearing measured metadata between runs, and recording start failures.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::AtomicU64;
 
+use p2p_core::{resolve_unix_ms, unix_time_ms};
 use p2p_daemon::{DaemonStatus, ShutdownToken};
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
@@ -124,9 +125,17 @@ pub(crate) fn push_log(logs: &LogBuffer, event: AndroidLogEvent) {
     }
 }
 
+/// Last known-good Unix ms, reused if the clock ever reads before the epoch so a diagnostics
+/// timestamp degrades to a real prior value instead of an invented zero (FIX6 P2-002).
+static LAST_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
+    let fresh = match unix_time_ms() {
+        Ok(ms) => Some(ms),
+        Err(err) => {
+            tracing::error!(%err, "system clock is before the unix epoch; reusing last known timestamp");
+            None
+        }
+    };
+    resolve_unix_ms(fresh, &LAST_UNIX_MS)
 }

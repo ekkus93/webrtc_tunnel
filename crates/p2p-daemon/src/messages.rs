@@ -2,9 +2,9 @@
 //! `InnerMessage`s (hello, error, duplicate-ack), translate ICE candidate bodies,
 //! and decode idle inbound payloads. They hold no daemon runtime state.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::AtomicU64;
 
-use p2p_core::{FailureCode, MsgId, PeerId, SessionId};
+use p2p_core::{FailureCode, MsgId, PeerId, SessionId, resolve_unix_ms, unix_time_ms};
 use p2p_crypto::{AuthorizedKey, kid_from_signing_key};
 use p2p_signaling::{
     ErrorBody, IceCandidateBody, InnerMessage, InnerMessageBuilder, MessageBody, OuterEnvelope,
@@ -87,9 +87,17 @@ pub(crate) fn build_error_message(
     )
 }
 
+/// Last known-good Unix ms, reused if the clock ever reads before the epoch so retry timing
+/// degrades to a real prior value instead of panicking or inventing zero (FIX6 P2-002).
+static LAST_CURRENT_MS: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time is before unix epoch")
-        .as_millis() as u64
+    let fresh = match unix_time_ms() {
+        Ok(ms) => Some(ms),
+        Err(err) => {
+            tracing::error!(%err, "system clock is before the unix epoch; reusing last known timestamp");
+            None
+        }
+    };
+    resolve_unix_ms(fresh, &LAST_CURRENT_MS)
 }
