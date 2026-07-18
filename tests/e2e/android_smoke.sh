@@ -36,6 +36,9 @@ log "PASS: Listening"
 # ---- Stop -> assert Stopped ----
 log "stopping tunnel"
 tap_text "Stop Tunnel" || fail "could not find Stop Tunnel"
+# Stop shows a "Stop tunnel?" confirmation dialog; confirm it (the dialog button is "Stop").
+sleep 1
+tap_text "Stop" || true
 wait_for_text "Stopped" 30 || fail "did not return to Stopped after Stop"
 log "PASS: Stopped after stop"
 

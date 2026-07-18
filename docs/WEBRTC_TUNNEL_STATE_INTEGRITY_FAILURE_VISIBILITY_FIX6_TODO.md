@@ -2018,11 +2018,22 @@ cargo test --workspace --all-features
 - [x] Android artifact/test report attached or path recorded: local reports at `android/app/build/reports/` (lint-results-debug, tests, detekt) and `android/app/build/test-results/testDebugUnitTest/`.
 - [x] Rust artifact/test report attached or path recorded: `cargo test --workspace` console output (all groups `ok`); no separate artifact captured.
 
-### Device/E2E evidence
+### Desktop E2E evidence (Docker)
 
-- [ ] Android emulator/physical-device startup test, or `NOT RUN: exact reason`: **NOT RUN**: no Android emulator or physical device available in this environment (unit/Robolectric + host build only).
-- [ ] metered-to-unmetered policy transition test, or `NOT RUN: exact reason`: **NOT RUN**: same reason (requires a device/emulator with real ConnectivityManager transitions; covered at unit level by `NetworkPolicyManagerTest`/`NetworkMonitorSupervisorTest`).
-- [ ] process-kill/destroy recovery test, or `NOT RUN: exact reason`: **NOT RUN** on-device: same reason; destroy-time semantics covered at unit level by `TunnelForegroundServiceDestroySemanticsTest` and `pendingRetryThenDestroyDoesNotRestart`.
+- [x] Docker-backed real-broker tunnel (`cargo test -p p2p-daemon --test real_broker_tunnel`): **PASS** — started a real `eclipse-mosquitto:2` TLS container and round-tripped application data through the full offer → WebRTC → answer → target → back path over `mqtts://`.
+- [x] Docker stop-lifecycle (`tests/e2e/docker/stop_lifecycle.sh`): **PASS** — `docker stop -t 10` reached the process-signal adapter; both daemons drained and exited 0 well under the grace period.
+
+### Device/E2E evidence (Android emulator)
+
+Ran on a headless `Medium_Phone_API_36.0` emulator (KVM-accelerated) via `tests/e2e/android_smoke.sh` against `broker.emqx.io:8883`.
+
+- [x] Android emulator startup test: **PASS** — the app installs and launches on the emulator (x86_64 native `.so` / JNI / Kotlin / foreground-service stack), the 7-step wizard automates, config validates, and the offer tunnel reaches **Listening** (broker-connected over TLS, forwards listening). This run **found and fixed a ship-breaking regression** (`ac43630`): first-time remote-peer setup previously failed config validation because `authorized_keys` wasn't written until commit-time — see the "authorized_keys before validation" fix; the emulator confirmed Listening only after that fix. Also hardened the wizard harness's long-string input (`adb input text` dropped chars in the base64 identity).
+- [ ] metered-to-unmetered policy transition test, or `NOT RUN: exact reason`: **NOT RUN** on-device — no scripted emulator ConnectivityManager-transition harness; covered at unit level by `NetworkPolicyManagerTest`/`NetworkMonitorSupervisorTest`.
+- [ ] process-kill/destroy recovery test, or `NOT RUN: exact reason`: **NOT RUN** on-device — destroy-time semantics covered at unit level (`TunnelForegroundServiceDestroySemanticsTest`, `pendingRetryThenDestroyDoesNotRestart`) and at the process level by the Docker stop-lifecycle PASS above.
+
+### Follow-up found by the emulator E2E (not yet fixed)
+
+- **Offer stop while Listening (no peer) reports Error, not Stopped.** After reaching Listening, a clean user Stop shows "Native stop returned success but final state was Error". Root-caused: the offer daemon's cooperative-shutdown path (`run_offer_daemon_with_status_and_shutdown`) returns `Err` when shut down while blocked waiting for a peer, and `p2p-mobile/src/runtime/mod.rs:208` maps a task `Err` to `AndroidRuntimeState::Error` (so the FIX6 stop-verification is correctly reporting a genuine daemon-status discrepancy — the daemon should return `Ok` on cooperative shutdown). This is a real but delicate fix in carefully-built shutdown code (the "P0-005 shutdown gate" / race-window logic) and is deferred to a focused follow-up rather than rushed. Not a FIX6-scope regression (the daemon behaved this way independent of the FIX6 changes).
 
 ---
 
