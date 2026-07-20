@@ -593,9 +593,9 @@ related tests
 
 ## P0-004-A — Expand request and stage model
 
-- [ ] Add `BrokerSecret` stage.
-- [ ] Request carries replacement identity, authorized key, broker password, setup input, preferences, config.
-- [ ] Stage order is exactly:
+- [x] Add `BrokerSecret` stage. (c6a993b)
+- [x] Request carries replacement identity, authorized key, broker password, setup input, preferences, config. (c6a993b)
+- [x] Stage order is exactly: (c6a993b)
 
 ```text
 Identity
@@ -606,18 +606,18 @@ Preferences
 Config LAST
 ```
 
-- [ ] Omit optional stages only when the request truly makes no mutation to that resource.
-- [ ] If broker password is intentionally removed, `BrokerSecret` is still requested.
+- [x] Omit optional stages only when the request truly makes no mutation to that resource. (c6a993b — `BrokerSecret` is omitted only when an "advanced" externally-managed password file is configured, in which case the managed secret is genuinely untouched)
+- [x] If broker password is intentionally removed, `BrokerSecret` is still requested. (c6a993b — `BrokerSecretChange.Remove`)
 
 ## P0-004-B — Capture one exact snapshot under writer serialization
 
-- [ ] Capture identity triplet through `IdentityRepository` lock.
-- [ ] Capture broker secret through `BrokerSecretRepository` lock.
-- [ ] Capture setup-input exact bytes/presence through `ConfigRepository` lock or dedicated repository API.
-- [ ] Capture exact config bytes/presence through `ConfigRepository` write mutex/locked snapshot API.
-- [ ] Capture preferences from authoritative loaded state.
-- [ ] Do not read a file outside its repository lock and later assume the snapshot is coherent.
-- [ ] Snapshot failure aborts before the first mutation.
+- [x] Capture identity triplet through `IdentityRepository` lock. (c6a993b — unchanged from FIX6/P0-002, `captureStorageSnapshot()`)
+- [x] Capture broker secret through `BrokerSecretRepository` lock. (c6a993b)
+- [x] Capture setup-input exact bytes/presence through `ConfigRepository` lock or dedicated repository API. (c6a993b — unchanged from FIX6, `captureSetupInputSnapshot`)
+- [x] Capture exact config bytes/presence through `ConfigRepository` write mutex/locked snapshot API. (c6a993b — unchanged from FIX6, `configFileExists`/`readConfig()`)
+- [x] Capture preferences from authoritative loaded state. (c6a993b — unchanged from FIX6, `loadPreferences()`)
+- [x] Do not read a file outside its repository lock and later assume the snapshot is coherent. (c6a993b — each repository owns its own lock; the coordinator calls one atomic snapshot method per repository)
+- [x] Snapshot failure aborts before the first mutation. (c6a993b — `captureSnapshot()` runs entirely before the stage loop; a thrown exception there returns `Failed(Snapshot, ...)` with an empty rollback)
 
 Avoid deadlock: define and document one lock order. Recommended parent coordinator order:
 
@@ -631,12 +631,12 @@ Capture each repository snapshot via an atomic repository method, then release i
 
 ## P0-004-C — Roll back ordinary failure under `NonCancellable`
 
-- [ ] On stage failure, rollback all committed stages in reverse order.
-- [ ] Wrap the whole rollback call in `withContext(NonCancellable)`.
-- [ ] Continue after individual rollback failure.
-- [ ] Return every rollback result.
-- [ ] Report `setup_rollback_incomplete` when any rollback fails.
-- [ ] Preserve fixed/redacted primary reason and rollback reasons.
+- [x] On stage failure, rollback all committed stages in reverse order. (c6a993b — unchanged behavior from FIX6, now also covers `BrokerSecret`)
+- [x] Wrap the whole rollback call in `withContext(NonCancellable)`. (c6a993b — new; the FIX6 code did not wrap this)
+- [x] Continue after individual rollback failure. (c6a993b — unchanged from FIX6)
+- [x] Return every rollback result. (c6a993b — unchanged from FIX6)
+- [x] Report `setup_rollback_incomplete` when any rollback fails. (c6a993b — unchanged from FIX6, `SetupSaveController.commitSetup`'s existing mapping)
+- [x] Preserve fixed/redacted primary reason and rollback reasons. (c6a993b — unchanged from FIX6, `safeReason(...)`)
 
 ## P0-004-D — Roll back cancellation before rethrow
 
@@ -683,66 +683,68 @@ try {
 }
 ```
 
-- [ ] Cancellation is never converted to `SetupPersistenceResult.Failed`.
-- [ ] Rollback failure is not hidden merely because the caller is cancelled.
-- [ ] Reporter failure is caught after rollback; it does not replace cancellation.
+- [x] Cancellation is never converted to `SetupPersistenceResult.Failed`. (c6a993b — the stage loop's `catch (cancelled: CancellationException)` rolls back then rethrows; it never returns a `Failed`)
+- [x] Rollback failure is not hidden merely because the caller is cancelled. (c6a993b — failed rollback stages are attached to the propagating `CancellationException` as suppressed `SetupRollbackException`s)
+- [x] Reporter failure is caught after rollback; it does not replace cancellation. (c6a993b — deviation from the illustrative `reportSafely(...)` snippet, per binding note below)
+
+Deviation: no `reportSafely(code, message)` reporter function exists in this codebase (the spec/TODO's snippet is illustrative). Instead, `SetupPersistenceCoordinator` attaches failed rollback stages as suppressed `SetupRollbackException`s on the propagating `CancellationException`, and `SetupSaveController.reportRollbackIncompleteIfPresent` (called synchronously in `runSaveAndApply`'s `catch (cancelled: CancellationException)`, before rethrowing) inspects `cancelled.suppressedExceptions` and sets the one required `setup_cancelled_rollback_incomplete` diagnostic via the existing `access.applyState` — no new reporter abstraction was introduced, and `IdentityRepository.kt` (listed in this task's file list) was not touched since no gap required it.
 
 ## P0-004-E — Controller mapping
 
-- [ ] Controller calls coordinator exactly once after isolated validation.
-- [ ] Success appears only for `SetupPersistenceResult.Success`.
-- [ ] Ordinary rollback-complete failure maps to durable `setup_persistence_failed`.
-- [ ] Ordinary rollback-incomplete failure maps to durable `setup_rollback_incomplete`.
-- [ ] Cancellation emits no normal success/failure snackbar, except the direct required rollback-incomplete diagnostic from the transaction layer.
-- [ ] Plaintext identity is wiped in all outcomes.
+- [x] Controller calls coordinator exactly once after isolated validation. (c6a993b — unchanged from FIX7 P0-003-D, `commitSetup`'s single `persistence.persist(request)` call)
+- [x] Success appears only for `SetupPersistenceResult.Success`. (c6a993b — unchanged from FIX6/P0-003)
+- [x] Ordinary rollback-complete failure maps to durable `setup_persistence_failed`. (c6a993b — unchanged from FIX6, `commitSetup`'s existing mapping)
+- [x] Ordinary rollback-incomplete failure maps to durable `setup_rollback_incomplete`. (c6a993b — unchanged from FIX6)
+- [x] Cancellation emits no normal success/failure snackbar, except the direct required rollback-incomplete diagnostic from the transaction layer. (c6a993b — `reportRollbackIncompleteIfPresent`)
+- [x] Plaintext identity is wiped in all outcomes. (c6a993b — unchanged `finally` in `validateAndCommit`, now proven for persistence-failure/cancellation specifically too, see P0-004-F wiping tests)
 
 ## P0-004-F — Exact tests
 
 Stage order and normal failure:
 
-- [ ] `allSetupStagesCommitInRequiredOrderIncludingBrokerSecret`
-- [ ] `snapshotFailurePerformsNoMutation`
-- [ ] `identityFailureStopsAllLaterStages`
-- [ ] `authorizedKeysFailureRollsBackIdentity`
-- [ ] `brokerSecretFailureRollsBackAuthorizedKeysAndIdentity`
-- [ ] `setupInputFailureRollsBackBrokerSecretAuthorizedKeysAndIdentity`
-- [ ] `preferencesFailureRollsBackSetupInputBrokerSecretAuthorizedKeysAndIdentity`
-- [ ] `configFailureRollsBackEveryEarlierStage`
-- [ ] `rollbackContinuesAfterEachIndividualRestoreFailure`
-- [ ] `rollbackIncompleteReturnsEveryFailedRollbackStage`
+- [x] `allSetupStagesCommitInRequiredOrderIncludingBrokerSecret` (c6a993b)
+- [x] `snapshotFailurePerformsNoMutation` (c6a993b)
+- [x] `identityFailureStopsAllLaterStages` (c6a993b)
+- [x] `authorizedKeysFailureRollsBackIdentity` (c6a993b)
+- [x] `brokerSecretFailureRollsBackAuthorizedKeysAndIdentity` (c6a993b)
+- [x] `setupInputFailureRollsBackBrokerSecretAuthorizedKeysAndIdentity` (c6a993b)
+- [x] `preferencesFailureRollsBackSetupInputBrokerSecretAuthorizedKeysAndIdentity` (c6a993b)
+- [x] `configFailureRollsBackEveryEarlierStage` (c6a993b)
+- [x] `rollbackContinuesAfterEachIndividualRestoreFailure` (c6a993b)
+- [x] `rollbackIncompleteReturnsEveryFailedRollbackStage` (c6a993b)
 
 Cancellation—one test per meaningful point, not one generic test:
 
-- [ ] `cancellationBeforeFirstMutationPerformsNoRollbackAndPropagates`
-- [ ] `cancellationDuringAuthorizedKeysRollsBackIdentityAndPropagates`
-- [ ] `cancellationDuringBrokerSecretRollsBackAuthorizedKeysAndIdentity`
-- [ ] `cancellationDuringSetupInputRollsBackBrokerSecretAuthorizedKeysAndIdentity`
-- [ ] `cancellationDuringPreferencesRollsBackAllEarlierStages`
-- [ ] `cancellationDuringConfigRollsBackAllEarlierStages`
-- [ ] `cancellationRollbackContinuesAfterOneRestoreFailure`
-- [ ] `cancellationRollbackFailureIsReportedAndAttachedAsSuppressed`
-- [ ] `cancellationNeverReportsConfigurationSavedOrOrdinarySaveFailure`
+- [x] `cancellationBeforeFirstMutationPerformsNoRollbackAndPropagates` (c6a993b)
+- [x] `cancellationDuringAuthorizedKeysRollsBackIdentityAndPropagates` (c6a993b)
+- [x] `cancellationDuringBrokerSecretRollsBackAuthorizedKeysAndIdentity` (c6a993b)
+- [x] `cancellationDuringSetupInputRollsBackBrokerSecretAuthorizedKeysAndIdentity` (c6a993b)
+- [x] `cancellationDuringPreferencesRollsBackAllEarlierStages` (c6a993b)
+- [x] `cancellationDuringConfigRollsBackAllEarlierStages` (c6a993b)
+- [x] `cancellationRollbackContinuesAfterOneRestoreFailure` (c6a993b)
+- [x] `cancellationRollbackFailureIsReportedAndAttachedAsSuppressed` (c6a993b)
+- [x] `cancellationNeverReportsConfigurationSavedOrOrdinarySaveFailure` (c6a993b — `SetupSaveControllerTest`, controller-level integration)
 
 Wiping:
 
-- [ ] `plaintextIdentityIsWipedOnSetupSuccess`
-- [ ] `plaintextIdentityIsWipedOnValidationFailure`
-- [ ] `plaintextIdentityIsWipedOnPersistenceFailure`
-- [ ] `plaintextIdentityIsWipedOnCancellation`
-- [ ] `brokerSecretSnapshotBytesAreWipedAfterSuccessFailureAndCancellation`
+- [x] `plaintextIdentityIsWipedOnSetupSuccess` (c6a993b — `SetupSaveControllerTest`)
+- [x] `plaintextIdentityIsWipedOnValidationFailure` (c6a993b — `SetupSaveControllerTest`)
+- [x] `plaintextIdentityIsWipedOnPersistenceFailure` (c6a993b — `SetupSaveControllerTest`)
+- [x] `plaintextIdentityIsWipedOnCancellation` (c6a993b — `SetupSaveControllerTest`)
+- [x] `brokerSecretSnapshotBytesAreWipedAfterSuccessFailureAndCancellation` (c6a993b — `SetupPersistenceCoordinatorTest`; required adding a small injectable `readBytes` seam to `BrokerSecretRepository`, mirroring its existing `atomicReplace` seam, so a test can observe the exact byte array a snapshot captured)
 
 Concurrency:
 
-- [ ] `twoSetupCoordinatorCallsCannotOverlap`
-- [ ] `globalAdmissionPreventsSetupFromRacingImportForwardAndReset`
+- [x] `twoSetupCoordinatorCallsCannotOverlap` (c6a993b — renamed from FIX6's `twoConcurrentSaveRequestsCannotOverlap`)
+- [x] `globalAdmissionPreventsSetupFromRacingImportForwardAndReset` (c6a993b — `ConfigurationMutationIntegrationTest`; consolidates the pairwise P0-001-D proofs into one test showing a single in-flight SetupSave rejects Import, ForwardMutation, and ConfigurationReset all at once)
 
 ## Acceptance
 
-- [ ] Setup is one transaction.
-- [ ] Cancellation restores every earlier stage before propagation.
-- [ ] Rollback failure is durable and specific.
-- [ ] Config remains last.
-- [ ] No outer controller restore exists.
+- [x] Setup is one transaction. (c6a993b)
+- [x] Cancellation restores every earlier stage before propagation. (c6a993b)
+- [x] Rollback failure is durable and specific. (c6a993b)
+- [x] Config remains last. (c6a993b — unchanged)
+- [x] No outer controller restore exists. (c6a993b — unchanged from FIX7 P0-003-D; `SetupSaveController` still has no identity snapshot/restore of its own)
 
 ---
 
