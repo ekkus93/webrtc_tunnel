@@ -280,12 +280,17 @@ android/app/src/test/.../ExactFileStateTest.kt (new)
 android/app/src/test/.../MutationHelpersTest.kt
 ```
 
+> Implementation note: the new file is `ExactFileSnapshot.kt`, not `ExactFileState.kt` — detekt's
+> `MatchingDeclarationName` requires the file name to match its single top-level declaration
+> (`ExactFileSnapshot`); no suppression is permitted per the linting policy, so the filename
+> deviates from this document's illustrative path.
+
 ## P0-002-A — Exact file snapshot
 
-- [ ] Add `ExactFileSnapshot(existed, bytes)`.
-- [ ] Snapshot read failure returns failure and aborts the parent transaction before mutation.
-- [ ] Present-empty is distinct from absent.
-- [ ] Never substitute parsed/default content for exact bytes.
+- [x] Add `ExactFileSnapshot(existed, bytes)`. (42d1081)
+- [x] Snapshot read failure returns failure and aborts the parent transaction before mutation. (42d1081)
+- [x] Present-empty is distinct from absent. (42d1081)
+- [x] Never substitute parsed/default content for exact bytes. (42d1081)
 
 ```kotlin
 class ExactFileSnapshot internal constructor(
@@ -321,10 +326,10 @@ internal fun captureExactFileSnapshot(file: File): Result<ExactFileSnapshot> =
 
 ## P0-002-B — Checked exact restore
 
-- [ ] Present snapshot restores via injected atomic replacement.
-- [ ] Absent snapshot restores via `Files.deleteIfExists`.
-- [ ] Do not use `File.delete()` without checking its return.
-- [ ] Restore returns `Result<Unit>` and is annotated/enforced as consumed.
+- [x] Present snapshot restores via injected atomic replacement. (42d1081)
+- [x] Absent snapshot restores via `Files.deleteIfExists`. (42d1081)
+- [x] Do not use `File.delete()` without checking its return. (42d1081)
+- [x] Restore returns `Result<Unit>` and is annotated/enforced as consumed. (42d1081)
 
 ```kotlin
 @CheckResult
@@ -357,12 +362,12 @@ internal fun restoreExactFileSnapshot(
 
 Replace caller-managed create/delete patterns with one helper that cannot forget cleanup.
 
-- [ ] Add `CandidateCleanupException` with a fixed safe message.
-- [ ] Add `withCandidateFile`.
-- [ ] Add equivalent `withTemporaryDirectory` or `withSetupValidationWorkspace` cleanup composition.
-- [ ] Primary error identity is preserved.
-- [ ] Cleanup is attached as suppressed after primary failure/cancellation.
-- [ ] Success becomes failure if cleanup fails.
+- [x] Add `CandidateCleanupException` with a fixed safe message. (42d1081)
+- [x] Add `withCandidateFile`. (42d1081)
+- [x] Add equivalent `withTemporaryDirectory` or `withSetupValidationWorkspace` cleanup composition. (42d1081 — `withTemporaryDirectory`, with an injectable recursive-delete seam for tests)
+- [x] Primary error identity is preserved. (42d1081)
+- [x] Cleanup is attached as suppressed after primary failure/cancellation. (42d1081)
+- [x] Success becomes failure if cleanup fails. (42d1081)
 
 Target helper:
 
@@ -406,24 +411,31 @@ internal suspend fun <T> withCandidateFile(
 
 Do not add `catch (Throwable)`.
 
+> Implementation note: the target snippet throws `CandidateCleanupException` from a `finally`
+> block, which detekt's `ThrowingExceptionFromFinally` forbids (no suppression permitted). The
+> shared `withCleanupComposition` helper instead captures the primary outcome as a `Result<T>`
+> first, always runs cleanup next, and only then decides what to return/throw — same observable
+> composition semantics, no throw-from-finally. `withCandidateFile` and `withTemporaryDirectory`
+> both delegate to it.
+
 ## P0-002-D — Tests
 
-- [ ] `snapshotDistinguishesAbsentFromPresentEmpty`
-- [ ] `snapshotReadFailureReturnsFailureBeforeMutation`
-- [ ] `restoreAbsentDeletesExistingFile`
-- [ ] `restoreAbsentDeletionFailureReturnsFailure`
-- [ ] `restorePresentUsesExactBytes`
-- [ ] `candidatePrimaryFailurePreservedAndCleanupSuppressed`
-- [ ] `candidateCancellationPreservedAndCleanupSuppressed`
-- [ ] `candidateSuccessfulBlockBecomesFailureWhenCleanupFails`
-- [ ] `candidateSuccessfulBlockReturnsValueWhenCleanupSucceeds`
-- [ ] `temporaryDirectoryCleanupFailureUsesSameCompositionRules`
+- [x] `snapshotDistinguishesAbsentFromPresentEmpty` (42d1081)
+- [x] `snapshotReadFailureReturnsFailureBeforeMutation` (42d1081)
+- [x] `restoreAbsentDeletesExistingFile` (42d1081)
+- [x] `restoreAbsentDeletionFailureReturnsFailure` (42d1081)
+- [x] `restorePresentUsesExactBytes` (42d1081)
+- [x] `candidatePrimaryFailurePreservedAndCleanupSuppressed` (42d1081)
+- [x] `candidateCancellationPreservedAndCleanupSuppressed` (42d1081)
+- [x] `candidateSuccessfulBlockBecomesFailureWhenCleanupFails` (42d1081)
+- [x] `candidateSuccessfulBlockReturnsValueWhenCleanupSucceeds` (42d1081)
+- [x] `temporaryDirectoryCleanupFailureUsesSameCompositionRules` (42d1081)
 
 ## Acceptance
 
-- [ ] Exact file absence is representable and restorable.
-- [ ] No cleanup caller can accidentally discard a cleanup `Result`.
-- [ ] Secret snapshots expose a wipe method and owners invoke it.
+- [x] Exact file absence is representable and restorable. (42d1081)
+- [x] No cleanup caller can accidentally discard a cleanup `Result`. (42d1081 — `@CheckResult` on `restoreExactFileSnapshot`; `withCandidateFile`/`withTemporaryDirectory` compose cleanup automatically)
+- [ ] Secret snapshots expose a wipe method and owners invoke it. `ExactFileSnapshot.wipe()` exists (42d1081), but no owner calls it yet — no P0-002 caller holds a secret-bearing snapshot. Deferred to whichever of P0-003/P0-004 first snapshots the broker password.
 
 ---
 
