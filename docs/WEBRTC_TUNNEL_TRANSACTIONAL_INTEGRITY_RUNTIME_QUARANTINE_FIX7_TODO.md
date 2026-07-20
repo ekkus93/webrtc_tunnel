@@ -764,10 +764,10 @@ related tests
 
 ## P0-005-A — Exact setup-input snapshot API
 
-- [ ] Add `captureSetupInputFileSnapshot(): Result<ExactFileSnapshot>` under repository serialization.
-- [ ] Add `restoreSetupInputFileSnapshot(snapshot): Result<Unit>` using atomic replacement or checked deletion.
-- [ ] Convert `saveSetupInput` to a consumed `Result<Unit>` or add an authoritative result-returning method used by transactions.
-- [ ] Do not restore absent setup input by writing default JSON.
+- [x] Add `captureSetupInputFileSnapshot(): Result<ExactFileSnapshot>` under repository serialization. (dc5c14a — top-level in `ExactFileSnapshot.kt`, not a `ConfigRepository` member, to keep that file/class under detekt's TooManyFunctions threshold; takes the file explicitly like its FIX6 `captureSetupInputSnapshot` sibling)
+- [x] Add `restoreSetupInputFileSnapshot(snapshot): Result<Unit>` using atomic replacement or checked deletion. (dc5c14a — `ConfigRepository.restoreSetupInputFileSnapshot`, open member so tests can inject a rollback-restore failure like every other reset stage)
+- [x] Convert `saveSetupInput` to a consumed `Result<Unit>` or add an authoritative result-returning method used by transactions. (dc5c14a — via the new `restoreSetupInputFileSnapshot`; `saveSetupInput` itself is unchanged and still used for the *forward* reset mutation, which legitimately always writes a value)
+- [x] Do not restore absent setup input by writing default JSON. (dc5c14a)
 
 ## P0-005-B — Reset snapshot model
 
@@ -781,54 +781,56 @@ data class ResetSnapshot(
 )
 ```
 
-- [ ] Wipe snapshot bytes in `finally` after reset/rollback finishes.
-- [ ] Snapshot capture cancellation propagates.
-- [ ] Any snapshot read failure aborts before mutation.
+- [x] Wipe snapshot bytes in `finally` after reset/rollback finishes. (dc5c14a — `ResetSnapshot.wipeSecrets()`, only `setupInput` needs it: config.toml never embeds the broker password directly, only a path to it)
+- [x] Snapshot capture cancellation propagates. (dc5c14a — unchanged from FIX6/P1-002, `captureSnapshot()`'s own catch rethrows `CancellationException`)
+- [x] Any snapshot read failure aborts before mutation. (dc5c14a — unchanged from FIX6/P1-002)
 
 ## P0-005-C — Cancellation rollback
 
-- [ ] Track `mutatedStages` only after each successful mutation.
-- [ ] On cancellation, run reverse rollback under `NonCancellable`.
-- [ ] Attach rollback failures as suppressed to the original cancellation.
-- [ ] Emit direct `reset_cancelled_rollback_incomplete` only when rollback is incomplete.
-- [ ] Rethrow the original cancellation.
+- [x] Track `mutatedStages` only after each successful mutation. (dc5c14a — unchanged from FIX6, `applyStages`)
+- [x] On cancellation, run reverse rollback under `NonCancellable`. (dc5c14a — new; the FIX6 code did not do this, matching the same gap P0-004 fixed for setup persistence)
+- [x] Attach rollback failures as suppressed to the original cancellation. (dc5c14a — `ResetRollbackException`)
+- [x] Emit direct `reset_cancelled_rollback_incomplete` only when rollback is incomplete. (dc5c14a — `SettingsViewModel.resetConfiguration()`'s `catch (cancelled: CancellationException)`)
+- [x] Rethrow the original cancellation. (dc5c14a)
+
+Deviation: no `reportSafely(...)` reporter exists in this codebase (as with P0-004); the top-level pure function `resetCancelledRollbackIncompleteMessage` (kept top-level, not a `SettingsViewModel` member, to stay under detekt's TooManyFunctions threshold) computes the message from `cancelled.suppressedExceptions`, and the ViewModel publishes it via the existing `publishOperationFailure`.
 
 ## P0-005-D — Settings state mapping
 
-- [ ] Normal rollback-complete reset failure uses durable `reset_failed`.
-- [ ] Normal rollback-incomplete uses `reset_rollback_incomplete`.
-- [ ] Busy rejection uses `configuration_operation_busy`.
-- [ ] Success clears prior failure.
-- [ ] Cancellation does not emit ordinary reset failure/success.
+- [x] Normal rollback-complete reset failure uses durable `reset_failed`. (dc5c14a — unchanged from FIX6, `resetFailureVisibleCode`)
+- [x] Normal rollback-incomplete uses `reset_rollback_incomplete`. (dc5c14a — unchanged from FIX6)
+- [x] Busy rejection uses `configuration_operation_busy`. (dc5c14a — unchanged from FIX7 P0-001-C)
+- [x] Success clears prior failure. (dc5c14a — unchanged from FIX6, `handleResetResult`'s `clearOperationFailure()`)
+- [x] Cancellation does not emit ordinary reset failure/success. (dc5c14a — `handleResetResult` is never reached on cancellation; only the one required rollback-incomplete diagnostic may publish)
 
 ## P0-005-E — Tests
 
 Exact state:
 
-- [ ] `resetSnapshotDistinguishesAbsentSetupInputFromDefaultSetupInput`
-- [ ] `failedResetRestoresAbsentSetupInputAsAbsent`
-- [ ] `failedResetRestoresPresentEmptySetupInputExactly`
-- [ ] `setupInputSnapshotReadFailureAbortsBeforeMutation`
+- [x] `resetSnapshotDistinguishesAbsentSetupInputFromDefaultSetupInput` (dc5c14a — `TransactionalResetExactSnapshotTest`)
+- [x] `failedResetRestoresAbsentSetupInputAsAbsent` (dc5c14a)
+- [x] `failedResetRestoresPresentEmptySetupInputExactly` (dc5c14a — uses deliberately unusual JSON formatting to prove byte-exact, not re-serialized, restoration)
+- [x] `setupInputSnapshotReadFailureAbortsBeforeMutation` (dc5c14a)
 
 Cancellation:
 
-- [ ] `cancellationDuringSetupInputResetRestoresConfig`
-- [ ] `cancellationDuringForwardsResetRestoresSetupInputAndConfig`
-- [ ] `resetCancellationRollbackContinuesAfterRestoreFailure`
-- [ ] `resetCancellationRollbackFailureIsReportedAndSuppressed`
-- [ ] `resetCancellationDoesNotReportSuccessOrOrdinaryFailure`
+- [x] `cancellationDuringSetupInputResetRestoresConfig` (dc5c14a)
+- [x] `cancellationDuringForwardsResetRestoresSetupInputAndConfig` (dc5c14a)
+- [x] `resetCancellationRollbackContinuesAfterRestoreFailure` (dc5c14a)
+- [x] `resetCancellationRollbackFailureIsReportedAndSuppressed` (dc5c14a)
+- [x] `resetCancellationDoesNotReportSuccessOrOrdinaryFailure` (dc5c14a — `SettingsViewModelTest`)
 
 Normal rollback:
 
-- [ ] `oneRollbackFailureDoesNotPreventRemainingResetRestores`
-- [ ] `resetRollbackIncompleteListsEveryFailedRestore`
-- [ ] `resetSnapshotSecretBytesAreWiped`
+- [x] `oneRollbackFailureDoesNotPreventRemainingResetRestores` (dc5c14a)
+- [x] `resetRollbackIncompleteListsEveryFailedRestore` (dc5c14a)
+- [x] `resetSnapshotSecretBytesAreWiped` (dc5c14a — required adding a `setupInputReadBytes` seam to `TransactionalResetCoordinator`'s constructor, mirroring `BrokerSecretRepository`'s `readBytes` seam)
 
 ## Acceptance
 
-- [ ] Reset restores exact absence/presence/bytes.
-- [ ] Cancellation cannot leave an earlier reset stage committed silently.
-- [ ] Settings failure state is durable and truthful.
+- [x] Reset restores exact absence/presence/bytes. (dc5c14a)
+- [x] Cancellation cannot leave an earlier reset stage committed silently. (dc5c14a)
+- [x] Settings failure state is durable and truthful. (dc5c14a)
 
 ---
 
