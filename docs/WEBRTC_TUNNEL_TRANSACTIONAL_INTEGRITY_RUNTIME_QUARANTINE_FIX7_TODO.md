@@ -435,7 +435,7 @@ Do not add `catch (Throwable)`.
 
 - [x] Exact file absence is representable and restorable. (42d1081)
 - [x] No cleanup caller can accidentally discard a cleanup `Result`. (42d1081 — `@CheckResult` on `restoreExactFileSnapshot`; `withCandidateFile`/`withTemporaryDirectory` compose cleanup automatically)
-- [ ] Secret snapshots expose a wipe method and owners invoke it. `ExactFileSnapshot.wipe()` exists (42d1081), but no owner calls it yet — `BrokerSecretRepository` (6582641) snapshots the broker password but does not yet need `wipe()` since its snapshot is only used for restore-on-failure, not held across a suspension point; still deferred to P0-004's cancellation-rollback work, whose coordinator stage will hold a live snapshot across a suspend boundary.
+- [x] Secret snapshots expose a wipe method and owners invoke it. `ExactFileSnapshot.wipe()` exists (42d1081); its first real owner is `SetupPersistenceCoordinator.SetupSnapshot.wipeSecrets()` (c6a993b, P0-004), which wipes the `BrokerSecret` stage's snapshot bytes in a `finally` after every transaction outcome; `TransactionalResetCoordinator.ResetSnapshot.wipeSecrets()` (dc5c14a, P0-005) does the same for the setup-input snapshot, which can hold a plaintext broker password.
 
 ---
 
