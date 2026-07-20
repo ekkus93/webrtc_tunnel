@@ -5,6 +5,8 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
+import com.phillipchin.webrtctunnel.data.ConfigurationOperation
 import com.phillipchin.webrtctunnel.data.OperationFailure
 import com.phillipchin.webrtctunnel.data.ResetResult
 import com.phillipchin.webrtctunnel.data.RollbackStageResult
@@ -168,38 +170,52 @@ class SettingsViewModel(
         }
 
     // P2-003: Uses TransactionalResetCoordinator for atomic multi-file reset.
+    // FIX7 P0-001-C: admission is the single cross-feature coordinator around the whole reset
+    // transaction, not just a per-screen guard — a concurrent setup save/import/forward
+    // mutation must also be rejected while a reset is in flight, and vice versa.
     fun resetConfiguration() {
         viewModelScope.launch {
-            val result =
-                withContext(deps.dispatchers.io) {
-                    deps.transactionalResetCoordinator.resetConfiguration()
+            when (
+                val admission =
+                    deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.ConfigurationReset) {
+                        withContext(deps.dispatchers.io) { deps.transactionalResetCoordinator.resetConfiguration() }
+                    }
+            ) {
+                is ConfigurationAdmission.Busy -> {
+                    val message = "Another configuration operation is already in progress: ${admission.active}"
+                    publishOperationFailure("configuration_operation_busy", message)
                 }
-            when (result) {
-                is ResetResult.Success -> {
-                    clearOperationFailure()
-                    deps.snackbar.show("Configuration reset")
-                }
-                is ResetResult.Failed -> {
-                    val rollbackSummary =
-                        result.rollback.joinToString("; ") {
-                            when (it) {
-                                is RollbackStageResult.Success ->
-                                    "${it.stage.name}: rollback_ok"
-                                is RollbackStageResult.Failure ->
-                                    "${it.stage.name}: ${it.reason}"
-                            }
+                is ConfigurationAdmission.Completed -> handleResetResult(admission.value)
+            }
+        }
+    }
+
+    private fun handleResetResult(result: ResetResult) {
+        when (result) {
+            is ResetResult.Success -> {
+                clearOperationFailure()
+                deps.snackbar.show("Configuration reset")
+            }
+            is ResetResult.Failed -> {
+                val rollbackSummary =
+                    result.rollback.joinToString("; ") {
+                        when (it) {
+                            is RollbackStageResult.Success ->
+                                "${it.stage.name}: rollback_ok"
+                            is RollbackStageResult.Failure ->
+                                "${it.stage.name}: ${it.reason}"
                         }
-                    // P1-002-D: partial rollback must be visibly distinct from a cleanly
-                    // rolled-back reset failure, so the user knows persistent state may be
-                    // inconsistent rather than restored.
-                    val code = resetFailureVisibleCode(result)
-                    val summary =
-                        "[$code] Reset failed at ${result.failedStage.name}: ${result.cause}\n" +
-                            "Rollback: $rollbackSummary"
-                    Log.e("SettingsViewModel", summary)
-                    // P1-008: durable, so the reset failure survives without a snackbar collector.
-                    publishOperationFailure(code, summary)
-                }
+                    }
+                // P1-002-D: partial rollback must be visibly distinct from a cleanly
+                // rolled-back reset failure, so the user knows persistent state may be
+                // inconsistent rather than restored.
+                val code = resetFailureVisibleCode(result)
+                val summary =
+                    "[$code] Reset failed at ${result.failedStage.name}: ${result.cause}\n" +
+                        "Rollback: $rollbackSummary"
+                Log.e("SettingsViewModel", summary)
+                // P1-008: durable, so the reset failure survives without a snackbar collector.
+                publishOperationFailure(code, summary)
             }
         }
     }

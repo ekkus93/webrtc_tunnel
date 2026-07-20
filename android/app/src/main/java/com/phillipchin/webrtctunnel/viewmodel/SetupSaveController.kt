@@ -4,6 +4,8 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.phillipchin.webrtctunnel.TunnelForegroundService
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
+import com.phillipchin.webrtctunnel.data.ConfigurationOperation
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinator
 import com.phillipchin.webrtctunnel.data.SetupPersistenceRequest
@@ -22,7 +24,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -63,10 +64,6 @@ class SetupSaveController(
             loadPreferences = loadPreferences,
             persistPreferences = persistPreferences,
         )
-
-    // P1-005-C: an atomic busy guard, not a check-before-launch read — two rapid saves cannot
-    // overlap and clobber each other's candidate/state. A rejected save is visibly reported.
-    private val operationMutex = Mutex()
 
     fun testBrokerConnection() {
         val current = access.state()
@@ -111,20 +108,26 @@ class SetupSaveController(
     }
 
     private suspend fun saveAndApplyConfigInternal(): Boolean {
-        // P1-005-C: reject an overlapping save visibly instead of racing on a mutable busy flag.
-        if (!operationMutex.tryLock()) {
-            access.applyState(
-                access.state().copy(
-                    errorMessage = "Configuration save is already in progress",
-                    saveResult = null,
-                ),
-            )
-            return false
-        }
-        try {
-            return runSaveAndApply()
-        } finally {
-            operationMutex.unlock()
+        // FIX7 P0-001-C: admission is the single cross-feature coordinator, not a local mutex —
+        // an overlapping config import/forward mutation/reset must also be rejected, not just
+        // another setup save. A rejected save is visibly and durably reported.
+        return when (
+            val admission =
+                deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.SetupSave) {
+                    runSaveAndApply()
+                }
+        ) {
+            is ConfigurationAdmission.Completed -> admission.value
+            is ConfigurationAdmission.Busy -> {
+                access.applyState(
+                    access.state().copy(
+                        errorMessage =
+                            "Another configuration operation is already in progress: ${admission.active}",
+                        saveResult = null,
+                    ),
+                )
+                false
+            }
         }
     }
 

@@ -39,6 +39,13 @@ class AppDependencies(
     val transactionalResetCoordinator: TransactionalResetCoordinator =
         TransactionalResetCoordinator(configRepository, forwardsRepository)
 
+    // FIX7 P0-001: the single cross-feature admission guard for setup save, config import,
+    // forward mutation+activation, and configuration reset (FIX7-INV-009). A body val (not a
+    // constructor parameter) for the same reason as appInitializationCoordinator below.
+    val configurationMutationCoordinator: ConfigurationMutationCoordinator by lazy {
+        ConfigurationMutationCoordinator()
+    }
+
     // Application-scoped work that must outlive any single service/ViewModel (currently
     // initialization). Cancelled only at process teardown, so no explicit cancel here.
     private val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + dispatchers.default)

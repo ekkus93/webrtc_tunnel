@@ -4,6 +4,9 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
+import com.phillipchin.webrtctunnel.data.ConfigurationMutationCoordinator
+import com.phillipchin.webrtctunnel.data.ConfigurationOperation
 import com.phillipchin.webrtctunnel.data.OperationFailure
 import com.phillipchin.webrtctunnel.data.SnackbarController
 import com.phillipchin.webrtctunnel.data.mutationResult
@@ -38,14 +41,21 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
     private val importService = ImportExportService(deps)
 
     // Shared IO-op runner bound to this ViewModel's scope/state/dispatcher.
-    private val io = ImportExportOps(viewModelScope, _state, deps.dispatchers.io, deps.snackbar)
+    private val io =
+        ImportExportOps(
+            viewModelScope,
+            _state,
+            deps.dispatchers.io,
+            deps.snackbar,
+            deps.configurationMutationCoordinator,
+        )
 
     fun updateState(transform: (ImportExportState) -> ImportExportState) {
         _state.value = transform(_state.value).copy(resultMessage = null)
     }
 
     fun importConfig() =
-        io.run("Config imported", "Config import failed", onSuccess = {
+        io.runImport("Config imported", "Config import failed", onSuccess = {
             _state.value = _state.value.copy(configImportPath = "")
         }) {
             val source = java.io.File(_state.value.configImportPath.trim())
@@ -54,7 +64,7 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         }
 
     fun importPrivateIdentity() =
-        io.run("Private identity imported", "Private identity import failed", onSuccess = {
+        io.runImport("Private identity imported", "Private identity import failed", onSuccess = {
             cachedPublicIdentity = null
             _state.value = _state.value.copy(privateIdentityImportPath = "")
         }) {
@@ -65,7 +75,7 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
         }
 
     fun importPublicIdentity() =
-        io.run("Public identity imported", "Public identity import failed", onSuccess = {
+        io.runImport("Public identity imported", "Public identity import failed", onSuccess = {
             _state.value = _state.value.copy(publicIdentityLine = "")
         }) {
             importService.importContent(ImportKind.PublicIdentity, _state.value.publicIdentityLine)
@@ -74,7 +84,7 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
     fun importFromUri(
         uri: Uri,
         kind: ImportKind,
-    ) = io.run("${kind.label} imported", "${kind.label} import failed", onSuccess = {
+    ) = io.runImport("${kind.label} imported", "${kind.label} import failed", onSuccess = {
         if (kind == ImportKind.PrivateIdentity) cachedPublicIdentity = null
     }) {
         val content =
@@ -144,10 +154,12 @@ private class ImportExportOps(
     private val state: MutableStateFlow<ImportExportState>,
     private val io: CoroutineDispatcher,
     private val snackbar: SnackbarController,
+    private val coordinator: ConfigurationMutationCoordinator,
 ) {
-    // P1-005-C: an atomic busy guard so two rapid imports cannot both pass a check-before-launch
-    // isBusy read and share/clobber the same candidate file. isBusy remains for UI state.
-    private val operationMutex = Mutex()
+    // Retained only for the LOCAL, non-authoritative export actions (FIX7 P0-001-C): they read
+    // current state to a file/URI and never mutate config/identity/forwards, so they are not
+    // part of the FIX7-INV-009 cross-feature admission guard. Real imports use [runImport].
+    private val exportMutex = Mutex()
 
     fun run(
         successMessage: String,
@@ -156,7 +168,7 @@ private class ImportExportOps(
         block: suspend () -> Unit,
     ) {
         scope.launch {
-            if (!operationMutex.tryLock()) return@launch
+            if (!exportMutex.tryLock()) return@launch
             state.value = state.value.copy(isBusy = true, resultMessage = null)
             try {
                 // FIX6 P0-005: mutationResult (not runCatching) so a cancelled operation — e.g.
@@ -172,7 +184,48 @@ private class ImportExportOps(
                     state.value.copy(isBusy = false, resultMessage = message, lastOperationFailure = failure)
                 snackbar.show(message)
             } finally {
-                operationMutex.unlock()
+                exportMutex.unlock()
+            }
+        }
+    }
+
+    /**
+     * FIX7 P0-001-C: real config/identity mutations go through the global cross-feature
+     * admission coordinator instead of a local mutex. A rejected overlap is a durable, specific
+     * `configuration_operation_busy` failure — never a silently dropped `return@launch` (HIGH-1).
+     */
+    fun runImport(
+        successMessage: String,
+        failureFallback: String,
+        onSuccess: () -> Unit = {},
+        block: suspend () -> Unit,
+    ) {
+        scope.launch {
+            when (
+                val admission =
+                    coordinator.tryRun(ConfigurationOperation.ConfigImport) {
+                        state.value = state.value.copy(isBusy = true, resultMessage = null)
+                        try {
+                            withContext(io) { mutationResult { block() } }
+                        } finally {
+                            state.value = state.value.copy(isBusy = false)
+                        }
+                    }
+            ) {
+                is ConfigurationAdmission.Busy -> {
+                    val message = "Another configuration operation is already in progress: ${admission.active}"
+                    val failure = OperationFailure("configuration_operation_busy", message)
+                    state.value = state.value.copy(resultMessage = message, lastOperationFailure = failure)
+                    snackbar.show(message)
+                }
+                is ConfigurationAdmission.Completed -> {
+                    val result = admission.value
+                    if (result.isSuccess) onSuccess()
+                    val message = result.fold({ successMessage }, { it.message ?: failureFallback })
+                    val failure = result.exceptionOrNull()?.let { OperationFailure("import_export_failed", message) }
+                    state.value = state.value.copy(resultMessage = message, lastOperationFailure = failure)
+                    snackbar.show(message)
+                }
             }
         }
     }
