@@ -135,7 +135,7 @@ local_eof_grace_ms = 250
 remote_eof_grace_ms = 250
 data_plane_probe_timeout_ms = 5000
 [[forwards]]
-id = "llama"
+id = "web-ui"
 [forwards.answer]
 target_host = "$TARGET_HOST_CFG"
 target_port = $TARGET_PORT
@@ -198,7 +198,7 @@ cat <<EOF
 ================= DEBUG RIG UP (persistent) =================
   phone (ANDROID_SERIAL=${ANDROID_SERIAL:-default}) offer: Listening, peer=$APP_PEER
   answer container : $ANSWER_CONTAINER  (peer=$REMOTE_PEER, net=$ANSWER_NET, level=$ANSWER_LEVEL)
-  forward id       : llama -> $TARGET_HOST_CFG:$TARGET_PORT (marker: $MARKER)
+  forward id       : web-ui -> $TARGET_HOST_CFG:$TARGET_PORT (marker: $MARKER)
   adb forward      : host 127.0.0.1:18080 -> device 8080
 
   drive a request  : curl -s --max-time 8 http://127.0.0.1:18080/marker.txt

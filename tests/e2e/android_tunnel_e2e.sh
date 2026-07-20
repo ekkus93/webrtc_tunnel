@@ -156,7 +156,7 @@ local_eof_grace_ms = 250
 remote_eof_grace_ms = 250
 data_plane_probe_timeout_ms = 5000
 [[forwards]]
-id = "llama"
+id = "web-ui"
 [forwards.answer]
 target_host = "$TARGET_HOST_CFG"
 target_port = $TARGET_PORT
