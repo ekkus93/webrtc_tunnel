@@ -5,8 +5,10 @@ import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import com.phillipchin.webrtctunnel.security.IdentityStorageSnapshot
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Ordered stages of a setup save. Config is committed last so an earlier failure never
@@ -16,10 +18,33 @@ enum class SetupPersistenceStage {
     Snapshot,
     Identity,
     AuthorizedKeys,
+    BrokerSecret,
     SetupInput,
     Preferences,
     Config,
 }
+
+/**
+ * A requested change to the managed broker secret (FIX7 P0-004-A). Distinct from "no request"
+ * (a `null` [SetupPersistenceRequest.brokerSecretChange], which omits the `BrokerSecret` stage
+ * entirely — e.g. an "advanced" externally-managed password file is in effect and the managed
+ * secret must not be touched): [Remove] still requests the stage so an intentionally-cleared
+ * password reliably deletes any stale managed secret rather than leaving it orphaned on disk.
+ */
+sealed interface BrokerSecretChange {
+    data class Set(val password: String) : BrokerSecretChange
+
+    data object Remove : BrokerSecretChange
+}
+
+/** Thrown (as a suppressed exception on the propagating [CancellationException]) when a
+ * cancelled setup save's rollback could not fully restore one stage (FIX7 P0-004-D). Carries
+ * enough detail for a caller to surface the one required cancellation diagnostic without
+ * converting the cancellation itself into a normal success/failure outcome. */
+class SetupRollbackException(
+    val stage: SetupPersistenceStage,
+    message: String,
+) : Exception(message)
 
 /**
  * A private identity to store as part of a setup save. Plaintext, wiped by its owner in a
@@ -41,6 +66,7 @@ class SetupPersistenceRequest(
     val preferences: AndroidAppPreferences,
     val replacementIdentity: IdentityReplacement?,
     val authorizedPublicIdentityToAdd: String?,
+    val brokerSecretChange: BrokerSecretChange? = null,
 )
 
 sealed interface SetupRollbackStageResult {
@@ -77,6 +103,7 @@ sealed interface SetupPersistenceResult {
 class SetupPersistenceCoordinator(
     private val configRepository: ConfigRepository,
     private val identityRepository: IdentityRepository,
+    private val brokerSecretRepository: BrokerSecretRepository,
     private val loadPreferences: suspend () -> AndroidAppPreferences,
     private val persistPreferences: suspend (AndroidAppPreferences) -> Result<Unit>,
 ) {
@@ -84,11 +111,16 @@ class SetupPersistenceCoordinator(
 
     private class SetupSnapshot(
         val identity: IdentityStorageSnapshot,
+        val brokerSecret: ExactFileSnapshot,
         val setupInput: SetupInputSnapshot,
         val configExisted: Boolean,
         val configContents: String,
         val preferences: AndroidAppPreferences,
-    )
+    ) {
+        /** Broker secret bytes are the only secret this snapshot holds; identity plaintext never
+         * appears here since [IdentityStorageSnapshot] only stores the encrypted/public files. */
+        fun wipeSecrets() = brokerSecret.wipe()
+    }
 
     suspend fun persist(request: SetupPersistenceRequest): SetupPersistenceResult =
         mutex.withLock {
@@ -106,24 +138,42 @@ class SetupPersistenceCoordinator(
                 }
 
             val committed = mutableListOf<SetupPersistenceStage>()
-            for (stage in requestedStages(request)) {
-                val result = applyStage(stage, request)
-                if (result.isFailure) {
-                    return@withLock SetupPersistenceResult.Failed(
-                        failedStage = stage,
-                        reason = safeReason(result.exceptionOrNull(), "Failed to persist setup"),
-                        rollback = rollback(snapshot, committed),
-                    )
+            try {
+                for (stage in requestedStages(request)) {
+                    val result = applyStage(stage, request)
+                    if (result.isFailure) {
+                        return@withLock SetupPersistenceResult.Failed(
+                            failedStage = stage,
+                            reason = safeReason(result.exceptionOrNull(), "Failed to persist setup"),
+                            // FIX7 P0-004-C: wrapped in NonCancellable so an ordinary-failure
+                            // rollback still runs to completion even if the caller's scope is
+                            // concurrently cancelled (e.g. the user navigates away) while it runs.
+                            rollback = withContext(NonCancellable) { rollback(snapshot, committed) },
+                        )
+                    }
+                    committed += stage
                 }
-                committed += stage
+                SetupPersistenceResult.Success(committed.toList())
+            } catch (cancelled: CancellationException) {
+                // FIX7 P0-004-D: a cancellation mid-transaction must roll back every stage
+                // already committed before propagating — otherwise a cancelled save silently
+                // leaves live storage in a partially-mutated state. Rollback runs under
+                // NonCancellable so the already-cancelled scope cannot abort it partway through.
+                val rollbackResults = withContext(NonCancellable) { rollback(snapshot, committed) }
+                rollbackResults.filterIsInstance<SetupRollbackStageResult.Failure>().forEach { failure ->
+                    cancelled.addSuppressed(SetupRollbackException(failure.stage, failure.reason))
+                }
+                throw cancelled
+            } finally {
+                snapshot.wipeSecrets()
             }
-            SetupPersistenceResult.Success(committed)
         }
 
     private fun requestedStages(request: SetupPersistenceRequest): List<SetupPersistenceStage> =
         buildList {
             if (request.replacementIdentity != null) add(SetupPersistenceStage.Identity)
             if (request.authorizedPublicIdentityToAdd != null) add(SetupPersistenceStage.AuthorizedKeys)
+            if (request.brokerSecretChange != null) add(SetupPersistenceStage.BrokerSecret)
             add(SetupPersistenceStage.SetupInput)
             add(SetupPersistenceStage.Preferences)
             add(SetupPersistenceStage.Config)
@@ -132,6 +182,7 @@ class SetupPersistenceCoordinator(
     private suspend fun captureSnapshot(): SetupSnapshot =
         SetupSnapshot(
             identity = identityRepository.captureStorageSnapshot(),
+            brokerSecret = brokerSecretRepository.captureSnapshot().getOrThrow(),
             setupInput = captureSetupInputSnapshot(configRepository.setupInputFileForSnapshot),
             configExisted = configRepository.configFileExists,
             configContents = configRepository.readConfig(),
@@ -153,6 +204,12 @@ class SetupPersistenceCoordinator(
                     val line =
                         requireNotNull(request.authorizedPublicIdentityToAdd) { "AuthorizedKeys stage requires a line" }
                     identityRepository.appendAuthorizedPublicIdentity(line).getOrThrow()
+                }
+                SetupPersistenceStage.BrokerSecret -> {
+                    val change =
+                        requireNotNull(request.brokerSecretChange) { "BrokerSecret stage requires a change" }
+                    val password = if (change is BrokerSecretChange.Set) change.password else null
+                    brokerSecretRepository.persist(password).getOrThrow()
                 }
                 SetupPersistenceStage.SetupInput -> configRepository.saveSetupInput(request.setupInput)
                 SetupPersistenceStage.Preferences -> persistPreferences(request.preferences).getOrThrow()
@@ -189,6 +246,8 @@ class SetupPersistenceCoordinator(
             // idempotent.
             SetupPersistenceStage.Identity, SetupPersistenceStage.AuthorizedKeys ->
                 identityRepository.restoreStorageSnapshot(snapshot.identity)
+            SetupPersistenceStage.BrokerSecret ->
+                brokerSecretRepository.restore(snapshot.brokerSecret).getOrThrow()
             SetupPersistenceStage.SetupInput ->
                 restoreSetupInputSnapshot(configRepository.setupInputFileForSnapshot, snapshot.setupInput)
             SetupPersistenceStage.Preferences -> persistPreferences(snapshot.preferences).getOrThrow()

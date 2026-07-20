@@ -272,6 +272,58 @@ class ConfigurationMutationIntegrationTest {
     }
 
     @Test
+    fun globalAdmissionPreventsSetupFromRacingImportForwardAndReset() {
+        // FIX7 P0-004-F: consolidates the pairwise proofs above into one test showing a single
+        // in-flight SetupSave rejects all three other operations, not just one neighbor.
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val deps = createDeps(GatedConfigRepository(app, entered, release))
+            val setup = buildValidSetupHarness(deps)
+            val importExportViewModel = ImportExportViewModel(deps)
+            val forwardsViewModel = ForwardsViewModel(deps)
+            val settingsViewModel = SettingsViewModel(deps)
+
+            setup.controller.saveAndApplyConfig()
+            withTimeout(5_000) { entered.await() }
+            assertEquals(
+                ConfigurationOperation.SetupSave,
+                deps.configurationMutationCoordinator.activeOperationForTest(),
+            )
+
+            importExportViewModel.importConfig()
+            val importFailure =
+                withTimeout(5_000) { awaitNonNull { importExportViewModel.state.value.lastOperationFailure } }
+            assertEquals("configuration_operation_busy", importFailure.code)
+            assertTrue(importFailure.message.contains("SetupSave"))
+
+            forwardsViewModel.saveForward(
+                ForwardConfig(
+                    id = "racer",
+                    name = "racer",
+                    localPort = 9292,
+                    remoteForwardId = "racer",
+                    enabled = true,
+                ),
+            )
+            val forwardFailure = withTimeout(5_000) { awaitNonNull { forwardsViewModel.lastOperationFailure.value } }
+            assertEquals("configuration_operation_busy", forwardFailure.code)
+            assertTrue(forwardFailure.message.contains("SetupSave"))
+
+            settingsViewModel.resetConfiguration()
+            val resetFailure =
+                withTimeout(5_000) { awaitNonNull { settingsViewModel.uiState.value.lastOperationFailure } }
+            assertEquals("configuration_operation_busy", resetFailure.code)
+            assertTrue(resetFailure.message.contains("SetupSave"))
+
+            release.complete(Unit)
+            withTimeout(5_000) {
+                awaitNonNull { setup.stateRef.get().saveResult ?: setup.stateRef.get().errorMessage }
+            }
+        }
+    }
+
+    @Test
     fun laterOperationUsesFreshStateAfterFirstOperationCompletes() {
         runBlocking {
             val deps = createDeps(ConfigRepository(app))

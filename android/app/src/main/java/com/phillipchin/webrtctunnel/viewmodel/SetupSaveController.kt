@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.phillipchin.webrtctunnel.TunnelForegroundService
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.BrokerSecretChange
 import com.phillipchin.webrtctunnel.data.CandidateCleanupException
 import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
 import com.phillipchin.webrtctunnel.data.ConfigurationOperation
@@ -12,6 +13,7 @@ import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinator
 import com.phillipchin.webrtctunnel.data.SetupPersistenceRequest
 import com.phillipchin.webrtctunnel.data.SetupPersistenceResult
+import com.phillipchin.webrtctunnel.data.SetupRollbackException
 import com.phillipchin.webrtctunnel.data.SetupRollbackStageResult
 import com.phillipchin.webrtctunnel.data.ValidationWorkspaceRenderInputs
 import com.phillipchin.webrtctunnel.data.renderOfferConfigForValidationWorkspace
@@ -64,6 +66,7 @@ class SetupSaveController(
         SetupPersistenceCoordinator(
             configRepository = deps.configRepository,
             identityRepository = deps.identityRepository,
+            brokerSecretRepository = deps.brokerSecretRepository,
             loadPreferences = loadPreferences,
             persistPreferences = persistPreferences,
         )
@@ -140,11 +143,16 @@ class SetupSaveController(
         val current = access.state()
         // P0-001-B: rethrow CancellationException rather than folding it into a visible save
         // error (the old enclosing runCatching reported cancellation as a failure). Only real
-        // errors become an errorMessage; a cancelled save reports neither success nor failure.
+        // errors become an errorMessage; a cancelled save reports neither success nor failure —
+        // except the one required diagnostic (FIX7 P0-004-E) when the coordinator's own
+        // cancellation-path rollback could not fully restore an earlier stage: that is not a
+        // normal save success/failure, just a durable heads-up that live storage may need
+        // re-running setup to fully repair.
         val outcome =
             try {
                 Result.success(validateAndCommit(current))
             } catch (cancelled: CancellationException) {
+                reportRollbackIncompleteIfPresent(cancelled, current)
                 throw cancelled
             } catch (error: Exception) {
                 Result.failure(error)
@@ -168,6 +176,33 @@ class SetupSaveController(
                 access.applyState(current.copy(errorMessage = text, saveResult = null))
                 false
             },
+        )
+    }
+
+    /**
+     * FIX7 P0-004-E: a cancelled save reports no normal success/failure snackbar — except this
+     * one required diagnostic when [SetupPersistenceCoordinator]'s own cancellation-path rollback
+     * (attached as [SetupRollbackException]s suppressed on [cancelled]) could not fully restore
+     * an earlier stage. Called synchronously before the cancellation propagates: [access]'s
+     * `applyState` is a plain (non-suspend) callback, so it is safe to invoke here even though the
+     * coroutine is already being cancelled.
+     */
+    private fun reportRollbackIncompleteIfPresent(
+        cancelled: CancellationException,
+        current: SetupWizardState,
+    ) {
+        val incompleteStages =
+            cancelled.suppressedExceptions.filterIsInstance<SetupRollbackException>().map { it.stage }
+        if (incompleteStages.isEmpty()) {
+            return
+        }
+        access.applyState(
+            current.copy(
+                errorMessage =
+                    "Setup was cancelled and could not be fully rolled back " +
+                        "(setup_cancelled_rollback_incomplete): $incompleteStages",
+                saveResult = null,
+            ),
         )
     }
 
@@ -300,12 +335,13 @@ class SetupSaveController(
     }
 
     /**
-     * FIX7 P0-003-D/P0-003-B: commits the setup save. The broker secret is persisted directly
-     * here (not yet its own coordinator stage with rollback — that upgrade is P0-004-A's scope),
-     * positioned before the coordinator so the config committed next can reference it. Identity
-     * and authorized-key mutations now flow through the coordinator's existing Identity/
-     * AuthorizedKeys stages (previously bypassed by writing them live pre-validation) — no
-     * outer identity snapshot/restore is needed here because nothing is written live until this
+     * FIX7 P0-003-D/P0-004-A: commits the setup save through the transactional coordinator in
+     * one call. The broker secret is now its own `BrokerSecret` stage (positioned before
+     * `SetupInput`/`Preferences`/`Config`, per the coordinator's fixed order) rather than a
+     * direct pre-coordinator write, so a later stage's failure rolls it back along with
+     * identity/authorized-keys instead of leaving it committed. Identity and authorized-key
+     * mutations flow through the coordinator's Identity/AuthorizedKeys stages — no outer
+     * identity snapshot/restore is needed here because nothing is written live until this
      * point, and the coordinator captures its own snapshot and rolls back on failure.
      */
     private suspend fun commitSetup(
@@ -314,15 +350,6 @@ class SetupSaveController(
         identity: ResolvedIdentity,
         authorizedLine: String?,
     ) {
-        if (input.brokerPasswordFile.isBlank() && input.brokerPassword.isNotBlank()) {
-            deps.brokerSecretRepository.persist(input.brokerPassword).getOrElse { error ->
-                saveError(
-                    "Failed to persist broker password: " +
-                        SensitiveDataRedactor.redactText(error.message ?: "unknown error"),
-                    redact = true,
-                )
-            }
-        }
         val existing = loadPreferences()
         val request =
             SetupPersistenceRequest(
@@ -340,6 +367,18 @@ class SetupSaveController(
                         null
                     },
                 authorizedPublicIdentityToAdd = authorizedLine,
+                // FIX7 P0-004-A: an "advanced" externally-managed password file means the
+                // managed secret must not be touched at all (stage omitted); otherwise the
+                // stage is always requested — including Remove — so an intentionally-cleared
+                // password reliably deletes a stale managed secret rather than orphaning it.
+                brokerSecretChange =
+                    if (input.brokerPasswordFile.isNotBlank()) {
+                        null
+                    } else if (input.brokerPassword.isNotBlank()) {
+                        BrokerSecretChange.Set(input.brokerPassword)
+                    } else {
+                        BrokerSecretChange.Remove
+                    },
             )
         val result = withContext(ioDispatcher) { persistence.persist(request) }
         if (result is SetupPersistenceResult.Failed) {

@@ -20,6 +20,10 @@ private const val BROKER_SECRET_TAG = "BrokerSecretRepository"
 class BrokerSecretRepository(
     context: Context,
     private val atomicReplace: (File, ByteArray) -> Unit = ::atomicReplaceBrokerSecret,
+    // Same testability seam as [atomicReplace]: lets a test observe (and later zero-check) the
+    // exact byte array a snapshot captured, without a filesystem trick — used to prove a
+    // secret-bearing snapshot's bytes are wiped once a transaction finishes (FIX7 P0-004-F).
+    private val readBytes: (File) -> ByteArray = File::readBytes,
 ) {
     private val lock = Any()
     private val passwordFile = File(context.filesDir, "runtime/mqtt_password.txt")
@@ -30,7 +34,22 @@ class BrokerSecretRepository(
      * before rendering a config that references it. */
     val path: String = passwordFile.absolutePath
 
-    fun captureSnapshot(): Result<ExactFileSnapshot> = synchronized(lock) { captureExactFileSnapshot(passwordFile) }
+    fun captureSnapshot(): Result<ExactFileSnapshot> =
+        synchronized(lock) {
+            try {
+                Result.success(
+                    if (passwordFile.exists()) {
+                        ExactFileSnapshot(existed = true, bytes = readBytes(passwordFile))
+                    } else {
+                        ExactFileSnapshot(existed = false, bytes = null)
+                    },
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
+        }
 
     /** Writes [password] as the managed secret, or removes it entirely when null/blank (the
      * "no password file" state). Result must be consumed — a discarded failure here would let a

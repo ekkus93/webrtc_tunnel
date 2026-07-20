@@ -246,6 +246,138 @@ class SetupSaveControllerTest {
         )
     }
 
+    // -- FIX7 P0-004-F: plaintext identity wipe, one focused test per distinct trigger point --
+
+    @Test
+    fun plaintextIdentityIsWipedOnSetupSuccess() {
+        val sentinel = "P0-004-SENTINEL-SUCCESS-1234567890ABCDEF".toByteArray()
+        val (identityRepo, trackedSentinel) = createTrackedIdentityRepo(sentinel)
+        val bridge =
+            RecordingBridge().apply {
+                privateIdentityValidationResult =
+                    IdentityValidationResult(
+                        valid = true,
+                        message = null,
+                        peerId = "android-phone",
+                        canonicalPublicIdentity = "canon-pub",
+                        canonicalPrivateIdentity = "canon-private",
+                    )
+                validationResult = ValidationResult(true, null)
+            }
+        val deps = createDeps(identityRepo = identityRepo, bridge = bridge)
+        val viewModel = SetupViewModel(deps)
+        setupValidState(viewModel, deps)
+
+        viewModel.save.saveAndApplyConfig()
+        val state = awaitState(viewModel) { it.saveResult != null }
+
+        assertTrue("save must succeed: ${state.errorMessage}", state.saveResult != null)
+        assertTrue(
+            "success: plaintext identity buffer must be zeroed",
+            trackedSentinel.all { it == 0.toByte() },
+        )
+    }
+
+    @Test
+    fun plaintextIdentityIsWipedOnValidationFailure() {
+        val sentinel = "P0-004-SENTINEL-VALIDATION-1234567890ABCD".toByteArray()
+        val (identityRepo, trackedSentinel) = createTrackedIdentityRepo(sentinel)
+        val bridge =
+            RecordingBridge().apply {
+                privateIdentityValidationResult =
+                    IdentityValidationResult(
+                        valid = true,
+                        message = null,
+                        peerId = "android-phone",
+                        canonicalPublicIdentity = "canon-pub",
+                        canonicalPrivateIdentity = "canon-private",
+                    )
+                // The candidate config fails native validation (not the identity check itself).
+                validationResult = ValidationResult(false, "forced validation failure")
+            }
+        val deps = createDeps(identityRepo = identityRepo, bridge = bridge)
+        val viewModel = SetupViewModel(deps)
+        setupValidState(viewModel, deps)
+
+        viewModel.save.saveAndApplyConfig()
+        val state = awaitState(viewModel) { it.errorMessage != null }
+
+        assertTrue(state.errorMessage != null)
+        assertTrue(
+            "validation failure: plaintext identity buffer must be zeroed",
+            trackedSentinel.all { it == 0.toByte() },
+        )
+    }
+
+    @Test
+    fun plaintextIdentityIsWipedOnPersistenceFailure() {
+        val sentinel = "P0-004-SENTINEL-PERSISTFAIL-1234567890AB".toByteArray()
+        val (identityRepo, trackedSentinel) = createTrackedIdentityRepo(sentinel)
+        val bridge =
+            RecordingBridge().apply {
+                privateIdentityValidationResult =
+                    IdentityValidationResult(
+                        valid = true,
+                        message = null,
+                        peerId = "android-phone",
+                        canonicalPublicIdentity = "canon-pub",
+                        canonicalPrivateIdentity = "canon-private",
+                    )
+                validationResult = ValidationResult(true, null)
+            }
+        val deps = createDeps(identityRepo = identityRepo, bridge = bridge, configRepo = DiskFullConfig(app))
+        val viewModel = SetupViewModel(deps)
+        setupValidState(viewModel, deps)
+
+        viewModel.save.saveAndApplyConfig()
+        val state = awaitState(viewModel) { it.errorMessage != null }
+
+        assertTrue(
+            "persistence must fail and roll back: ${state.errorMessage}",
+            state.errorMessage?.contains("setup_persistence_failed") == true ||
+                state.errorMessage?.contains("setup_rollback_incomplete") == true,
+        )
+        assertTrue(
+            "persistence failure: plaintext identity buffer must be zeroed",
+            trackedSentinel.all { it == 0.toByte() },
+        )
+    }
+
+    @Test
+    fun plaintextIdentityIsWipedOnCancellation() {
+        val sentinel = "P0-004-SENTINEL-CANCEL-1234567890ABCDEF12".toByteArray()
+        val (identityRepo, trackedSentinel) = createTrackedIdentityRepo(sentinel)
+        val bridge =
+            RecordingBridge().apply {
+                privateIdentityValidationResult =
+                    IdentityValidationResult(
+                        valid = true,
+                        message = null,
+                        peerId = "android-phone",
+                        canonicalPublicIdentity = "canon-pub",
+                        canonicalPrivateIdentity = "canon-private",
+                    )
+                validationResult = ValidationResult(true, null)
+            }
+        val deps = createDeps(identityRepo = identityRepo, bridge = bridge, configRepo = CancellingConfig(app))
+        val viewModel = SetupViewModel(deps)
+        setupValidState(viewModel, deps)
+
+        viewModel.save.saveAndApplyConfig()
+        runBlocking {
+            repeat(SETTLE_CYCLES) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                delay(SETTLE_DELAY_MS)
+            }
+        }
+
+        assertEquals(null, viewModel.state.value.saveResult)
+        assertTrue(
+            "cancellation: plaintext identity buffer must be zeroed",
+            trackedSentinel.all { it == 0.toByte() },
+        )
+    }
+
     @Test
     fun missingStoredIdentityReportsMissing() {
         val bridge = RecordingBridge()
@@ -417,6 +549,43 @@ class SetupSaveControllerTest {
         val state = viewModel.state.value
         assertEquals(null, state.errorMessage)
         assertEquals(null, state.saveResult)
+    }
+
+    @Test
+    fun cancellationNeverReportsConfigurationSavedOrOrdinarySaveFailure() {
+        // FIX7 P0-004-D/E: cancellation during the LAST stage (Config) must roll back every
+        // earlier stage (Identity, AuthorizedKeys, SetupInput, Preferences) that already
+        // committed — proving the coordinator's cancellation-path rollback, not just that the
+        // save reports neither success nor failure.
+        listOf("identity.enc", "identity.pub", "authorized_keys").forEach { File(app.filesDir, it).delete() }
+        val (viewModel, _) = wizardReachingConfigWrite(CancellingConfig(app))
+        val identityExistedBefore = File(app.filesDir, "identity.enc").exists()
+        val authorizedKeysExistedBefore = File(app.filesDir, "authorized_keys").exists()
+
+        viewModel.save.saveAndApplyConfig()
+        runBlocking {
+            repeat(SETTLE_CYCLES) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                delay(SETTLE_DELAY_MS)
+            }
+        }
+
+        val state = viewModel.state.value
+        assertTrue(
+            "a cancelled save must never report ordinary success or failure: ${state.errorMessage}",
+            state.saveResult == null &&
+                (state.errorMessage == null || state.errorMessage!!.contains("setup_cancelled_rollback_incomplete")),
+        )
+        assertEquals(
+            "identity committed before the cancelled Config stage must be rolled back",
+            identityExistedBefore,
+            File(app.filesDir, "identity.enc").exists(),
+        )
+        assertEquals(
+            "authorized_keys committed before the cancelled Config stage must be rolled back",
+            authorizedKeysExistedBefore,
+            File(app.filesDir, "authorized_keys").exists(),
+        )
     }
 
     private companion object {
