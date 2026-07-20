@@ -52,6 +52,7 @@ class TransactionalResetCoordinatorTest {
     private class FakeForwardsStore(
         val initialForwards: List<ForwardConfig> = emptyList(),
         val throwOnSave: Boolean = false,
+        val error: Throwable = IOException("Simulated save failure"),
     ) : ForwardsStore {
         var saveCallCount = 0
         var loadedForwards = initialForwards
@@ -61,7 +62,7 @@ class TransactionalResetCoordinatorTest {
         override fun saveForwards(forwards: List<ForwardConfig>) {
             saveCallCount++
             if (throwOnSave) {
-                throw IOException("Simulated save failure")
+                throw error
             }
             loadedForwards = forwards
         }
@@ -647,6 +648,18 @@ class TransactionalResetCoordinatorTest {
             if (callCount == failOnCallNumber) throw error
             super.saveSetupInput(input)
         }
+
+        // FIX7 P0-005-A: rollback-restore of setup-input now goes through this method instead of
+        // saveSetupInput (which cannot represent "absent"), so a fake targeting the rollback call
+        // (call 2 in every test using this class) must override this one instead.
+        override fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+            callCount++
+            if (callCount == failOnCallNumber) {
+                if (error is CancellationException) throw error
+                return Result.failure(error as? Exception ?: Exception(error))
+            }
+            return super.restoreSetupInputFileSnapshot(snapshot)
+        }
     }
 
     @Test
@@ -743,6 +756,43 @@ class TransactionalResetCoordinatorTest {
             caught != null,
         )
     }
+
+    @Test
+    fun cancellationDuringForwardsResetRestoresSetupInputAndConfig() =
+        runBlocking {
+            // FIX7 P0-005-C/E: a cancellation at the LAST reset stage (Forwards) must roll back
+            // the already-committed Config and SetupInput stages before propagating, exactly
+            // like an ordinary Forwards failure already does.
+            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+            val fakeStore =
+                FakeForwardsStore(
+                    initialForwards = forwardsRepo.current(),
+                    throwOnSave = true,
+                    error = CancellationException("cancelled during forwards reset"),
+                )
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val cancellingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
+
+            var caught: CancellationException? = null
+            try {
+                cancellingCoordinator.resetConfiguration()
+            } catch (cancelled: CancellationException) {
+                caught = cancelled
+            }
+
+            assertTrue("cancellation during Forwards must propagate", caught != null)
+            assertEquals(
+                "config committed before the cancelled Forwards stage must be rolled back",
+                "format = \"prior\"\n",
+                configRepo.readConfig(),
+            )
+            assertEquals(
+                "setup input committed before the cancelled Forwards stage must be rolled back",
+                "broker.prior",
+                configRepo.loadSetupInputResult().getOrThrow().brokerHost,
+            )
+        }
 
     // P1-004: true early-stage failure tests — every prior test that claimed to prove
     // "stops immediately" actually only failed on the final (Forwards) stage. These

@@ -90,6 +90,18 @@ class TransactionalResetHardeningTest {
             if (calls == throwOnCall) throw error
             super.saveSetupInput(input)
         }
+
+        // FIX7 P0-005-A: rollback-restore of setup-input now goes through this method instead of
+        // saveSetupInput (which cannot represent "absent"); this fake's call 2 (the rollback
+        // restore in every test using it) must fail here instead.
+        override fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+            calls++
+            return if (calls == throwOnCall) {
+                Result.failure(error as? Exception ?: Exception(error))
+            } else {
+                super.restoreSetupInputFileSnapshot(snapshot)
+            }
+        }
     }
 
     private class ConfigRedactionFailRepo(context: android.content.Context) : ConfigRepository(context) {

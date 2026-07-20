@@ -1,10 +1,12 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import android.os.Looper
+import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.ResetResult
 import com.phillipchin.webrtctunnel.data.ResetStage
 import com.phillipchin.webrtctunnel.data.RollbackStageResult
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -168,6 +170,28 @@ class SettingsViewModelTest : AppViewModelTestBase() {
             assertTrue("expected the visible reset code, got: $message", message.startsWith("[reset_failed]"))
             assertTrue("the failure detail must be preserved", message.contains("Reset failed at"))
             assertTrue("the underlying failure reason must not be discarded", message.contains(":"))
+        }
+
+    @Test
+    fun resetCancellationDoesNotReportSuccessOrOrdinaryFailure() =
+        runBlocking {
+            // FIX7 P0-005-D: a cancelled reset must report no normal success/failure snackbar or
+            // durable operation-failure state.
+            val cancellingConfigRepo =
+                object : ConfigRepository(app) {
+                    override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+                        throw CancellationException("cancelled during config reset")
+                }
+            val cancellingDeps = createTestDeps(cancellingConfigRepo)
+            val viewModel = SettingsViewModel(cancellingDeps)
+
+            viewModel.resetConfiguration()
+            repeat(20) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                yield()
+            }
+
+            assertEquals(null, viewModel.uiState.value.lastOperationFailure)
         }
 
     @Test

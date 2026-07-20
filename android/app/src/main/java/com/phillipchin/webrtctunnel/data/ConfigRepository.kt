@@ -27,40 +27,6 @@ import java.nio.file.StandardCopyOption
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
 
-/**
- * Snapshot of the setup-input file for transactional rollback (FIX6 P0-003). Distinguishes
- * an absent file from a blank/present one so restore can recreate the exact prior state.
- */
-data class SetupInputSnapshot(
-    val existed: Boolean,
-    val contents: String?,
-)
-
-/**
- * FIX6 P0-003: capture the exact prior setup-input file state (distinguishing absent from
- * blank/corrupt) so a failed setup transaction can restore it precisely. Top-level (not a
- * [ConfigRepository] member) to keep that class under detekt's TooManyFunctions threshold.
- */
-fun captureSetupInputSnapshot(setupInputFile: File): SetupInputSnapshot =
-    if (setupInputFile.exists()) {
-        SetupInputSnapshot(existed = true, contents = setupInputFile.readText())
-    } else {
-        SetupInputSnapshot(existed = false, contents = null)
-    }
-
-/** Restore setup-input to a captured [snapshot], recreating the absent state exactly. */
-fun restoreSetupInputSnapshot(
-    setupInputFile: File,
-    snapshot: SetupInputSnapshot,
-) {
-    if (snapshot.existed) {
-        setupInputFile.parentFile?.mkdirs()
-        setupInputFile.writeText(snapshot.contents.orEmpty())
-    } else {
-        setupInputFile.delete()
-    }
-}
-
 open class ConfigRepository(private val context: Context) {
     private val configFile: File get() = File(context.filesDir, "config.toml")
     private val setupInputFile: File get() = File(context.filesDir, "setup_input.json")
@@ -168,13 +134,6 @@ open class ConfigRepository(private val context: Context) {
     }
 
     /**
-     * Write config contents through the atomic writer so all writes are serialized.
-     * Routes through [writeConfigAtomically] to prevent direct file writes that bypass
-     * the mutex serialization (P1-007).
-     */
-    suspend fun writeConfig(contents: String): Result<Unit> = writeConfigAtomically(contents)
-
-    /**
      * P1-007: Atomic write with unique temp file under [writeMutex].
      * All config writers go through this single serialized boundary.
      * Returns Result.success(Unit) on success, Result.failure(...) on failure.
@@ -222,6 +181,16 @@ open class ConfigRepository(private val context: Context) {
     internal val setupInputFileForSnapshot: File get() = setupInputFile
 
     /**
+     * FIX7 P0-005-A: restore `setup_input.json` to an exact prior [ExactFileSnapshot] using real
+     * atomic replacement (or checked deletion when it was absent) rather than
+     * [saveSetupInput]'s re-derived write, which cannot represent "absent". open so tests can
+     * inject a rollback-restore failure the same way every other reset stage's restore path can.
+     */
+    @CheckResult
+    internal open fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
+        restoreExactFileSnapshot("setup input", setupInputFile, snapshot, ::setupInputAtomicReplace)
+
+    /**
      * Load the saved setup draft, distinguishing a corrupt file (failure) from a
      * legitimately missing one (success with fresh defaults). A corrupt existing draft must
      * NOT silently reset to defaults — callers surface the failure so the user can repair or
@@ -256,6 +225,15 @@ open class ConfigRepository(private val context: Context) {
             ),
         )
 }
+
+/**
+ * Write config contents through the atomic writer so all writes are serialized. Routes through
+ * [ConfigRepository.writeConfigAtomically] to prevent direct file writes that bypass the mutex
+ * serialization (P1-007). An extension function (not a class member) so it doesn't count against
+ * [ConfigRepository]'s detekt TooManyFunctions threshold — call sites (`configRepository
+ * .writeConfig(...)`) are unaffected, since Kotlin resolves member and extension calls identically.
+ */
+suspend fun ConfigRepository.writeConfig(contents: String): Result<Unit> = writeConfigAtomically(contents)
 
 /**
  * P1-006: file operations for the atomic config write, injectable so the temp-cleanup-inside-Result

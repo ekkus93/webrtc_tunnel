@@ -9,9 +9,11 @@ import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
 import com.phillipchin.webrtctunnel.data.ConfigurationOperation
 import com.phillipchin.webrtctunnel.data.OperationFailure
 import com.phillipchin.webrtctunnel.data.ResetResult
+import com.phillipchin.webrtctunnel.data.ResetRollbackException
 import com.phillipchin.webrtctunnel.data.RollbackStageResult
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -175,17 +177,28 @@ class SettingsViewModel(
     // mutation must also be rejected while a reset is in flight, and vice versa.
     fun resetConfiguration() {
         viewModelScope.launch {
-            when (
-                val admission =
-                    deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.ConfigurationReset) {
-                        withContext(deps.dispatchers.io) { deps.transactionalResetCoordinator.resetConfiguration() }
+            // FIX7 P0-005-C/D: a cancelled reset reports no normal success/failure — except the
+            // one required diagnostic when TransactionalResetCoordinator's own cancellation-path
+            // rollback (attached as ResetRollbackExceptions suppressed on the cancellation)
+            // could not fully restore an earlier stage.
+            try {
+                when (
+                    val admission =
+                        deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.ConfigurationReset) {
+                            withContext(deps.dispatchers.io) { deps.transactionalResetCoordinator.resetConfiguration() }
+                        }
+                ) {
+                    is ConfigurationAdmission.Busy -> {
+                        val message = "Another configuration operation is already in progress: ${admission.active}"
+                        publishOperationFailure("configuration_operation_busy", message)
                     }
-            ) {
-                is ConfigurationAdmission.Busy -> {
-                    val message = "Another configuration operation is already in progress: ${admission.active}"
-                    publishOperationFailure("configuration_operation_busy", message)
+                    is ConfigurationAdmission.Completed -> handleResetResult(admission.value)
                 }
-                is ConfigurationAdmission.Completed -> handleResetResult(admission.value)
+            } catch (cancelled: CancellationException) {
+                resetCancelledRollbackIncompleteMessage(cancelled)?.let { message ->
+                    publishOperationFailure("reset_cancelled_rollback_incomplete", message)
+                }
+                throw cancelled
             }
         }
     }
@@ -245,3 +258,18 @@ internal fun resetFailureVisibleCode(result: ResetResult.Failed): String =
     } else {
         "reset_failed"
     }
+
+/**
+ * FIX7 P0-005-D: the one required cancellation diagnostic — null when the cancelled reset's own
+ * rollback fully restored every earlier stage (no message to show), or a durable message when
+ * [TransactionalResetCoordinator]'s cancellation-path rollback (attached as [ResetRollbackException]s
+ * suppressed on [cancelled]) could not. Top-level (not a [SettingsViewModel] member) to keep that
+ * class under detekt's TooManyFunctions threshold; also testable without the ViewModel harness.
+ */
+internal fun resetCancelledRollbackIncompleteMessage(cancelled: CancellationException): String? {
+    val incompleteStages = cancelled.suppressedExceptions.filterIsInstance<ResetRollbackException>().map { it.stage }
+    if (incompleteStages.isEmpty()) {
+        return null
+    }
+    return "Reset was cancelled and could not be fully rolled back: $incompleteStages"
+}
