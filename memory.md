@@ -884,3 +884,74 @@ unexpected mapping → fails. Laptop's single native socket never trips this.
   (persistent toggle alone wasn't enough for the running session).
 - adb-over-USB is independent of the phone's radio, so `svc wifi disable; svc data enable`
   flips the WebRTC path to cellular while keeping adb + `adb forward`.
+
+## 2026-07-20 — Claude Haiku 4.5 — Full lint/test rerun, docker E2E rerun, and a real fix: E2E scripts had a stale forward id ("llama" vs app default "web-ui")
+
+Ran the full `lint-n-test` suite (Rust fmt/clippy/tests, `cd android && ./gradlew check`
+including `testDebugUnitTest`) on current `master` (tip `a9d01ae` at the time) — all green,
+no findings. Then reran the docker-backed E2E tiers documented in `tests/e2e/README.md`:
+`cargo test -p p2p-daemon --test real_broker_tunnel`, `tests/e2e/docker/run.sh`, and
+`tests/e2e/docker/stop_lifecycle.sh` — all PASS.
+
+### Android emulator E2E: several environment flakes, one real bug found
+
+Ran `tests/e2e/android_tunnel_e2e.sh` and `tests/e2e/android_tunnel_debug.sh` against a
+headless `Medium_Phone_API_36.0` emulator in this (sandboxed, resource-constrained) dev
+environment — not a physical device. Hit several **environment-specific flakes**, none of
+them app/code bugs:
+- systemUI ANR ("System UI isn't responding") right as the app launched, caused by the
+  emulator's software-rendered qemu process spiking to 350-450% CPU under host contention
+  from unrelated processes — blocked uiautomator from finding the Settings nav tab. Cleared
+  by `adb reboot` + letting host load settle before retrying.
+- The wizard's own Review-step swipe-then-tap-"Start Tunnel" occasionally missed (input
+  gesture timing), even though the identical code path had just worked in a prior run.
+- The 50-try loop in `android_generate_remote_identity()` (`lib/android_wizard.sh`) that
+  looks for a `p2pctl keygen` output with no `+`/`/` in the base64 fields failed once by
+  genuine bad luck (~4% chance per run, confirmed by manually running `p2pctl keygen` in a
+  loop) — not a keygen bug.
+- One run hit a transient DNS failure connecting to `broker.emqx.io` ("failed to lookup
+  address information") that resolved fine moments later on retry.
+
+None of these needed a code change; they were resolved by retrying / rebooting the
+emulator.
+
+### The real bug: false "data not delivered" from a stale test-harness forward id
+
+Multiple android-tunnel-e2e attempts reached a real WebRTC data channel (ICE/DTLS/SCTP all
+connected, `answer received tunnel PING; sending PONG` looping every 5s indefinitely) but
+the tunneled HTTP request never delivered the marker — `curl` got "Empty reply from
+server", not a timeout. This *looked* like it could be a new instance of the still-open
+2026-06-13/06-14 Android vnet × symmetric-NAT SCTP bug (heartbeat succeeding, data not
+flowing), so I dug in with `tests/e2e/android_tunnel_debug.sh`'s DEBUG-level answer logs
+(`docker logs -f`) instead of assuming.
+
+Root cause, confirmed from the logs: `answer received OPEN frame stream_id=1
+forward_id=web-ui`, but the answer's config (both `android_tunnel_e2e.sh` and
+`android_tunnel_debug.sh`) only defined `[[forwards]] id = "llama"` — a name left over from
+before the app's wizard default forward was renamed. Checked
+`android/app/src/main/java/com/phillipchin/webrtctunnel/data/ForwardsConfigStore.kt`: the
+app's actual current defaults are `ssh` (port 2222) and `web-ui` (port 8080) — `llama` does
+not exist anywhere in the current app. So every OPEN for the app's real forward hit
+`forward_table.target_for("web-ui", ...)` → `ForwardLookupError::UnknownForward` →
+`crates/p2p-tunnel/src/multiplex/answer.rs:145-155` sent a stream-local `unknown_forward`
+error back, the stream closed cleanly (no hang), and no target connection was ever
+attempted. Session-level PING/PONG kept succeeding throughout because it's independent of
+any specific forward.
+
+This confirms and closes the memory_summary.md-recorded open item ("Phone's forward id was
+left as `web-ui`... worth confirming/reverting") — the phone side was already correct; the
+test scripts were stale.
+
+**Fix** (commit `2591bc4`, pushed to `master`): changed `id = "llama"` → `id = "web-ui"` in
+both `tests/e2e/android_tunnel_e2e.sh` and `tests/e2e/android_tunnel_debug.sh` (plus the
+debug rig's status-banner text). Verified by rerunning `android_tunnel_e2e.sh`: **PASS** —
+marker delivered end-to-end through the emulator offer → dockerized answer, with the
+data-plane PING/PONG probe also confirmed round-tripping.
+
+### Does this touch the still-open Android SCTP/vnet/NAT bug?
+
+**No.** This was a test-harness config bug, not the tunnel/mux/webrtc code, and it
+reproduced in an emulator-to-local-Docker topology that the 2026-06-14 failure matrix
+already lists as passing. The primary unresolved bug (A54 vnet fallback vs. the remote
+answer-office's NAT) remains exactly as documented on 2026-06-13/06-14 — still unconfirmed
+either way by anything from today, still blocked on answer-office access.
