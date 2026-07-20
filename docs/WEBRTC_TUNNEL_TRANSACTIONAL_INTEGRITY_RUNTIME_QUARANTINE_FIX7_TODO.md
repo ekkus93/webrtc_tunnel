@@ -135,11 +135,11 @@ related tests
 
 ## P0-001-A — Create operation and admission types
 
-- [ ] Add `ConfigurationOperation` with `SetupSave`, `ConfigImport`, `ForwardMutation`, and `ConfigurationReset`.
-- [ ] Add `ConfigurationAdmission.Completed<T>` and `ConfigurationAdmission.Busy`.
-- [ ] Add `ConfigurationMutationCoordinator` using one `Mutex` and an `AtomicReference` for the active operation.
-- [ ] Make `tryRun` release the lock in `finally` for success, failure, fatal error, and cancellation.
-- [ ] Do not catch or normalize the operation block’s exception.
+- [x] Add `ConfigurationOperation` with `SetupSave`, `ConfigImport`, `ForwardMutation`, and `ConfigurationReset`. (5b0c4d4)
+- [x] Add `ConfigurationAdmission.Completed<T>` and `ConfigurationAdmission.Busy`. (5b0c4d4)
+- [x] Add `ConfigurationMutationCoordinator` using one `Mutex` and an `AtomicReference` for the active operation. (5b0c4d4)
+- [x] Make `tryRun` release the lock in `finally` for success, failure, fatal error, and cancellation. (5b0c4d4)
+- [x] Do not catch or normalize the operation block’s exception. (5b0c4d4)
 
 Target implementation:
 
@@ -196,7 +196,7 @@ class ConfigurationMutationCoordinator {
 
 ## P0-001-B — Wire as an `AppDependencies` body property
 
-- [ ] Add a lazy/body property; do not add a seventh constructor parameter.
+- [x] Add a lazy/body property; do not add a seventh constructor parameter. (5b0c4d4)
 
 ```kotlin
 val configurationMutationCoordinator: ConfigurationMutationCoordinator by lazy {
@@ -206,13 +206,13 @@ val configurationMutationCoordinator: ConfigurationMutationCoordinator by lazy {
 
 ## P0-001-C — Replace authoritative local operation admission
 
-- [ ] Setup save uses `ConfigurationOperation.SetupSave`.
-- [ ] Config import uses `ConfigurationOperation.ConfigImport`.
-- [ ] Forward mutation plus active-config regeneration uses `ConfigurationOperation.ForwardMutation` around the whole mutation/activation/rollback sequence.
-- [ ] Configuration reset uses `ConfigurationOperation.ConfigurationReset` around the whole reset transaction.
-- [ ] Do not release global admission between the forward repository mutation and config activation.
-- [ ] Do not release global admission between setup validation and setup commit; otherwise import/reset can change authoritative inputs after validation.
-- [ ] Existing local mutexes may remain only for unrelated local actions. Remove redundant ones when safe.
+- [x] Setup save uses `ConfigurationOperation.SetupSave`. (5b0c4d4)
+- [x] Config import uses `ConfigurationOperation.ConfigImport`. (5b0c4d4)
+- [x] Forward mutation plus active-config regeneration uses `ConfigurationOperation.ForwardMutation` around the whole mutation/activation/rollback sequence. (5b0c4d4)
+- [x] Configuration reset uses `ConfigurationOperation.ConfigurationReset` around the whole reset transaction. (5b0c4d4)
+- [x] Do not release global admission between the forward repository mutation and config activation. (5b0c4d4)
+- [x] Do not release global admission between setup validation and setup commit; otherwise import/reset can change authoritative inputs after validation. (5b0c4d4)
+- [x] Existing local mutexes may remain only for unrelated local actions. Remove redundant ones when safe. (5b0c4d4 — the export-only `ImportExportOps.exportMutex` is retained since exports are non-authoritative local actions; setup/forwards/import authoritative mutexes were removed)
 
 Busy mapping example:
 
@@ -226,37 +226,44 @@ private fun busyFailure(
     )
 ```
 
-- [ ] Every busy rejection updates durable state.
-- [ ] Snackbar may mirror the durable failure.
-- [ ] Import must no longer use `if (!operationMutex.tryLock()) return@launch`.
-- [ ] Setup and forwards must use the global active operation in their busy message, not only “already in progress.”
+- [x] Every busy rejection updates durable state. (5b0c4d4)
+- [x] Snackbar may mirror the durable failure. (5b0c4d4)
+- [x] Import must no longer use `if (!operationMutex.tryLock()) return@launch`. (5b0c4d4)
+- [x] Setup and forwards must use the global active operation in their busy message, not only “already in progress.” (5b0c4d4)
 
 ## P0-001-D — Tests
 
 Add `ConfigurationMutationCoordinatorTest.kt`:
 
-- [ ] `busyAdmissionReportsTheActiveOperation`
-- [ ] `operationFailureReleasesAdmission`
-- [ ] `operationCancellationReleasesAdmission`
-- [ ] `fatalErrorReleasesAdmissionAndStillPropagates`
-- [ ] `completedOperationReturnsValue`
+- [x] `busyAdmissionReportsTheActiveOperation` (5b0c4d4)
+- [x] `operationFailureReleasesAdmission` (5b0c4d4)
+- [x] `operationCancellationReleasesAdmission` (5b0c4d4)
+- [x] `fatalErrorReleasesAdmissionAndStillPropagates` (5b0c4d4)
+- [x] `completedOperationReturnsValue` (5b0c4d4)
 
 Integration tests:
 
-- [ ] `setupSaveBlocksConcurrentConfigImportAndImportReportsBusyDurably`
-- [ ] `configImportBlocksConcurrentForwardMutationAndForwardReportsBusyDurably`
-- [ ] `forwardActivationBlocksConcurrentResetAndResetReportsBusyDurably`
-- [ ] `resetBlocksConcurrentSetupSaveAndSetupReportsBusyDurably`
-- [ ] `laterOperationUsesFreshStateAfterFirstOperationCompletes`
+- [x] `setupSaveBlocksConcurrentConfigImportAndImportReportsBusyDurably` (5b0c4d4)
+- [x] `configImportBlocksConcurrentForwardMutationAndForwardReportsBusyDurably` (5b0c4d4)
+- [x] `forwardActivationBlocksConcurrentResetAndResetReportsBusyDurably` (5b0c4d4)
+- [x] `resetBlocksConcurrentSetupSaveAndSetupReportsBusyDurably` (5b0c4d4)
+- [x] `laterOperationUsesFreshStateAfterFirstOperationCompletes` (5b0c4d4)
 
 Use `CompletableDeferred` barriers. Do not use `Thread.sleep` or timing assertions.
 
+> Implementation note: integration tests use inline (Unconfined) test dispatchers, not
+> `realIoTestDispatchers()` — suspension on an unresolved `CompletableDeferred` yields control to
+> the caller regardless of dispatcher, so a real background-thread hop isn't needed for the
+> blocking technique, and inline dispatchers sidestep Robolectric's paused-Looper semantics for
+> `viewModelScope`-launched coroutines. `SetupSaveController` (constructed directly, not as a
+> `ViewModel`) keeps its own explicit `Dispatchers.IO` scope.
+
 ## Acceptance
 
-- [ ] No setup/import/forward/reset pair can overlap.
-- [ ] Busy rejection is visible and durable.
-- [ ] Admission always releases after cancellation/failure.
-- [ ] The entire multi-stage operation owns admission, not only one repository call.
+- [x] No setup/import/forward/reset pair can overlap. (5b0c4d4)
+- [x] Busy rejection is visible and durable. (5b0c4d4)
+- [x] Admission always releases after cancellation/failure. (5b0c4d4)
+- [x] The entire multi-stage operation owns admission, not only one repository call. (5b0c4d4)
 
 ---
 
