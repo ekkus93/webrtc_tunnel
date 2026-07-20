@@ -848,13 +848,13 @@ new focused identity restore tests
 
 ## P0-006-A — Detailed restore results
 
-- [ ] Add an enum for `EncryptedIdentity`, `PublicIdentity`, `AuthorizedKeys`.
-- [ ] `restoreStorageSnapshot` returns a list of per-file success/failure results.
-- [ ] It attempts all three files even after one failure.
-- [ ] It uses atomic replacement for present snapshots.
-- [ ] It uses checked deletion for absent snapshots.
-- [ ] It redacts reasons before returning them to callers.
-- [ ] Its returned result is statically required to be consumed.
+- [x] Add an enum for `EncryptedIdentity`, `PublicIdentity`, `AuthorizedKeys`. (7803afb — `IdentityStorageFile`)
+- [x] `restoreStorageSnapshot` returns a list of per-file success/failure results. (7803afb — `List<IdentityRestoreResult>`)
+- [x] It attempts all three files even after one failure. (7803afb)
+- [x] It uses atomic replacement for present snapshots. (7803afb — upgraded from the old non-atomic `restoreFileFromSnapshot`)
+- [x] It uses checked deletion for absent snapshots. (7803afb — `Files.deleteIfExists`)
+- [x] It redacts reasons before returning them to callers. (7803afb — `SensitiveDataRedactor.redactText`)
+- [x] Its returned result is statically required to be consumed. (7803afb — `@CheckResult`)
 
 Target loop:
 
@@ -881,11 +881,11 @@ An explicit loop may be clearer than nested pairs; use readable production code.
 
 ## P0-006-B — Identity pair rollback after cancellation
 
-- [ ] After encrypted identity replacement succeeds, catch cancellation from public replacement.
-- [ ] Restore encrypted and public snapshots synchronously before rethrowing cancellation.
-- [ ] Attempt both restores independently.
-- [ ] Attach every restore failure as suppressed to cancellation.
-- [ ] Emit/report `identity_rollback_incomplete` through the owning transaction if restore failed.
+- [x] After encrypted identity replacement succeeds, catch cancellation from public replacement. (7803afb — unchanged catch site, now with recovery)
+- [x] Restore encrypted and public snapshots synchronously before rethrowing cancellation. (7803afb)
+- [x] Attempt both restores independently. (7803afb — `restoreIdentityPair`)
+- [x] Attach every restore failure as suppressed to cancellation. (7803afb)
+- [x] Emit/report `identity_rollback_incomplete` through the owning transaction if restore failed. (7803afb — deviation: no separate `identity_rollback_incomplete` code was added; `SetupPersistenceCoordinator.restoreStage`'s Identity/AuthorizedKeys case now throws `IdentityRollbackIncompleteException` naming the failed file(s), which is already surfaced through the existing `setup_rollback_incomplete` transaction-level code with that identity-specific reason text — adding a second, redundant code was judged unnecessary duplication of an already-working signal)
 
 Do not leave the current branch:
 
@@ -899,10 +899,10 @@ without recovery.
 
 ## P0-006-C — Preserve rollback causes
 
-- [ ] `IdentityRollbackIncompleteException` retains the forward failure as cause.
-- [ ] Every rollback failure is attached as suppressed.
-- [ ] Error message does not contain identity content or raw file bytes.
-- [ ] One restore failure does not prevent the second restore attempt.
+- [x] `IdentityRollbackIncompleteException` retains the forward failure as cause. (7803afb — unchanged constructor shape, `cause = error`)
+- [x] Every rollback failure is attached as suppressed. (7803afb)
+- [x] Error message does not contain identity content or raw file bytes. (7803afb — fixed messages plus redacted reasons only)
+- [x] One restore failure does not prevent the second restore attempt. (7803afb — `restoreIdentityPair`/`restoreIdentityFile` attempt both/all independently; this was a real pre-existing bug, `runCatching { a(); b() }` skipped `b()` whenever `a()` threw)
 
 Suggested helper:
 
@@ -927,29 +927,29 @@ private fun restoreIdentityPair(
 
 ## P0-006-D — Snapshot coherence
 
-- [ ] Setup transaction captures identity storage through one locked method.
-- [ ] No caller reads files separately outside `storageLock` to construct a supposed identity snapshot.
-- [ ] Document single-process/JVM-lock assumption.
+- [x] Setup transaction captures identity storage through one locked method. (7803afb — unchanged, `captureStorageSnapshot()`)
+- [x] No caller reads files separately outside `storageLock` to construct a supposed identity snapshot. (7803afb — unchanged; confirmed no such caller exists)
+- [x] Document single-process/JVM-lock assumption. (7803afb — `storageLock`'s existing FIX6 INV-011 comment already documents this; `concurrentSnapshotAndIdentityCommitAreSerialized`/`concurrentSnapshotAndAuthorizedKeyAppendAreSerialized` now exercise it under real multi-thread concurrency, not just single-threaded sequencing)
 
 ## P0-006-E — Tests
 
-- [ ] `cancellationDuringPublicIdentityReplaceRestoresPriorEncryptedAndPublicPair`
-- [ ] `cancellationRollbackFailureIsSuppressedAndCancellationPropagates`
-- [ ] `encryptedRestoreFailureDoesNotSkipPublicRestore`
-- [ ] `publicRestoreFailureDoesNotEraseEncryptedRestoreResult`
-- [ ] `identityRollbackIncompleteExceptionContainsEveryRollbackFailure`
-- [ ] `restoreStorageSnapshotAttemptsAllThreeFilesAfterFirstFailure`
-- [ ] `restoreStorageSnapshotDeletesFilesThatWerePreviouslyAbsent`
-- [ ] `failedDeleteIsReturnedAsRestoreFailure`
-- [ ] `concurrentSnapshotAndAuthorizedKeyAppendAreSerialized`
-- [ ] `concurrentSnapshotAndIdentityCommitAreSerialized`
-- [ ] `plaintextIdentityNeverReachesDiskOnAnyFailurePath`
+- [x] `cancellationDuringPublicIdentityReplaceRestoresPriorEncryptedAndPublicPair` (7803afb)
+- [x] `cancellationRollbackFailureIsSuppressedAndCancellationPropagates` (7803afb)
+- [x] `encryptedRestoreFailureDoesNotSkipPublicRestore` (7803afb)
+- [x] `publicRestoreFailureDoesNotEraseEncryptedRestoreResult` (7803afb)
+- [x] `identityRollbackIncompleteExceptionContainsEveryRollbackFailure` (7803afb)
+- [x] `restoreStorageSnapshotAttemptsAllThreeFilesAfterFirstFailure` (7803afb)
+- [x] `restoreStorageSnapshotDeletesFilesThatWerePreviouslyAbsent` (7803afb)
+- [x] `failedDeleteIsReturnedAsRestoreFailure` (7803afb — uses a non-empty directory in place of the target file to force a real `Files.deleteIfExists` failure, not a filesystem permission trick)
+- [x] `concurrentSnapshotAndAuthorizedKeyAppendAreSerialized` (7803afb — real multi-thread test with a deterministic sleep-inside-the-lock window, matching this codebase's established `ConcurrencyProbe` technique)
+- [x] `concurrentSnapshotAndIdentityCommitAreSerialized` (7803afb — proves a concurrent snapshot never observes a mismatched identity/public pair)
+- [x] `plaintextIdentityNeverReachesDiskOnAnyFailurePath` (7803afb — extends the existing success-path-only `plaintextIdentityIsNotWrittenToDisk` to an induced failure path, scanning every file under `filesDir`)
 
 ## Acceptance
 
-- [ ] Pair mismatch cannot survive cancellation silently.
-- [ ] All restore members are attempted.
-- [ ] Forward and rollback failures remain inspectable without leaking secrets.
+- [x] Pair mismatch cannot survive cancellation silently. (7803afb)
+- [x] All restore members are attempted. (7803afb)
+- [x] Forward and rollback failures remain inspectable without leaking secrets. (7803afb)
 
 ---
 
