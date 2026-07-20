@@ -46,6 +46,21 @@ class IdentityStorageSnapshot internal constructor(
     val authorizedKeys: StoredFileSnapshot,
 )
 
+/** The three files [IdentityRepository] owns, named for exhaustive per-file restore reporting
+ * (FIX7 P0-006-A). */
+enum class IdentityStorageFile {
+    EncryptedIdentity,
+    PublicIdentity,
+    AuthorizedKeys,
+}
+
+/** Outcome of restoring one [IdentityStorageFile] during [IdentityRepository.restoreStorageSnapshot]. */
+sealed interface IdentityRestoreResult {
+    data class Success(val file: IdentityStorageFile) : IdentityRestoreResult
+
+    data class Failure(val file: IdentityStorageFile, val reason: String) : IdentityRestoreResult
+}
+
 class IdentityRepository(
     private val context: Context,
     private val crypto: IdentityCrypto = AndroidKeystoreIdentityCrypto(),
@@ -66,10 +81,14 @@ class IdentityRepository(
     /**
      * P1-004-C: commit the encrypted-identity + public-identity pair as one logical unit.
      * Encrypt first, snapshot the prior pair, atomically replace the encrypted file, then the
-     * public file; if the public replace fails, restore BOTH prior files so the pair can never
-     * be left mismatched. Throws [IdentityPersistenceException] when the prior pair was restored,
-     * or [IdentityRollbackIncompleteException] when restoration itself failed (so the mismatch is
-     * visible, not silent). Only ciphertext ever reaches disk.
+     * public file; if the public replace fails OR is cancelled, restore BOTH prior files (each
+     * attempted independently, FIX7 P0-006-C) so the pair can never be left mismatched. Throws
+     * [IdentityPersistenceException] when the prior pair was restored, or
+     * [IdentityRollbackIncompleteException] when restoration itself failed (so the mismatch is
+     * visible, not silent) — in both cases every individual restore failure is attached as
+     * suppressed. A cancellation (FIX7 P0-006-B) is rolled back the same way, then rethrown with
+     * any restore failures attached as suppressed rather than left unrecovered. Only ciphertext
+     * ever reaches disk.
      */
     fun storeEncryptedIdentity(
         privateIdentity: ByteArray,
@@ -85,19 +104,18 @@ class IdentityRepository(
             // Step 4: replace the public file.
             atomicReplace(publicFile, publicIdentity.encodeToByteArray())
         } catch (cancelled: CancellationException) {
+            restoreIdentityPair(identityFile, publicFile, priorEncrypted, priorPublic, atomicReplace)
+                .forEach(cancelled::addSuppressed)
             throw cancelled
         } catch (error: Exception) {
-            // Step 5: restore both files to the prior pair (through the same atomic replace).
-            val rolledBack =
-                runCatching {
-                    restorePairFile(identityFile, priorEncrypted, atomicReplace)
-                    restorePairFile(publicFile, priorPublic, atomicReplace)
-                }
-            if (rolledBack.isFailure) {
+            // Step 5: restore both files to the prior pair (through the same atomic replace),
+            // each attempted independently so one restore failure never skips the other.
+            val failures = restoreIdentityPair(identityFile, publicFile, priorEncrypted, priorPublic, atomicReplace)
+            if (failures.isNotEmpty()) {
                 throw IdentityRollbackIncompleteException(
                     "Failed to store identity pair and rollback was incomplete",
                     error,
-                )
+                ).apply { failures.forEach(::addSuppressed) }
             }
             throw IdentityPersistenceException("Failed to store identity pair; prior pair restored", error)
         }
@@ -116,12 +134,35 @@ class IdentityRepository(
             )
         }
 
-    /** Restore identity storage to a captured [snapshot]. Serialized against mutations. */
-    fun restoreStorageSnapshot(snapshot: IdentityStorageSnapshot) =
+    /**
+     * Restore identity storage to a captured [snapshot]. Serialized against mutations.
+     * FIX7 P0-006-A: attempts all three files even after an earlier one fails or was absent, and
+     * returns a per-file result rather than throwing on the first failure — a caller must consume
+     * every result to know exactly which file(s), if any, could not be restored ([CheckResult]).
+     */
+    @CheckResult
+    fun restoreStorageSnapshot(snapshot: IdentityStorageSnapshot): List<IdentityRestoreResult> =
         synchronized(storageLock) {
-            restoreFileFromSnapshot(identityFile, snapshot.encryptedIdentity)
-            restoreFileFromSnapshot(publicFile, snapshot.publicIdentity)
-            restoreFileFromSnapshot(authorizedKeysFile, snapshot.authorizedKeys)
+            listOf(
+                restoreIdentityFile(
+                    IdentityStorageFile.EncryptedIdentity,
+                    identityFile,
+                    snapshot.encryptedIdentity,
+                    atomicReplace,
+                ),
+                restoreIdentityFile(
+                    IdentityStorageFile.PublicIdentity,
+                    publicFile,
+                    snapshot.publicIdentity,
+                    atomicReplace,
+                ),
+                restoreIdentityFile(
+                    IdentityStorageFile.AuthorizedKeys,
+                    authorizedKeysFile,
+                    snapshot.authorizedKeys,
+                    atomicReplace,
+                ),
+            )
         }
 
     /**
@@ -218,18 +259,6 @@ private fun snapshotOfFile(file: File): StoredFileSnapshot =
         StoredFileSnapshot(existed = false, bytes = null)
     }
 
-private fun restoreFileFromSnapshot(
-    file: File,
-    snapshot: StoredFileSnapshot,
-) {
-    if (snapshot.existed) {
-        file.parentFile?.mkdirs()
-        file.writeBytes(snapshot.bytes ?: ByteArray(0))
-    } else {
-        file.delete()
-    }
-}
-
 // P1-004-C: restore one file of the identity pair during rollback — atomically replace it with
 // its prior bytes, or delete it if it was absent. Uses the same [atomicReplace] as the forward
 // write so an injected failure exercises the rollback-incomplete path.
@@ -244,6 +273,74 @@ private fun restorePairFile(
         file.delete()
     }
 }
+
+/** [restorePairFile], wrapped as a [Result] so a caller can attempt the identity pair's other
+ * file even after this one fails (FIX7 P0-006-C) instead of letting the first failure abort the
+ * whole rollback. */
+private fun restorePairFileResult(
+    file: File,
+    snapshot: StoredFileSnapshot,
+    atomicReplace: (File, ByteArray) -> Unit,
+): Result<Unit> =
+    try {
+        restorePairFile(file, snapshot, atomicReplace)
+        Result.success(Unit)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(error)
+    }
+
+/**
+ * Restores both identity-pair files independently — the second is always attempted even if the
+ * first fails (FIX7 P0-006-C) — and returns every restore failure so the caller can attach them
+ * as suppressed on whatever exception (ordinary or cancellation) triggered the rollback. Returns
+ * an empty list when both restores succeed.
+ */
+private fun restoreIdentityPair(
+    identityFile: File,
+    publicFile: File,
+    priorEncrypted: StoredFileSnapshot,
+    priorPublic: StoredFileSnapshot,
+    atomicReplace: (File, ByteArray) -> Unit,
+): List<Exception> {
+    val failures = mutableListOf<Exception>()
+
+    restorePairFileResult(identityFile, priorEncrypted, atomicReplace)
+        .exceptionOrNull()
+        ?.let { failures.add(it as? Exception ?: Exception(it)) }
+
+    restorePairFileResult(publicFile, priorPublic, atomicReplace)
+        .exceptionOrNull()
+        ?.let { failures.add(it as? Exception ?: Exception(it)) }
+
+    return failures
+}
+
+/**
+ * Restores one [IdentityStorageFile] to its exact prior [snapshot] using atomic replacement (or
+ * checked deletion when it was absent), reporting success/failure per file rather than throwing
+ * on the first one (FIX7 P0-006-A) — [IdentityRepository.restoreStorageSnapshot] always attempts
+ * all three. Reasons are redacted before being returned to callers.
+ */
+private fun restoreIdentityFile(
+    logical: IdentityStorageFile,
+    file: File,
+    snapshot: StoredFileSnapshot,
+    atomicReplace: (File, ByteArray) -> Unit,
+): IdentityRestoreResult =
+    try {
+        if (snapshot.existed) {
+            atomicReplace(file, snapshot.bytes ?: ByteArray(0))
+        } else {
+            Files.deleteIfExists(file.toPath())
+        }
+        IdentityRestoreResult.Success(logical)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        IdentityRestoreResult.Failure(logical, SensitiveDataRedactor.redactText(error.message ?: "restore failed"))
+    }
 
 /**
  * P1-004-B: atomically replace [destination] with [bytes] via a unique same-directory temp file

@@ -3,6 +3,8 @@ package com.phillipchin.webrtctunnel.data
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import com.phillipchin.webrtctunnel.security.IdentityRestoreResult
+import com.phillipchin.webrtctunnel.security.IdentityRollbackIncompleteException
 import com.phillipchin.webrtctunnel.security.IdentityStorageSnapshot
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -243,9 +245,20 @@ class SetupPersistenceCoordinator(
         when (stage) {
             // The identity storage snapshot is holistic (all three files), so restoring it
             // reverts both the identity pair and authorized_keys; each stage's restore is
-            // idempotent.
-            SetupPersistenceStage.Identity, SetupPersistenceStage.AuthorizedKeys ->
-                identityRepository.restoreStorageSnapshot(snapshot.identity)
+            // idempotent. FIX7 P0-006-A: restoreStorageSnapshot now reports per-file results
+            // instead of throwing on the first failure, so every failed file is visible here.
+            SetupPersistenceStage.Identity, SetupPersistenceStage.AuthorizedKeys -> {
+                val failures =
+                    identityRepository.restoreStorageSnapshot(snapshot.identity)
+                        .filterIsInstance<IdentityRestoreResult.Failure>()
+                if (failures.isNotEmpty()) {
+                    throw IdentityRollbackIncompleteException(
+                        "Identity storage rollback incomplete: " +
+                            failures.joinToString { "${it.file}: ${it.reason}" },
+                        null,
+                    )
+                }
+            }
             SetupPersistenceStage.BrokerSecret ->
                 brokerSecretRepository.restore(snapshot.brokerSecret).getOrThrow()
             SetupPersistenceStage.SetupInput ->

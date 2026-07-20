@@ -121,8 +121,9 @@ class IdentityRepositoryTest {
         repository.storeEncryptedIdentity("new-private".toByteArray(), "new-public")
         repository.appendAuthorizedPublicIdentity("new-key peerB").getOrThrow()
 
-        repository.restoreStorageSnapshot(snapshot)
+        val results = repository.restoreStorageSnapshot(snapshot)
 
+        assertTrue("every file must restore successfully", results.all { it is IdentityRestoreResult.Success })
         assertArrayEquals("old-private".toByteArray(), repository.readPrivateIdentityPlaintext())
         assertEquals("old-public", repository.readPublicIdentity())
         assertEquals(listOf("old-key peerA"), File(context.filesDir, "authorized_keys").readLines())
@@ -138,8 +139,9 @@ class IdentityRepositoryTest {
         repository.storeEncryptedIdentity("created-later".toByteArray(), "pub")
         repository.appendAuthorizedPublicIdentity("created-key peer").getOrThrow()
 
-        repository.restoreStorageSnapshot(snapshot)
+        val results = repository.restoreStorageSnapshot(snapshot)
 
+        assertTrue("every file must restore successfully", results.all { it is IdentityRestoreResult.Success })
         assertFalse("identity.enc must be absent again", repository.hasEncryptedIdentity())
         assertEquals("", repository.readPublicIdentity())
         assertFalse("authorized_keys must be absent again", File(context.filesDir, "authorized_keys").exists())
