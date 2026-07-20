@@ -46,6 +46,12 @@ class AppDependencies(
         ConfigurationMutationCoordinator()
     }
 
+    // FIX7 P0-003-B: the one authoritative owner of the managed broker-password file. A body
+    // val for the same constructor-growth reason as the other lazy properties here.
+    val brokerSecretRepository: BrokerSecretRepository by lazy {
+        BrokerSecretRepository(this.context)
+    }
+
     // Application-scoped work that must outlive any single service/ViewModel (currently
     // initialization). Cancelled only at process teardown, so no explicit cancel here.
     private val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + dispatchers.default)

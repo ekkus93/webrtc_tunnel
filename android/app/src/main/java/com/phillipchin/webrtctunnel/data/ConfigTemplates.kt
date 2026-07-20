@@ -1,5 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
+import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import java.io.File
@@ -15,10 +16,15 @@ internal val VALID_ANDROID_ICE_MODES = setOf("auto", "native", "vnet", "vnet_mux
  */
 internal const val DEFAULT_ANDROID_ICE_MODE = "vnet_mux"
 
-/** Render-time options for the config templates. */
+/** Render-time options for the config templates. [authorizedKeysPath] overrides the referenced
+ * `authorized_keys` path (FIX7 P0-003-C: an isolated setup-validation workspace copy instead of
+ * the live file); null uses the default `<filesDir>/authorized_keys`. Folded into one options
+ * object (rather than a separate function parameter) to keep buildOfferConfig/renderOfferConfig
+ * under detekt's LongParameterList threshold. */
 internal data class ConfigRenderOptions(
     val debugLogs: Boolean = false,
     val androidIceMode: String = DEFAULT_ANDROID_ICE_MODE,
+    val authorizedKeysPath: String? = null,
 )
 
 /**
@@ -154,11 +160,19 @@ internal fun tomlString(value: String): String =
         append('"')
     }
 
-private fun pathsSection(filesDir: File): String =
+// FIX7 P0-003-C: authorizedKeysPath is overridable so a setup-validation candidate can point at
+// an isolated workspace copy instead of the live authorized_keys file — the native validator
+// requires the referenced file to exist and be readable, and validation must never touch
+// authoritative storage. `identity` always stays live: validateConfigWithIdentity takes the
+// private identity as in-memory bytes, so that path is never read during validation.
+private fun pathsSection(
+    filesDir: File,
+    authorizedKeysPath: String = File(filesDir, "authorized_keys").absolutePath,
+): String =
     """
     [paths]
     identity = ${tomlString(File(filesDir, "runtime/identity.toml").absolutePath)}
-    authorized_keys = ${tomlString(File(filesDir, "authorized_keys").absolutePath)}
+    authorized_keys = ${tomlString(authorizedKeysPath)}
     state_dir = ${tomlString(File(filesDir, "state").absolutePath)}
     log_dir = ${tomlString(File(filesDir, "state/log").absolutePath)}
     """.trimIndent()
@@ -267,7 +281,7 @@ internal fun buildOfferConfig(
         peer_id = ${tomlString(input.localPeerId)}
         role = "offer"
         """.trimIndent(),
-        pathsSection(filesDir),
+        pathsSection(filesDir, options.authorizedKeysPath ?: File(filesDir, "authorized_keys").absolutePath),
         """
         [broker]
         url = ${tomlString("$scheme://${input.brokerHost}:${input.brokerPort}")}
@@ -287,3 +301,35 @@ internal fun buildOfferConfig(
         loggingHealthSections(filesDir, options.debugLogs),
     ).joinToString("\n\n")
 }
+
+/** Grouped inputs for [renderOfferConfigForValidationWorkspace] (FIX7 P0-003-C) — one parameter
+ * object so that function, deliberately top-level rather than a `ConfigRepository` member (to
+ * keep that class under detekt's TooManyFunctions threshold), also stays under
+ * LongParameterList. */
+data class ValidationWorkspaceRenderInputs(
+    val filesDir: File,
+    val preferences: AndroidAppPreferences,
+    val brokerPasswordPath: String?,
+    val authorizedKeysPath: String,
+)
+
+/**
+ * Setup-validation-only renderer referencing an isolated workspace's `authorized_keys` copy
+ * instead of the live file (FIX7 P0-003-C). Top-level, not a `ConfigRepository` member.
+ */
+fun renderOfferConfigForValidationWorkspace(
+    input: SetupConfigInput,
+    forwards: List<ForwardConfig>,
+    render: ValidationWorkspaceRenderInputs,
+): String =
+    buildOfferConfig(
+        input,
+        forwards,
+        render.filesDir,
+        render.brokerPasswordPath.orEmpty(),
+        ConfigRenderOptions(
+            debugLogs = render.preferences.debugLogsEnabled,
+            androidIceMode = resolveAndroidIceMode(render.preferences.androidIceMode),
+            authorizedKeysPath = render.authorizedKeysPath,
+        ),
+    )

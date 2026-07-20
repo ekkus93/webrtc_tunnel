@@ -234,17 +234,22 @@ open class ConfigRepository(private val context: Context) {
         return runCatching { Json.decodeFromString<SetupConfigInput>(setupInputFile.readText()) }
     }
 
+    // FIX7 P0-003-A: pure — no file creation/write/delete/permission change, repository
+    // mutation, preference read, or network call. The caller decides brokerPasswordPath
+    // (resolveBrokerPasswordPath) and, if it points at the managed BrokerSecretRepository path,
+    // must have already persisted it there; this function only ever turns inputs into a string.
     fun renderOfferConfig(
         input: SetupConfigInput,
         forwards: List<ForwardConfig>,
         debugLogs: Boolean = false,
         androidIceMode: String = DEFAULT_ANDROID_ICE_MODE,
+        brokerPasswordPath: String?,
     ): String =
         buildOfferConfig(
             input,
             forwards,
             context.filesDir,
-            resolveBrokerPasswordFile(input, context.filesDir),
+            brokerPasswordPath.orEmpty(),
             ConfigRenderOptions(
                 debugLogs = debugLogs,
                 androidIceMode = resolveAndroidIceMode(androidIceMode),
@@ -392,7 +397,7 @@ private fun deleteTempOrNull(
  * (so the E2E harness can force a mode), otherwise the user's chosen [userPreference]
  * (normalized). This is the single chokepoint every render/apply path goes through.
  */
-private fun resolveAndroidIceMode(userPreference: String): String =
+internal fun resolveAndroidIceMode(userPreference: String): String =
     debugAndroidIceModeOverrideOrNull() ?: normalizeAndroidIceMode(userPreference)
 
 /**
@@ -439,20 +444,19 @@ private fun Preferences.toAppPreferences() =
         androidIceMode = normalizeAndroidIceMode(this[Keys.androidIceMode]),
     )
 
-private fun resolveBrokerPasswordFile(
+/**
+ * Decides the effective broker password path with no I/O (FIX7 P0-003-A): the user's explicit
+ * "advanced" path always wins; otherwise, if a password was entered, [managedPath] (the caller's
+ * already-persisted [BrokerSecretRepository.path]) is used; otherwise there is no password file.
+ */
+fun resolveBrokerPasswordPath(
     input: SetupConfigInput,
-    filesDir: File,
-): String {
+    managedPath: String,
+): String? {
     val advancedPath = input.brokerPasswordFile.trim()
-    val password = input.brokerPassword
     return when {
         advancedPath.isNotBlank() -> advancedPath
-        password.isBlank() -> ""
-        else -> {
-            val passwordFile = File(filesDir, "runtime/mqtt_password.txt")
-            passwordFile.parentFile?.mkdirs()
-            passwordFile.writeText(password)
-            passwordFile.absolutePath
-        }
+        input.brokerPassword.isBlank() -> null
+        else -> managedPath
     }
 }

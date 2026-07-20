@@ -7,6 +7,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -15,22 +16,34 @@ import org.robolectric.Shadows
 import java.io.File
 
 /**
- * FIX6 regression guard: the native config validator requires the config's `authorized_keys`
- * file to exist (the config references it by path), so a remote public identity must be written
- * to `authorized_keys` BEFORE config validation, not only at commit-time. The B-2c "validate
- * without mutating" change moved that write to commit (after validation), so a first-time
- * remote-peer setup could never validate — a ship-breaking regression caught on-device by the
- * emulator smoke test and missed by the mock validator (which doesn't check file existence).
+ * FIX6 regression guard, updated for FIX7 P0-003: the native config validator requires the
+ * config's referenced `authorized_keys` file to exist. Before FIX7 that meant writing the
+ * proposed key to the LIVE file before validation; P0-003 instead validates against an isolated
+ * workspace copy (never the live file) and only commits the live file afterward, through the
+ * transactional coordinator. This test now asserts the FIX7 contract directly: validation must
+ * succeed even though the live file never existed during it, and the live file must exist with
+ * the new key only after a successful save — never before.
  */
 @RunWith(RobolectricTestRunner::class)
 class SetupSaveAuthorizedKeysTest : AppViewModelTestBase() {
     @Test
-    fun remotePublicIdentityIsWrittenToAuthorizedKeysBeforeConfigValidation() {
-        File(app.filesDir, "authorized_keys").delete()
-        // Mirror the native validator: config validation fails unless authorized_keys exists.
-        recordingBridge.validateConfigWithIdentityHook = {
-            val ak = File(app.filesDir, "authorized_keys")
-            if (ak.exists() && ak.readText().isNotBlank()) {
+    fun remotePublicIdentityIsCommittedToAuthorizedKeysOnlyAfterSuccessfulSaveNotDuringValidation() {
+        val liveAuthorizedKeys = File(app.filesDir, "authorized_keys")
+        liveAuthorizedKeys.delete()
+        var liveFileExistedDuringValidation = false
+        // Mirrors the real native validator: it requires the config's OWN referenced
+        // authorized_keys path (an isolated workspace copy under FIX7 P0-003, not the live
+        // path) to exist and be non-blank. It also records whether the LIVE file existed at the
+        // moment of validation, proving validation never touched it.
+        recordingBridge.validateConfigWithIdentityHook = { configPath ->
+            liveFileExistedDuringValidation = liveFileExistedDuringValidation || liveAuthorizedKeys.exists()
+            val referencedPath =
+                Regex("""authorized_keys\s*=\s*"([^"]*)"""")
+                    .find(File(configPath).readText())
+                    ?.groupValues
+                    ?.get(1)
+            val referenced = referencedPath?.let(::File)
+            if (referenced != null && referenced.exists() && referenced.readText().isNotBlank()) {
                 ValidationResult(true, null)
             } else {
                 ValidationResult(false, "authorized_keys file does not exist")
@@ -43,7 +56,13 @@ class SetupSaveAuthorizedKeysTest : AppViewModelTestBase() {
 
         val state = awaitState(viewModel) { it.saveResult != null || it.errorMessage != null }
         assertEquals("save must succeed: ${state.errorMessage}", "Configuration saved", state.saveResult)
-        assertTrue("authorized_keys must be written", File(app.filesDir, "authorized_keys").exists())
+        assertFalse(
+            "validation must never see the live authorized_keys file — it must be untouched " +
+                "until the transactional commit",
+            liveFileExistedDuringValidation,
+        )
+        assertTrue("authorized_keys must be committed live after a successful save", liveAuthorizedKeys.exists())
+        assertTrue(liveAuthorizedKeys.readText().contains("kid peer"))
     }
 
     private fun driveWizardToReviewWithRemoteIdentity(viewModel: SetupViewModel) {

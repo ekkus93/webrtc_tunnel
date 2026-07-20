@@ -14,7 +14,10 @@ import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.createCandidateFile
 import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
 import com.phillipchin.webrtctunnel.data.describeForwardsFailure
+import com.phillipchin.webrtctunnel.data.resolveBrokerPasswordPath
+import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
+import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.CancellationException
@@ -25,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -217,56 +221,102 @@ class ForwardsViewModel(
             }
         val forwards = deps.forwardsRepository.current().filter { it.enabled }
         val prefs = deps.configRepository.preferences.first()
-        val candidate =
-            deps.configRepository.renderOfferConfig(
-                input,
-                forwards,
-                prefs.debugLogsEnabled,
-                prefs.androidIceMode,
-            )
-        // P1-005: a unique candidate file per validation so two concurrent forward mutations
-        // can never share (and clobber) one fixed candidate path.
-        val temp = createCandidateFile(deps.context.cacheDir, "forwards-config-")
-        // FIX6 P0-005: explicit try/catch (not runCatching) — it wraps the suspend
-        // writeConfigAtomically, so a cancellation must propagate, not become an invalid result.
-        return try {
-            // Identity absent vs. present-but-unreadable differ: only the former falls back to
-            // identity-less validation; an unreadable present identity is a visible failure (P1-001).
-            val identity =
-                if (deps.identityRepository.hasEncryptedIdentity()) {
-                    try {
-                        deps.identityRepository.readPrivateIdentityPlaintext()
-                    } catch (error: Exception) {
-                        error("Identity exists but could not be loaded: ${error.message}")
-                    }
-                } else {
-                    null
-                }
-            try {
-                temp.parentFile?.mkdirs()
-                temp.writeText(candidate)
-                val result =
-                    if (identity != null) {
-                        deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identity)
-                    } else {
-                        deps.identityValidation.validateConfig(temp.absolutePath)
-                    }
-                commitRegeneratedForwardsConfig(deps.configRepository, candidate, result)
-            } finally {
-                // Wipe the plaintext identity buffer regardless of success/failure.
-                identity?.fill(0)
-                deleteCandidateFileSafely(temp)
-            }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            // Message kept as-is to preserve existing behavior (e.g. the identity-unreadable
-            // diagnostic); holistic redaction of these ViewModel messages is P1-009. The
-            // write-failure path already redacts its own message.
-            ValidationResult(false, error.message ?: "Failed to regenerate config")
-        }
+        // FIX7 P0-003-E: reference the existing authoritative broker secret path without
+        // rewriting it — forward activation never mutates identity/authorized_keys/broker
+        // secret. If setup configured a password but the managed file is missing, fail visibly
+        // instead of silently rendering a config that points at a nonexistent file. Folded into
+        // one `?:` with the render below (rather than its own early return) to stay under
+        // detekt's ReturnCount threshold.
+        val brokerPasswordPath = resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path)
+        // Combined into one `?:` (rather than its own early return) so the function keeps
+        // exactly two `return` statements total for detekt's ReturnCount threshold: this early
+        // corrupt-input check above, and this one. The success path is a top-level function
+        // (rather than an inline `run { ... }` lambda) to keep nesting under detekt's
+        // NestedBlockDepth threshold.
+        return missingBrokerPasswordFailure(deps, brokerPasswordPath)
+            ?: regenerateWithValidatedCandidate(deps, input, forwards, prefs, brokerPasswordPath)
     }
 }
+
+// FIX7 P0-003-E: the actual render+validate+commit path, extracted to top level (rather than an
+// inline `run { ... }` lambda inside regenerateActiveConfig) to keep that function's nesting
+// depth under detekt's NestedBlockDepth threshold.
+private suspend fun regenerateWithValidatedCandidate(
+    deps: AppDependencies,
+    input: SetupConfigInput,
+    forwards: List<ForwardConfig>,
+    prefs: com.phillipchin.webrtctunnel.model.AndroidAppPreferences,
+    brokerPasswordPath: String?,
+): ValidationResult {
+    val candidate =
+        deps.configRepository.renderOfferConfig(
+            input,
+            forwards,
+            prefs.debugLogsEnabled,
+            prefs.androidIceMode,
+            brokerPasswordPath,
+        )
+    // P1-005: a unique candidate file per validation so two concurrent forward
+    // mutations can never share (and clobber) one fixed candidate path.
+    val temp = createCandidateFile(deps.context.cacheDir, "forwards-config-")
+    // FIX6 P0-005: explicit try/catch (not runCatching) — it wraps the suspend
+    // writeConfigAtomically, so a cancellation must propagate, not become an invalid
+    // result.
+    return try {
+        // Identity absent vs. present-but-unreadable differ: only the former falls back
+        // to identity-less validation; an unreadable present identity is a visible
+        // failure (P1-001).
+        val identity =
+            if (deps.identityRepository.hasEncryptedIdentity()) {
+                try {
+                    deps.identityRepository.readPrivateIdentityPlaintext()
+                } catch (error: Exception) {
+                    error("Identity exists but could not be loaded: ${error.message}")
+                }
+            } else {
+                null
+            }
+        try {
+            temp.parentFile?.mkdirs()
+            temp.writeText(candidate)
+            val result =
+                if (identity != null) {
+                    deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identity)
+                } else {
+                    deps.identityValidation.validateConfig(temp.absolutePath)
+                }
+            commitRegeneratedForwardsConfig(deps.configRepository, candidate, result)
+        } finally {
+            // Wipe the plaintext identity buffer regardless of success/failure.
+            identity?.fill(0)
+            deleteCandidateFileSafely(temp)
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        // Message kept as-is to preserve existing behavior (e.g. the identity-unreadable
+        // diagnostic); holistic redaction of these ViewModel messages is P1-009. The
+        // write-failure path already redacts its own message.
+        ValidationResult(false, error.message ?: "Failed to regenerate config")
+    }
+}
+
+// FIX7 P0-003-E: the managed broker-secret path is expected to already exist when configured;
+// a missing file means setup persistence and forward activation have drifted apart, which must
+// fail visibly rather than silently render a config referencing a nonexistent file. Top-level
+// (not a class member) to keep ForwardsViewModel under detekt's TooManyFunctions threshold.
+private fun missingBrokerPasswordFailure(
+    deps: AppDependencies,
+    brokerPasswordPath: String?,
+): ValidationResult? =
+    if (brokerPasswordPath == deps.brokerSecretRepository.path && !File(brokerPasswordPath).exists()) {
+        ValidationResult(
+            false,
+            "Broker password is configured but the managed secret file is missing; re-run setup to restore it",
+        )
+    } else {
+        null
+    }
 
 // FIX6 P0-001-D: a failed config commit invalidates the result so the caller rolls the forward
 // mutation back, rather than reporting a false "saved". Top-level (not a class member) to keep

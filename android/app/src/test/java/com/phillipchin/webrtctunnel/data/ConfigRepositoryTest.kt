@@ -462,6 +462,7 @@ class ConfigRepositoryTest {
             repository.renderOfferConfig(
                 input,
                 listOf(ForwardConfig(id = "llama", name = "Llama", localPort = 8080, remoteForwardId = "llama")),
+                brokerPasswordPath = null,
             )
         assertTrue(text.contains("url = \"mqtts://broker.local:8883\""))
         assertTrue(text.contains("remote_peer_id = \"desktop-peer\""))
@@ -474,6 +475,7 @@ class ConfigRepositoryTest {
             repository.renderOfferConfig(
                 SetupConfigInput(localPeerId = "android-peer", brokerHost = "broker.local"),
                 listOf(ForwardConfig(id = "llama", name = "Llama", localPort = 8080, remoteForwardId = "llama")),
+                brokerPasswordPath = null,
             )
         assertTrue(text.contains("level = \"info\""))
         assertFalse(text.contains("level = \"debug\""))
@@ -486,6 +488,7 @@ class ConfigRepositoryTest {
                 SetupConfigInput(localPeerId = "android-peer", brokerHost = "broker.local"),
                 listOf(ForwardConfig(id = "llama", name = "Llama", localPort = 8080, remoteForwardId = "llama")),
                 debugLogs = true,
+                brokerPasswordPath = null,
             )
         assertTrue(text.contains("level = \"debug\""))
         assertFalse(text.contains("level = \"info\""))
@@ -511,10 +514,57 @@ class ConfigRepositoryTest {
                         remoteForwardId = "llama\"inject",
                     ),
                 ),
+                brokerPasswordPath = null,
             )
         assertTrue(text.contains("topic_prefix = \"topic\\nprefix\""))
         assertTrue(text.contains("id = \"llama\\\"inject\""))
         assertFalse(text.contains("\n[[forwards]]\nid = \"evil\""))
+    }
+
+    // FIX7 P0-003-A/F: renderOfferConfig must be pure — no filesystem writes, and it must use
+    // exactly the caller-provided broker password path rather than computing/writing one itself.
+
+    @Test
+    fun renderOfferConfigPerformsNoFilesystemWrites() {
+        val runtimeDir = File(context.filesDir, "runtime")
+        runtimeDir.deleteRecursively()
+        val input =
+            SetupConfigInput(
+                localPeerId = "android-peer",
+                brokerHost = "broker.local",
+                brokerPassword = "s3cret",
+            )
+        repository.renderOfferConfig(
+            input,
+            emptyList(),
+            brokerPasswordPath = "/tmp/some/managed/path/mqtt_password.txt",
+        )
+        assertFalse(
+            "render must not create the managed broker-password runtime directory",
+            runtimeDir.exists(),
+        )
+    }
+
+    @Test
+    fun renderOfferConfigUsesProvidedBrokerPasswordPath() {
+        val text =
+            repository.renderOfferConfig(
+                SetupConfigInput(localPeerId = "android-peer", brokerHost = "broker.local"),
+                emptyList(),
+                brokerPasswordPath = "/explicit/managed/mqtt_password.txt",
+            )
+        assertTrue(text.contains("password_file = \"/explicit/managed/mqtt_password.txt\""))
+    }
+
+    @Test
+    fun renderOfferConfigOmitsPasswordFileWhenNoPasswordConfigured() {
+        val text =
+            repository.renderOfferConfig(
+                SetupConfigInput(localPeerId = "android-peer", brokerHost = "broker.local"),
+                emptyList(),
+                brokerPasswordPath = null,
+            )
+        assertTrue(text.contains("password_file = \"\""))
     }
 
     @Test

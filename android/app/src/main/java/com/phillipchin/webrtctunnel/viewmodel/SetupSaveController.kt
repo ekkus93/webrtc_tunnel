@@ -4,27 +4,30 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.phillipchin.webrtctunnel.TunnelForegroundService
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.CandidateCleanupException
 import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
 import com.phillipchin.webrtctunnel.data.ConfigurationOperation
+import com.phillipchin.webrtctunnel.data.IdentityReplacement
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinator
 import com.phillipchin.webrtctunnel.data.SetupPersistenceRequest
 import com.phillipchin.webrtctunnel.data.SetupPersistenceResult
 import com.phillipchin.webrtctunnel.data.SetupRollbackStageResult
-import com.phillipchin.webrtctunnel.data.createCandidateFile
-import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
+import com.phillipchin.webrtctunnel.data.ValidationWorkspaceRenderInputs
+import com.phillipchin.webrtctunnel.data.renderOfferConfigForValidationWorkspace
+import com.phillipchin.webrtctunnel.data.resolveBrokerPasswordPath
+import com.phillipchin.webrtctunnel.data.withSetupValidationWorkspace
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
-import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -169,21 +172,19 @@ class SetupSaveController(
     }
 
     /**
-     * Validate the review state and, if valid, commit the whole save through the transactional
-     * coordinator. Throws [SaveError] on any validation/persistence failure and always wipes the
-     * plaintext identity buffer. Returns the resolved identity for the success path.
+     * Validate the review state in an isolated workspace and, if valid, commit the whole save
+     * through the transactional coordinator. FIX7 P0-003-D: validation never mutates live
+     * identity/authorized_keys/broker-secret/setup-input/preferences/config storage — it resolves
+     * inputs in memory, renders a candidate against an isolated workspace copy, and only on
+     * success builds one [SetupPersistenceRequest] committed through [persistence] exactly once.
+     * Throws [SaveError] on any validation/persistence failure and always wipes the plaintext
+     * identity buffer. Returns the resolved identity for the success path.
      */
     private suspend fun validateAndCommit(current: SetupWizardState): ResolvedIdentity {
         val input = current.input
         val enabledForwards = access.forwards().filter { it.enabled }
         validateStep(deps, SetupStep.Review, current)?.let { saveError(it, redact = false) }
         val identity = resolveSaveIdentity(current)
-        // P0-003 + authorized-keys validation: the native config validator requires the
-        // identity and authorized_keys FILES to exist (the config references authorized_keys by
-        // path), so they must be written before validation. Snapshot identity storage first and
-        // restore it on ANY failure below, so a failed save still leaves no partial identity
-        // state — the transactional guarantee, achieved by rollback rather than by never writing.
-        val identitySnapshot = deps.identityRepository.captureStorageSnapshot()
         try {
             if (identity.peerId != input.localPeerId) {
                 saveError(
@@ -198,39 +199,21 @@ class SetupSaveController(
                 } else {
                     null
                 }
-            withContext(ioDispatcher) {
-                if (identity.fromImport) {
-                    deps.identityRepository.storeEncryptedIdentity(identity.privateIdentity, identity.publicIdentity)
-                }
-                if (authorizedLine != null) {
-                    deps.identityRepository.appendAuthorizedPublicIdentity(authorizedLine).getOrThrow()
-                }
-            }
             val prefs = deps.configRepository.preferences.first()
-            val candidate =
+            validateInIsolatedWorkspace(input, enabledForwards, authorizedLine, identity.privateIdentity, prefs)
+            // Validation used an isolated workspace copy of authorized_keys/broker-secret paths
+            // (P0-003-C); the commit candidate below references the real (about-to-be-committed)
+            // live paths instead — the workspace is already deleted by this point.
+            val commitCandidate =
                 deps.configRepository.renderOfferConfig(
-                    input,
-                    enabledForwards,
-                    prefs.debugLogsEnabled,
-                    prefs.androidIceMode,
+                    input = input,
+                    forwards = enabledForwards,
+                    debugLogs = prefs.debugLogsEnabled,
+                    androidIceMode = prefs.androidIceMode,
+                    brokerPasswordPath = resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path),
                 )
-            val validation =
-                withContext(ioDispatcher) { validateCandidateConfig(deps, candidate, identity.privateIdentity) }
-            if (!validation.valid) {
-                saveError(validation.message ?: "Config validation failed", redact = false)
-            }
-            // Identity + authorized_keys are already committed; the coordinator persists only the
-            // remaining resources (setup input, preferences, config) transactionally.
-            commitSetup(input, candidate)
+            commitSetup(input, commitCandidate, identity, authorizedLine)
             return identity
-        } catch (cancelled: CancellationException) {
-            withContext(
-                NonCancellable,
-            ) { runCatching { deps.identityRepository.restoreStorageSnapshot(identitySnapshot) } }
-            throw cancelled
-        } catch (error: Exception) {
-            runCatching { deps.identityRepository.restoreStorageSnapshot(identitySnapshot) }
-            throw error
         } finally {
             // Wipe the plaintext identity buffer; only the public id/peer id are used afterward.
             identity.privateIdentity.fill(0)
@@ -258,18 +241,88 @@ class SetupSaveController(
     }
 
     /**
-     * P0-003: commit the setup save's remaining resources (setup input, preferences, config)
-     * through the transactional coordinator, config last. Identity and authorized_keys are
-     * already committed by [validateAndCommit] (they must exist before config validation) under
-     * its own snapshot/restore, so they are not stages here. A failure leaves no partial state:
-     * the coordinator rolls back its stages, and [validateAndCommit] restores identity storage.
-     * [SetupPersistenceResult.Failed] reports whether rollback fully restored the prior state
-     * (setup_persistence_failed) or could not (setup_rollback_incomplete).
+     * FIX7 P0-003-C: renders a candidate referencing an isolated workspace copy of
+     * `authorized_keys` (the live file merged with [authorizedLine], never the live file itself)
+     * and, if a new plaintext broker password was entered, a workspace copy of the broker secret
+     * — then validates that candidate. Workspace cleanup failure after an otherwise-successful
+     * validation must still block the commit (P0-002 cleanup composition throws
+     * [CandidateCleanupException] in exactly that case), surfaced here as `candidate_cleanup_failed`.
+     */
+    private suspend fun validateInIsolatedWorkspace(
+        input: SetupConfigInput,
+        forwards: List<ForwardConfig>,
+        authorizedLine: String?,
+        identityBytes: ByteArray,
+        prefs: AndroidAppPreferences,
+    ) {
+        val includeBrokerPassword = input.brokerPasswordFile.isBlank() && input.brokerPassword.isNotBlank()
+        val validation =
+            try {
+                withContext(ioDispatcher) {
+                    withSetupValidationWorkspace(deps.context.cacheDir, includeBrokerPassword) { workspace ->
+                        workspace.authorizedKeysFile.writeText(mergedAuthorizedKeys(deps, authorizedLine))
+                        val brokerPasswordPath =
+                            if (workspace.brokerPasswordFile != null) {
+                                workspace.brokerPasswordFile.writeText(input.brokerPassword)
+                                workspace.brokerPasswordFile.absolutePath
+                            } else {
+                                resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path)
+                            }
+                        val candidate =
+                            renderOfferConfigForValidationWorkspace(
+                                input = input,
+                                forwards = forwards,
+                                render =
+                                    ValidationWorkspaceRenderInputs(
+                                        filesDir = deps.context.filesDir,
+                                        preferences = prefs,
+                                        brokerPasswordPath = brokerPasswordPath,
+                                        authorizedKeysPath = workspace.authorizedKeysFile.absolutePath,
+                                    ),
+                            )
+                        workspace.candidateFile.writeText(candidate)
+                        deps.identityValidation.validateConfigWithIdentity(
+                            workspace.candidateFile.absolutePath,
+                            identityBytes,
+                        )
+                    }
+                }
+            } catch (cleanupFailure: CandidateCleanupException) {
+                saveError(
+                    "Setup validation workspace cleanup failed (candidate_cleanup_failed): " +
+                        (cleanupFailure.cause?.message ?: "unknown cleanup failure"),
+                    redact = true,
+                )
+            }
+        if (!validation.valid) {
+            saveError(validation.message ?: "Config validation failed", redact = false)
+        }
+    }
+
+    /**
+     * FIX7 P0-003-D/P0-003-B: commits the setup save. The broker secret is persisted directly
+     * here (not yet its own coordinator stage with rollback — that upgrade is P0-004-A's scope),
+     * positioned before the coordinator so the config committed next can reference it. Identity
+     * and authorized-key mutations now flow through the coordinator's existing Identity/
+     * AuthorizedKeys stages (previously bypassed by writing them live pre-validation) — no
+     * outer identity snapshot/restore is needed here because nothing is written live until this
+     * point, and the coordinator captures its own snapshot and rolls back on failure.
      */
     private suspend fun commitSetup(
         input: SetupConfigInput,
         candidate: String,
+        identity: ResolvedIdentity,
+        authorizedLine: String?,
     ) {
+        if (input.brokerPasswordFile.isBlank() && input.brokerPassword.isNotBlank()) {
+            deps.brokerSecretRepository.persist(input.brokerPassword).getOrElse { error ->
+                saveError(
+                    "Failed to persist broker password: " +
+                        SensitiveDataRedactor.redactText(error.message ?: "unknown error"),
+                    redact = true,
+                )
+            }
+        }
         val existing = loadPreferences()
         val request =
             SetupPersistenceRequest(
@@ -280,8 +333,13 @@ class SetupSaveController(
                         allowMetered = input.allowMetered,
                         resumeOnUnmetered = input.resumeOnUnmetered,
                     ),
-                replacementIdentity = null,
-                authorizedPublicIdentityToAdd = null,
+                replacementIdentity =
+                    if (identity.fromImport) {
+                        IdentityReplacement(identity.privateIdentity, identity.publicIdentity)
+                    } else {
+                        null
+                    },
+                authorizedPublicIdentityToAdd = authorizedLine,
             )
         val result = withContext(ioDispatcher) { persistence.persist(request) }
         if (result is SetupPersistenceResult.Failed) {
@@ -319,6 +377,26 @@ private fun saveError(
     message: String,
     redact: Boolean,
 ): Nothing = throw SaveError(message, redact)
+
+/** FIX7 P0-003-C: the live `authorized_keys` content merged with [authorizedLine] (if any),
+ * mirroring `IdentityRepository.appendAuthorizedPublicIdentity`'s own dedupe-and-sort merge —
+ * without touching the live file itself. Used to populate the isolated validation workspace. */
+private fun mergedAuthorizedKeys(
+    deps: AppDependencies,
+    authorizedLine: String?,
+): String {
+    val liveFile = File(deps.context.filesDir, "authorized_keys")
+    val existing =
+        if (liveFile.exists()) {
+            liveFile.readLines().map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+        } else {
+            mutableSetOf()
+        }
+    if (authorizedLine != null) {
+        existing.add(authorizedLine)
+    }
+    return existing.toList().sorted().joinToString("\n")
+}
 
 private suspend fun resolveStoredIdentity(
     deps: AppDependencies,
@@ -386,25 +464,3 @@ private fun validatePublicIdentityForImport(
         }
         validated.canonicalPublicIdentity ?: line.trim()
     }
-
-private fun validateCandidateConfig(
-    deps: AppDependencies,
-    candidate: String,
-    identityBytes: ByteArray,
-): ValidationResult {
-    // P1-005: a unique candidate file per validation so two concurrent operations can never
-    // share (and clobber) one fixed "config-candidate.toml".
-    val temp = createCandidateFile(deps.context.cacheDir, "setup-config-")
-    return runCatching {
-        temp.writeText(candidate)
-        deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identityBytes)
-    }.getOrElse { ValidationResult(false, it.message) }.also {
-        // Cleanup failure must not mask the validation result; it is reported separately.
-        deleteCandidateFileSafely(temp).onFailure { cleanup ->
-            android.util.Log.w(
-                "SetupSaveController",
-                "Candidate cleanup failed: ${SensitiveDataRedactor.redactText(cleanup.message ?: "unknown")}",
-            )
-        }
-    }
-}
