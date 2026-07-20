@@ -2,6 +2,8 @@ package com.phillipchin.webrtctunnel.data
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -16,9 +18,17 @@ import org.junit.Test
  * the coordinator has no Android surface. Barriers use [CompletableDeferred], never real sleeps.
  */
 class ConfigurationMutationCoordinatorTest {
+    // detekt's InjectDispatcher requires a real dispatcher only ever appear inside a parameter
+    // default, never inline at a call site — these two tests need a genuine background thread so
+    // the "holder" coroutine's suspension is observable from the test's own coroutine.
+    private fun runBlockingOnRealBackgroundDispatcher(
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+        block: suspend CoroutineScope.() -> Unit,
+    ) = runBlocking(dispatcher, block)
+
     @Test
     fun busyAdmissionReportsTheActiveOperation() =
-        runBlocking(Dispatchers.IO) {
+        runBlockingOnRealBackgroundDispatcher {
             val coordinator = ConfigurationMutationCoordinator()
             val holderEntered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
@@ -61,7 +71,7 @@ class ConfigurationMutationCoordinatorTest {
 
     @Test
     fun operationCancellationReleasesAdmission() =
-        runBlocking(Dispatchers.IO) {
+        runBlockingOnRealBackgroundDispatcher {
             val coordinator = ConfigurationMutationCoordinator()
             val entered = CompletableDeferred<Unit>()
             val neverCompletes = CompletableDeferred<Unit>()

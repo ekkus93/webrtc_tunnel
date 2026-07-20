@@ -112,4 +112,137 @@ class MutationHelpersTest {
         assertTrue("cleanup failure must be returned, not thrown", result.isFailure)
         assertTrue(result.exceptionOrNull() is IOException)
     }
+
+    // FIX7 P0-002-C: withCandidateFile/withTemporaryDirectory cleanup composition (INV-010).
+
+    @Test
+    fun candidatePrimaryFailurePreservedAndCleanupSuppressed() =
+        runBlocking {
+            val error =
+                try {
+                    withCandidateFile(cacheDir, "setup-config-") { candidate ->
+                        // Make cleanup itself fail: replace the candidate file with a
+                        // non-empty directory of the same name before the block returns.
+                        candidate.delete()
+                        candidate.mkdirs()
+                        File(candidate, "child.txt").writeText("blocks deletion")
+                        error("primary validation failure")
+                    }
+                } catch (thrown: IllegalStateException) {
+                    thrown
+                }
+
+            assertEquals("primary validation failure", error.message)
+            assertTrue(
+                "cleanup failure must be attached as suppressed, not lost",
+                error.suppressed.isNotEmpty(),
+            )
+        }
+
+    @Test
+    fun candidateCancellationPreservedAndCleanupSuppressed() {
+        var caught: CancellationException? = null
+        try {
+            runBlocking {
+                withCandidateFile(cacheDir, "setup-config-") { candidate ->
+                    candidate.delete()
+                    candidate.mkdirs()
+                    File(candidate, "child.txt").writeText("blocks deletion")
+                    throw CancellationException("cancelled mid-validation")
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            caught = cancelled
+        }
+
+        assertTrue(
+            "cleanup failure during cancellation must be attached as suppressed",
+            caught?.suppressed?.isNotEmpty() == true,
+        )
+    }
+
+    @Test
+    fun candidateSuccessfulBlockBecomesFailureWhenCleanupFails() =
+        runBlocking {
+            val error =
+                try {
+                    withCandidateFile(cacheDir, "setup-config-") { candidate ->
+                        candidate.delete()
+                        candidate.mkdirs()
+                        File(candidate, "child.txt").writeText("blocks deletion")
+                        "would-be success value"
+                    }
+                    null
+                } catch (thrown: CandidateCleanupException) {
+                    thrown
+                }
+
+            assertTrue(
+                "a successful block whose cleanup fails must fail overall, not report false success",
+                error != null,
+            )
+        }
+
+    @Test
+    fun candidateSuccessfulBlockReturnsValueWhenCleanupSucceeds() =
+        runBlocking {
+            val value = withCandidateFile(cacheDir, "setup-config-") { candidate -> "committed:${candidate.name}" }
+            assertTrue(value.startsWith("committed:"))
+        }
+
+    @Test
+    fun temporaryDirectoryCleanupFailureUsesSameCompositionRules() =
+        runBlocking {
+            // A real recursive delete empties a directory bottom-up before removing it, so
+            // there is no portable non-permission way to make it fail — inject a failing fake
+            // instead (the same technique AtomicConfigFileOps tests use).
+            val failingDelete: (File) -> Result<Unit> = {
+                Result.failure(IOException("simulated workspace cleanup failure"))
+            }
+
+            val error =
+                try {
+                    withTemporaryDirectory(cacheDir, "setup-validation-", deleteRecursively = failingDelete) {
+                        error("primary workspace failure")
+                    }
+                } catch (thrown: IllegalStateException) {
+                    thrown
+                }
+
+            assertEquals("primary workspace failure", error.message)
+            assertTrue(
+                "cleanup failure must be attached as suppressed, not lost",
+                error.suppressed.isNotEmpty(),
+            )
+        }
+
+    @Test
+    fun temporaryDirectorySuccessfulBlockBecomesFailureWhenCleanupFails() =
+        runBlocking {
+            val failingDelete: (File) -> Result<Unit> = {
+                Result.failure(IOException("simulated workspace cleanup failure"))
+            }
+
+            val error =
+                try {
+                    withTemporaryDirectory(cacheDir, "setup-validation-", deleteRecursively = failingDelete) {
+                        "would-be success value"
+                    }
+                    null
+                } catch (thrown: CandidateCleanupException) {
+                    thrown
+                }
+
+            assertTrue(
+                "a successful block whose workspace cleanup fails must fail overall",
+                error != null,
+            )
+        }
+
+    @Test
+    fun temporaryDirectoryReturnsValueWhenCleanupSucceeds() =
+        runBlocking {
+            val value = withTemporaryDirectory(cacheDir, "setup-validation-") { workspace -> workspace.exists() }
+            assertTrue(value)
+        }
 }

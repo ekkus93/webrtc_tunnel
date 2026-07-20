@@ -19,6 +19,7 @@ import com.phillipchin.webrtctunnel.viewmodel.SetupWizardState
 import com.phillipchin.webrtctunnel.viewmodel.WizardStateAccess
 import com.phillipchin.webrtctunnel.viewmodel.inlineTestDispatchers
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -96,7 +97,13 @@ class ConfigurationMutationIntegrationTest {
      * to reach its Config commit stage: matching stored identity, remote public identity, and
      * an enabled forward — the minimum `SetupStepValidation` requires, without driving the full
      * wizard UI navigation. */
-    private fun buildValidSetupHarness(deps: AppDependencies): SetupHarness {
+    private fun buildValidSetupHarness(
+        deps: AppDependencies,
+        // detekt's InjectDispatcher: the real dispatcher only ever appears inside this default —
+        // SetupSaveController is constructed directly (not as a ViewModel) and needs its own
+        // genuine background scope so its suspension is observable from the test's coroutine.
+        controllerDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ): SetupHarness {
         deps.identityRepository.storeEncryptedIdentity("private-bytes".toByteArray(), "pub-identity")
         deps.forwardsStore.saveForwards(
             listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
@@ -130,7 +137,7 @@ class ConfigurationMutationIntegrationTest {
         val controller =
             SetupSaveController(
                 deps = deps,
-                scope = CoroutineScope(Job() + Dispatchers.IO),
+                scope = CoroutineScope(Job() + controllerDispatcher),
                 loadPreferences = { deps.configRepository.preferences.first() },
                 persistPreferences = { deps.configRepository.savePreferences(it) },
                 access = access,
