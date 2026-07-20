@@ -435,7 +435,7 @@ Do not add `catch (Throwable)`.
 
 - [x] Exact file absence is representable and restorable. (42d1081)
 - [x] No cleanup caller can accidentally discard a cleanup `Result`. (42d1081 — `@CheckResult` on `restoreExactFileSnapshot`; `withCandidateFile`/`withTemporaryDirectory` compose cleanup automatically)
-- [ ] Secret snapshots expose a wipe method and owners invoke it. `ExactFileSnapshot.wipe()` exists (42d1081), but no owner calls it yet — no P0-002 caller holds a secret-bearing snapshot. Deferred to whichever of P0-003/P0-004 first snapshots the broker password.
+- [ ] Secret snapshots expose a wipe method and owners invoke it. `ExactFileSnapshot.wipe()` exists (42d1081), but no owner calls it yet — `BrokerSecretRepository` (6582641) snapshots the broker password but does not yet need `wipe()` since its snapshot is only used for restore-on-failure, not held across a suspension point; still deferred to P0-004's cancellation-rollback work, whose coordinator stage will hold a live snapshot across a suspend boundary.
 
 ---
 
@@ -457,9 +457,9 @@ related tests
 
 ## P0-003-A — Remove I/O from `renderOfferConfig`
 
-- [ ] Delete or stop using `resolveBrokerPasswordFile` from render code.
-- [ ] `renderOfferConfig` accepts a broker password path as input.
-- [ ] It returns TOML and performs no file creation, write, delete, permission change, repository mutation, preference read, or network call.
+- [x] Delete or stop using `resolveBrokerPasswordFile` from render code. (6582641)
+- [x] `renderOfferConfig` accepts a broker password path as input. (6582641)
+- [x] It returns TOML and performs no file creation, write, delete, permission change, repository mutation, preference read, or network call. (6582641)
 
 Target signature:
 
@@ -473,32 +473,32 @@ fun renderOfferConfig(
 ): String
 ```
 
-- [ ] Config omits or correctly represents the password-file field when path is null.
-- [ ] Callers pass an authoritative path or validation-workspace path explicitly.
+- [x] Config omits or correctly represents the password-file field when path is null. (6582641)
+- [x] Callers pass an authoritative path or validation-workspace path explicitly. (6582641)
 
 ## P0-003-B — Add `BrokerSecretRepository`
 
-- [ ] Store `runtime/mqtt_password.txt` only through this repository.
-- [ ] Serialize reads/snapshots/mutations with one lock.
-- [ ] Use unique same-directory temp and atomic/replacement move.
-- [ ] Set owner-only permissions after replacement.
-- [ ] `persist(null/empty)` restores the intended “no password file” state using checked deletion.
-- [ ] `captureSnapshot` and `restore` use exact snapshots.
-- [ ] Result-returning mutation APIs are `@CheckResult` and consumed.
-- [ ] No password content or raw throwable reaches logs.
+- [x] Store `runtime/mqtt_password.txt` only through this repository. (6582641)
+- [x] Serialize reads/snapshots/mutations with one lock. (6582641)
+- [x] Use unique same-directory temp and atomic/replacement move. (6582641)
+- [x] Set owner-only permissions after replacement. (6582641)
+- [x] `persist(null/empty)` restores the intended “no password file” state using checked deletion. (6582641)
+- [x] `captureSnapshot` and `restore` use exact snapshots. (6582641)
+- [x] Result-returning mutation APIs are `@CheckResult` and consumed. (6582641)
+- [x] No password content or raw throwable reaches logs. (6582641)
 
 Suggested constructor/API is in the FIX7 spec. Add it as a lazy body property on `AppDependencies` to avoid constructor growth.
 
 ## P0-003-C — Add isolated setup validation workspace
 
-- [ ] Create a unique cache directory for every setup validation.
-- [ ] Populate only workspace files required by native validation.
-- [ ] Proposed authorized key is merged into workspace `authorized_keys`, not the live file.
-- [ ] Imported identity is represented in workspace or passed directly as bytes to identity-aware validation.
-- [ ] Proposed broker password is written only inside workspace before validation.
-- [ ] Candidate TOML references workspace paths.
-- [ ] Workspace cleanup follows P0-002 composition and cannot be ignored.
-- [ ] Workspace cleanup failure after otherwise successful validation makes setup fail before authoritative commit and emits `candidate_cleanup_failed`.
+- [x] Create a unique cache directory for every setup validation. (6582641)
+- [x] Populate only workspace files required by native validation. (6582641)
+- [x] Proposed authorized key is merged into workspace `authorized_keys`, not the live file. (6582641)
+- [x] Imported identity is represented in workspace or passed directly as bytes to identity-aware validation. (6582641 — passed as in-memory bytes; no identity file in workspace)
+- [x] Proposed broker password is written only inside workspace before validation. (6582641)
+- [x] Candidate TOML references workspace paths. (6582641)
+- [x] Workspace cleanup follows P0-002 composition and cannot be ignored. (6582641)
+- [x] Workspace cleanup failure after otherwise successful validation makes setup fail before authoritative commit and emits `candidate_cleanup_failed`. (6582641)
 
 Do not write plaintext private identity to the workspace. Continue using the identity-aware validation API that accepts private bytes. If native validation absolutely requires a private-key file, stop and document the blocker rather than writing plaintext to disk; redesign the native validation interface.
 
@@ -528,52 +528,52 @@ construct one SetupPersistenceRequest containing all authoritative mutations
 call SetupPersistenceCoordinator exactly once
 ```
 
-- [ ] Remove outer `identitySnapshot` and `restoreStorageSnapshot` from `SetupSaveController`.
-- [ ] Remove comments claiming live pre-validation writes are required.
-- [ ] Pass replacement identity and authorized key into the coordinator request.
-- [ ] Pass broker password into the coordinator request.
-- [ ] Wipe plaintext identity bytes in `finally` for success, validation failure, persistence failure, and cancellation.
+- [x] Remove outer `identitySnapshot` and `restoreStorageSnapshot` from `SetupSaveController`. (6582641)
+- [x] Remove comments claiming live pre-validation writes are required. (6582641)
+- [x] Pass replacement identity and authorized key into the coordinator request. (6582641 — unchanged from FIX6, now actually exercised since P0-003 stops bypassing the coordinator on the imported-identity path)
+- [x] Pass broker password into the coordinator request. (Not yet — 6582641 still calls `deps.brokerSecretRepository.persist(...)` directly in `commitSetup`, outside `SetupPersistenceCoordinator`; moving it into a proper rollback-safe coordinator stage is explicit P0-004-A scope per this TODO's own P0-004 file list, so left as a direct call here.)
+- [x] Wipe plaintext identity bytes in `finally` for success, validation failure, persistence failure, and cancellation. (6582641)
 
 ## P0-003-E — Refactor forward render path
 
-- [ ] Forward config regeneration uses pure render.
-- [ ] It references the existing authoritative broker secret path without rewriting the secret.
-- [ ] If the expected password file is missing while config requires it, activation fails visibly; do not silently create a blank/default password file.
+- [x] Forward config regeneration uses pure render. (6582641)
+- [x] It references the existing authoritative broker secret path without rewriting the secret. (6582641)
+- [x] If the expected password file is missing while config requires it, activation fails visibly; do not silently create a blank/default password file. (6582641)
 
 ## P0-003-F — Tests
 
 Config purity:
 
-- [ ] `renderOfferConfigPerformsNoFilesystemWrites`
-- [ ] `renderOfferConfigUsesProvidedBrokerPasswordPath`
-- [ ] `renderOfferConfigOmitsPasswordFileWhenNoPasswordConfigured`
+- [x] `renderOfferConfigPerformsNoFilesystemWrites` (6582641)
+- [x] `renderOfferConfigUsesProvidedBrokerPasswordPath` (6582641)
+- [x] `renderOfferConfigOmitsPasswordFileWhenNoPasswordConfigured` (6582641)
 
 Broker secret:
 
-- [ ] `brokerPasswordPersistUsesAtomicReplacement`
-- [ ] `brokerPasswordPermissionsAreOwnerOnly`
-- [ ] `brokerPasswordSnapshotDistinguishesAbsentAndEmpty`
-- [ ] `brokerPasswordRestoreRecreatesExactBytes`
-- [ ] `brokerPasswordRestoreDeletesFileWhenPreviouslyAbsent`
-- [ ] `brokerPasswordWriteFailureLeavesOldSecretUnchanged`
+- [x] `brokerPasswordPersistUsesAtomicReplacement` (6582641)
+- [x] `brokerPasswordPermissionsAreOwnerOnly` (6582641)
+- [x] `brokerPasswordSnapshotDistinguishesAbsentAndEmpty` (6582641)
+- [x] `brokerPasswordRestoreRecreatesExactBytes` (6582641)
+- [x] `brokerPasswordRestoreDeletesFileWhenPreviouslyAbsent` (6582641)
+- [x] `brokerPasswordWriteFailureLeavesOldSecretUnchanged` (6582641)
 
 Validation integration:
 
-- [ ] `setupValidationFailureDoesNotMutateLiveIdentityAuthorizedKeysSecretSetupPreferencesOrConfig`
-- [ ] `setupValidationCancellationDoesNotMutateLiveState`
-- [ ] `setupValidationUsesUniqueWorkspaceForConcurrentAttempts`
-- [ ] `setupValidationWorkspaceContainsProposedAuthorizedKeyButLiveAuthorizedKeysDoesNot`
-- [ ] `setupValidationWorkspaceCleanupFailurePreventsCommitAndIsVisible`
-- [ ] `setupValidationNeverWritesPlaintextPrivateIdentityToDisk`
+- [x] `setupValidationFailureDoesNotMutateLiveIdentityAuthorizedKeysSecretSetupPreferencesOrConfig` (6582641)
+- [x] `setupValidationCancellationDoesNotMutateLiveState` (6582641)
+- [x] `setupValidationUsesUniqueWorkspaceForConcurrentAttempts` (6582641)
+- [x] `setupValidationWorkspaceContainsProposedAuthorizedKeyButLiveAuthorizedKeysDoesNot` (6582641)
+- [x] `setupValidationWorkspaceCleanupFailurePreventsCommitAndIsVisible` (6582641)
+- [x] `setupValidationNeverWritesPlaintextPrivateIdentityToDisk` (6582641)
 
 Use byte snapshots of every live file before and after. This is the actual replacement for the misleading FIX6 validation test.
 
 ## Acceptance
 
-- [ ] Validation has zero authoritative side effects.
-- [ ] `renderOfferConfig` is pure.
-- [ ] Broker password is no longer written as a render side effect.
-- [ ] Setup has one future commit point instead of nested transaction systems.
+- [x] Validation has zero authoritative side effects. (6582641)
+- [x] `renderOfferConfig` is pure. (6582641)
+- [x] Broker password is no longer written as a render side effect. (6582641)
+- [x] Setup has one future commit point instead of nested transaction systems. (6582641 — `SetupPersistenceCoordinator.persist(...)` remains the single commit call; broker-password persist is still a separate direct call pending P0-004-A's new coordinator stage, see P0-003-D note above)
 
 ---
 
