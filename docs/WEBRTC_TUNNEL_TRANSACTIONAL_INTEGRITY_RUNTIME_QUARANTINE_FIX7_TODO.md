@@ -1684,40 +1684,40 @@ startup tests
 
 ## P1-003-A — Inventory constructor side effects
 
-- [ ] Identify every constructor/property initializer executed by `AppDependencies(this)`.
-- [ ] Record disk reads, JSON parsing, network classification, binder calls, and native initialization.
-- [ ] Keep native bridge lazy.
+- [x] Identify every constructor/property initializer executed by `AppDependencies(this)`. (2d2bb36 — inventoried via subagent read of ConfigRepository, NetworkPolicyManager, IdentityRepository, LocalAddressResolver, DiagnosticsRepository, ForwardsConfigStore, ForwardsRepository, TransactionalResetCoordinator)
+- [x] Record disk reads, JSON parsing, network classification, binder calls, and native initialization. (2d2bb36 — two real findings: `NetworkPolicyManager`'s `_status` initializer called `classifyCurrentNetwork` synchronously — ConnectivityManager Binder calls; `ForwardsRepository`'s `initial` property read+decoded the forwards file synchronously. All other eagerly-constructed classes — ConfigRepository, IdentityRepository, LocalAddressResolver, DiagnosticsRepository, ForwardsConfigStore, TransactionalResetCoordinator — do only field assignment at construction, no eager I/O.)
+- [x] Keep native bridge lazy. (2d2bb36 — unchanged; `sharedBridge` was already `by lazy` before this task)
 
 ## P1-003-B — Move work off main
 
-- [ ] Make forwards loading lazy/asynchronous with explicit Initializing/Ready/Failed state if needed.
-- [ ] Make network initial classification guarded/lazy and fail-closed.
-- [ ] Do not synchronously read setup/config/preferences in `Application.onCreate`.
-- [ ] Notification channel setup may remain; it is Android-required lightweight initialization.
+- [x] Make forwards loading lazy/asynchronous with explicit Initializing/Ready/Failed state if needed. (2d2bb36 — `ForwardsLoadState` sealed interface; construction seeds `Initializing`/empty list; `refresh()` transitions to `Ready`/`Failed`; mutations blocked while not `Ready`)
+- [x] Make network initial classification guarded/lazy and fail-closed. (2d2bb36 — `_status` seeded fail-closed `Unknown`/not-allowed; classification deferred to first refresh/evaluateWithPolicy/monitor call)
+- [x] Do not synchronously read setup/config/preferences in `Application.onCreate`. (2d2bb36 — unchanged from FIX6 INV-010; `onCreate` already only calls `appInitializationCoordinator.start()`, confirmed still async)
+- [x] Notification channel setup may remain; it is Android-required lightweight initialization. (2d2bb36 — unchanged, `NotificationController(this).ensureChannels()` left as-is)
 
 ## P1-003-C — Initialization coordinator idempotence
 
-- [ ] `start()` may be called once or is explicitly idempotent.
-- [ ] Repeated start does not launch duplicate initialization.
-- [ ] Exact `Initializing`, `Ready`, and `Failed` paths are tested.
-- [ ] Start gating consumes state without blocking main.
+- [x] `start()` may be called once or is explicitly idempotent. (2d2bb36 — made idempotent via an `AtomicReference<Job?>`)
+- [x] Repeated start does not launch duplicate initialization. (2d2bb36)
+- [x] Exact `Initializing`, `Ready`, and `Failed` paths are tested. (2d2bb36)
+- [x] Start gating consumes state without blocking main. (2d2bb36 — unchanged; `requireRuntimeStartAllowedFor` already reads `appInitialization.state.value` without blocking)
 
 ## P1-003-D — Tests
 
-- [ ] `applicationOnCreateDoesNotReadForwardsOnMainThread`
-- [ ] `applicationOnCreateDoesNotClassifyNetworkOnMainThread`
-- [ ] `applicationOnCreateDoesNotPerformConfigFileIoOnMainThread`
-- [ ] `initializationStartIsIdempotent`
-- [ ] `startWhileExactlyInitializingDoesNotCallNative`
-- [ ] `startAfterReadyCallsNative`
-- [ ] `startAfterFailedInitializationIsDurableAndVisible`
+- [x] `applicationOnCreateDoesNotReadForwardsOnMainThread` (2d2bb36)
+- [x] `applicationOnCreateDoesNotClassifyNetworkOnMainThread` (2d2bb36)
+- [x] `applicationOnCreateDoesNotPerformConfigFileIoOnMainThread` (2d2bb36)
+- [x] `initializationStartIsIdempotent` (2d2bb36)
+- [x] `startWhileExactlyInitializingDoesNotCallNative` (2d2bb36 — new `TunnelForegroundServiceInitializationRaceTest`, a blocking-`ensureDefaultConfig` test application driving the real async `start()`, since every other test application reaches `Ready` synchronously before the service is even created)
+- [x] `startAfterReadyCallsNative` (2d2bb36 — same new race test file)
+- [x] `startAfterFailedInitializationIsDurableAndVisible` (2d2bb36 — added to the existing `TunnelForegroundServiceInitializationGateTest`, proving a second start attempt after Failed stays blocked)
 
 Use injected fakes/dispatchers or StrictMode-style test seams; do not infer coverage from unrelated service tests.
 
 ## Acceptance
 
-- [ ] Identified disk/network work is absent from main-thread `onCreate`.
-- [ ] Readiness tests execute all three states.
+- [x] Identified disk/network work is absent from main-thread `onCreate`. (2d2bb36)
+- [x] Readiness tests execute all three states. (2d2bb36)
 
 ---
 
