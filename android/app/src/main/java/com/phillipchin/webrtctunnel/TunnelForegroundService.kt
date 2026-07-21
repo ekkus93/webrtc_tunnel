@@ -12,22 +12,12 @@ import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.CoordinatorOperations
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
 import com.phillipchin.webrtctunnel.data.LifecycleCommand
-import com.phillipchin.webrtctunnel.data.NativeFailureAfterStartupContext
-import com.phillipchin.webrtctunnel.data.PolicyAllowedResumeContext
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
-import com.phillipchin.webrtctunnel.data.StartOutcome
-import com.phillipchin.webrtctunnel.data.StopStatusVerificationException
 import com.phillipchin.webrtctunnel.data.TunnelLifecycleCoordinator
 import com.phillipchin.webrtctunnel.data.TunnelRepository
-import com.phillipchin.webrtctunnel.data.UnverifiedStartContext
-import com.phillipchin.webrtctunnel.data.classifyStartResult
-import com.phillipchin.webrtctunnel.data.cleanupUnverifiedStart
-import com.phillipchin.webrtctunnel.data.handleNativeFailureAfterStartup
-import com.phillipchin.webrtctunnel.data.resumeOnPolicyAllowedIfPreferred
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ServiceState
 import com.phillipchin.webrtctunnel.model.TunnelMode
-import com.phillipchin.webrtctunnel.model.isTunnelActiveOrStarting
 import com.phillipchin.webrtctunnel.network.LocalAddressResolver
 import com.phillipchin.webrtctunnel.network.NetworkMonitorSupervisor
 import com.phillipchin.webrtctunnel.network.NetworkPolicyDiagnosticReporter
@@ -52,12 +42,6 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-// Control-flow signal: a startup attempt aborted after publishing its own error/state.
-private class StartupAborted(message: String) : Exception(message)
-
-// P0-001: Signal that startup was blocked by network policy before native start.
-private class StartupPolicyBlocked(message: String) : RuntimeException(message)
-
 // P0-002: Quarantine violation — thrown when native runtime state is uncertain.
 internal class NativeRuntimeQuarantinedException(
     message: String,
@@ -69,27 +53,6 @@ internal class AppInitializationIncompleteException(
     val code: String,
     message: String,
 ) : IllegalStateException(message)
-
-// Maps a start-guard failure to its visible diagnostic code. Top-level (not a class
-// member) for the same reason as stopFailureCode: it costs no function budget against
-// this file's already-at-threshold classes.
-private fun startBlockedCode(error: Throwable): String =
-    if (error is AppInitializationIncompleteException) {
-        error.code
-    } else {
-        "native_runtime_quarantined"
-    }
-
-// Distinguishes an outright native stop failure from a stop that JNI reported as successful
-// but whose final state could not be verified as Stopped (P0-003), so TunnelRepository's
-// sticky lastCleanupError history can retain both categories. Top-level (not a class member)
-// so it doesn't count against this class's function budget for no behavioral reason.
-private fun stopFailureCode(error: Throwable): String =
-    if (error is StopStatusVerificationException) {
-        "stop_status_verification_failed"
-    } else {
-        "stop_failed"
-    }
 
 // RESPONSES item 3/FIX7 P0-007-D: the native-runtime-quarantine check runs FIRST, before app
 // initialization readiness, so an uncertain runtime always blocks a restart regardless of
@@ -137,33 +100,38 @@ private fun requireRuntimeStartAllowedFor(
 class TunnelForegroundService
     @JvmOverloads
     constructor(
-        private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+        // internal (not private): OfferCoordinator, split out into its own file, performs the
+        // native-start's I/O off the main thread through this same dispatcher.
+        internal val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
         private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
     ) : Service() {
         private val tag = "TunnelForegroundService"
-        private lateinit var notifications: NotificationController
-        private lateinit var repository: TunnelRepository
-        private lateinit var identityValidation: IdentityValidationClient
-        private lateinit var configRepository: ConfigRepository
-        private lateinit var identityRepository: IdentityRepository
-        private lateinit var networkPolicyManager: NetworkPolicyManager
+
+        // internal (not private): OfferCoordinator/ServiceCoordinatorOperations, split into
+        // their own file, reach every field below through an explicit `service` reference
+        // (Kotlin requires a class body, including former `inner class`es, to live in one
+        // file) rather than the implicit outer-instance access an `inner class` would get.
+        internal lateinit var notifications: NotificationController
+        internal lateinit var repository: TunnelRepository
+        internal lateinit var identityValidation: IdentityValidationClient
+        internal lateinit var configRepository: ConfigRepository
+        internal lateinit var identityRepository: IdentityRepository
+        internal lateinit var networkPolicyManager: NetworkPolicyManager
         private lateinit var appInitialization: AppInitializationCoordinator
-        private lateinit var localAddressResolver: LocalAddressResolver
+        internal lateinit var localAddressResolver: LocalAddressResolver
         private lateinit var coordinator: TunnelLifecycleCoordinator
-        private val serviceScope = CoroutineScope(SupervisorJob() + defaultDispatcher)
+        internal val serviceScope = CoroutineScope(SupervisorJob() + defaultDispatcher)
 
         private var networkMonitorJob: Job? = null
 
         // P0-004: Explicit startup ownership — coordinator is the only authority that clears it.
-        private var activeStartup: ActiveStartup? = null
+        // internal (not private): OfferCoordinator, split into its own file, is the sole writer.
+        internal var activeStartup: ActiveStartup? = null
         private var statusPollJob: Job? = null
-        private var lastMode: TunnelMode = TunnelMode.Offer
 
-        // P0-004: Startup ownership data class.
-        private data class ActiveStartup(
-            val generation: Long,
-            val job: Job,
-        )
+        // internal (not private): OfferCoordinator (split into its own file) both reads this to
+        // decide what `resume()` restarts and writes it when a new offer start begins.
+        internal var lastMode: TunnelMode = TunnelMode.Offer
 
         // internal (not private): P0-001's Robolectric test captures this reference and
         // joins it directly, so it can deterministically wait for a specific stale poll
@@ -184,18 +152,23 @@ class TunnelForegroundService
         // When a PolicyAllowed arrives while a startup is active, this records the
         // expected generation so the retry can be validated after the current attempt
         // completes. null means no pending retry.
-        private val pendingPolicyResumeGeneration =
+        // internal (not private): ServiceCoordinatorOperations, split into its own file, records
+        // the pending retry generation directly.
+        internal val pendingPolicyResumeGeneration =
             java.util.concurrent.atomic.AtomicReference<Long?>(null)
 
         // P1-006: Central helper to invalidate pending policy retry.
-        private fun invalidatePendingPolicyRetry() {
+        // internal (not private): called from OfferCoordinator/ServiceCoordinatorOperations,
+        // split into their own file.
+        internal fun invalidatePendingPolicyRetry() {
             pendingPolicyResumeGeneration.set(null)
         }
 
         // P0-004: True when native runtime existence is uncertain after a cleanup/stop
         // failure. Blocks all automatic restart (PolicyAllowed, RetryPolicyResume, auto-resume).
-        // Only a verified successful STOP clears the quarantine.
-        private val nativeRuntimeUncertain = AtomicBoolean(false)
+        // Only a verified successful STOP clears the quarantine. internal (not private):
+        // OfferCoordinator, split into its own file, clears this on a verified stop success.
+        internal val nativeRuntimeUncertain = AtomicBoolean(false)
 
         // P1-002-C: true once onDestroy() has begun tearing this service down. Distinguishes a
         // benign post-destroy dropped command (onDestroy already owns the remaining cleanup)
@@ -208,19 +181,23 @@ class TunnelForegroundService
         // P1-001: AtomicBoolean (not a plain var) because reads happen from coroutines
         // that never hold lifecycleMutex — the network-policy monitor callback and
         // status-poll loop — so a plain Boolean write would have no guaranteed visibility
-        // to those unsynchronized readers.
-        private val allowMeteredForCurrentRun = AtomicBoolean(false)
+        // to those unsynchronized readers. internal (not private): OfferCoordinator, split
+        // into its own file, both reads and writes this.
+        internal val allowMeteredForCurrentRun = AtomicBoolean(false)
 
         // P0-006: Tracks whether a verified native stop has succeeded. Set to false when
         // a new startup begins, set to true only after repository.stop() returns verified
         // success. onDestroy() checks this to avoid a redundant second native stop.
-        private val nativeStopVerified = AtomicBoolean(true)
+        // internal (not private): OfferCoordinator, split into its own file, writes this.
+        internal val nativeStopVerified = AtomicBoolean(true)
 
         // AtomicLong (not a mutex-guarded plain Long): generation checks must be lock-free so
         // an explicit lifecycle transition can cancel-and-join the startup coroutine while
         // holding lifecycleMutex without risking a deadlock against a startup coroutine that
-        // might otherwise need the same lock to check its own generation (P0-001).
-        private val lifecycleGeneration = AtomicLong(0)
+        // might otherwise need the same lock to check its own generation (P0-001). internal
+        // (not private): OfferCoordinator/ServiceCoordinatorOperations, split into their own
+        // file, read and advance this.
+        internal val lifecycleGeneration = AtomicLong(0)
 
         // internal (not private): the stale-generation regression test must wait for a
         // superseding command to have actually taken effect (this counter advancing) before
@@ -245,12 +222,17 @@ class TunnelForegroundService
         internal val lifecycleMutex = Mutex()
 
         // Notification + status-polling slice; accesses the shared lifecycle fields directly.
-        private val reporter = StatusReporter()
+        // internal (not private): OfferCoordinator/ServiceCoordinatorOperations, split into
+        // their own file, call through this directly.
+        internal val reporter = StatusReporter()
 
-        // Offer start/pause/stop state machine; accesses the shared lifecycle fields directly.
+        // Offer start/pause/stop state machine, split into its own file (Offer​Coordinator.kt) —
+        // reaches every field/helper it needs through the explicit `service` reference passed
+        // here rather than implicit outer-instance access, since Kotlin requires an `inner
+        // class`'s body to live in the same file as its outer class.
         // internal (not private): P0-004's Robolectric test drives pauseForPolicy() through
         // this real path rather than a synthetic test-only wrapper function.
-        internal val offer = OfferCoordinator()
+        internal val offer = OfferCoordinator(this)
 
         override fun onCreate() {
             super.onCreate()
@@ -340,7 +322,9 @@ class TunnelForegroundService
         // command is more than routine post-destroy noise (FIX7 P0-009-C: the network monitor's
         // fail-closed policy-blocked submission) can detect and escalate a dead control plane
         // rather than silently treating it the same as every other post-destroy drop.
-        private fun submitLifecycleCommand(command: LifecycleCommand): Boolean {
+        // internal (not private): ServiceCoordinatorOperations, split into its own file, calls
+        // this directly (e.g. to resubmit a pending policy retry).
+        internal fun submitLifecycleCommand(command: LifecycleCommand): Boolean {
             if (coordinator.trySubmit(command)) return true
             // P1-002-C: a drop while onDestroy owns the remaining cleanup (it stops the
             // coordinator before cancelling an in-flight startup, so that startup's
@@ -427,7 +411,9 @@ class TunnelForegroundService
             super.onDestroy()
         }
 
-        private fun abortStartup(
+        // internal (not private): OfferCoordinator, split into its own file, calls this while
+        // preparing an offer start.
+        internal fun abortStartup(
             message: String,
             code: String,
             state: ServiceState = ServiceState.Error,
@@ -441,8 +427,9 @@ class TunnelForegroundService
         // safely perform the one authoritative repository.stop() afterward without racing the
         // startup coroutine's own unwind. Safe to call under lifecycleMutex because generation
         // checks are lock-free and no other code the startup coroutine runs acquires this mutex
-        // (P0-001).
-        private suspend fun cancelStartupJobAndJoinLocked() {
+        // (P0-001). internal (not private): OfferCoordinator, split into its own file, calls
+        // this before every explicit lifecycle transition.
+        internal suspend fun cancelStartupJobAndJoinLocked() {
             val startup = activeStartup
             activeStartup = null
             startup?.job?.cancelAndJoin()
@@ -585,8 +572,10 @@ class TunnelForegroundService
         // separate AppInitializationCoordinator.requireReady() gate) — a quarantined
         // runtime must block start/resume regardless of app-initialization state.
         // A property (not a function) so it doesn't count against this class's detekt
-        // function budget for no behavioral reason.
-        private val requireRuntimeStartAllowed: () -> Result<Unit> = {
+        // function budget for no behavioral reason. internal (not private):
+        // OfferCoordinator/ServiceCoordinatorOperations, split into their own file, call
+        // this before every start/resume attempt.
+        internal val requireRuntimeStartAllowed: () -> Result<Unit> = {
             requireRuntimeStartAllowedFor(appInitialization.state.value, nativeRuntimeUncertain.get())
         }
 
@@ -654,8 +643,11 @@ class TunnelForegroundService
          * (possibly-failing) visible-notification call so a notification failure can never hide
          * that quarantine already happened, and never overwritten by it afterward since
          * [StatusReporter.publishErrorSafely] does not touch `repository.setLocalError`.
+         *
+         * internal (not private): `OfferCoordinator`, split into its own file, calls this on
+         * every stop-like failure (pause/pauseForPolicy/stopServiceWork).
          */
-        private fun enterNativeRuntimeQuarantine(
+        internal fun enterNativeRuntimeQuarantine(
             code: String,
             message: String,
         ) {
@@ -679,504 +671,11 @@ class TunnelForegroundService
             reporter.publishErrorSafely(code = code, message = redacted)
         }
 
-        private val coordinatorOps: CoordinatorOperations =
-            object : CoordinatorOperations {
-                // P0-001: submits the retry once the NativeFailure branch of
-                // handleStartupCompleted has confirmed the pending policy retry is live.
-                // A property (not a function) so it doesn't count against this object's
-                // detekt function budget, and it keeps handleStartupCompleted short enough
-                // for detekt's LongMethod check.
-                val resumeAfterNativeFailurePendingRetry: (Long) -> Unit = { gen ->
-                    submitLifecycleCommand(LifecycleCommand.RetryPolicyResume(expectedGeneration = gen))
-                }
+        private val coordinatorOps: CoordinatorOperations = ServiceCoordinatorOperations(this)
 
-                override fun onError(
-                    message: String,
-                    code: String,
-                    state: ServiceState,
-                ) {
-                    reporter.publishError(message, code, state)
-                }
-
-                // P1-002-B: the lifecycle command processor died unexpectedly — nothing is
-                // left to drain the command queue, so the native runtime's real state is
-                // uncertain. Quarantine through the same central helper every other stop-like
-                // failure uses, then actually stop the service rather than leaving it foreground
-                // pretending to still be controllable. A property (not a function) so it doesn't
-                // count against this object's detekt function budget.
-                override val onProcessorFailed: () -> Unit = {
-                    enterNativeRuntimeQuarantine(
-                        code = "lifecycle_processor_failed",
-                        message = "Lifecycle command processor exited unexpectedly",
-                    )
-                    stopSelf()
-                }
-
-                override suspend fun startOffer() {
-                    requireRuntimeStartAllowed()
-                        .getOrElse { error ->
-                            reporter.publishError(
-                                message =
-                                    SensitiveDataRedactor.redactText(
-                                        error.message ?: "Runtime restart is blocked",
-                                    ),
-                                code = startBlockedCode(error),
-                            )
-                            return
-                        }
-                    if (!repository.status.value.serviceState.isTunnelActiveOrStarting()) {
-                        offer.startOffer()
-                    }
-                }
-
-                override suspend fun pause() {
-                    offer.pause()
-                }
-
-                override suspend fun resume() {
-                    requireRuntimeStartAllowed()
-                        .getOrElse { error ->
-                            reporter.publishError(
-                                message =
-                                    SensitiveDataRedactor.redactText(
-                                        error.message ?: "Runtime restart is blocked",
-                                    ),
-                                code = startBlockedCode(error),
-                            )
-                            return
-                        }
-                    offer.resume()
-                }
-
-                override suspend fun stop() {
-                    offer.stopServiceWork()
-                }
-
-                override suspend fun allowMeteredForSessionAndStart() {
-                    requireRuntimeStartAllowed()
-                        .getOrElse { error ->
-                            reporter.publishError(
-                                message =
-                                    SensitiveDataRedactor.redactText(
-                                        error.message ?: "Runtime restart is blocked",
-                                    ),
-                                code = startBlockedCode(error),
-                            )
-                            return
-                        }
-                    offer.allowMeteredForSessionAndStart()
-                }
-
-                override suspend fun pauseForPolicy(reason: String) {
-                    offer.pauseForPolicy(reason)
-                }
-
-                override suspend fun handlePolicyAllowed() {
-                    // FIX6 P0-004: quarantine (and not-yet-ready init) must be visible from
-                    // this path just as from manual start/resume, not silently swallowed.
-                    requireRuntimeStartAllowed().getOrElse { error ->
-                        invalidatePendingPolicyRetry()
-                        reporter.publishError(
-                            code = startBlockedCode(error),
-                            message =
-                                SensitiveDataRedactor.redactText(
-                                    error.message ?: "Runtime restart is blocked",
-                                ),
-                        )
-                        return
-                    }
-                    // Not policy-paused is not an error — just drop any stale token.
-                    if (!pausedByPolicy.get()) {
-                        invalidatePendingPolicyRetry()
-                        return
-                    }
-                    // The pref-read + resume decision lives in a top-level function (like
-                    // handleNativeFailureAfterStartup) so it costs no method budget against
-                    // this object, which is at detekt's TooManyFunctions limit.
-                    resumeOnPolicyAllowedIfPreferred(
-                        PolicyAllowedResumeContext(
-                            readPreferences = { configRepository.preferences.first() },
-                            invalidatePendingRetry = ::invalidatePendingPolicyRetry,
-                            publishError = { code, message -> reporter.publishError(message = message, code = code) },
-                            recordPendingRetry = { pendingPolicyResumeGeneration.set(lifecycleGeneration.get()) },
-                            hasActiveStartup = { activeStartup != null },
-                            resume = { offer.resume() },
-                        ),
-                    )
-                }
-
-                override suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
-                    val allowed = requireRuntimeStartAllowed().getOrNull()
-                    if (allowed == null) {
-                        invalidatePendingPolicyRetry()
-                        return
-                    }
-                    if (lifecycleGeneration.get() != expectedGeneration ||
-                        !pausedByPolicy.get()
-                    ) {
-                        invalidatePendingPolicyRetry()
-                        return
-                    }
-                    invalidatePendingPolicyRetry()
-                    offer.resume()
-                }
-
-                override suspend fun handleStartupCompleted(
-                    generation: Long,
-                    outcome: StartOutcome,
-                ) {
-                    if (lifecycleGeneration.get() != generation) return
-                    activeStartup = null
-                    if (outcome !is StartOutcome.VerifiedSuccess) {
-                        clearTemporaryMeteredAllowance()
-                    }
-                    // P0-001: every branch except NativeFailure invalidates unconditionally.
-                    // NativeFailure must consume the pending retry first — invalidating here
-                    // too would clear it before that branch could read it.
-                    if (outcome !is StartOutcome.NativeFailure) {
-                        invalidatePendingPolicyRetry()
-                    }
-                    when (outcome) {
-                        StartOutcome.VerifiedSuccess -> {
-                            pausedByPolicy.set(false)
-                            reporter.publishStatus()
-                            reporter.startStatusPolling()
-                        }
-                        is StartOutcome.NativeFailure -> {
-                            handleNativeFailureAfterStartup(
-                                NativeFailureAfterStartupContext(
-                                    outcome.error,
-                                    generation,
-                                    pendingPolicyResumeGeneration,
-                                    pausedByPolicy,
-                                    resumeAfterNativeFailurePendingRetry,
-                                    reporter::publishError,
-                                ),
-                            )
-                        }
-                        is StartOutcome.VerificationFailure -> {
-                            cleanupUnverifiedStart(
-                                UnverifiedStartContext(
-                                    outcome.error,
-                                    generation,
-                                    lifecycleGeneration,
-                                    reporter::stopStatusPollingAndJoin,
-                                    { repository.stop() },
-                                    nativeStopVerified,
-                                    ::enterNativeRuntimeQuarantine,
-                                ),
-                            )
-                        }
-                        is StartOutcome.UnexpectedFailure -> {
-                            reporter.publishError(
-                                outcome.error.message ?: "Unexpected startup failure",
-                                "startup_unexpected_failure",
-                            )
-                        }
-                        is StartOutcome.PolicyBlocked -> {
-                            pausedByPolicy.set(true)
-                            nativeStopVerified.set(true)
-                            repository.setPolicyBlocked(outcome.reason)
-                            reporter.publishStatus(outcome.reason)
-                        }
-                        is StartOutcome.Aborted -> {
-                            reporter.publishError(outcome.reason, "startup_aborted")
-                        }
-                    }
-                }
-            }
-
-        // Offer-mode start plus pause/stop transitions, guarded by the lifecycle generation.
-        inner class OfferCoordinator {
-            suspend fun startOffer() {
-                var generation = 0L
-                lifecycleMutex.withLock {
-                    if (activeStartup != null) {
-                        reporter.publishStatus(getString(R.string.service_msg_already_starting))
-                        return
-                    }
-                    val current = repository.status.value.serviceState
-                    // P1-012: Block duplicate starts in transitional states too.
-                    if (current.isTunnelActiveOrStarting()) {
-                        reporter.publishStatus(getString(R.string.service_msg_already_running))
-                        return
-                    }
-                    generation = lifecycleGeneration.incrementAndGet()
-                    nativeStopVerified.set(false)
-                    // Invalidate any pending retry when a new start begins.
-                    invalidatePendingPolicyRetry()
-                    val job =
-                        serviceScope.launch {
-                            doStartOffer(generation)
-                        }
-                    activeStartup = ActiveStartup(generation, job)
-                }
-            }
-
-            private suspend fun doStartOffer(startGeneration: Long) {
-                lastMode = TunnelMode.Offer
-                startForeground(
-                    NOTIFICATION_ID,
-                    reporter.loadingNotification(getString(R.string.service_msg_starting_tunnel)),
-                )
-                val completion = performStartupAttempt(startGeneration)
-                submitLifecycleCommand(LifecycleCommand.StartupCompleted(startGeneration, completion))
-            }
-
-            // P0-001: Wraps both preparation and native start into a single completion boundary.
-            // Every path returns a typed StartOutcome — no path may return without completion.
-            // Cancellation propagates; other exceptions become typed StartOutcome values.
-            private suspend fun performStartupAttempt(generation: Long): StartOutcome {
-                return try {
-                    val identity =
-                        prepareOfferIdentity()
-
-                    try {
-                        classifyStartAndZeroIdentity(
-                            identity = identity,
-                            generation = generation,
-                        )
-                    } finally {
-                        identity.fill(0)
-                    }
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (blocked: StartupPolicyBlocked) {
-                    StartOutcome.PolicyBlocked(
-                        reason =
-                            blocked.message
-                                ?: "Blocked by network policy",
-                    )
-                } catch (aborted: StartupAborted) {
-                    StartOutcome.Aborted(
-                        reason =
-                            aborted.message
-                                ?: "Startup aborted",
-                    )
-                } catch (error: Exception) {
-                    StartOutcome.UnexpectedFailure(
-                        error = error,
-                    )
-                }
-            }
-
-            // Classifies the native start result after identity has been prepared. Returns Aborted
-            // if the generation changed at any point, otherwise classifies the native start result.
-            private suspend fun classifyStartAndZeroIdentity(
-                identity: ByteArray,
-                generation: Long,
-            ): StartOutcome {
-                val generationStillValid = lifecycleGeneration.get() == generation
-                return if (generationStillValid) {
-                    val result =
-                        withContext(ioDispatcher) {
-                            repository.start(TunnelMode.Offer, configRepository.configPath, identity)
-                        }
-                    if (lifecycleGeneration.get() == generation) {
-                        classifyStartResult(result)
-                    } else {
-                        StartOutcome.Aborted("Startup superseded during native start")
-                    }
-                } else {
-                    StartOutcome.Aborted("Startup superseded by newer lifecycle generation")
-                }
-            }
-
-            // Loads + validates prerequisites for an offer start. Returns the private identity
-            // bytes, or throws StartupAborted after publishing the appropriate state/error.
-            private suspend fun prepareOfferIdentity(): ByteArray {
-                val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
-                val policy =
-                    networkPolicyManager.evaluateWithPolicy(
-                        prefs.allowMetered || allowMeteredForCurrentRun.get(),
-                    )
-                repository.updateNetworkStatus(policy)
-                if (!policy.tunnelAllowed) {
-                    throw StartupPolicyBlocked(policy.blockReason ?: "Tunnel blocked by current network policy")
-                }
-                // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
-                // wraps a suspend call chain (withContext).
-                val identity =
-                    try {
-                        withContext(ioDispatcher) { identityRepository.readPrivateIdentityPlaintext() }
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (error: Exception) {
-                        abortStartup("Unable to decrypt private identity: ${error.message}", "identity_decrypt_failed")
-                    }
-                // P0-008: Ownership transfer — identity is wiped if preparation fails.
-                var transferred = false
-                try {
-                    // Apply the user's chosen ICE mode and inject the active network's IPv4
-                    // (ConnectivityManager/LinkProperties) as the vnet_mux host candidate before
-                    // validating/starting, so a strict vnet_mux start fails loudly rather than
-                    // silently dropping to native ICE.
-                    val configResult =
-                        withContext(ioDispatcher) {
-                            configRepository.prepareActiveConfigForStart(
-                                prefs.androidIceMode,
-                                localAddressResolver.currentIpv4(),
-                            )
-                        }
-                    if (!configResult.isSuccess) {
-                        val redacted =
-                            SensitiveDataRedactor.redactText(
-                                configResult.exceptionOrNull()
-                                    ?.message ?: "unknown error",
-                            )
-                        abortStartup(
-                            "Failed to prepare active config: $redacted",
-                            "config_prep_failed",
-                        )
-                    }
-                    val validation =
-                        withContext(ioDispatcher) {
-                            identityValidation.validateConfigWithIdentity(configRepository.configPath, identity)
-                        }
-                    if (!validation.valid) {
-                        abortStartup(
-                            validation.message ?: "Config validation failed",
-                            "config_validation_failed",
-                            ServiceState.ConfigInvalid,
-                        )
-                    }
-                    transferred = true
-                    return identity
-                } finally {
-                    if (!transferred) {
-                        // Preparation failed — wipe the plaintext identity.
-                        identity.fill(0)
-                    }
-                }
-            }
-
-            // P1-001: AllowMeteredSession is now one ordered lifecycle command.
-
-            // P1-001: AllowMeteredSession is now one ordered lifecycle command.
-            // The handler performs: set allowance, update repository, begin startup
-            // within one command processing step.
-            suspend fun allowMeteredForSessionAndStart() {
-                lifecycleMutex.withLock {
-                    allowMeteredForCurrentRun.set(true)
-                    repository.updateSessionMeteredAllowance(true)
-                    pausedByPolicy.set(false)
-                    invalidatePendingPolicyRetry()
-                }
-                startOffer()
-            }
-
-            suspend fun resume() {
-                when (lastMode) {
-                    TunnelMode.Offer -> startOffer()
-                    TunnelMode.Answer ->
-                        reporter.publishError(
-                            message = "Answer mode is not available on Android",
-                            code = "answer_mode_disabled",
-                        )
-                }
-            }
-
-            suspend fun pause() {
-                lifecycleMutex.withLock {
-                    lifecycleGeneration.incrementAndGet()
-                    cancelStartupJobAndJoinLocked()
-                    reporter.stopStatusPollingAndJoin()
-                    invalidatePendingPolicyRetry()
-                    withContext(ioDispatcher) { repository.stop() }
-                        .fold(
-                            onSuccess = {
-                                // P1-011: Set nativeStopVerified true after verified successful pause.
-                                nativeStopVerified.set(true)
-                                clearTemporaryMeteredAllowance()
-                                reporter.publishStatus(getString(R.string.service_msg_paused))
-                            },
-                            onFailure = {
-                                // FIX7 P0-007-B: a failed manual-pause stop must quarantine the
-                                // runtime, exactly like a failed explicit STOP already does —
-                                // previously this only reported the error.
-                                enterNativeRuntimeQuarantine(
-                                    code = stopFailureCode(it),
-                                    message = it.message ?: "Unable to stop tunnel",
-                                )
-                            },
-                        )
-                }
-            }
-
-            suspend fun pauseForPolicy(reason: String) {
-                lifecycleMutex.withLock {
-                    lifecycleGeneration.incrementAndGet()
-                    cancelStartupJobAndJoinLocked()
-                    reporter.stopStatusPollingAndJoin()
-                    // P0-002: Invalidate any pending retry when policy pauses.
-                    invalidatePendingPolicyRetry()
-                    withContext(ioDispatcher) { repository.stop() }
-                        .fold(
-                            onSuccess = {
-                                // P1-011: Set nativeStopVerified true after verified successful policy pause.
-                                nativeStopVerified.set(true)
-                                pausedByPolicy.set(true)
-                                repository.setPolicyBlocked(reason)
-                                clearTemporaryMeteredAllowance()
-                                reporter.publishStatus(reason)
-                            },
-                            onFailure = {
-                                // The tunnel did not stop cleanly, so this must never be
-                                // reported as the normal policy-paused state. Force false
-                                // unconditionally rather than restoring a stale prior
-                                // value, so a retry/reevaluation path stays open.
-                                pausedByPolicy.set(false)
-                                // FIX7 P0-007-B: a failed policy-pause stop must quarantine the
-                                // runtime, exactly like a failed explicit STOP already does —
-                                // previously this only reported the error.
-                                enterNativeRuntimeQuarantine(
-                                    code = stopFailureCode(it),
-                                    message = it.message ?: "Failed stopping tunnel after policy block",
-                                )
-                            },
-                        )
-                }
-            }
-
-            suspend fun stopServiceWork() {
-                lifecycleMutex.withLock {
-                    lifecycleGeneration.incrementAndGet()
-                    cancelStartupJobAndJoinLocked()
-                    reporter.stopStatusPollingAndJoin()
-                    val stopResult = withContext(ioDispatcher) { repository.stop() }
-                    pausedByPolicy.set(false)
-                    clearTemporaryMeteredAllowance()
-                    stopResult.fold(
-                        onSuccess = {
-                            // P0-005: Stop success path.
-                            nativeStopVerified.set(true)
-                            nativeRuntimeUncertain.set(false)
-                            // P0-002: Invalidate any pending retry on explicit stop success.
-                            invalidatePendingPolicyRetry()
-                            notifications.show(
-                                notifications.buildStatusNotification(ServiceState.Stopped, "Tunnel stopped"),
-                            )
-                            stopForeground(STOP_FOREGROUND_REMOVE)
-                            stopSelf()
-                        },
-                        onFailure = {
-                            // P0-005/FIX7 P0-007-B: Stop failure path — remain alive and
-                            // foreground; quarantine through the central helper (covers both
-                            // an outright stop failure and a stop-status-verification failure,
-                            // per stopFailureCode's distinction).
-                            enterNativeRuntimeQuarantine(
-                                code = stopFailureCode(it),
-                                message = it.message ?: "Unable to stop tunnel cleanly",
-                            )
-                            // Service remains foreground; user can retry STOP.
-                        },
-                    )
-                }
-            }
-        }
-
-        // Clears the temporary metered allowance so a future run starts fresh.
-        private fun clearTemporaryMeteredAllowance() {
+        // Clears the temporary metered allowance so a future run starts fresh. internal (not
+        // private): OfferCoordinator, split into its own file, calls this too.
+        internal fun clearTemporaryMeteredAllowance() {
             allowMeteredForCurrentRun.set(false)
             repository.updateSessionMeteredAllowance(false)
         }
