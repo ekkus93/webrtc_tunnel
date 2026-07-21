@@ -1739,38 +1739,38 @@ related tests
 
 ## P1-004-A — Durable network-policy state
 
-- [ ] Add `NetworkPolicyUiState.lastOperationFailure` or equivalent.
-- [ ] Preference save failure sets fixed/redacted durable failure.
-- [ ] Success clears it.
-- [ ] Snackbar mirrors only.
-- [ ] New collector/recreation sees the failure until acknowledged or a success clears it.
+- [x] Add `NetworkPolicyUiState.lastOperationFailure` or equivalent. (5988e22)
+- [x] Preference save failure sets fixed/redacted durable failure. (5988e22 — `SensitiveDataRedactor.redactText` applied, code `network_preference_save_failed`)
+- [x] Success clears it. (5988e22)
+- [x] Snackbar mirrors only. (5988e22 — `publishOperationFailure`/`clearOperationFailure` set state first, snackbar is the mirror)
+- [x] New collector/recreation sees the failure until acknowledged or a success clears it. (5988e22 — durable `StateFlow`, not a one-shot event)
 
 ## P1-004-B — Flow exception handling
 
-- [ ] `evaluateWithPolicy` exception does not terminate `networkStatus` flow.
-- [ ] Emit canonical fail-closed Unknown.
-- [ ] Store/report classification failure safely.
+- [x] `evaluateWithPolicy` exception does not terminate `networkStatus` flow. (5988e22 — `evaluateNetworkPolicySafely` wraps the combine lambda in both `NetworkPolicyViewModel` and `SetupViewModel`, which had the identical unguarded pattern)
+- [x] Emit canonical fail-closed Unknown. (5988e22 — `NetworkPolicyManager.evaluate(NetworkType.Unknown to false, allowMetered = false)`)
+- [x] Store/report classification failure safely. (5988e22 — `Log.e` with `SensitiveDataRedactor.redactText`)
 
 ## P1-004-C — Boundary redaction
 
-- [ ] Audit every `OperationFailure` assignment and ViewModel error state assignment.
-- [ ] Redact before assignment.
-- [ ] Prefer fixed safe messages for config write, candidate cleanup, identity persistence, reset, and network preference errors.
-- [ ] Remove comments that defer redaction to future work.
+- [x] Audit every `OperationFailure` assignment and ViewModel error state assignment. (5988e22 — audited NetworkPolicyViewModel, ForwardsViewModel, ImportExportViewModel, ImportExportService, SettingsViewModel [already clean], SetupSaveController)
+- [x] Redact before assignment. (5988e22)
+- [x] Prefer fixed safe messages for config write, candidate cleanup, identity persistence, reset, and network preference errors. (5988e22 — deviation: reset errors were already redacted at a single chokepoint in `TransactionalReset.kt`'s `safeResetReason`, predating this task; no change needed there)
+- [x] Remove comments that defer redaction to future work. (5988e22 — removed the two "expanding redaction is P1-009" comments in `ForwardsViewModel.kt`)
 
 ## P1-004-D — Tests
 
-- [ ] `networkPreferenceFailureRemainsInStateWithoutSnackbarCollector`
-- [ ] `networkPreferenceSuccessClearsPriorFailure`
-- [ ] `networkPolicyFailureMessageRedactsPasswordTokenApiKeyAndPrivateKey`
-- [ ] `networkStatusEvaluationFailureEmitsBlockedUnknownAndFlowContinues`
-- [ ] `allMutatingViewModelFailureStatesRejectSecretSentinel`
+- [x] `networkPreferenceFailureRemainsInStateWithoutSnackbarCollector` (5988e22)
+- [x] `networkPreferenceSuccessClearsPriorFailure` (5988e22)
+- [x] `networkPolicyFailureMessageRedactsPasswordTokenApiKeyAndPrivateKey` (5988e22)
+- [x] `networkStatusEvaluationFailureEmitsBlockedUnknownAndFlowContinues` (5988e22)
+- [x] `allMutatingViewModelFailureStatesRejectSecretSentinel` (5988e22 — new `AllViewModelFailureRedactionTest`, covering NetworkPolicyViewModel/ImportExportViewModel/SetupSaveController with one shared secret sentinel; incidentally caught and fixed a real double-redaction regression where `SensitiveDataRedactor`'s identity-path regex mangled an already-safe fixed message)
 
 ## Acceptance
 
-- [ ] Network policy joins the durable-failure contract.
-- [ ] No required ViewModel failure depends only on snackbar.
-- [ ] Failure state is redacted at assignment boundary.
+- [x] Network policy joins the durable-failure contract. (5988e22)
+- [x] No required ViewModel failure depends only on snackbar. (5988e22)
+- [x] Failure state is redacted at assignment boundary. (5988e22)
 
 ---
 
