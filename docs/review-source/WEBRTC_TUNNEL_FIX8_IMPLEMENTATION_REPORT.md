@@ -49,4 +49,13 @@ Consequence: cargo, gradle, Docker E2E, emulator E2E, and CI push are all execut
 
 ## Task log
 
-_Per-task entries appended below as work proceeds._
+### Setup / relocation — commit `dcbbf65`
+`git mv` FIX7 review + FIX8 manifest into `docs/review-source/`; created `.aiworkflow/logs/fix8/` inventories + `environment-preflight.txt`; added this report skeleton. Evidence logs scanned for secret-value patterns (clean — source line references only).
+
+### P0-001-A — SetupIdentityDraft private-byte holder — commit `fae7aa9`
+- Added `viewmodel/SetupIdentityDraft.kt`: non-`data` `SetupIdentityDraft` + `DraftIdentityReplacement`, `internal`. Wipes previous bytes on `replace`/`clear`; `copyForSave()` returns an independently-owned copy; `replace` requires non-empty/non-blank fields.
+- Added `SetupIdentityDraftTest.kt` (5 tests): `replaceWipesPreviousPrivateBytes`, `clearWipesPrivateBytesAndDropsReplacement`, `copyForSaveReturnsIndependentCopyThatDoesNotAffectDraft`, `copyForSaveIsNullWhenEmpty`, `replaceRejectsEmptyOrBlankFields`. Confirmed the test failed to compile first (`Unresolved reference 'SetupIdentityDraft'`), then passed 5/5 after implementation.
+- Focused: `testDebugUnitTest --tests '*SetupIdentityDraftTest'` → tests=5 failures=0. ktlint (main+test) + detekt (all source sets) PASS.
+
+### Sequencing note (documented reorder, permitted by TODO §0)
+Reading `SetupSaveController.validateAndCommit`/`commitSetup` showed **P0-001-C (draft-only forwards) is coupled to P0-004-D (setup `Forwards` transactional stage)**. The wizard currently persists `forwards.json` eagerly via `ForwardsRepository.upsertWithReceipt/deleteWithReceipt`; the final setup transaction renders *enabled* forwards into `config.toml` but has no `Forwards` stage to write `forwards.json`. Removing the eager write in isolation would (a) leave `forwards.json` unpersisted by setup and (b) break existing forwards tests — violating the green-commit rule. Per spec §3.2 ("Forwards is a real transactional stage; it may not be committed by SetupForwardsController before Review save"), P0-001-C and P0-004-D will land together. P0-001-B (draft-only identity generate/URI/path import) and P0-001-D (final-save draft resolution) can still proceed first, since the import-path save resolution is already draft-shaped (`fromImport`).
