@@ -1225,11 +1225,11 @@ related tests
 
 ## P0-009-A — Add safe reporter wrapper
 
-- [ ] Required safety actions occur before reporting.
-- [ ] Catch `Exception`, not `Throwable`.
-- [ ] Redact reporter failure message.
-- [ ] Do not recursively invoke the same failing reporter to report reporter failure.
-- [ ] Log a fixed safe secondary message.
+- [x] Required safety actions occur before reporting. (`6ab050f`)
+- [x] Catch `Exception`, not `Throwable`. (`6ab050f`)
+- [x] Redact reporter failure message. (`6ab050f`)
+- [x] Do not recursively invoke the same failing reporter to report reporter failure. (`6ab050f`)
+- [x] Log a fixed safe secondary message. (`6ab050f`)
 
 ```kotlin
 internal fun reportNetworkDiagnosticSafely(
@@ -1255,53 +1255,74 @@ internal fun reportNetworkDiagnosticSafely(
 
 For callback and initial/refresh classification:
 
-- [ ] Catch classifier `Exception`.
-- [ ] Produce canonical Unknown with `allowMetered = false`.
-- [ ] Assign internal status first.
-- [ ] Try to deliver status.
-- [ ] Report classification failure safely last.
-- [ ] A throwing reporter cannot cause the callback to throw.
+- [x] Catch classifier `Exception`. (`6ab050f`)
+- [x] Produce canonical Unknown with `allowMetered = false`. (`6ab050f`)
+- [x] Assign internal status first. (`6ab050f`)
+- [x] Try to deliver status. (`6ab050f`)
+- [x] Report classification failure safely last. (`6ab050f`)
+- [x] A throwing reporter cannot cause the callback to throw. (`6ab050f`)
+
+**Deviation:** "initial/refresh classification" turned out to cover 3 call sites,
+not 1 — the constructor's initial evaluation, `refresh()`, and
+`evaluateWithPolicy()` all called the classifier with no exception handling at
+all (a throwing classifier there crashed construction or propagated
+uncaught). None of these three have a reporter parameter available (only
+`monitor()` does), so they fail closed via a new `classifySafely()` helper
+that logs directly instead of reporting — confirmed by
+`constructorClassificationFailureProducesBlockedUnknown` and
+`refreshClassificationFailureProducesBlockedUnknown` initially failing
+against the pre-fix code.
 
 ## P0-009-C — Monitor-supervisor safety order
 
 On register/upstream/unregister/collection failure:
 
-- [ ] Update repository to fail-closed Unknown.
-- [ ] Submit policy-blocked lifecycle command.
-- [ ] If command submission fails, expose `lifecycle_processor_unavailable` and stop service/control flow.
-- [ ] Report monitor failure safely.
-- [ ] Retry with bounded backoff only while lifecycle processor/control plane remains available.
-- [ ] Cancellation publishes nothing and retries nothing.
+- [x] Update repository to fail-closed Unknown. (`6ab050f`)
+- [x] Submit policy-blocked lifecycle command. (`6ab050f`)
+- [x] If command submission fails, expose `lifecycle_processor_unavailable` and stop service/control flow. (`6ab050f`)
+- [x] Report monitor failure safely. (`6ab050f`)
+- [x] Retry with bounded backoff only while lifecycle processor/control plane remains available. (`6ab050f`)
+- [x] Cancellation publishes nothing and retries nothing. (`6ab050f`, pre-existing, still green)
+
+**Deviation:** `submitLifecycleCommand` now returns `Boolean` (previously
+`Unit`, silently dropping post-destroy commands) so the network monitor's
+`onMonitorFailure` callback can detect a dead lifecycle processor and
+escalate it as `lifecycle_processor_unavailable`, then return `false` so
+`NetworkMonitorSupervisor.run()` stops retrying instead of backing off
+forever against a control plane that is already gone. Other
+`submitLifecycleCommand` call sites (onStartCommand etc.) ignore the return
+value unchanged — the routine post-destroy drop there is already logged and
+does not need this escalation.
 
 ## P0-009-D — Validate backoff constructor
 
-- [ ] `initialDelayMs > 0`.
-- [ ] `maxDelayMs >= initialDelayMs`.
-- [ ] multiplier/growth factor valid and finite.
-- [ ] delay calculation cannot overflow to negative.
-- [ ] cap is enforced.
+- [x] `initialDelayMs > 0`. (`6ab050f`)
+- [x] `maxDelayMs >= initialDelayMs`. (`6ab050f`)
+- [x] multiplier/growth factor valid and finite. (`6ab050f` — the growth factor is a fixed bit-shift doubling, not a configurable float, so "valid and finite" reduces to the overflow guard below)
+- [x] delay calculation cannot overflow to negative. (`6ab050f`)
+- [x] cap is enforced. (`6ab050f`)
 
 ## P0-009-E — Tests
 
-- [ ] `classifierFailureAppliesBlockedUnknownBeforeReporterCall`
-- [ ] `throwingClassificationReporterDoesNotEscapeCallback`
-- [ ] `throwingDeliveryReporterDoesNotPreventStatusUpdate`
-- [ ] `registerFailureBlocksTunnelEvenWhenReporterThrows`
-- [ ] `upstreamFailureBlocksTunnelEvenWhenReporterThrows`
-- [ ] `unregisterFailureReporterThrowDoesNotEscapeCleanup`
-- [ ] `monitorFailureSubmitsPolicyBlockedBeforeReporting`
-- [ ] `failedPolicyBlockedSubmissionStopsSupervisorAndIsVisible`
-- [ ] `constructorClassificationFailureProducesBlockedUnknown`
-- [ ] `refreshClassificationFailureProducesBlockedUnknown`
-- [ ] `monitorCancellationWithThrowingReporterStillExitsWithoutRetry`
-- [ ] `invalidBackoffParametersAreRejected`
-- [ ] `backoffCalculationIsCappedAndCannotOverflow`
+- [x] `classifierFailureAppliesBlockedUnknownBeforeReporterCall` (`6ab050f`)
+- [x] `throwingClassificationReporterDoesNotEscapeCallback` (`6ab050f`)
+- [x] `throwingDeliveryReporterDoesNotPreventStatusUpdate` (`6ab050f`)
+- [x] `registerFailureBlocksTunnelEvenWhenReporterThrows` (`6ab050f`)
+- [x] `upstreamFailureBlocksTunnelEvenWhenReporterThrows` (`6ab050f`)
+- [x] `unregisterFailureReporterThrowDoesNotEscapeCleanup` (`6ab050f`)
+- [x] `monitorFailureSubmitsPolicyBlockedBeforeReporting` (`6ab050f`)
+- [x] `failedPolicyBlockedSubmissionStopsSupervisorAndIsVisible` (`6ab050f`)
+- [x] `constructorClassificationFailureProducesBlockedUnknown` (`6ab050f`)
+- [x] `refreshClassificationFailureProducesBlockedUnknown` (`6ab050f`)
+- [x] `monitorCancellationWithThrowingReporterStillExitsWithoutRetry` (`6ab050f`)
+- [x] `invalidBackoffParametersAreRejected` (`6ab050f`)
+- [x] `backoffCalculationIsCappedAndCannotOverflow` (`6ab050f`)
 
 ## Acceptance
 
-- [ ] Reporter failure cannot defeat safety state.
-- [ ] Classification is fail-closed in every entry path.
-- [ ] Dead control plane is escalated, not silently retried.
+- [x] Reporter failure cannot defeat safety state. (`6ab050f`)
+- [x] Classification is fail-closed in every entry path. (`6ab050f`)
+- [x] Dead control plane is escalated, not silently retried. (`6ab050f`)
 
 ---
 
