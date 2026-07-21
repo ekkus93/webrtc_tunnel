@@ -1512,18 +1512,27 @@ related tests
 
 ## P1-001-A — Visible import busy state
 
-- [ ] Use global coordinator.
-- [ ] Busy rejection sets durable `lastOperationFailure` with `configuration_operation_busy`.
-- [ ] It clears/sets `isBusy` truthfully.
-- [ ] It may mirror snackbar.
-- [ ] No bare `return@launch`.
+- [x] Use global coordinator. (already correct — `ConfigurationMutationCoordinator.tryRun`, predates this pass)
+- [x] Busy rejection sets durable `lastOperationFailure` with `configuration_operation_busy`. (already correct)
+- [x] It clears/sets `isBusy` truthfully. (already correct)
+- [x] It may mirror snackbar. (already correct)
+- [x] No bare `return@launch`. (already correct)
+
+**Deviation:** P1-001-A was already fully and correctly implemented before
+this task started (`ImportExportOps.runImport` in `ImportExportViewModel.kt`
+already matched the target pattern closely). `a9dfdff` adds the missing named
+test coverage (`secondConfigImportIsRejectedVisiblyWithActiveOperation`) for
+behavior that already existed.
 
 ## P1-001-B — Cancellation-safe UI busy cleanup
 
-- [ ] Set `isBusy = true` only after admission succeeds.
-- [ ] Clear `isBusy` in non-suspending `finally` state assignment.
-- [ ] Cancellation rethrows and emits no ordinary result message.
-- [ ] A destroyed ViewModel naturally disappears; no extra global UI write is required.
+- [x] Set `isBusy = true` only after admission succeeds. (already correct)
+- [x] Clear `isBusy` in non-suspending `finally` state assignment. (already correct)
+- [x] Cancellation rethrows and emits no ordinary result message. (already correct — `ConfigurationMutationCoordinator.tryRun` has no catch clause; `mutationResult` rethrows cancellation)
+- [x] A destroyed ViewModel naturally disappears; no extra global UI write is required. (already correct)
+
+**Deviation:** same as P1-001-A — already implemented; `a9dfdff` adds
+`cancelledImportClearsBusyAndEmitsNoOrdinaryResult` as the missing named test.
 
 Target pattern:
 
@@ -1551,37 +1560,53 @@ Ensure cancellation from the block is not converted into `Completed(Result.failu
 
 ## P1-001-C — Use scoped candidate helper
 
-- [ ] Import config uses `withCandidateFile`.
-- [ ] Forward activation uses `withCandidateFile`.
-- [ ] Setup candidate validation uses workspace helper.
-- [ ] Remove all bare/discarded `deleteCandidateFileSafely` caller calls.
-- [ ] Cleanup-only failure maps to durable `candidate_cleanup_failed`.
+- [x] Import config uses `withCandidateFile`. (`a9dfdff`)
+- [x] Forward activation uses `withCandidateFile`. (`a9dfdff`)
+- [x] Setup candidate validation uses workspace helper. (already correct — `SetupSaveController.validateInIsolatedWorkspace` already used `withSetupValidationWorkspace`, predates this pass)
+- [x] Remove all bare/discarded `deleteCandidateFileSafely` caller calls. (`a9dfdff`)
+- [x] Cleanup-only failure maps to durable `candidate_cleanup_failed`. (`a9dfdff`)
+
+**Deviation:** for forward activation specifically, a cleanup-only failure
+maps to `ValidationResult(false, ...candidate_cleanup_failed...)`, which
+routes through the *existing* rollback machinery (same as any other
+post-write failure) rather than a separate non-rollback code path — the
+write already committed by the time cleanup runs, and a leftover
+secret-bearing candidate file is treated as serious enough to warrant
+rolling the mutation back, matching `SetupSaveController`'s own established
+"cleanup failure blocks the outcome" philosophy. This required also adding
+`ForwardsRegenerationFailedException` so a *real* validation/write failure
+(returned as a normal `ValidationResult`, not a thrown exception) can be
+told apart from a genuine success when `withCandidateFile`'s cleanup
+composition decides whether a subsequent cleanup failure should override it
+— confirmed as a real gap by `forwardPrimaryFailurePreservedWhenCleanupAlsoFails`
+initially failing (the real failure message was being silently replaced by
+the generic cleanup message) before the fix.
 
 ## P1-001-D — Wipe imported private bytes
 
-- [ ] Hold canonical private bytes in a nullable variable.
-- [ ] Wipe in `finally` after success/failure/cancellation.
-- [ ] Do not retain canonical private string longer than necessary; where API permits, convert and clear references promptly.
+- [x] Hold canonical private bytes in a nullable variable. (`a9dfdff`)
+- [x] Wipe in `finally` after success/failure/cancellation. (`a9dfdff`)
+- [x] Do not retain canonical private string longer than necessary; where API permits, convert and clear references promptly. (`a9dfdff`)
 
 ## P1-001-E — Tests
 
-- [ ] `secondConfigImportIsRejectedVisiblyWithActiveOperation`
-- [ ] `cancelledImportClearsBusyAndEmitsNoOrdinaryResult`
-- [ ] `configImportCleanupFailureAfterWriteSuccessReportsFailureNotImported`
-- [ ] `configImportPrimaryFailurePreservedWhenCleanupAlsoFails`
-- [ ] `configImportCancellationPreservedWhenCleanupAlsoFails`
-- [ ] `forwardCandidateCleanupFailurePreventsSavedSuccess`
-- [ ] `forwardPrimaryFailurePreservedWhenCleanupAlsoFails`
-- [ ] `importedPrivateBytesWipedOnSuccess`
-- [ ] `importedPrivateBytesWipedOnValidationFailure`
-- [ ] `importedPrivateBytesWipedOnPersistenceFailure`
-- [ ] `importedPrivateBytesWipedOnCancellation`
+- [x] `secondConfigImportIsRejectedVisiblyWithActiveOperation` (`a9dfdff`)
+- [x] `cancelledImportClearsBusyAndEmitsNoOrdinaryResult` (`a9dfdff`)
+- [x] `configImportCleanupFailureAfterWriteSuccessReportsFailureNotImported` (`a9dfdff`)
+- [x] `configImportPrimaryFailurePreservedWhenCleanupAlsoFails` (`a9dfdff`)
+- [x] `configImportCancellationPreservedWhenCleanupAlsoFails` (`a9dfdff`)
+- [x] `forwardCandidateCleanupFailurePreventsSavedSuccess` (`a9dfdff`)
+- [x] `forwardPrimaryFailurePreservedWhenCleanupAlsoFails` (`a9dfdff`)
+- [x] `importedPrivateBytesWipedOnSuccess` (`a9dfdff`)
+- [x] `importedPrivateBytesWipedOnValidationFailure` (`a9dfdff`)
+- [x] `importedPrivateBytesWipedOnPersistenceFailure` (`a9dfdff`)
+- [x] `importedPrivateBytesWipedOnCancellation` (`a9dfdff`)
 
 ## Acceptance
 
-- [ ] No import is silently dropped.
-- [ ] No secret-bearing candidate cleanup failure is silent.
-- [ ] Imported private bytes are wiped in all outcomes.
+- [x] No import is silently dropped. (`a9dfdff`)
+- [x] No secret-bearing candidate cleanup failure is silent. (`a9dfdff`)
+- [x] Imported private bytes are wiped in all outcomes. (`a9dfdff`)
 
 ---
 
