@@ -1125,60 +1125,88 @@ Android stop integration tests if needed
 
 ## P0-008-A — Reproduce before changing code
 
-- [ ] Add a Rust test using the real offer daemon/status/shutdown seam.
-- [ ] Reach `Listening`/waiting state with at least one bound forward and no peer/session.
-- [ ] Request cooperative shutdown.
-- [ ] Await daemon result.
-- [ ] Confirm current baseline returns `Err` and identify exact finalizer/worker result that produces it.
-- [ ] Record the root cause in a code comment near the fix.
+- [x] Add a Rust test using the real offer daemon/status/shutdown seam. (`e0e8e52`, `offer_shutdown_while_listening_without_peer_returns_ok`)
+- [x] Reach `Listening`/waiting state with at least one bound forward and no peer/session. (`e0e8e52`)
+- [x] Request cooperative shutdown. (`e0e8e52`)
+- [x] Await daemon result. (`e0e8e52`)
+- [x] Confirm current baseline returns `Err` and identify exact finalizer/worker result that produces it. (`e0e8e52` — see deviation below)
+- [x] Record the root cause in a code comment near the fix. (`e0e8e52`)
 
 Do not “fix” only `p2p-mobile` by mapping every error during shutdown to success. The daemon must distinguish cooperative stop from real failure correctly.
 
+**Deviation:** the real integration scenario (Listening/no-peer + shutdown request)
+already returns `Ok(())` on the current baseline — the run loop's `Ok(())` exits
+are all already gated on `shutdown.is_shutdown_requested()`
+(`shutdown.cancelled()` is the first, biased `select!` branch), and
+`merge_offer_run_and_cleanup_results` passed that `Ok(())` through unchanged.
+There is no currently-reachable `Err` in this exact scenario. The actual defect
+(confirmed by writing `unrequested_clean_offer_exit_is_failure` and observing it
+fail against the pre-fix logic, per the Work Discipline in §1) is that the
+*pure merge function* had no defense at all against a future accidental clean
+exit with no shutdown request — it would have silently folded that into
+`Ok(())` too. The real, reproducible bug found while writing these tests was
+one level up the stack: `p2p-mobile`'s `stop_with_grace_period` unconditionally
+overwrote runtime state with `Stopped` on a graceful task join, even when the
+daemon had already recorded a genuine `Err` as `Error` — see P0-008-C.
+
 ## P0-008-B — Correct daemon result precedence
 
-- [ ] Shutdown with no prior primary failure returns `Ok(())` after successful cleanup/drain.
-- [ ] A real pre-shutdown primary error remains `Err`.
-- [ ] Cleanup/drain failure remains `Err`.
-- [ ] A worker exit that is expected because shutdown was requested is not promoted to primary failure.
-- [ ] Status finishes in stopped/idle truth, not Listening.
+- [x] Shutdown with no prior primary failure returns `Ok(())` after successful cleanup/drain. (`e0e8e52`)
+- [x] A real pre-shutdown primary error remains `Err`. (`e0e8e52`)
+- [x] Cleanup/drain failure remains `Err`. (`e0e8e52`)
+- [x] A worker exit that is expected because shutdown was requested is not promoted to primary failure. (`e0e8e52`, `expected_accept_worker_exit_during_shutdown_is_not_an_error`)
+- [x] Status finishes in stopped/idle truth, not Listening. (`e0e8e52`, `offer_shutdown_while_listening_publishes_final_stopped_status`)
 
-Target precedence:
-
-```rust
-match (primary_error, cleanup_result, shutdown.is_shutdown_requested()) {
-    (Some(error), _, _) => Err(error),
-    (None, Err(error), _) => Err(error),
-    (None, Ok(()), true) => Ok(()),
-    (None, Ok(()), false) => Ok(()),
-}
-```
-
-Adapt to actual types. Preserve existing shutdown race gates.
+Target precedence: per RESPONSES item 4 (binding, supersedes the TODO's own
+illustrative pseudocode above), `merge_offer_run_and_cleanup_results` now takes
+an explicit `shutdown_requested_at_loop_exit: bool` captured immediately before
+the finalizer's own `shutdown.request_shutdown()` call, and an unrequested
+clean exit (`Ok`, `Ok`, `Ok`, `false`) is folded into
+`Err(DaemonError::Logging("offer daemon exited without a shutdown request"))`
+rather than `Ok(())`. See `crates/p2p-daemon/src/offer/mod.rs`.
 
 ## P0-008-C — Mobile mapping
 
-- [ ] Successful offer task completion maps to `AndroidRuntimeState::Stopped`.
-- [ ] Real daemon `Err` still maps to Error.
-- [ ] Stop verification sees final Stopped.
-- [ ] No false success is introduced for cleanup failure.
+- [x] Successful offer task completion maps to `AndroidRuntimeState::Stopped`. (`e0e8e52`, `mobile_runtime_maps_cooperative_offer_shutdown_to_stopped`)
+- [x] Real daemon `Err` still maps to Error. (`e0e8e52`, `stop_after_task_already_reported_error_does_not_overwrite_it_with_stopped`)
+- [x] Stop verification sees final Stopped. (`e0e8e52`)
+- [x] No false success is introduced for cleanup failure. (`e0e8e52`)
+
+**Deviation/real bug found:** `AndroidTunnelController::stop_with_grace_period`'s
+`Graceful` branch unconditionally overwrote runtime state with `Stopped` on any
+clean task join — a clean join only means the task didn't panic, it says
+nothing about whether the daemon's own `Result` was `Ok` or `Err`. So an
+explicit `stop()` racing a task that had already recorded a real daemon `Err`
+as `Error` would silently stomp that back to a false `Stopped`, hiding the
+failure. Confirmed via `stop_after_task_already_reported_error_does_not_overwrite_it_with_stopped`
+failing against the pre-fix code. Fixed by guarding the `Graceful` branch on
+`inner.state.state != AndroidRuntimeState::Error`, and by extracting the
+completion-result mapping into `apply_daemon_completion_result` so tests can
+drive the real production mapping directly instead of a hand-written mimic of
+it.
 
 ## P0-008-D — Tests
 
-- [ ] `offerShutdownWhileListeningWithoutPeerReturnsOk`
-- [ ] `offerShutdownWhileListeningPublishesFinalStoppedStatus`
-- [ ] `offerShutdownAfterPrimaryFailureStillReturnsPrimaryFailure`
-- [ ] `offerShutdownCleanupFailureStillReturnsFailure`
-- [ ] `expectedAcceptWorkerExitDuringShutdownIsNotAnError`
-- [ ] `mobileRuntimeMapsCooperativeOfferShutdownToStopped`
-- [ ] `androidStopWhileListeningWithoutPeerReportsStoppedNotError`
+- [x] `offerShutdownWhileListeningWithoutPeerReturnsOk` (`e0e8e52`)
+- [x] `offerShutdownWhileListeningPublishesFinalStoppedStatus` (`e0e8e52`)
+- [x] `offerShutdownAfterPrimaryFailureStillReturnsPrimaryFailure` (`e0e8e52`, pure-merge-function unit test)
+- [x] `offerShutdownCleanupFailureStillReturnsFailure` (`e0e8e52`, pure-merge-function unit test)
+- [x] `expectedAcceptWorkerExitDuringShutdownIsNotAnError` (`e0e8e52`)
+- [x] `mobileRuntimeMapsCooperativeOfferShutdownToStopped` (`e0e8e52`)
+- [ ] `androidStopWhileListeningWithoutPeerReportsStoppedNotError` — not written this pass; the TODO marks this one as optional ("may use JNI/integration seam or emulator E2E"), and no Android emulator/JNI harness was exercised in this session. The equivalent mandatory Rust mobile-runtime coverage (the two tests above) is in place.
+
+Also added (beyond the required list, RESPONSES item 4's own suggestion):
+`unrequested_clean_offer_exit_is_failure` (pure-merge-function invariant test,
+`e0e8e52`) plus three more small merge-function unit tests covering primary/
+cleanup/closed-write error precedence.
 
 The Android test may use JNI/integration seam or emulator E2E, but the Rust daemon and mobile runtime tests are mandatory.
 
 ## Acceptance
 
-- [ ] User Stop while Listening/no peer ends in Stopped.
-- [ ] Real failures are not hidden.
-- [ ] Existing carefully built shutdown race tests remain green.
+- [x] User Stop while Listening/no peer ends in Stopped. (`e0e8e52`)
+- [x] Real failures are not hidden. (`e0e8e52`)
+- [x] Existing carefully built shutdown race tests remain green. (`e0e8e52` — full `cargo test --workspace`, `cargo clippy --workspace --all-targets`, `cargo fmt --all --check` all clean)
 
 ---
 
