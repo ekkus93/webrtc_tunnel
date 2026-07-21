@@ -967,12 +967,21 @@ service/lifecycle tests
 
 ## P0-007-A — Central quarantine transition
 
-- [ ] Add one helper or extracted collaborator that performs safety state changes before reporting.
-- [ ] Set `nativeStopVerified = false`.
-- [ ] Set `nativeRuntimeUncertain = true`.
-- [ ] Invalidate pending policy retry.
-- [ ] Update repository/service state to Error/uncertain as appropriate.
-- [ ] Publish fixed/redacted error through a safely guarded reporter.
+- [x] Add one helper or extracted collaborator that performs safety state changes before reporting. (`1d6a191`)
+- [x] Set `nativeStopVerified = false`. (`1d6a191`)
+- [x] Set `nativeRuntimeUncertain = true`. (`1d6a191`)
+- [x] Invalidate pending policy retry. (`1d6a191`)
+- [x] Update repository/service state to Error/uncertain as appropriate. (`1d6a191`)
+- [x] Publish fixed/redacted error through a safely guarded reporter. (`1d6a191`)
+
+Deviation from the illustrative snippet: `repository.setLocalError` is called
+TWICE — first with the caller's specific `code`/`message` (so
+`TunnelRepository`'s sticky cleanup-history set, which keys off the exact
+codes `stop_failed`/`stop_status_verification_failed`/
+`start_verification_cleanup_failed`, keeps working), then with the canonical
+`native_runtime_quarantined` code as the final/durable `lastError`. The
+illustrative snippet's single canonical-only call would have silently broken
+`lastCleanupError` population for those three codes.
 
 ```kotlin
 private fun enterNativeRuntimeQuarantine(
@@ -997,43 +1006,55 @@ Use actual repository/reporting APIs. Do not publish before setting quarantine.
 
 ## P0-007-B — Apply to every stop-like failure
 
-- [ ] Explicit STOP failure.
-- [ ] Explicit STOP final-status verification failure.
-- [ ] Manual pause native stop failure.
-- [ ] Policy pause native stop failure.
-- [ ] Start-verification cleanup failure.
-- [ ] Observed destroy fallback stop failure.
-- [ ] Any new stop-like helper introduced by FIX7.
+- [x] Explicit STOP failure. (`1d6a191`, `stopServiceWork`)
+- [x] Explicit STOP final-status verification failure. (`1d6a191`, `stopServiceWork` via `stopFailureCode`)
+- [x] Manual pause native stop failure. (`1d6a191`, `pause`)
+- [x] Policy pause native stop failure. (`1d6a191`, `pauseForPolicy`)
+- [x] Start-verification cleanup failure. (`1d6a191`, `cleanupUnverifiedStart`)
+- [x] Observed destroy fallback stop failure. (`1d6a191`, `onDestroy` fallback)
+- [x] Any new stop-like helper introduced by FIX7. (none introduced beyond the above)
 
 Codes should remain specific (`manual_pause_stop_failed`, etc.) while durable state also shows `native_runtime_quarantined` semantics.
 
 ## P0-007-C — Block every start/resume/retry while quarantined
 
-- [ ] ACTION start path.
-- [ ] manual Resume.
-- [ ] policy Resume.
-- [ ] pending policy retry after startup completion/failure.
-- [ ] automatic reconnect/start path if present.
-- [ ] start-from-review path after service receives intent.
+- [x] ACTION start path. (`1d6a191`, `requireRuntimeStartAllowedFor`)
+- [x] manual Resume. (`1d6a191`)
+- [x] policy Resume. (`1d6a191`)
+- [x] pending policy retry after startup completion/failure. (`1d6a191`)
+- [x] automatic reconnect/start path if present. (covered by the shared guard; no separate path exists)
+- [x] start-from-review path after service receives intent. (covered by the shared guard)
 
-- [ ] Guard failure must be durably visible, not silently discarded by a policy retry helper.
-- [ ] No native start call occurs.
-- [ ] Pending generation/token is cleared.
+- [x] Guard failure must be durably visible, not silently discarded by a policy retry helper. (`1d6a191`, proven by `quarantineGuardFailureIsDurableAndVisible`)
+- [x] No native start call occurs. (`1d6a191`)
+- [x] Pending generation/token is cleared. (`1d6a191`, `quarantineClearsPendingPolicyRetry`)
 
 ## P0-007-D — Only verified explicit STOP clears quarantine
 
-- [ ] Successful pause does not clear pre-existing quarantine.
-- [ ] Successful start never clears quarantine.
-- [ ] Destroy best-effort completion does not claim authoritative recovery unless the explicit stop verification contract is met.
-- [ ] Verified explicit STOP sets `nativeRuntimeUncertain = false` and `nativeStopVerified = true`.
+- [x] Successful pause does not clear pre-existing quarantine. (`1d6a191`)
+- [x] Successful start never clears quarantine. (`1d6a191`)
+- [x] Destroy best-effort completion does not claim authoritative recovery unless the explicit stop verification contract is met. (`1d6a191`)
+- [x] Verified explicit STOP sets `nativeRuntimeUncertain = false` and `nativeStopVerified = true`. (`1d6a191`, `stopServiceWork` success path)
 
 ## P0-007-E — Fix `cleanupUnverifiedStart`
 
-- [ ] Remove suspend `stop()` from `runCatching`.
-- [ ] Define mandatory cleanup under `NonCancellable`.
-- [ ] Preserve incoming/original cancellation in the caller.
-- [ ] If cleanup stop fails, enter runtime quarantine before cancellation/error propagation.
-- [ ] Reporter failure cannot hide quarantine.
+- [x] Remove suspend `stop()` from `runCatching`. (`1d6a191`)
+- [x] Define mandatory cleanup under `NonCancellable`. (`1d6a191`)
+- [x] Preserve incoming/original cancellation in the caller. (`1d6a191`)
+- [x] If cleanup stop fails, enter runtime quarantine before cancellation/error propagation. (`1d6a191`)
+- [x] Reporter failure cannot hide quarantine. (`1d6a191`, proven by `cleanupReporterFailureCannotPreventQuarantine`)
+
+Deviation from the illustrative snippet: the whole cleanup body (the
+status-poll join AND the fallback stop) runs under `withContext(NonCancellable)`,
+not just the `stop()` call, so cancellation cannot skip
+`stopStatusPollingAndJoin()` either. `context.stop()`'s inner `try/catch`
+explicitly rethrows `CancellationException` before the generic
+`catch (error: Exception)` — the illustrative snippet's generic catch alone
+would silently launder a real cancellation thrown by `stop()` into an
+ordinary `Result.failure`, since `CancellationException` is itself an
+`Exception` subtype (caught during test-writing by
+`unverifiedStartCleanupCancellationDoesNotBecomeOrdinaryFailure` initially
+failing).
 
 One acceptable orchestration:
 
@@ -1056,35 +1077,35 @@ The caller catches cancellation around verification, invokes cleanup in `NonCanc
 
 Quarantine:
 
-- [ ] `manualPauseStopFailureEntersRuntimeQuarantine`
-- [ ] `policyPauseStopFailureEntersRuntimeQuarantine`
-- [ ] `startVerificationCleanupFailureEntersRuntimeQuarantine`
-- [ ] `destroyFallbackStopFailureEntersRuntimeQuarantineWhenObserved`
-- [ ] `quarantineClearsPendingPolicyRetry`
+- [x] `manualPauseStopFailureEntersRuntimeQuarantine` (`1d6a191`)
+- [x] `policyPauseStopFailureEntersRuntimeQuarantine` (`1d6a191`)
+- [x] `startVerificationCleanupFailureEntersRuntimeQuarantine` (`1d6a191`)
+- [x] `destroyFallbackStopFailureEntersRuntimeQuarantineWhenObserved` (`1d6a191`)
+- [x] `quarantineClearsPendingPolicyRetry` (`1d6a191`)
 
 Start blocking:
 
-- [ ] `startAfterManualPauseFailureDoesNotCallNative`
-- [ ] `resumeAfterPolicyPauseFailureDoesNotCallNative`
-- [ ] `pendingPolicyRetryAfterQuarantineDoesNotCallNative`
-- [ ] `quarantineGuardFailureIsDurableAndVisible`
-- [ ] `verifiedExplicitStopClearsQuarantineAndAllowsLaterStart`
-- [ ] `failedExplicitStopDoesNotClearQuarantine`
+- [x] `startAfterManualPauseFailureDoesNotCallNative` (`1d6a191`)
+- [x] `resumeAfterPolicyPauseFailureDoesNotCallNative` (`1d6a191`)
+- [x] `pendingPolicyRetryAfterQuarantineDoesNotCallNative` (`1d6a191`)
+- [x] `quarantineGuardFailureIsDurableAndVisible` (`1d6a191`)
+- [x] `verifiedExplicitStopClearsQuarantineAndAllowsLaterStart` (`1d6a191`)
+- [x] `failedExplicitStopDoesNotClearQuarantine` (`1d6a191`)
 
 Cleanup cancellation:
 
-- [ ] `unverifiedStartCleanupRunsWhenVerificationCoroutineIsCancelled`
-- [ ] `unverifiedStartCleanupCancellationDoesNotBecomeOrdinaryFailure`
-- [ ] `cleanupFailureDuringCancellationQuarantinesThenPropagatesCancellation`
-- [ ] `cleanupReporterFailureCannotPreventQuarantine`
+- [x] `unverifiedStartCleanupRunsWhenVerificationCoroutineIsCancelled` (`1d6a191`)
+- [x] `unverifiedStartCleanupCancellationDoesNotBecomeOrdinaryFailure` (`1d6a191`)
+- [x] `cleanupFailureDuringCancellationQuarantinesThenPropagatesCancellation` (`1d6a191`)
+- [x] `cleanupReporterFailureCannotPreventQuarantine` (`1d6a191`)
 
 Use barriers and native-call recorders.
 
 ## Acceptance
 
-- [ ] No failed native stop-like operation permits later start/resume.
-- [ ] Cancellation cannot skip mandatory unverified-start cleanup.
-- [ ] Runtime uncertainty is durable and visible.
+- [x] No failed native stop-like operation permits later start/resume. (`1d6a191`)
+- [x] Cancellation cannot skip mandatory unverified-start cleanup. (`1d6a191`)
+- [x] Runtime uncertainty is durable and visible. (`1d6a191`)
 
 ---
 
