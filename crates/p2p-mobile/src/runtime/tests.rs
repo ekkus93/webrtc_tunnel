@@ -184,6 +184,83 @@ fn stop_requests_cooperative_shutdown_and_waits_for_task() {
     assert_eq!(controller.status().state, AndroidRuntimeState::Stopped);
 }
 
+/// FIX7 P0-008-C: the task closure drives the real
+/// [`apply_daemon_completion_result`] production mapping (not a hand-written
+/// mimic of it) with an `Ok(())` daemon result — the outcome of a genuine
+/// cooperative offer shutdown while Listening with no peer (P0-008-B) — and
+/// confirms it maps to `Stopped`, matching the spec's required Android/mobile
+/// assertion (§6.11).
+#[test]
+fn mobile_runtime_maps_cooperative_offer_shutdown_to_stopped() {
+    let controller = AndroidTunnelController::new();
+    let runtime = Runtime::new().expect("tokio runtime");
+    let shutdown = ShutdownToken::new();
+    let controller_for_task = controller.clone();
+    let task = runtime.spawn(async move {
+        let mut inner = controller_for_task.inner.lock().expect("lock");
+        inner.state.active = true;
+        apply_daemon_completion_result(&mut inner, Ok(()));
+    });
+    {
+        let mut inner = controller.inner.lock().expect("lock");
+        inner.task = Some(task);
+        inner.runtime = Some(runtime);
+        inner.shutdown = Some(shutdown);
+        inner.state.active = true;
+    }
+
+    let result = controller.stop();
+
+    assert_eq!(result, Ok(()), "a graceful stop must report success");
+    let status = controller.status();
+    assert_eq!(status.state, AndroidRuntimeState::Stopped);
+    assert!(status.last_error.is_none());
+}
+
+/// FIX7 P0-008-C: the task closure drives the real
+/// [`apply_daemon_completion_result`] production mapping with an `Err(..)` daemon
+/// result (e.g. the P0-008 invariant-violation error for an unrequested clean
+/// offer-loop exit) — then drives it through a real explicit `stop()` call,
+/// proving `stop_with_grace_period`'s own Graceful-join bookkeeping does not
+/// stomp that Error back to a false Stopped just because the task itself joined
+/// without panicking.
+#[test]
+fn stop_after_task_already_reported_error_does_not_overwrite_it_with_stopped() {
+    let controller = AndroidTunnelController::new();
+    let runtime = Runtime::new().expect("tokio runtime");
+    let shutdown = ShutdownToken::new();
+    let controller_for_task = controller.clone();
+    let task = runtime.spawn(async move {
+        let mut inner = controller_for_task.inner.lock().expect("lock");
+        inner.state.active = true;
+        apply_daemon_completion_result(
+            &mut inner,
+            Err(p2p_daemon::DaemonError::Logging(
+                "offer daemon exited without a shutdown request".to_owned(),
+            )),
+        );
+    });
+    {
+        let mut inner = controller.inner.lock().expect("lock");
+        inner.task = Some(task);
+        inner.runtime = Some(runtime);
+        inner.shutdown = Some(shutdown);
+        inner.state.active = true;
+    }
+
+    let result = controller.stop();
+
+    assert_eq!(result, Ok(()), "the task itself joined without panicking, so stop() succeeds");
+    let status = controller.status();
+    assert_eq!(
+        status.state,
+        AndroidRuntimeState::Error,
+        "a real daemon failure already recorded by the task must not be overwritten with a \
+         false Stopped state just because the join itself was clean"
+    );
+    assert!(status.last_error.is_some(), "the real error message must survive stop()");
+}
+
 #[test]
 fn stop_forces_abort_after_grace_period_when_task_ignores_shutdown() {
     let controller = AndroidTunnelController::new();

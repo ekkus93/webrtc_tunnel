@@ -21,6 +21,67 @@ use tokio::time::timeout;
 
 use crate::harness::*;
 
+/// FIX7 P0-008/spec §6.11: contrasts with
+/// [`offer_idle_accept_worker_failure_is_daemon_fatal`] below — here shutdown is
+/// requested *before* the accept-worker dies, so the worker's exit (observed via
+/// the same `worker_exits` supervision channel) must be treated as expected
+/// teardown noise, not promoted to a daemon-fatal `OfferAcceptWorkerFailed`.
+#[tokio::test]
+async fn expected_accept_worker_exit_during_shutdown_is_not_an_error() {
+    let offer_identity = generate_identity("offer-home").expect("offer identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+    let offer_keys = authorized_keys_for(&answer_identity);
+
+    let offer_status_path = unique_path("offer-status-worker-exit-during-shutdown");
+    let offer_port = unused_local_port();
+    let target_port = unused_local_port();
+
+    let offer_config =
+        sample_config(NodeRole::Offer, offer_status_path.clone(), offer_port, target_port);
+    let (offer_transport, _answer_transport, _trace) = transport_pair(0, 0);
+
+    let (fault_tx, mut fault_rx) = mpsc::unbounded_channel();
+    let offer_shutdown = ShutdownToken::new();
+    let offer_task = tokio::spawn(run_offer_daemon_with_worker_fault_hook_and_shutdown(
+        offer_config,
+        clone_identity(&offer_identity.identity),
+        offer_keys,
+        offer_transport,
+        fault_tx,
+        offer_shutdown.clone(),
+    ));
+
+    wait_for_status(&offer_status_path, "waiting_for_local_client").await;
+
+    let worker_handles: Vec<OfferAcceptWorkerTestHandle> =
+        timeout(Duration::from_secs(5), fault_rx.recv())
+            .await
+            .expect("worker fault hook should fire once the accept runtime starts")
+            .expect("worker fault hook channel should stay open");
+    assert_eq!(worker_handles.len(), 1, "single-forward config should spawn exactly one worker");
+
+    // Shutdown first, then the worker exits — the reverse order from the
+    // daemon-fatal test above.
+    offer_shutdown.request_shutdown();
+    worker_handles[0].abort_handle.abort();
+
+    let result = timeout(Duration::from_secs(5), offer_task)
+        .await
+        .expect("offer daemon should stop promptly instead of hanging")
+        .expect("offer daemon task should not panic");
+    assert!(
+        result.is_ok(),
+        "an accept-worker exit that races with (or follows) a shutdown request must not be \
+         reported as a daemon-fatal error, got {result:?}"
+    );
+
+    let final_status = read_status_file(&offer_status_path).await;
+    assert_eq!(final_status["current_state"], "closed");
+    assert_eq!(final_status["forwards"][0]["listen_state"], "stopped");
+
+    let _ = tokio::fs::remove_file(&offer_status_path).await;
+}
+
 #[tokio::test]
 async fn offer_idle_accept_worker_failure_is_daemon_fatal() {
     let offer_identity = generate_identity("offer-home").expect("offer identity should build");

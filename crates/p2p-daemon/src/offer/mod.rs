@@ -757,6 +757,13 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     // finalizer: enter Draining, stop/join the accept workers, enter Closed, and
     // always attempt the terminal status write. No `?` between here and the
     // function's return can bypass this.
+    //
+    // FIX7 P0-008/RESPONSES item 4: captured *before* `shutdown.request_shutdown()`
+    // below unconditionally marks the token as requested. Reading the token after
+    // that point could never distinguish a genuine requested shutdown from an
+    // unexpected clean loop exit, defeating the invariant check in
+    // `merge_offer_run_and_cleanup_results`.
+    let shutdown_requested_at_loop_exit = shutdown.is_shutdown_requested();
     ctx.runtime.phase = DaemonRuntimePhase::Draining;
     shutdown.request_shutdown();
 
@@ -765,7 +772,12 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
     ctx.runtime.phase = DaemonRuntimePhase::Closed;
     let closed_result = write_offer_closed_status(&mut ctx).await;
 
-    merge_offer_run_and_cleanup_results(run_result, cleanup_result, closed_result)
+    merge_offer_run_and_cleanup_results(
+        run_result,
+        cleanup_result,
+        closed_result,
+        shutdown_requested_at_loop_exit,
+    )
 }
 
 /// Preserves the primary run-loop error (if any) as the daemon's final result; a
@@ -773,10 +785,19 @@ async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
 /// succeeded, and a terminal-status write failure only when both the run loop and
 /// cleanup otherwise succeeded. Every error not returned is still logged (not
 /// silently dropped) as secondary context.
+///
+/// FIX7 P0-008/RESPONSES item 4: when the run loop, cleanup, and terminal status
+/// write all succeed, that is only a genuine cooperative shutdown if
+/// [`shutdown_requested_at_loop_exit`] is true. A clean exit with no primary error
+/// and no shutdown request is an invariant violation — the loop's own `Ok(())`
+/// exits are all shutdown-gated today, so this should be unreachable, but folding
+/// it into success here would turn a future accidental early return or
+/// worker-supervisor defect into a false clean shutdown.
 fn merge_offer_run_and_cleanup_results(
     run_result: Result<(), DaemonError>,
     cleanup_result: Result<(), DaemonError>,
     closed_result: Result<(), DaemonError>,
+    shutdown_requested_at_loop_exit: bool,
 ) -> Result<(), DaemonError> {
     match run_result {
         Err(primary) => {
@@ -795,7 +816,18 @@ fn merge_offer_run_and_cleanup_results(
                 }
                 Err(primary)
             }
-            Ok(()) => closed_result,
+            Ok(()) => match closed_result {
+                Err(error) => Err(error),
+                Ok(()) => {
+                    if shutdown_requested_at_loop_exit {
+                        Ok(())
+                    } else {
+                        Err(DaemonError::Logging(
+                            "offer daemon exited without a shutdown request".to_owned(),
+                        ))
+                    }
+                }
+            },
         },
     }
 }
@@ -1098,6 +1130,90 @@ mod tests {
             other => panic!(
                 "a panicked monitor must surface as OfferAcceptMonitorJoinFailed, not a \
                  warning-and-success, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn merge_prefers_primary_run_error_over_cleanup_and_closed_errors() {
+        let primary = DaemonError::AckTimeout;
+        let result = merge_offer_run_and_cleanup_results(
+            Err(primary),
+            Err(DaemonError::Logging("cleanup failed".to_owned())),
+            Err(DaemonError::Logging("closed write failed".to_owned())),
+            true,
+        );
+        match result {
+            Err(DaemonError::AckTimeout) => {}
+            other => panic!("expected the primary run error to win, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn offer_shutdown_after_primary_failure_still_returns_primary_failure() {
+        let result =
+            merge_offer_run_and_cleanup_results(Err(DaemonError::AckTimeout), Ok(()), Ok(()), true);
+        assert!(
+            matches!(result, Err(DaemonError::AckTimeout)),
+            "a real primary run-loop failure must not be hidden by a later shutdown request"
+        );
+    }
+
+    #[test]
+    fn offer_shutdown_cleanup_failure_still_returns_failure() {
+        let result = merge_offer_run_and_cleanup_results(
+            Ok(()),
+            Err(DaemonError::OfferAcceptMonitorJoinFailed {
+                forward_id: "ssh".to_owned(),
+                reason: "panicked".to_owned(),
+            }),
+            Ok(()),
+            true,
+        );
+        assert!(
+            matches!(result, Err(DaemonError::OfferAcceptMonitorJoinFailed { .. })),
+            "a genuine cleanup failure during cooperative shutdown must not be hidden, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn merge_returns_closed_write_failure_when_run_and_cleanup_both_succeed() {
+        let result = merge_offer_run_and_cleanup_results(
+            Ok(()),
+            Ok(()),
+            Err(DaemonError::Logging("closed write failed".to_owned())),
+            true,
+        );
+        assert!(
+            matches!(result, Err(DaemonError::Logging(_))),
+            "a terminal status write failure must not be hidden, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn offer_shutdown_while_listening_without_peer_returns_ok_for_pure_merge() {
+        let result = merge_offer_run_and_cleanup_results(Ok(()), Ok(()), Ok(()), true);
+        assert!(result.is_ok(), "a genuine cooperative shutdown must return Ok, got {result:?}");
+    }
+
+    /// FIX7 P0-008/RESPONSES item 4: an unrequested, error-free run-loop exit must
+    /// be treated as an invariant violation, not folded into success — the current
+    /// run loop's `Ok(())` exits are all shutdown-gated, so this combination
+    /// should be unreachable today, but a future accidental early return or
+    /// worker-supervisor defect must not silently become a false clean shutdown.
+    #[test]
+    fn unrequested_clean_offer_exit_is_failure() {
+        let result = merge_offer_run_and_cleanup_results(Ok(()), Ok(()), Ok(()), false);
+        match result {
+            Err(DaemonError::Logging(message)) => {
+                assert!(
+                    message.contains("without a shutdown request"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!(
+                "an unrequested, error-free offer-loop exit must be an invariant-violation \
+                 error, not {other:?}"
             ),
         }
     }

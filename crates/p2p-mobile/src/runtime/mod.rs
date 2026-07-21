@@ -59,6 +59,52 @@ enum StopOutcome {
     TaskJoinFailed { reason: String },
 }
 
+/// Applies the daemon task's final result to the runtime state — the single real
+/// production mapping from `Ok(())`/`Err` onto `Stopped`/`Error`. Extracted (rather
+/// than left inline in the spawned task closure) so tests can drive this exact
+/// code, not a hand-written mimic of it (FIX7 P0-008-C): a cooperative shutdown
+/// (`Ok(())`) always maps to `Stopped`, and a real daemon failure (`Err`) always
+/// maps to `Error` — including the P0-008 invariant-violation error for an
+/// unrequested clean offer-loop exit, which must never be reported as success.
+fn apply_daemon_completion_result(
+    inner: &mut RuntimeInner,
+    result: Result<(), p2p_daemon::DaemonError>,
+) {
+    match result {
+        Ok(()) => {
+            inner.state.state = AndroidRuntimeState::Stopped;
+            inner.state.mode = None;
+            inner.state.active = false;
+            inner.state.config_path = None;
+            inner.state.last_error = None;
+            reset_runtime_metadata(&mut inner.state);
+            push_log(
+                &inner.logs,
+                AndroidLogEvent {
+                    unix_ms: unix_ms(),
+                    level: "info".to_owned(),
+                    message: "runtime completed".to_owned(),
+                },
+            );
+        }
+        Err(error) => {
+            inner.state.state = AndroidRuntimeState::Error;
+            inner.state.last_error = Some(error.to_string());
+            inner.state.active = false;
+            // Preserve config_path for diagnostics; clear uptime/measured fields.
+            reset_runtime_metadata(&mut inner.state);
+            push_log(
+                &inner.logs,
+                AndroidLogEvent {
+                    unix_ms: unix_ms(),
+                    level: "error".to_owned(),
+                    message: error.to_string(),
+                },
+            );
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct AndroidTunnelController {
     inner: Arc<Mutex<RuntimeInner>>,
@@ -187,39 +233,7 @@ impl AndroidTunnelController {
             };
             match log_state.lock() {
                 Ok(mut inner) => {
-                    match result {
-                        Ok(()) => {
-                            inner.state.state = AndroidRuntimeState::Stopped;
-                            inner.state.mode = None;
-                            inner.state.active = false;
-                            inner.state.config_path = None;
-                            inner.state.last_error = None;
-                            reset_runtime_metadata(&mut inner.state);
-                            push_log(
-                                &inner.logs,
-                                AndroidLogEvent {
-                                    unix_ms: unix_ms(),
-                                    level: "info".to_owned(),
-                                    message: "runtime completed".to_owned(),
-                                },
-                            );
-                        }
-                        Err(error) => {
-                            inner.state.state = AndroidRuntimeState::Error;
-                            inner.state.last_error = Some(error.to_string());
-                            inner.state.active = false;
-                            // Preserve config_path for diagnostics; clear uptime/measured fields.
-                            reset_runtime_metadata(&mut inner.state);
-                            push_log(
-                                &inner.logs,
-                                AndroidLogEvent {
-                                    unix_ms: unix_ms(),
-                                    level: "error".to_owned(),
-                                    message: error.to_string(),
-                                },
-                            );
-                        }
-                    }
+                    apply_daemon_completion_result(&mut inner, result);
                     inner.task = None;
                 }
                 // The state mutex is poisoned, so it cannot be updated here; log through
@@ -339,7 +353,14 @@ impl AndroidTunnelController {
         inner.forward_config = Vec::new();
         inner.state.active = false;
         match &stop_outcome {
-            StopOutcome::Graceful => {
+            // FIX7 P0-008-C: a "Graceful" join only means the task returned without
+            // panicking — it says nothing about whether the daemon itself succeeded.
+            // The task's own completion handler (the real production path's match on
+            // the daemon's `Result`, run as its very last action before returning)
+            // already recorded the true outcome, including `Error` for a real daemon
+            // failure. That handler is authoritative: a clean join must never
+            // overwrite an already-recorded Error with a false Stopped.
+            StopOutcome::Graceful if inner.state.state != AndroidRuntimeState::Error => {
                 inner.state.state = AndroidRuntimeState::Stopped;
                 inner.state.mode = None;
                 // Clean stop: clear stale metadata so the UI shows no stale uptime,
@@ -356,6 +377,7 @@ impl AndroidTunnelController {
                     },
                 );
             }
+            StopOutcome::Graceful => {}
             StopOutcome::ForcedAbort { grace_period } => {
                 let message = format!("runtime required forced abort after {grace_period:?}");
                 inner.state.state = AndroidRuntimeState::Error;

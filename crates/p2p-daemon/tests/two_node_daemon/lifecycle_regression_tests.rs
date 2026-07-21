@@ -73,6 +73,97 @@ async fn offer_idle_shutdown_is_race_free_under_repeated_iterations() {
     }
 }
 
+/// FIX7 P0-008/spec §6.11: the offer daemon must return `Ok(())` when shutdown is
+/// requested while Listening/waiting for a local client with no peer/session, and
+/// no primary failure preceded shutdown. Named to match P0-008-D's required test
+/// list exactly (a single run, not the repeated-iteration race regression above).
+#[tokio::test]
+async fn offer_shutdown_while_listening_without_peer_returns_ok() {
+    let offer_identity = generate_identity("offer-home").expect("offer identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+    let offer_keys = authorized_keys_for(&answer_identity);
+
+    let offer_status_path = unique_path("offer-status-shutdown-no-peer-ok");
+    let offer_port = unused_local_port();
+    let target_port = unused_local_port();
+
+    let offer_config =
+        sample_config(NodeRole::Offer, offer_status_path.clone(), offer_port, target_port);
+    let (offer_transport, _answer_transport, _trace) = transport_pair(0, 0);
+
+    let offer_shutdown = ShutdownToken::new();
+    let offer_task = tokio::spawn(run_offer_daemon_with_transport_and_shutdown(
+        offer_config,
+        clone_identity(&offer_identity.identity),
+        offer_keys,
+        offer_transport,
+        offer_shutdown.clone(),
+    ));
+
+    wait_for_status(&offer_status_path, "waiting_for_local_client").await;
+    offer_shutdown.request_shutdown();
+
+    let result = timeout(Duration::from_secs(5), offer_task)
+        .await
+        .expect("offer daemon should stop promptly")
+        .expect("offer daemon task should not panic");
+    assert!(
+        result.is_ok(),
+        "a cooperative shutdown while Listening with no peer must return Ok, got {result:?}"
+    );
+
+    let _ = tokio::fs::remove_file(&offer_status_path).await;
+}
+
+/// FIX7 P0-008/spec §6.11: the same cooperative-shutdown-while-Listening scenario
+/// as above, but asserting the final published status is the terminal stopped
+/// state (daemon-level `closed`, with the listener released) rather than just the
+/// task's `Result`. Named to match P0-008-D's required test list exactly.
+#[tokio::test]
+async fn offer_shutdown_while_listening_publishes_final_stopped_status() {
+    let offer_identity = generate_identity("offer-home").expect("offer identity should build");
+    let answer_identity = generate_identity("answer-office").expect("answer identity should build");
+    let offer_keys = authorized_keys_for(&answer_identity);
+
+    let offer_status_path = unique_path("offer-status-shutdown-no-peer-stopped");
+    let offer_port = unused_local_port();
+    let target_port = unused_local_port();
+
+    let offer_config =
+        sample_config(NodeRole::Offer, offer_status_path.clone(), offer_port, target_port);
+    let (offer_transport, _answer_transport, _trace) = transport_pair(0, 0);
+
+    let offer_shutdown = ShutdownToken::new();
+    let offer_task = tokio::spawn(run_offer_daemon_with_transport_and_shutdown(
+        offer_config,
+        clone_identity(&offer_identity.identity),
+        offer_keys,
+        offer_transport,
+        offer_shutdown.clone(),
+    ));
+
+    wait_for_status(&offer_status_path, "waiting_for_local_client").await;
+    offer_shutdown.request_shutdown();
+
+    let result = timeout(Duration::from_secs(5), offer_task)
+        .await
+        .expect("offer daemon should stop promptly")
+        .expect("offer daemon task should not panic");
+    assert!(result.is_ok(), "a cooperative shutdown must return Ok, got {result:?}");
+
+    let final_status = read_status_file(&offer_status_path).await;
+    assert_eq!(
+        final_status["current_state"], "closed",
+        "final status must be the terminal stopped state"
+    );
+    assert_eq!(
+        final_status["forwards"][0]["listen_state"], "stopped",
+        "the bound listener must be released"
+    );
+
+    let _ = tokio::fs::remove_file(&offer_status_path).await;
+}
+
 /// Observes every live status transition (via the `watch`-backed status sink, not
 /// file polling) spanning the shutdown request, proving the daemon runtime-phase
 /// gate (P0-001) and the top-of-loop shutdown gate (P0-005) both hold under a real
