@@ -4,6 +4,7 @@ import android.content.Context
 import com.phillipchin.webrtctunnel.model.LogEvent
 import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.TunnelStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -26,15 +27,22 @@ class DiagnosticsRepository(
             appendLine("recent_logs_redacted=${Json.encodeToString(logs.map(SensitiveDataRedactor::redactLogEvent))}")
         }
 
+    // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this writes a
+    // file (mutation).
     fun exportRedactedDiagnostics(
         outputPath: String,
         status: TunnelStatus,
         logs: List<LogEvent>,
         networkStatus: NetworkPolicyStatus,
     ): Result<Unit> =
-        runCatching {
+        try {
             val output = File(outputPath)
             output.parentFile?.mkdirs()
             output.writeText(buildRedactedDiagnosticsPayload(status, logs, networkStatus))
+            Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
         }
 }

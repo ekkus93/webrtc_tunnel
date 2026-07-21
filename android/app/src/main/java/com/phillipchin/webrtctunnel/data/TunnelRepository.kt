@@ -166,10 +166,14 @@ class TunnelRepository(
         // only the merge decision (which depends on whatever the *latest* status turns out
         // to be at commit time, not this stale-by-the-time-we-commit snapshot) runs inside
         // updateStatus's retry loop.
+        // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this reads
+        // through the native JNI bridge, so a fatal Error must not be silently swallowed.
         val native =
-            runCatching {
+            try {
                 Json.decodeFromString<NativeRuntimeStatusDto>(bridge.getStatusJson())
-            }.getOrElse { error ->
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
                 updateStatus { current ->
                     current.asInvalidNativeStatus(
                         "status_decode_failed",

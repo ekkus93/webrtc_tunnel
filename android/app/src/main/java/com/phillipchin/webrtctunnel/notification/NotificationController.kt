@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 import com.phillipchin.webrtctunnel.MainActivity
 import com.phillipchin.webrtctunnel.R
 import com.phillipchin.webrtctunnel.model.ServiceState
+import kotlinx.coroutines.CancellationException
 
 class NotificationController(
     private val context: Context,
@@ -147,9 +148,13 @@ class NotificationController(
             return
         }
 
-        runCatching {
+        // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — posting a
+        // notification is an externally-visible mutation.
+        try {
             notifyAction(NOTIFICATION_ID, notification)
-        }.onFailure { error ->
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
             Log.w(TAG, "Unable to show notification", error)
         }
     }

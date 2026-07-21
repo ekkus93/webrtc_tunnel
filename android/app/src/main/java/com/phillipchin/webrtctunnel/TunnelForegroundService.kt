@@ -529,24 +529,27 @@ class TunnelForegroundService
                         while (active && !pausedByPolicy.get()) {
                             delay(STATUS_POLL_INTERVAL_MS)
                             if (pausedByPolicy.get()) break
-                            val result = runCatching { repository.refreshStatus() }
-                            if (result.isFailure) {
-                                val error = result.exceptionOrNull()
-                                if (error is CancellationException) throw error
-                                reporter.publishError(
-                                    code = "status_poll_failed",
-                                    message =
-                                        SensitiveDataRedactor.redactText(
-                                            error?.message ?: "Status poll failed",
-                                        ),
-                                )
-                            } else {
+                            // FIX7 P1-005-B: explicit cancellation-first try/catch, not
+                            // runCatching — refreshStatus() reads through the native JNI
+                            // bridge, so a fatal Error must not be silently swallowed.
+                            try {
+                                repository.refreshStatus()
                                 val state = repository.status.value.serviceState
                                 if (state != lastState) {
                                     lastState = state
                                     publishStatus()
                                 }
                                 active = state in ACTIVE_STATES
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                reporter.publishError(
+                                    code = "status_poll_failed",
+                                    message =
+                                        SensitiveDataRedactor.redactText(
+                                            error.message ?: "Status poll failed",
+                                        ),
+                                )
                             }
                         }
                     }
@@ -991,13 +994,16 @@ class TunnelForegroundService
                 if (!policy.tunnelAllowed) {
                     throw StartupPolicyBlocked(policy.blockReason ?: "Tunnel blocked by current network policy")
                 }
+                // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
+                // wraps a suspend call chain (withContext).
                 val identity =
-                    runCatching {
+                    try {
                         withContext(ioDispatcher) { identityRepository.readPrivateIdentityPlaintext() }
-                    }.onFailure { if (it is CancellationException) throw it }
-                        .getOrElse {
-                            abortStartup("Unable to decrypt private identity: ${it.message}", "identity_decrypt_failed")
-                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        abortStartup("Unable to decrypt private identity: ${error.message}", "identity_decrypt_failed")
+                    }
                 // P0-008: Ownership transfer — identity is wiped if preparation fails.
                 var transferred = false
                 try {

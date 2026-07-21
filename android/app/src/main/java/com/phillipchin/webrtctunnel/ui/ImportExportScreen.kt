@@ -36,7 +36,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.phillipchin.webrtctunnel.viewmodel.ImportExportState
 import com.phillipchin.webrtctunnel.viewmodel.ImportExportViewModel
 import com.phillipchin.webrtctunnel.viewmodel.ImportKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+
+private const val IMPORT_EXPORT_SCREEN_TAG = "ImportExportScreen"
 
 @Composable
 fun ImportExportScreen(
@@ -227,8 +230,12 @@ private fun PublicIdentityShareRow(vm: ImportExportViewModel) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AppOutlinedButton(
             onClick = {
+                // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching —
+                // publicIdentityForShare() is a suspend call; runCatching's Throwable-catching
+                // (and the discarded Result before this fix) would have silently swallowed a
+                // real coroutine cancellation.
                 scope.launch {
-                    runCatching {
+                    try {
                         val payload = vm.publicIdentityForShare()
                         val intent =
                             Intent.createChooser(
@@ -240,6 +247,10 @@ private fun PublicIdentityShareRow(vm: ImportExportViewModel) {
                                 "Share public identity",
                             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         context.startActivity(intent)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        android.util.Log.w(IMPORT_EXPORT_SCREEN_TAG, "Unable to share public identity", error)
                     }
                 }
             },
@@ -251,7 +262,15 @@ private fun PublicIdentityShareRow(vm: ImportExportViewModel) {
         }
         AppOutlinedButton(
             onClick = {
-                scope.launch { runCatching { clipboard.setText(AnnotatedString(vm.publicIdentityForShare())) } }
+                scope.launch {
+                    try {
+                        clipboard.setText(AnnotatedString(vm.publicIdentityForShare()))
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        android.util.Log.w(IMPORT_EXPORT_SCREEN_TAG, "Unable to copy public identity", error)
+                    }
+                }
             },
             modifier = Modifier.weight(1f),
         ) {

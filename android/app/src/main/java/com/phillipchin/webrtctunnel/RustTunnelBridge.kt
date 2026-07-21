@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel
 
 import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.ValidationResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 
 interface TunnelControlBridge {
@@ -42,6 +43,9 @@ private object NativeLibLoader {
     val loadError: Throwable?
 
     init {
+        // FIX7 P1-005-B: safe as runCatching — this runs in a static object's init block,
+        // outside any coroutine, before any coroutine could exist; it cannot observe or
+        // swallow a CancellationException.
         val load = runCatching { System.loadLibrary("p2p_mobile") }
         available = load.isSuccess
         loadError = load.exceptionOrNull()
@@ -156,11 +160,14 @@ class RustTunnelBridge(
     private var runtimeHandle: Long = if (NativeLibLoader.available) control.nativeCreateRuntime() else 0L
     private var disposed: Boolean = false
 
+    // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this is a
+    // native JNI mutation (starts the Rust runtime), and runCatching's Throwable-catching
+    // could silently convert a native-side fatal Error into an ordinary Result.failure.
     override fun startOffer(
         configPath: String,
         identityBytes: ByteArray?,
     ): Result<Unit> =
-        runCatching {
+        try {
             ensureNativeAvailable()
             val code =
                 if (identityBytes == null) {
@@ -169,18 +176,34 @@ class RustTunnelBridge(
                     control.nativeStartOfferWithIdentity(runtimeHandle, configPath, identityBytes)
                 }
             check(code == 0) { control.nativeLastError(runtimeHandle) }
+            Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
         }
 
     override fun startAnswer(configPath: String): Result<Unit> =
-        runCatching {
+        try {
             ensureNativeAvailable()
             check(control.nativeStartAnswer(runtimeHandle, configPath) == 0) { control.nativeLastError(runtimeHandle) }
+            Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
         }
 
+    // FIX7 P1-005-B: this is the native cleanup call itself — explicit catch, not runCatching.
     override fun stop(): Result<Unit> =
-        runCatching {
+        try {
             ensureNativeAvailable()
             check(control.nativeStop(runtimeHandle) == 0) { control.nativeLastError(runtimeHandle) }
+            Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
         }
 
     override fun getStatusJson(): String {

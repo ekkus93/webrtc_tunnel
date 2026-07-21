@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.data
 import android.content.Context
 import android.util.Log
 import com.phillipchin.webrtctunnel.model.ForwardConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -61,7 +62,13 @@ interface ForwardsStore {
  * Concrete [ForwardsStore] implementation that persists forwards to `forwards.json`
  * in the app's files directory.
  */
-class ForwardsConfigStore(private val context: Context) : ForwardsStore {
+class ForwardsConfigStore(
+    private val context: Context,
+    // FIX7 P1-005-A: injectable seams so a test can force the move/cleanup steps to fail
+    // deterministically instead of a flaky filesystem permission trick.
+    private val moveIntoPlace: (File, File) -> Unit = ::atomicMoveOrReplace,
+    private val deleteTempFile: (File) -> Boolean = File::delete,
+) : ForwardsStore {
     private val forwardsFile: File get() = File(context.filesDir, "forwards.json")
 
     // Seeded on a clean install. The remoteForwardId of each entry must match a forward `id`
@@ -99,12 +106,21 @@ class ForwardsConfigStore(private val context: Context) : ForwardsStore {
      */
     override fun loadForwardsResult(): Result<List<ForwardConfig>> =
         if (!forwardsFile.exists()) {
-            runCatching {
+            // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
+            // branch writes forwards.json (seeds defaults), a real mutation.
+            try {
                 val defaults = defaultForwards()
                 saveForwards(defaults)
-                defaults
+                Result.success(defaults)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
             }
         } else {
+            // FIX7 P1-005-B: safe as runCatching — readAndDecodeForwards() is a pure
+            // synchronous read + JSON decode (already distinguishes its own read/parse
+            // exception types internally), no native call, no mutation.
             runCatching { readAndDecodeForwards() }
         }.onFailure { error ->
             when (error) {
@@ -136,30 +152,39 @@ class ForwardsConfigStore(private val context: Context) : ForwardsStore {
      * Never direct-writes the destination, so a crash mid-write cannot truncate it.
      * Any failure here is a [ForwardsWriteException], never a bare I/O exception, so
      * callers can distinguish a write failure from a read/parse one (P1-003).
+     *
+     * FIX7 P1-005-A: the temp file's cleanup result is checked, not discarded. A cleanup
+     * failure after an otherwise-successful save still surfaces as a failure — a leftover
+     * temp file is unaccounted-for state, so "saved" must not be reported without a
+     * guarantee it was actually cleaned up. If the primary write/move itself failed, that
+     * failure is what's thrown; a cleanup failure on top of it is attached as suppressed
+     * rather than replacing or discarding it.
      */
     override fun saveForwards(forwards: List<ForwardConfig>) {
-        try {
-            val dir = forwardsFile.parentFile
-            dir?.mkdirs()
-            val temp = File.createTempFile("forwards", ".json.tmp", dir)
+        var temp: File? = null
+        val primaryFailure =
             try {
-                temp.writeText(Json.encodeToString(forwards))
-                try {
-                    Files.move(
-                        temp.toPath(),
-                        forwardsFile.toPath(),
-                        StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING,
-                    )
-                } catch (_: AtomicMoveNotSupportedException) {
-                    Files.move(temp.toPath(), forwardsFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                }
-            } finally {
-                temp.delete()
+                val dir = forwardsFile.parentFile
+                dir?.mkdirs()
+                val created = File.createTempFile("forwards", ".json.tmp", dir)
+                temp = created
+                created.writeText(Json.encodeToString(forwards))
+                moveIntoPlace(created, forwardsFile)
+                null
+            } catch (error: IOException) {
+                ForwardsWriteException(error)
             }
-        } catch (error: IOException) {
-            throw ForwardsWriteException(error)
-        }
+        // A successful move already removed temp; only a failed move can leave it behind.
+        // Attempting deletion either way is safe — a missing/never-created file is not
+        // itself a cleanup failure.
+        val cleanupFailed = temp?.let { it.exists() && !deleteTempFile(it) } ?: false
+        val cleanupFailure =
+            if (cleanupFailed) {
+                ForwardsWriteException(IOException("Config saved but failed to remove temporary forwards file"))
+            } else {
+                null
+            }
+        throwComposedFailureIfAny(primaryFailure, cleanupFailure)
     }
 
     override fun validateForwards(forwards: List<ForwardConfig>): String? {
@@ -183,5 +208,23 @@ class ForwardsConfigStore(private val context: Context) : ForwardsStore {
                 "Non-localhost bind requires advanced warning"
             else -> null
         }
+    }
+}
+
+// FIX7 P1-005-A: the real move implementation, kept top-level so it lives only inside a
+// parameter default (DI) — the seam ForwardsConfigStore's constructor exposes for tests.
+private fun atomicMoveOrReplace(
+    source: File,
+    destination: File,
+) {
+    try {
+        Files.move(
+            source.toPath(),
+            destination.toPath(),
+            StandardCopyOption.ATOMIC_MOVE,
+            StandardCopyOption.REPLACE_EXISTING,
+        )
+    } catch (_: AtomicMoveNotSupportedException) {
+        Files.move(source.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
     }
 }

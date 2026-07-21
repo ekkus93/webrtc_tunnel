@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.annotation.CheckResult
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.data.throwComposedFailureIfAny
 import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.nio.file.AtomicMoveNotSupportedException
@@ -190,9 +191,12 @@ class IdentityRepository(
 
     fun readPublicIdentity(): String = if (publicFile.exists()) publicFile.readText() else ""
 
+    // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this is a real
+    // file mutation (authorized_keys append), and runCatching's Throwable-catching could
+    // silently swallow a fatal Error or a laundered CancellationException.
     @CheckResult
     fun appendAuthorizedPublicIdentity(line: String): Result<Unit> =
-        runCatching {
+        try {
             val trimmed = line.trim()
             require(trimmed.isNotEmpty()) { "Public identity line is empty" }
             // P1-004-D / INV-011: read-modify-write under the lock so a concurrent append cannot
@@ -210,29 +214,47 @@ class IdentityRepository(
                     atomicReplace(authorizedKeysFile, updated.encodeToByteArray())
                 }
             }
+            Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
         }
 
+    // FIX7 P1-005-B: writes plaintext private key material to disk — a security-sensitive
+    // mutation; explicit catch, not runCatching.
     @CheckResult
     fun exportPrivateIdentity(
         outputPath: String,
         confirmRisk: Boolean,
     ): Result<Unit> =
-        runCatching {
+        try {
             require(confirmRisk) { "Private export requires explicit confirmation" }
             require(hasEncryptedIdentity()) { "No private identity available" }
             val output = File(outputPath)
             output.parentFile?.mkdirs()
             usePrivateIdentityPlaintext { output.writeBytes(it) }
+            Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
         }
 
+    // FIX7 P1-005-B: file mutation; explicit catch, not runCatching.
     @CheckResult
     fun exportPublicIdentity(outputPath: String): Result<Unit> =
-        runCatching {
+        try {
             val value = readPublicIdentity()
             require(value.isNotBlank()) { "No public identity available" }
             val output = File(outputPath)
             output.parentFile?.mkdirs()
             output.writeText(value)
+            Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
         }
 }
 
@@ -240,6 +262,9 @@ class IdentityRepository(
  * Reads and validates a private-identity file at [path]. Stateless (touches no repository
  * state), so it lives at top level, which also keeps [IdentityRepository] under detekt's
  * TooManyFunctions threshold.
+ *
+ * FIX7 P1-005-B: safe as runCatching — a pure synchronous file read plus simple validation
+ * (no native call, no persistence), so it cannot observe or swallow a CancellationException.
  */
 fun readPrivateIdentityFile(path: String): Result<String> =
     runCatching {
@@ -354,30 +379,47 @@ private fun identityAtomicReplace(
 ) {
     destination.parentFile?.mkdirs()
     val temp = Files.createTempFile(destination.parentFile?.toPath(), "${destination.name}.tmp-", ".partial")
-    try {
-        Files.write(temp, bytes)
+    // FIX7 P1-005-B/A: the temp file's cleanup result is checked, not discarded. Previously a
+    // cleanup failure was only logged — an otherwise-successful replace silently reported
+    // success despite a leftover temp file possibly holding identity/authorized-keys content.
+    // A cleanup failure now surfaces as a failure; a cleanup failure on top of a primary
+    // failure is attached as suppressed rather than replacing or discarding it.
+    val primaryFailure =
         try {
-            Files.move(
-                temp,
-                destination.toPath(),
-                StandardCopyOption.ATOMIC_MOVE,
-                StandardCopyOption.REPLACE_EXISTING,
-            )
-        } catch (error: AtomicMoveNotSupportedException) {
-            Log.w(IDENTITY_TAG, "Atomic identity move unavailable; using replacement", error)
-            Files.move(temp, destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }
-    } finally {
-        runCatching { Files.deleteIfExists(temp) }
-            .onFailure { cleanup ->
-                Log.w(
-                    IDENTITY_TAG,
-                    "Identity temp cleanup failed: ${
-                        SensitiveDataRedactor.redactText(cleanup.message ?: "unknown cleanup failure")
-                    }",
+            Files.write(temp, bytes)
+            try {
+                Files.move(
+                    temp,
+                    destination.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
                 )
+            } catch (error: AtomicMoveNotSupportedException) {
+                Log.w(IDENTITY_TAG, "Atomic identity move unavailable; using replacement", error)
+                Files.move(temp, destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
-    }
+            null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            error
+        }
+    val cleanupFailure =
+        try {
+            Files.deleteIfExists(temp)
+            null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w(
+                IDENTITY_TAG,
+                "Identity temp cleanup failed: ${
+                    SensitiveDataRedactor.redactText(error.message ?: "unknown cleanup failure")
+                }",
+            )
+            error
+        }
+    throwComposedFailureIfAny(primaryFailure, cleanupFailure)
 }
 
 interface IdentityCrypto {

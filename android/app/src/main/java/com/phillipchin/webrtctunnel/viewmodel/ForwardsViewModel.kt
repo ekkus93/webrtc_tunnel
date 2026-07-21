@@ -207,19 +207,24 @@ class ForwardsViewModel(
         return deps.forwardsStore.validateForwards(updated)
     }
 
+    // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — a TCP connect
+    // probe, same category the TODO explicitly names for the broker probe (never catch
+    // Throwable through runCatching here); the failure message is redacted below.
     fun testLocalPort(forward: ForwardConfig) {
         viewModelScope.launch(ioDispatcher) {
             // Connect to the configured local host (blank falls back to loopback),
             // and report the host actually tested rather than a hardcoded address.
             val host = forward.localHost.trim().ifBlank { "127.0.0.1" }
             val resultMessage =
-                runCatching {
+                try {
                     Socket().use { socket ->
                         socket.connect(InetSocketAddress(host, forward.localPort), LOCAL_PORT_TEST_TIMEOUT_MS)
                     }
                     "Local port test succeeded for $host:${forward.localPort}"
-                }.getOrElse {
-                    "Local port test failed for $host:${forward.localPort}: ${it.message}"
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    "Local port test failed for $host:${forward.localPort}: ${error.message}"
                 }
             report(SensitiveDataRedactor.redactText(resultMessage))
         }

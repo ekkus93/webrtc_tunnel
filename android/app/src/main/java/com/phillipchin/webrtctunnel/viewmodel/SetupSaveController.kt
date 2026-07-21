@@ -79,15 +79,19 @@ class SetupSaveController(
             access.applyState(current.copy(brokerTestMessage = "Broker host/port is invalid"))
             return
         }
+        // FIX7 P1-005-B: the broker TCP probe — explicit cancellation-first try/catch(Exception),
+        // never runCatching (which would catch Throwable). The failure message is redacted below.
         scope.launch(ioDispatcher) {
             val message =
-                runCatching {
+                try {
                     Socket().use { socket ->
                         socket.connect(InetSocketAddress(host, port), BROKER_PROBE_TIMEOUT_MS)
                     }
                     "TCP connection to $host:$port succeeded. Full MQTT/TLS auth is confirmed when the tunnel connects."
-                }.getOrElse {
-                    "TCP connection to $host:$port failed: ${it.message ?: "unknown error"}"
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    "TCP connection to $host:$port failed: ${error.message ?: "unknown error"}"
                 }
             access.applyState(access.state().copy(brokerTestMessage = SensitiveDataRedactor.redactText(message)))
         }
@@ -470,12 +474,15 @@ private suspend fun resolveStoredIdentity(
  * P0-003: validate an imported private identity and return its canonical material WITHOUT
  * persisting it. The returned [ResolvedIdentity] is marked [ResolvedIdentity.fromImport] so the
  * setup transaction stores it atomically alongside the config.
+ *
+ * FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — calls the native
+ * validation bridge.
  */
 private fun importPrivateIdentity(
     deps: AppDependencies,
     path: String,
 ): Result<ResolvedIdentity> =
-    runCatching {
+    try {
         val privateIdentity = readPrivateIdentityFile(path).getOrThrow()
         val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
         require(validated.valid) { validated.message ?: "Invalid private identity" }
@@ -484,24 +491,35 @@ private fun importPrivateIdentity(
             validated.canonicalPublicIdentity
                 ?: throw IllegalArgumentException("Missing canonical public identity")
         val peerId = validated.peerId ?: throw IllegalArgumentException("Missing canonical peer id")
-        ResolvedIdentity(canonicalPrivate.toByteArray(), canonicalPublic, peerId, fromImport = true)
+        Result.success(ResolvedIdentity(canonicalPrivate.toByteArray(), canonicalPublic, peerId, fromImport = true))
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(error)
     }
 
 /**
  * P0-003: validate an imported public identity and return the canonical authorized-keys line
  * WITHOUT appending it. The setup transaction appends it atomically (AuthorizedKeys stage).
+ *
+ * FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — calls the native
+ * validation bridge.
  */
 private fun validatePublicIdentityForImport(
     deps: AppDependencies,
     line: String,
     expectedRemotePeerId: String,
 ): Result<String> =
-    runCatching {
+    try {
         val validated = deps.identityValidation.validatePublicIdentity(line)
         require(validated.valid) { validated.message ?: "Invalid public identity" }
         val peerId = validated.peerId ?: throw IllegalArgumentException("Public identity missing peer ID")
         require(peerId == expectedRemotePeerId) {
             "Remote peer ID must match imported public identity peer ID ($peerId)"
         }
-        validated.canonicalPublicIdentity ?: line.trim()
+        Result.success(validated.canonicalPublicIdentity ?: line.trim())
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(error)
     }

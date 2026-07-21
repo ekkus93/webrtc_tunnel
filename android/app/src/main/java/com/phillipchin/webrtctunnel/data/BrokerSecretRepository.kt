@@ -87,37 +87,54 @@ private fun restrictToOwnerOnly(file: File) {
 }
 
 /** Same unique-temp-file-plus-move pattern as `IdentityRepository`'s atomic replace, plus
- * owner-only permissions once the secret is in place. Temp cleanup failure is logged (redacted)
- * and swallowed rather than masking the primary write outcome. */
+ * owner-only permissions once the secret is in place.
+ *
+ * FIX7 P1-005-B/A: the temp file's cleanup result is checked, not discarded — a cleanup
+ * failure is logged (redacted) and now also surfaces as a failure rather than being
+ * swallowed, since a leftover temp file may hold the broker secret in plaintext. A cleanup
+ * failure on top of a primary failure is attached as suppressed rather than replacing or
+ * discarding it. */
 private fun atomicReplaceBrokerSecret(
     destination: File,
     bytes: ByteArray,
 ) {
     destination.parentFile?.mkdirs()
     val temp = Files.createTempFile(destination.parentFile?.toPath(), "${destination.name}.tmp-", ".partial")
-    try {
-        Files.write(temp, bytes)
+    val primaryFailure =
         try {
-            Files.move(
-                temp,
-                destination.toPath(),
-                StandardCopyOption.ATOMIC_MOVE,
-                StandardCopyOption.REPLACE_EXISTING,
-            )
-        } catch (error: AtomicMoveNotSupportedException) {
-            Log.w(BROKER_SECRET_TAG, "Atomic broker secret move unavailable; using replacement", error)
-            Files.move(temp, destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }
-        restrictToOwnerOnly(destination)
-    } finally {
-        runCatching { Files.deleteIfExists(temp) }
-            .onFailure { cleanup ->
-                Log.w(
-                    BROKER_SECRET_TAG,
-                    "Broker secret temp cleanup failed: ${
-                        SensitiveDataRedactor.redactText(cleanup.message ?: "unknown cleanup failure")
-                    }",
+            Files.write(temp, bytes)
+            try {
+                Files.move(
+                    temp,
+                    destination.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
                 )
+            } catch (error: AtomicMoveNotSupportedException) {
+                Log.w(BROKER_SECRET_TAG, "Atomic broker secret move unavailable; using replacement", error)
+                Files.move(temp, destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
-    }
+            restrictToOwnerOnly(destination)
+            null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            error
+        }
+    val cleanupFailure =
+        try {
+            Files.deleteIfExists(temp)
+            null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w(
+                BROKER_SECRET_TAG,
+                "Broker secret temp cleanup failed: ${
+                    SensitiveDataRedactor.redactText(error.message ?: "unknown cleanup failure")
+                }",
+            )
+            error
+        }
+    throwComposedFailureIfAny(primaryFailure, cleanupFailure)
 }

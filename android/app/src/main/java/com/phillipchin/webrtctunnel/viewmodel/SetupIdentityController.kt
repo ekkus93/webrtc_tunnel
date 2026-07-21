@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.viewmodel
 import android.net.Uri
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -33,14 +34,20 @@ class SetupIdentityController(
                 access.applyState(current.copy(errorMessage = "Choose an identity file path to import"))
                 return@launchBusy
             }
+            // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
+            // calls the native validation bridge.
             val resolved =
                 withContext(deps.dispatchers.io) {
-                    runCatching {
+                    try {
                         val privateIdentity = readPrivateIdentityFile(trimmed).getOrThrow()
                         val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
                         require(validated.valid) { validated.message ?: "Invalid private identity" }
                         val peerId = validated.peerId ?: throw IllegalArgumentException("Missing identity peer id")
-                        peerId to validated.canonicalPublicIdentity.orEmpty()
+                        Result.success(peerId to validated.canonicalPublicIdentity.orEmpty())
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        Result.failure(error)
                     }
                 }
             resolved.onSuccess { (peerId, canonicalPublic) ->
@@ -69,9 +76,11 @@ class SetupIdentityController(
     fun importIdentityFromUri(uri: Uri) =
         launchBusy {
             val current = access.state()
+            // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
+            // calls the native validation bridge and persists the identity (mutation).
             val resolved =
                 withContext(deps.dispatchers.io) {
-                    runCatching {
+                    try {
                         val privateIdentity =
                             deps.context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                                 ?: error("Unable to read private identity from selected URI")
@@ -81,7 +90,11 @@ class SetupIdentityController(
                         val canonicalPublic = validated.canonicalPublicIdentity.orEmpty()
                         val peerId = validated.peerId ?: throw IllegalArgumentException("Missing identity peer id")
                         deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
-                        peerId to canonicalPublic
+                        Result.success(peerId to canonicalPublic)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        Result.failure(error)
                     }
                 }
             resolved.onSuccess { (peerId, canonicalPublic) ->
@@ -111,6 +124,9 @@ class SetupIdentityController(
     fun importPublicIdentityFromUri(uri: Uri) =
         launchBusy {
             val current = access.state()
+            // FIX7 P1-005-B: safe as runCatching — a pure content-URI text read (no native
+            // call, no persistence in this block), so it cannot swallow a fatal Error or a
+            // laundered CancellationException that matters here.
             val text =
                 withContext(deps.dispatchers.io) {
                     runCatching {

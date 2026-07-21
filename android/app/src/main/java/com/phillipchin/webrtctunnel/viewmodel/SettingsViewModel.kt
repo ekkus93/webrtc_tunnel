@@ -70,9 +70,17 @@ class SettingsViewModel(
         viewModelScope.launch {
             _uiState.value =
                 _uiState.value.copy(isValidatingConfig = true, configValidationMessage = null, configValid = null)
+            // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
+            // calls the native validation bridge.
             val result =
                 withContext(deps.dispatchers.io) {
-                    runCatching { deps.identityValidation.validateConfig(deps.configRepository.configPath) }
+                    try {
+                        Result.success(deps.identityValidation.validateConfig(deps.configRepository.configPath))
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        Result.failure(error)
+                    }
                 }
             val valid = result.map { it.valid }.getOrDefault(false)
             val message =
@@ -124,32 +132,40 @@ class SettingsViewModel(
         }
     }
 
+    // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — loadPublicIdentity
+    // is a suspend call; runCatching's Throwable-catching could silently convert a real
+    // coroutine cancellation into an ordinary load failure.
     fun refreshPublicIdentity() {
         viewModelScope.launch {
-            runCatching { loadPublicIdentity().ifBlank { null } }
-                .onSuccess { publicIdentity ->
-                    _uiState.value =
-                        _uiState.value.copy(
-                            publicIdentity = publicIdentity,
-                            publicIdentityLoadError = null,
-                        )
-                }
-                .onFailure { error ->
-                    _uiState.value =
-                        _uiState.value.copy(
-                            publicIdentity = null,
-                            publicIdentityLoadError =
-                                SensitiveDataRedactor.redactText(
-                                    error.message ?: "Unable to load local public identity",
-                                ),
-                        )
-                }
+            try {
+                val publicIdentity = loadPublicIdentity().ifBlank { null }
+                _uiState.value =
+                    _uiState.value.copy(
+                        publicIdentity = publicIdentity,
+                        publicIdentityLoadError = null,
+                    )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _uiState.value =
+                    _uiState.value.copy(
+                        publicIdentity = null,
+                        publicIdentityLoadError =
+                            SensitiveDataRedactor.redactText(
+                                error.message ?: "Unable to load local public identity",
+                            ),
+                    )
+            }
         }
     }
 
     /** Real status JSON on success, or a JSON object carrying a redacted error message —
      * never a bare `"{}"`, which would be indistinguishable from a legitimately idle/empty
-     * status. Used for both the "copy status JSON" clipboard action and diagnostics share. */
+     * status. Used for both the "copy status JSON" clipboard action and diagnostics share.
+     *
+     * FIX7 P1-005-B: safe as runCatching — a pure in-memory encode of an already-held
+     * StateFlow value (no native call, no file/suspend involvement), so it cannot swallow
+     * a fatal Error or a laundered CancellationException that matters here. */
     fun statusJson(): String =
         runCatching {
             Json.encodeToString(SensitiveDataRedactor.redactStatus(deps.tunnelRepository.status.value))
@@ -163,6 +179,9 @@ class SettingsViewModel(
         withContext(deps.dispatchers.io) {
             val file = File(deps.configRepository.configPath)
             if (!file.exists()) return@withContext "(no config file present)"
+            // FIX7 P1-005-B: safe as runCatching — a synchronous file read + redact with no
+            // suspend calls inside the lambda itself (the outer withContext already handled
+            // dispatching), no native call, and read-only.
             runCatching { SensitiveDataRedactor.redactText(file.readText()) }
                 .getOrElse { error ->
                     "(config read/redaction failed: " +

@@ -150,20 +150,39 @@ internal fun setupInputAtomicReplace(
 ) {
     destination.parentFile?.mkdirs()
     val temp = Files.createTempFile(destination.parentFile?.toPath(), "${destination.name}.tmp-", ".partial")
-    try {
-        Files.write(temp, bytes)
+    // FIX7 P1-005-B: the temp file's cleanup result is checked, not discarded (the previous
+    // `finally { runCatching { ... } }` dropped it entirely, worse than the other two
+    // temp-cleanup sites in this codebase which at least logged). A cleanup failure on top
+    // of a primary failure is attached as suppressed, never silently lost; a cleanup failure
+    // after an otherwise-successful replace still surfaces as a failure.
+    val primaryFailure =
         try {
-            Files.move(
-                temp,
-                destination.toPath(),
-                StandardCopyOption.ATOMIC_MOVE,
-                StandardCopyOption.REPLACE_EXISTING,
-            )
-        } catch (error: AtomicMoveNotSupportedException) {
-            android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", error)
-            Files.move(temp, destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            Files.write(temp, bytes)
+            try {
+                Files.move(
+                    temp,
+                    destination.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (error: AtomicMoveNotSupportedException) {
+                android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", error)
+                Files.move(temp, destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            error
         }
-    } finally {
-        runCatching { Files.deleteIfExists(temp) }
-    }
+    val cleanupFailure =
+        try {
+            Files.deleteIfExists(temp)
+            null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            error
+        }
+    throwComposedFailureIfAny(primaryFailure, cleanupFailure)
 }

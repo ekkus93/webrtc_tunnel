@@ -92,6 +92,38 @@ class SettingsViewModelTest : AppViewModelTestBase() {
         assertEquals(null, state.publicIdentity)
     }
 
+    // FIX7 P1-005-E: refreshPublicIdentity() wraps loadPublicIdentity() (a suspend call) in an
+    // explicit cancellation-first try/catch, not runCatching — a genuine CancellationException
+    // must propagate (the launched coroutine simply completes cancelled) rather than being
+    // converted into an ordinary publicIdentityLoadError.
+    @Test
+    fun cancellationFromEachAuditedSuspendPathPropagates() =
+        runBlocking {
+            val viewModel =
+                SettingsViewModel(
+                    deps = deps,
+                    loadPublicIdentity = { throw CancellationException("injected cancellation") },
+                )
+
+            // Pump a bounded number of cycles rather than waiting for a predicate: nothing
+            // should ever change state, so there is no positive event to await.
+            repeat(20) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                delay(10)
+            }
+
+            assertEquals(
+                "a propagated cancellation must never be reported as a load error",
+                null,
+                viewModel.uiState.value.publicIdentityLoadError,
+            )
+            assertEquals(
+                "a propagated cancellation must never be reported as a successful load either",
+                null,
+                viewModel.uiState.value.publicIdentity,
+            )
+        }
+
     @Test
     fun statusJsonReturnsParseableJsonForTheDefaultStatus() {
         val viewModel = SettingsViewModel(deps)

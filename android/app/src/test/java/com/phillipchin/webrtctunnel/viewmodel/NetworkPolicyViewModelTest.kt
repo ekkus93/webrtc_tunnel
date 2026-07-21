@@ -284,6 +284,49 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
         assertFalse(status.tunnelAllowed)
     }
 
+    // FIX7 P1-005-C/E: SnackbarController is lossy/convenience-only — a burst of unrelated
+    // snackbar traffic (some of it necessarily dropped past its buffer, all of it with no
+    // collector attached here) must have no way to reach into or erase a caller's own
+    // durable failure state; SnackbarController exposes nothing that could even attempt it.
+    @Test
+    fun snackbarDropDoesNotEraseDurableFailure() =
+        runBlocking {
+            val failingRepository =
+                object : ConfigRepository(app) {
+                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+                        Result.failure(RuntimeException("disk full"))
+                }
+            val testDeps =
+                AppDependencies(
+                    context = app,
+                    nativeBridgeFactory = { recordingBridge },
+                    configRepository = failingRepository,
+                    networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                    identityRepository = deps.identityRepository,
+                    dispatchers = inlineTestDispatchers(),
+                )
+            val testViewModel = NetworkPolicyViewModel(testDeps)
+
+            testViewModel.savePreferences(AndroidAppPreferences())
+            withTimeout(5_000) {
+                while (testViewModel.uiState.value.lastOperationFailure == null) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    yield()
+                }
+            }
+            val recordedFailure = testViewModel.uiState.value.lastOperationFailure
+
+            // A burst of unrelated snackbar messages, with no collector attached — some are
+            // necessarily dropped past the buffer.
+            repeat(50) { index -> testDeps.snackbar.show("unrelated burst message $index") }
+
+            assertEquals(
+                "unrelated snackbar traffic must never disturb the durable failure state",
+                recordedFailure,
+                testViewModel.uiState.value.lastOperationFailure,
+            )
+        }
+
     @Test
     fun preferencesReflectsRepository() =
         runBlocking {

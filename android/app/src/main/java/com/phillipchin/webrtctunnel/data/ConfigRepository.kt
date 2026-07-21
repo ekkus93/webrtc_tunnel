@@ -200,6 +200,8 @@ open class ConfigRepository(private val context: Context) {
         if (!setupInputFile.exists()) {
             return Result.success(SetupConfigInput())
         }
+        // FIX7 P1-005-B: safe as runCatching — a pure synchronous file read + JSON decode, no
+        // native call, no mutation, no suspend chain.
         return runCatching { Json.decodeFromString<SetupConfigInput>(setupInputFile.readText()) }
     }
 
@@ -389,6 +391,8 @@ private fun debugAndroidIceModeOverrideOrNull(): String? {
     if (!BuildConfig.DEBUG) {
         return null
     }
+    // FIX7 P1-005-B: safe as runCatching — a synchronous debug-only OS property read (plain
+    // ProcessBuilder, not the Rust/JNI bridge), no mutation, no suspend chain.
     val raw =
         runCatching {
             ProcessBuilder("getprop", "debug.p2p.android_ice_mode")

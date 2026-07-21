@@ -113,6 +113,73 @@ class ForwardsConfigStoreTest {
         assertTrue(temps.isNullOrEmpty())
     }
 
+    // FIX7 P1-005-A: a successful write+move whose temp-file cleanup afterward fails must not
+    // be silently reported as a clean success — the leftover temp file is unaccounted-for state.
+    // A genuine atomic rename always consumes its source, so "moveIntoPlace" here is a fake
+    // that copies (rather than moves) to deterministically leave the temp file behind, the
+    // way a non-atomic move implementation legitimately could — not a flaky permission trick.
+    @Test
+    fun forwardStoreCleanupFailureAfterSuccessReturnsFailure() {
+        val storeWithFailingCleanup =
+            ForwardsConfigStore(
+                context,
+                moveIntoPlace = { source, destination -> source.copyTo(destination, overwrite = true) },
+                deleteTempFile = { false },
+            )
+
+        val error = runCatching { storeWithFailingCleanup.saveForwards(listOf(forward("a", 1111))) }.exceptionOrNull()
+
+        assertTrue(
+            "a successful save whose temp cleanup fails must still surface as a failure",
+            error is ForwardsWriteException,
+        )
+        // The save itself genuinely succeeded (real content on disk) — the failure is
+        // specifically about the leftover temp file, not the save itself.
+        assertEquals(listOf(forward("a", 1111)), store.loadForwardsResult().getOrThrow())
+    }
+
+    // FIX7 P1-005-A: when the primary write/move fails AND the subsequent cleanup also fails,
+    // the primary failure must be what's thrown (not silently replaced by the cleanup one) —
+    // the cleanup failure is attached as suppressed instead of discarded.
+    @Test
+    fun forwardStorePrimaryFailurePreservesAndSuppressesCleanupFailure() {
+        val storeWithBothFailing =
+            ForwardsConfigStore(
+                context,
+                moveIntoPlace = { _, _ -> throw java.io.IOException("move boom") },
+                deleteTempFile = { false },
+            )
+
+        val error = runCatching { storeWithBothFailing.saveForwards(listOf(forward("a", 1111))) }.exceptionOrNull()
+
+        assertTrue("the primary move failure must be preserved", error is ForwardsWriteException)
+        assertTrue(
+            "the cleanup failure must be attached as suppressed, not discarded",
+            error?.suppressedExceptions?.isNotEmpty() == true,
+        )
+    }
+
+    // FIX7 P1-005-B/E: saveForwards uses an explicit `catch (error: Exception)`, not
+    // runCatching — a fatal Error (which does not extend Exception) must propagate
+    // uncaught rather than being silently normalized into a ForwardsWriteException.
+    @Test
+    fun fatalErrorFromMutationIsNotConvertedToOrdinaryFailure() {
+        val storeWithFatalMove =
+            ForwardsConfigStore(
+                context,
+                moveIntoPlace = { _, _ -> throw OutOfMemoryError("simulated fatal error") },
+            )
+
+        try {
+            storeWithFatalMove.saveForwards(listOf(forward("a", 1111)))
+            org.junit.Assert.fail("expected the fatal Error to propagate, not be swallowed")
+        } catch (error: ForwardsWriteException) {
+            org.junit.Assert.fail("a fatal Error must never be normalized into ForwardsWriteException: $error")
+        } catch (expected: OutOfMemoryError) {
+            // Expected: the fatal Error propagated uncaught, exactly as it must.
+        }
+    }
+
     @Test
     fun saveReplacesExistingFileContents() {
         store.saveForwards(listOf(forward("a", 1111)))

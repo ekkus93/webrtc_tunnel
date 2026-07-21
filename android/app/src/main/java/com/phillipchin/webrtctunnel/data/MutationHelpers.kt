@@ -26,6 +26,33 @@ internal suspend inline fun <T> mutationResult(crossinline block: suspend () -> 
     }
 
 /**
+ * FIX7 P1-005-B: shared "which failure wins" decision for the primary-write-plus-temp-cleanup
+ * composition used by [com.phillipchin.webrtctunnel.data.ForwardsConfigStore],
+ * [com.phillipchin.webrtctunnel.data.BrokerSecretRepository], the setup-input snapshot
+ * restore, and [com.phillipchin.webrtctunnel.security.IdentityRepository]'s atomic replace.
+ * A cleanup failure on top of a primary failure is attached as suppressed rather than
+ * replacing or discarding it; a cleanup failure after an otherwise-successful primary still
+ * throws. Extracted to a single throw site so each caller's own function stays under
+ * detekt's `ThrowsCount` threshold.
+ */
+internal fun throwComposedFailureIfAny(
+    primaryFailure: Exception?,
+    cleanupFailure: Exception?,
+) {
+    val toThrow =
+        when {
+            primaryFailure != null && cleanupFailure != null -> {
+                primaryFailure.addSuppressed(cleanupFailure)
+                primaryFailure
+            }
+            primaryFailure != null -> primaryFailure
+            cleanupFailure != null -> cleanupFailure
+            else -> null
+        }
+    if (toThrow != null) throw toThrow
+}
+
+/**
  * Creates a unique candidate file for validation-before-commit flows (FIX6 INV-012).
  *
  * Every candidate gets its own path: the previous fixed names (`config-candidate.toml`,

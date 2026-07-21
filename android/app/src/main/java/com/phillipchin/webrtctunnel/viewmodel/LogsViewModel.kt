@@ -8,6 +8,7 @@ import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.model.LogEvent
 import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.TunnelError
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -104,9 +105,11 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
             try {
                 val status = deps.tunnelRepository.status.value
                 val logs = _logs.value
+                // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
+                // writes to a user-selected URI (mutation).
                 val result =
                     withContext(deps.dispatchers.io) {
-                        runCatching {
+                        try {
                             val payload =
                                 deps.diagnosticsRepository.buildRedactedDiagnosticsPayload(
                                     status = status,
@@ -116,6 +119,11 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
                             deps.context.contentResolver.openOutputStream(uri, "wt")?.use { stream ->
                                 stream.write(payload.toByteArray())
                             } ?: error("Unable to open destination URI")
+                            Result.success(Unit)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            Result.failure(error)
                         }
                     }
                 val message = result.fold({ "Diagnostics exported" }, { it.message ?: "Diagnostics export failed" })
