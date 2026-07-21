@@ -29,6 +29,12 @@ class TunnelLifecycleCoordinator(
     // channel before flipping this, so a late trySubmit is a benign drop, not acceptance.
     private val stopped = AtomicBoolean(false)
 
+    // P1-002-B: true once [stop] has been called, set BEFORE it cancels the processor job — so
+    // the processor's own completion (in [start]'s finally) can tell an expected teardown apart
+    // from an unexpected death (a propagated cancellation not caused by our own [stop], a fatal
+    // Throwable from a handler, or a throwing [CoordinatorOperations.onError] reporter).
+    private val stopRequested = AtomicBoolean(false)
+
     // P2-001: read-only test signal — true once the command processor has exited (e.g. a handler
     // cancellation tore it down), so tests wait on this deterministic event instead of a sleep.
     internal val isStoppedForTest: Boolean get() = stopped.get()
@@ -55,6 +61,14 @@ class TunnelLifecycleCoordinator(
                     // acceptance.
                     commands.close()
                     stopped.set(true)
+                    // P1-002-B: an exit nobody requested via [stop] is a processor death, not a
+                    // teardown — tell the owner so it can quarantine any possibly-still-active
+                    // native runtime instead of silently leaving the service uncontrolled.
+                    // Synchronous (not suspend): safe to call here even though this coroutine may
+                    // itself be in the middle of being cancelled.
+                    if (!stopRequested.get()) {
+                        lifecycleOps.onProcessorFailed()
+                    }
                 }
             }
     }
@@ -64,6 +78,9 @@ class TunnelLifecycleCoordinator(
      * Idempotent: safe to call more than once.
      */
     suspend fun stop() {
+        // P1-002-B: set BEFORE closing/cancelling, so the finally above can tell this expected
+        // teardown apart from an unexpected death.
+        stopRequested.set(true)
         stopped.set(true)
         commands.close()
         val job = processorJob
@@ -143,6 +160,14 @@ interface CoordinatorOperations {
         code: String,
         state: ServiceState = ServiceState.Error,
     )
+
+    // P1-002-B: the command processor exited without [TunnelLifecycleCoordinator.stop] having
+    // been requested — an unexpected death (propagated cancellation not from our own stop, a
+    // fatal Throwable from a handler, or a throwing onError reporter). The native runtime may
+    // still be active with nothing left to control it, so the owner must quarantine and stop
+    // accepting start/resume, not merely log the loss.
+    // A property (not a function): this interface is at detekt's TooManyFunctions threshold.
+    val onProcessorFailed: () -> Unit
 
     suspend fun startOffer()
 

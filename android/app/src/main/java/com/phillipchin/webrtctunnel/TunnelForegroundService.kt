@@ -197,6 +197,14 @@ class TunnelForegroundService
         // Only a verified successful STOP clears the quarantine.
         private val nativeRuntimeUncertain = AtomicBoolean(false)
 
+        // P1-002-C: true once onDestroy() has begun tearing this service down. Distinguishes a
+        // benign post-destroy dropped command (onDestroy already owns the remaining cleanup)
+        // from a dropped command while the service object is still nominally alive — e.g. the
+        // command processor died unexpectedly (P1-002-B) before onDestroy was ever called. Set
+        // synchronously at the very start of onDestroy(), before the coordinator is stopped, so
+        // no drop in that window is misclassified as active-service.
+        private val serviceDestroying = AtomicBoolean(false)
+
         // P1-001: AtomicBoolean (not a plain var) because reads happen from coroutines
         // that never hold lifecycleMutex — the network-policy monitor callback and
         // status-poll loop — so a plain Boolean write would have no guaranteed visibility
@@ -334,12 +342,24 @@ class TunnelForegroundService
         // rather than silently treating it the same as every other post-destroy drop.
         private fun submitLifecycleCommand(command: LifecycleCommand): Boolean {
             if (coordinator.trySubmit(command)) return true
-            // Only reachable after onDestroy has stopped the coordinator, which closes the
-            // channel before cancelling an in-flight startup — so that startup's
-            // StartupCompleted can still land here. Dropping is correct (onDestroy owns the
-            // remaining cleanup) but must not be silent. Logs the command type only: a
-            // command can carry a policy reason or error text, which must not be logged raw.
-            Log.w(tag, "Dropped lifecycle command after coordinator shutdown: ${command.javaClass.simpleName}")
+            // P1-002-C: a drop while onDestroy owns the remaining cleanup (it stops the
+            // coordinator before cancelling an in-flight startup, so that startup's
+            // StartupCompleted can still land here) is routine teardown-late noise — debug-only.
+            // A drop while the service object is NOT known to be tearing down means the command
+            // processor died some other way (P1-002-B) while this service is nominally still
+            // active; that must stay visible, not merely logged. Either way, the command type
+            // only is logged: a command can carry a policy reason or error text, which must not
+            // be logged raw.
+            val commandName = command.javaClass.simpleName
+            if (serviceDestroying.get()) {
+                Log.d(tag, "Dropped lifecycle command during teardown: $commandName")
+            } else {
+                Log.w(tag, "Dropped lifecycle command outside teardown: $commandName")
+                reporter.publishErrorSafely(
+                    code = "lifecycle_processor_unavailable",
+                    message = "Lifecycle command dropped: processor unavailable",
+                )
+            }
             return false
         }
 
@@ -363,6 +383,9 @@ class TunnelForegroundService
          * (see [submitLifecycleCommand]) and cannot restart the tunnel.
          */
         override fun onDestroy() {
+            // P1-002-C: set synchronously, before anything else, so no window exists where a
+            // dropped command during this teardown could be misclassified as active-service.
+            serviceDestroying.set(true)
             val pendingStop =
                 serviceScope.launch {
                     // P0-006: Cancel network monitor and join it before fallback cleanup.
@@ -670,6 +693,20 @@ class TunnelForegroundService
                     state: ServiceState,
                 ) {
                     reporter.publishError(message, code, state)
+                }
+
+                // P1-002-B: the lifecycle command processor died unexpectedly — nothing is
+                // left to drain the command queue, so the native runtime's real state is
+                // uncertain. Quarantine through the same central helper every other stop-like
+                // failure uses, then actually stop the service rather than leaving it foreground
+                // pretending to still be controllable. A property (not a function) so it doesn't
+                // count against this object's detekt function budget.
+                override val onProcessorFailed: () -> Unit = {
+                    enterNativeRuntimeQuarantine(
+                        code = "lifecycle_processor_failed",
+                        message = "Lifecycle command processor exited unexpectedly",
+                    )
+                    stopSelf()
                 }
 
                 override suspend fun startOffer() {

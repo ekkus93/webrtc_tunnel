@@ -88,6 +88,13 @@ object TunnelForegroundServiceTestHooks {
 
     @get:JvmName("preferenceReadInterceptSkipCount")
     val preferenceReadInterceptSkipCount: AtomicInteger = AtomicInteger(0)
+
+    // P1-002-B: injects a raw Throwable thrown directly out of the native bridge's stop() call
+    // (rather than returned as Result.failure) — simulating an unexpected native-binding bug
+    // so the lifecycle command processor dies unexpectedly instead of via a normal, recoverable
+    // Result.failure path.
+    @get:JvmName("stopThrowsUnexpectedly")
+    val stopThrowsUnexpectedly: AtomicReference<Throwable?> = AtomicReference(null)
 }
 
 /**
@@ -345,6 +352,7 @@ class FailableRecordingBridge : TunnelNativeBridge {
         }
         // P0-007: Record the stop event for deterministic ordering proofs.
         lifecycleEvents.add(FakeLifecycleEvent.StopEntered(call))
+        TunnelForegroundServiceTestHooks.stopThrowsUnexpectedly.getAndSet(null)?.let { throw it }
         if (failNextStopAtomic.compareAndSet(true, false)) {
             return Result.failure(RuntimeException("injected stop failure"))
         }

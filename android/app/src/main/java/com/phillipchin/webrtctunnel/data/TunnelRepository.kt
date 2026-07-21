@@ -171,17 +171,12 @@ class TunnelRepository(
                 Json.decodeFromString<NativeRuntimeStatusDto>(bridge.getStatusJson())
             }.getOrElse { error ->
                 updateStatus { current ->
-                    current.copy(
-                        serviceState = ServiceState.Error,
-                        lastError =
-                            TunnelError(
-                                code = "status_decode_failed",
-                                message = "Native status decode failed",
-                                details =
-                                    SensitiveDataRedactor.redactText(
-                                        error.message ?: "unknown status decode error",
-                                    ),
-                            ),
+                    current.asInvalidNativeStatus(
+                        "status_decode_failed",
+                        "Native status decode failed",
+                        SensitiveDataRedactor.redactText(
+                            error.message ?: "unknown status decode error",
+                        ),
                     )
                 }
                 return Result.failure(error)
@@ -341,6 +336,21 @@ private fun TunnelStatus.withoutActivePeer(): TunnelStatus =
         mqttConnected = false,
     )
 
+// P1-002-A: shared helper so every "the native status itself cannot be trusted" branch
+// (decode failure, unknown native mode, missing required field) clears stale live-connection
+// truth the same way a terminal state does, and cannot diverge from that clearing by only
+// updating serviceState/lastError while leaving a previous Connected status's remote peer,
+// active session count, or MQTT-connected flag still showing.
+// An extension property holding a lambda (not a function): this file is at detekt's
+// TooManyFunctions threshold.
+private val TunnelStatus.asInvalidNativeStatus: (code: String, message: String, details: String?) -> TunnelStatus
+    get() = { code, message, details ->
+        copy(
+            serviceState = ServiceState.Error,
+            lastError = TunnelError(code = code, message = message, details = details),
+        ).withoutActivePeer()
+    }
+
 // Truthful mapping: native "running" only means the daemon task is alive. Reserve
 // Connected for an actual active session/tunnel; otherwise show a listening/serving
 // label. Unknown native states map to Error, never silently to Stopped.
@@ -384,14 +394,13 @@ private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): Tunne
     // P1-008: Reject unknown native mode explicitly.
     val modeValue = resolveNativeMode(mode)
     if (modeValue == null) {
-        // Unknown mode: retain previous mode, surface as schema error.
-        return previous.copy(
-            serviceState = ServiceState.Error,
-            lastError =
-                TunnelError(
-                    code = "native_status_schema_error",
-                    message = "Unknown native mode: ${SensitiveDataRedactor.redactText(mode ?: "null")}",
-                ),
+        // Unknown mode: retain previous mode, surface as schema error. P1-002-A: this native
+        // status cannot be trusted, so it must clear stale live-connection truth exactly like
+        // any other invalid-status branch — never resurrect a previous Connected status's peer.
+        return previous.asInvalidNativeStatus(
+            "native_status_schema_error",
+            "Unknown native mode: ${SensitiveDataRedactor.redactText(mode ?: "null")}",
+            null,
         )
     }
     val stateValue = mapNativeServiceState(state, modeValue, activeSessionCount)

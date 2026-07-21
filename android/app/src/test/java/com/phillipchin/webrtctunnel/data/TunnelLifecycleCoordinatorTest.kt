@@ -30,6 +30,7 @@ class TunnelLifecycleCoordinatorTest {
         val errors = CopyOnWriteArrayList<Pair<String, String>>()
         val handled = CopyOnWriteArrayList<String>()
         val startOfferCalls = AtomicInteger(0)
+        val processorFailedCalls = AtomicInteger(0)
         var startOfferThrows: Throwable? = null
 
         override fun onError(
@@ -38,6 +39,10 @@ class TunnelLifecycleCoordinatorTest {
             state: ServiceState,
         ) {
             errors.add(message to code)
+        }
+
+        override val onProcessorFailed: () -> Unit = {
+            processorFailedCalls.incrementAndGet()
         }
 
         override suspend fun startOffer() {
@@ -247,6 +252,63 @@ class TunnelLifecycleCoordinatorTest {
             assertFalse(
                 "acceptance must be closed once the processor exits",
                 coordinator.trySubmit(LifecycleCommand.Pause),
+            )
+        }
+
+    @Test
+    fun unexpectedCancellationNotifiesProcessorFailed() =
+        runTest {
+            val ops = RecordingCoordinatorOperations()
+            ops.startOfferThrows = CancellationException("propagated cancellation")
+            val coordinator = TunnelLifecycleCoordinator(ops, this)
+            coordinator.start()
+
+            coordinator.trySubmit(LifecycleCommand.StartOffer)
+            advanceUntilIdle()
+
+            assertEquals(
+                "an unexpected (not requested via stop()) processor death must notify the owner",
+                1,
+                ops.processorFailedCalls.get(),
+            )
+        }
+
+    @Test
+    fun fatalErrorNotifiesProcessorFailed() =
+        runTest {
+            val ops = RecordingCoordinatorOperations()
+            ops.startOfferThrows = OutOfMemoryError("fatal")
+            val scope =
+                CoroutineScope(
+                    SupervisorJob() + StandardTestDispatcher(testScheduler) +
+                        CoroutineExceptionHandler { _, _ -> },
+                )
+            val coordinator = TunnelLifecycleCoordinator(ops, scope)
+            coordinator.start()
+
+            coordinator.trySubmit(LifecycleCommand.StartOffer)
+            advanceUntilIdle()
+
+            assertEquals(
+                "a fatal Throwable escaping a handler must notify the owner, not merely propagate",
+                1,
+                ops.processorFailedCalls.get(),
+            )
+        }
+
+    @Test
+    fun explicitStopDoesNotNotifyProcessorFailed() =
+        runTest {
+            val ops = RecordingCoordinatorOperations()
+            val coordinator = TunnelLifecycleCoordinator(ops, this)
+            coordinator.start()
+
+            coordinator.stop()
+
+            assertEquals(
+                "a requested stop() is expected teardown, not an unexpected processor death",
+                0,
+                ops.processorFailedCalls.get(),
             )
         }
 
