@@ -93,6 +93,9 @@ class SetupViewModelTest : AppViewModelTestBase() {
             listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
         )
         viewModel.setImportIdentityPath(identityFile.absolutePath)
+        // FIX8 P0-001-D: the save path no longer re-reads importIdentityPath — the draft is
+        // populated by actually running the import action (draft-only, no live mutation).
+        viewModel.identity.importIdentityFromPath()
         viewModel.setImportPublicIdentity("kid peer")
         viewModel.setInput(
             viewModel.state.value.input.copy(
@@ -708,6 +711,9 @@ class SetupViewModelTest : AppViewModelTestBase() {
         deps.forwardsStore.saveForwards(listOf(forward))
         recordingBridge.validationResult = ValidationResult(true, null)
         viewModel.setImportIdentityPath(identityFile.absolutePath)
+        // FIX8 P0-001-D: the save path no longer re-reads importIdentityPath — the draft is
+        // populated by actually running the import action (draft-only, no live mutation).
+        viewModel.identity.importIdentityFromPath()
         viewModel.setImportPublicIdentity("kid peer")
         viewModel.setInput(
             viewModel.state.value.input.copy(

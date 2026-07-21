@@ -22,7 +22,6 @@ import com.phillipchin.webrtctunnel.data.withSetupValidationWorkspace
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
-import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -230,7 +229,7 @@ internal class SetupSaveController(
         val input = current.input
         val enabledForwards = access.forwards().filter { it.enabled }
         validateStep(deps, SetupStep.Review, current)?.let { saveError(it, redact = false) }
-        val identity = resolveSaveIdentity(current)
+        val identity = resolveSaveIdentity()
         try {
             if (identity.peerId != input.localPeerId) {
                 saveError(
@@ -266,20 +265,15 @@ internal class SetupSaveController(
         }
     }
 
-    private suspend fun resolveSaveIdentity(current: SetupWizardState): ResolvedIdentity {
-        // FIX8 P0-001-D: a wizard-generated/imported identity is resolved from the draft's
-        // save-owned bytes (no import-path re-read / TOCTOU). The draft copy is wiped by
-        // validateAndCommit's finally like any other resolved identity.
+    private suspend fun resolveSaveIdentity(): ResolvedIdentity {
+        // FIX8 P0-001-D: a wizard-generated/imported identity is resolved ONLY from the
+        // draft's save-owned bytes — no import-path re-read / TOCTOU. The draft copy is
+        // wiped by validateAndCommit's finally like any other resolved identity.
         identityDraft.copyForSave()?.let { draft ->
             return ResolvedIdentity(draft.privateIdentity, draft.publicIdentity, draft.peerId, fromImport = true)
         }
         val resolved =
-            if (current.importIdentityPath.isNotBlank()) {
-                withContext(ioDispatcher) { importPrivateIdentity(deps, current.importIdentityPath) }
-                    // FIX7 P1-004-C: redact — this is a raw exception message from private
-                    // identity import (file read/native validation), not a known-safe value.
-                    .getOrElse { saveError(it.message ?: "Failed importing private identity", redact = true) }
-            } else if (!deps.identityRepository.hasEncryptedIdentity()) {
+            if (!deps.identityRepository.hasEncryptedIdentity()) {
                 // Absence and present-but-unreadable are different states (P1-001/P1-007): only
                 // absence may report "missing" — a present identity that fails to load/validate
                 // must say so, not tell the user their identity vanished.
@@ -481,34 +475,6 @@ private suspend fun resolveStoredIdentity(
                 bytes?.fill(0)
             }
         }
-    }
-
-/**
- * P0-003: validate an imported private identity and return its canonical material WITHOUT
- * persisting it. The returned [ResolvedIdentity] is marked [ResolvedIdentity.fromImport] so the
- * setup transaction stores it atomically alongside the config.
- *
- * FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — calls the native
- * validation bridge.
- */
-private fun importPrivateIdentity(
-    deps: AppDependencies,
-    path: String,
-): Result<ResolvedIdentity> =
-    try {
-        val privateIdentity = readPrivateIdentityFile(path).getOrThrow()
-        val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
-        require(validated.valid) { validated.message ?: "Invalid private identity" }
-        val canonicalPrivate = validated.canonicalPrivateIdentity ?: privateIdentity
-        val canonicalPublic =
-            validated.canonicalPublicIdentity
-                ?: throw IllegalArgumentException("Missing canonical public identity")
-        val peerId = validated.peerId ?: throw IllegalArgumentException("Missing canonical peer id")
-        Result.success(ResolvedIdentity(canonicalPrivate.toByteArray(), canonicalPublic, peerId, fromImport = true))
-    } catch (cancelled: CancellationException) {
-        throw cancelled
-    } catch (error: Exception) {
-        Result.failure(error)
     }
 
 /**

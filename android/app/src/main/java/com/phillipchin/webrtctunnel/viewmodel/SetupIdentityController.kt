@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel.viewmodel
 
 import android.net.Uri
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
 import kotlinx.coroutines.CancellationException
@@ -75,7 +76,10 @@ internal class SetupIdentityController(
                     current.copy(
                         identityPeerId = null,
                         localPublicIdentity = "",
-                        errorMessage = it.message ?: "Invalid private identity file",
+                        errorMessage =
+                            SensitiveDataRedactor.redactSecretValues(
+                                it.message ?: "Invalid private identity file",
+                            ),
                         saveResult = null,
                     ),
                 )
@@ -117,7 +121,10 @@ internal class SetupIdentityController(
             }.onFailure {
                 access.applyState(
                     current.copy(
-                        errorMessage = it.message ?: "Invalid private identity file",
+                        errorMessage =
+                            SensitiveDataRedactor.redactSecretValues(
+                                it.message ?: "Invalid private identity file",
+                            ),
                         saveResult = null,
                     ),
                 )
@@ -155,7 +162,10 @@ internal class SetupIdentityController(
             }.onFailure {
                 access.applyState(
                     current.copy(
-                        errorMessage = it.message ?: "Failed importing remote public identity",
+                        errorMessage =
+                            SensitiveDataRedactor.redactSecretValues(
+                                it.message ?: "Failed importing remote public identity",
+                            ),
                     ),
                 )
             }

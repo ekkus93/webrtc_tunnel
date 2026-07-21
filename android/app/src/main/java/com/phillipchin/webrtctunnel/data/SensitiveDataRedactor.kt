@@ -26,7 +26,18 @@ object SensitiveDataRedactor {
                 """[A-Za-z0-9_.-]*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^,\s}\]]+)""",
         )
 
-    fun redactText(input: String): String {
+    /**
+     * Redacts structured secret VALUES only (password/token/api-key/kex-secret/signing-key
+     * fields, PEM private-key blocks, `sign.private`/`kex.private` lines, `Bearer`/`Basic` auth
+     * headers, and MQTT userinfo credentials). Deliberately does NOT apply [redactText]'s
+     * identity-path/bare-word rule or the SDP/candidate/payload protocol-log rules below —
+     * those are tuned for diagnostic-log export, where erring toward over-redaction is
+     * acceptable, but they mangle ordinary user-facing prose (e.g. turning "invalid private
+     * identity" into "invalid private ***REDACTED_IDENTITY_PATH***"). Use this, not [redactText],
+     * for setup/identity validation and import failure messages shown directly in the UI
+     * (FIX8 P0-001-B: "redact native/file error messages before assigning UI state").
+     */
+    fun redactSecretValues(input: String): String {
         return input
             .replace(Regex("""(?im)^\s*sign\.private\s*=\s*".*"$"""), "sign.private = \"***REDACTED***\"")
             .replace(Regex("""(?im)^\s*kex\.private\s*=\s*".*"$"""), "kex.private = \"***REDACTED***\"")
@@ -43,6 +54,10 @@ object SensitiveDataRedactor {
             .replace(
                 Regex("""(?i)\b(mqtts?)://([^:@/\s]+):([^@/\s]+)@"""),
             ) { match -> "${match.groupValues[1]}://***REDACTED***:***REDACTED***@" }
+    }
+
+    fun redactText(input: String): String {
+        return redactSecretValues(input)
             .replace(Regex("""(?is)\bsdp\s*[:=]\s*.*?(?:\r?\n\r?\n|$)"""), "sdp=***REDACTED***\n")
             .replace(Regex("""(?im)\bcandidate\s*[:=]\s*.*$"""), "candidate=***REDACTED***")
             .replace(Regex("""(?im)\bdecrypted[_\s-]?payload\s*[:=]\s*.*$"""), "decrypted_payload=***REDACTED***")

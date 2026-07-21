@@ -75,6 +75,9 @@ class SetupSaveAuthorizedKeysTest : AppViewModelTestBase() {
         )
         recordingBridge.validationResult = ValidationResult(true, null)
         viewModel.setImportIdentityPath(identityFile.absolutePath)
+        // FIX8 P0-001-D: the save path no longer re-reads importIdentityPath — the draft is
+        // populated by actually running the import action (draft-only, no live mutation).
+        viewModel.identity.importIdentityFromPath()
         viewModel.setImportPublicIdentity("kid peer")
         viewModel.setInput(
             viewModel.state.value.input.copy(brokerHost = "broker.local", remotePeerId = "remote-peer"),

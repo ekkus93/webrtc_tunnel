@@ -231,6 +231,57 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
         assertFalse("a failed save must not persist the identity", deps.identityRepository.hasEncryptedIdentity())
     }
 
+    @Test
+    fun pathFileReplacementAfterValidationCannotChangeCommittedIdentity() {
+        val identityFile =
+            File(app.filesDir, "toctou_identity.toml").apply {
+                writeText("peer_id = \"android-phone\"\nsecret = \"original\"")
+            }
+        recordingBridge.privateIdentityValidationResult =
+            IdentityValidationResult(
+                valid = true,
+                canonicalPublicIdentity = "canon-original",
+                canonicalPrivateIdentity = "canon-original-private",
+                peerId = "android-phone",
+            )
+        val viewModel = SetupViewModel(deps)
+        viewModel.setImportIdentityPath(identityFile.absolutePath)
+        viewModel.identity.importIdentityFromPath()
+        awaitState(viewModel) { it.saveResult == "Identity imported" }
+
+        // FIX8 P0-001-D: replace the file on disk (and what the bridge would now return) AFTER
+        // the import validated and populated the draft, but BEFORE final save. The save path
+        // must never re-read the path, so this replacement must have zero effect on what
+        // actually gets committed.
+        identityFile.writeText("peer_id = \"android-phone\"\nsecret = \"replaced-after-validation\"")
+        recordingBridge.privateIdentityValidationResult =
+            IdentityValidationResult(
+                valid = true,
+                canonicalPublicIdentity = "canon-REPLACED",
+                canonicalPrivateIdentity = "canon-REPLACED-private",
+                peerId = "android-phone",
+            )
+
+        deps.forwardsStore.saveForwards(
+            listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
+        )
+        recordingBridge.validationResult = ValidationResult(true, null)
+        viewModel.setImportPublicIdentity("kid peer")
+        viewModel.setInput(
+            viewModel.state.value.input.copy(brokerHost = "broker.local", remotePeerId = "remote-peer"),
+        )
+        while (viewModel.state.value.currentStep != SetupStep.Review) {
+            val before = viewModel.state.value.currentStep
+            viewModel.goNext()
+            if (viewModel.state.value.currentStep == before) break
+        }
+
+        viewModel.save.saveAndApplyConfig()
+        awaitState(viewModel) { it.saveResult == "Configuration saved" }
+
+        assertEquals("canon-original", deps.identityRepository.readPublicIdentity())
+    }
+
     /** Drives the wizard to a valid Review state whose identity comes from a generated draft. */
     private fun prepareReviewFromGeneratedDraft(viewModel: SetupViewModel) {
         deps.forwardsStore.saveForwards(

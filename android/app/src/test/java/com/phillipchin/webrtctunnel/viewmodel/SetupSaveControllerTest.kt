@@ -431,6 +431,9 @@ class SetupSaveControllerTest {
 
         val viewModel = SetupViewModel(deps)
         viewModel.setImportIdentityPath(identityFile.absolutePath)
+        // FIX8 P0-001-D: the save path no longer re-reads importIdentityPath — the draft is
+        // populated by actually running the import action (draft-only, no live mutation).
+        viewModel.identity.importIdentityFromPath()
         viewModel.setInput(
             viewModel.state.value.input.copy(
                 brokerHost = "broker.local",
@@ -485,6 +488,9 @@ class SetupSaveControllerTest {
         val deps = createDeps(bridge = bridge, configRepo = configRepo)
         val viewModel = SetupViewModel(deps)
         viewModel.setImportIdentityPath(identityFile.absolutePath)
+        // FIX8 P0-001-D: the save path no longer re-reads importIdentityPath — the draft is
+        // populated by actually running the import action (draft-only, no live mutation).
+        viewModel.identity.importIdentityFromPath()
         viewModel.setInput(
             viewModel.state.value.input.copy(
                 brokerHost = "broker.local",

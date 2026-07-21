@@ -120,7 +120,9 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
             )
         val vm = SetupViewModel(testDeps)
         // A private-identity import whose native validation fails with a message the test
-        // bridge is configured to echo back containing the sentinel.
+        // bridge is configured to echo back containing the sentinel. FIX8 P0-001-B: the
+        // import action itself (not a save-time re-read, which no longer exists) is where
+        // this failure message is now produced and must be redacted before reaching UI state.
         recordingBridge.privateIdentityValidationResult =
             IdentityValidationResult(
                 valid = false,
@@ -133,7 +135,7 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
         vm.setImportIdentityPath(importFile.absolutePath)
         vm.setInput(vm.state.value.input.copy(localPeerId = "android-phone"))
 
-        vm.save.saveAndApplyConfig()
+        vm.identity.importIdentityFromPath()
         withTimeout(5_000) {
             while (vm.state.value.errorMessage == null) {
                 Shadows.shadowOf(Looper.getMainLooper()).idle()
@@ -142,7 +144,7 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
         }
 
         assertFalse(
-            "SetupViewModel save errorMessage must not contain the raw secret",
+            "SetupViewModel import errorMessage must not contain the raw secret",
             vm.state.value.errorMessage.orEmpty().contains(SECRET),
         )
     }
