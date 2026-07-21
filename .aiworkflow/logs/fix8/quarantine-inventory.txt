@@ -1,0 +1,30 @@
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:63:    nativeRuntimeUncertain: Boolean,
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:66:        nativeRuntimeUncertain ->
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:171:        internal val nativeRuntimeUncertain = AtomicBoolean(false)
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:192:        internal val nativeStopVerified = AtomicBoolean(true)
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:357:         * An explicit STOP (verified `repository.stop()`, which sets [nativeStopVerified]) is the
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:359:         * already happened, and we set `nativeStopVerified = true` solely on an observed successful
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:388:                        if (!nativeStopVerified.get()) {
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:393:                                    nativeStopVerified.set(true)
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:394:                                    nativeRuntimeUncertain.set(false)
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:476:             * `native_runtime_quarantined` code, so this narrower diagnostic can't silently
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:571:        // FIX7 RESPONSES item 3: nativeRuntimeUncertain is checked FIRST (not adding a
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:579:            requireRuntimeStartAllowedFor(appInitialization.state.value, nativeRuntimeUncertain.get())
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:642:         * state is always the canonical `native_runtime_quarantined` — set before the
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:654:            nativeStopVerified.set(false)
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:655:            nativeRuntimeUncertain.set(true)
+app/src/main/java/com/phillipchin/webrtctunnel/TunnelForegroundService.kt:668:                code = "native_runtime_quarantined",
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:37:        "native_runtime_quarantined"
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:185:        val allowed = service.requireRuntimeStartAllowed().getOrNull()
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:241:                        service.nativeStopVerified,
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:254:                service.nativeStopVerified.set(true)
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:283:            service.nativeStopVerified.set(false)
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:435:                        // P1-011: Set nativeStopVerified true after verified successful pause.
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:436:                        service.nativeStopVerified.set(true)
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:463:                        // P1-011: Set nativeStopVerified true after verified successful policy pause.
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:464:                        service.nativeStopVerified.set(true)
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:499:                    service.nativeStopVerified.set(true)
+app/src/main/java/com/phillipchin/webrtctunnel/OfferCoordinator.kt:500:                    service.nativeRuntimeUncertain.set(false)
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:407:        }.getOrNull()
+app/src/main/java/com/phillipchin/webrtctunnel/data/UnverifiedStartContext.kt:23:    val nativeStopVerified: AtomicBoolean,
+app/src/main/java/com/phillipchin/webrtctunnel/data/UnverifiedStartContext.kt:50:        context.nativeStopVerified.set(stopResult.isSuccess)

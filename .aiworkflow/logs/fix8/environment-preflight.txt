@@ -1,0 +1,10 @@
+FIX8 environment preflight — session baseline 050cb060a82e7a63d164cb1a8a57cbdfeb15b0ac
+cargo 1.94.1 (29ea6fb6a 2026-03-24) — AVAILABLE
+rustc 1.94.1 (e408947bf 2026-03-25) — AVAILABLE
+Gradle 8.7 — AVAILABLE
+docker info — OK
+Docker Compose v5.1.3 — AVAILABLE
+adb 1.0.41 — AVAILABLE
+adb devices: emulator-5554 device sdk_gphone64_x86_64 — EMULATOR RUNNING
+git remote origin git@github.com:ekkus93/webrtc_tunnel.git — AVAILABLE
+gh auth: logged in ekkus93 — AVAILABLE

@@ -1,0 +1,18 @@
+crates/p2p-mobile/src/runtime/mod.rs:24:// Used by the C-ABI layer to timestamp a synthetic log event when `recent_logs`
+crates/p2p-mobile/src/runtime/mod.rs:436:    pub fn recent_logs(&self, max_events: usize) -> Result<Vec<AndroidLogEvent>, String> {
+crates/p2p-mobile/src/runtime/log_bridge.rs:9://! a shared [`LogBuffer`] that `recent_logs` reads, so daemon/ICE diagnostics show
+crates/p2p-mobile/src/runtime/log_bridge.rs:206:                    unix_ms: 0,
+crates/p2p-mobile/src/runtime/tests.rs:377:fn recent_logs_json_shape_is_stable() {
+crates/p2p-mobile/src/runtime/tests.rs:379:    let logs = controller.recent_logs(10).expect("state mutex is not poisoned");
+crates/p2p-mobile/src/runtime/tests.rs:385:fn recent_logs_reports_explicit_error_when_state_mutex_is_poisoned() {
+crates/p2p-mobile/src/runtime/tests.rs:389:        controller.recent_logs(10).expect_err("mutex is poisoned"),
+crates/p2p-mobile/src/c_abi.rs:151:pub unsafe extern "C" fn p2ptunnel_recent_logs_json(
+crates/p2p-mobile/src/c_abi.rs:160:            let events = match controller.recent_logs(max_events) {
+crates/p2p-mobile/src/tests.rs:42:fn recent_logs_json_is_stable_and_side_effect_free() {
+crates/p2p-mobile/src/tests.rs:45:        serde_json::from_str(&read_and_free(unsafe { p2ptunnel_recent_logs_json(handle, 4) }))
+crates/p2p-mobile/src/tests.rs:48:        serde_json::from_str(&read_and_free(unsafe { p2ptunnel_recent_logs_json(handle, 4) }))
+crates/p2p-mobile/src/tests.rs:56:fn recent_logs_json_surfaces_a_synthetic_error_entry_when_state_mutex_is_poisoned() {
+crates/p2p-mobile/src/tests.rs:60:    let raw = unsafe { p2ptunnel_recent_logs_json(handle, 4) };
+crates/p2p-mobile/src/jni_bridge.rs:197:        p2ptunnel_recent_logs_json(handle as *mut AndroidTunnelController, max_events as usize)
+crates/p2p-mobile/src/jni_bridge.rs:202:    // SAFETY: the pointer was allocated by `p2ptunnel_recent_logs_json`.
+crates/p2p-mobile/src/jni_bridge.rs:206:        r#"[{"unix_ms":0,"level":"error","message":"native returned invalid UTF-8 for log JSON"}]"#

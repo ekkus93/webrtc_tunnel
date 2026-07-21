@@ -1,0 +1,187 @@
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModel.kt:58:    fun savePreferences(updated: AndroidAppPreferences) {
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModel.kt:60:            deps.configRepository.savePreferences(updated).fold(
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupViewModel.kt:50:    ) -> Result<Unit> = { deps.configRepository.savePreferences(it) },
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SettingsViewModel.kt:103:    fun savePreferences(updated: AndroidAppPreferences) {
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SettingsViewModel.kt:105:            deps.configRepository.savePreferences(updated).fold(
+app/src/main/java/com/phillipchin/webrtctunnel/ui/NetworkPolicyScreen.kt:53:                if (checked) showMeteredWarningDialog = true else vm.savePreferences(prefs.copy(allowMetered = false))
+app/src/main/java/com/phillipchin/webrtctunnel/ui/NetworkPolicyScreen.kt:57:            vm.savePreferences(prefs.copy(resumeOnUnmetered = it))
+app/src/main/java/com/phillipchin/webrtctunnel/ui/NetworkPolicyScreen.kt:64:                vm.savePreferences(prefs.copy(allowMetered = true))
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ForwardsViewModel.kt:404:        configRepository.writeConfigAtomically(candidate).fold(
+app/src/main/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinator.kt:190:            configExisted = configRepository.configFileExists,
+app/src/main/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinator.kt:191:            configContents = configRepository.readConfig(),
+app/src/main/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinator.kt:218:                SetupPersistenceStage.SetupInput -> configRepository.saveSetupInput(request.setupInput)
+app/src/main/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinator.kt:221:                    configRepository.writeConfigAtomically(
+app/src/main/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinator.kt:267:                restoreSetupInputSnapshot(configRepository.setupInputFileForSnapshot, snapshot.setupInput)
+app/src/main/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinator.kt:271:                    configRepository.writeConfigAtomically(snapshot.configContents).getOrThrow()
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:168:                configRepository.writeConfigAtomically(configRepository.defaultConfigTemplate).fold(
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:196:            configRepository.saveSetupInput(SetupConfigInput())
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:209:    // instead of throwing out of the coordinator mid-reset. readConfig()/current() are not
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:214:    // default-valued one (CRITICAL-3). Config still goes through the existing configFileExists/
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:215:    // readConfig() seam (unchanged from FIX6/P1-002, so existing read-failure/cancellation fault
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:224:            val configExisted = configRepository.configFileExists
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:225:            // readConfig() is called unconditionally (not gated on configExisted) so a
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:228:            val configContents = configRepository.readConfig()
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:274:            ResetStage.SetupInput -> restoreSetupInput(configRepository, snapshot.setupInput)
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:283:            configRepository.writeConfigAtomically(contents).fold(
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:317:private fun restoreSetupInput(
+app/src/main/java/com/phillipchin/webrtctunnel/data/TransactionalReset.kt:321:    val result = configRepository.restoreSetupInputFileSnapshot(snapshot)
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportService.kt:40:        return deps.configRepository.readConfig()
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportService.kt:82:                    .writeConfigAtomically(candidate)
+app/src/main/java/com/phillipchin/webrtctunnel/data/ExactFileSnapshot.kt:104:fun restoreSetupInputSnapshot(
+app/src/main/java/com/phillipchin/webrtctunnel/data/ExactFileSnapshot.kt:145: * internal (not private): called from [ConfigRepository.restoreSetupInputFileSnapshot] in the
+app/src/main/java/com/phillipchin/webrtctunnel/data/DiagnosticsRepository.kt:26:            appendLine("config_redacted=${SensitiveDataRedactor.redactText(configRepository.readConfig())}")
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:48:    open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:100:    open fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:106:    internal val configFileExists: Boolean get() = configFile.exists()
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:126:            val current = readConfig()
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:147:    open suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:176:    open fun saveSetupInput(input: SetupConfigInput) {
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:192:    internal open fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:241:suspend fun ConfigRepository.writeConfig(contents: String): Result<Unit> = writeConfigAtomically(contents)
+app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceOrderingTest.kt:171:            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceOrderingTest.kt:205:            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceOrderingTest.kt:264:            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceOrderingTest.kt:346:            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceOrderingTest.kt:494:        runBlocking { deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true)) }
+app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceOrderingTest.kt:527:        runBlocking { deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = false)) }
+app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceOrderingTest.kt:554:        runBlocking { deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = false)) }
+app/src/test/java/com/phillipchin/webrtctunnel/PendingRetryInvalidationTest.kt:86:            deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true))
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportServiceTest.kt:46:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> = onWrite()
+app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceStopFailureTest.kt:514:        runBlocking { deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true)) }
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:54:        assertEquals("abc", repository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:63:        assertEquals("existing", repository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:102:                    override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:104:                        return super.writeConfigAtomically(contents)
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:114:            assertEquals("default", repo.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:125:            assertEquals("existing", repository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:153:                repository.readConfig(),
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:303:        val config = repository.readConfig()
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:310:        val cleared = repository.readConfig()
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:320:        assertEquals("", repository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:327:        assertEquals(contents, repository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:333:        assertEquals("", repository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:363:            repository.savePreferences(update).getOrThrow()
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:385:        assertEquals("second", repository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:386:        assertFalse(repository.readConfig().contains("first"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:393:            repository.writeConfigAtomically("after")
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:395:        assertEquals("after", repository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:579:        repository.saveSetupInput(input)
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:601:    fun restoreSetupInputSnapshotRevertsToPriorContents() {
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:603:        repository.saveSetupInput(SetupConfigInput(brokerHost = "prior.example"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:606:        repository.saveSetupInput(SetupConfigInput(brokerHost = "changed.example"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:607:        restoreSetupInputSnapshot(setupInputFile, snapshot)
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:613:    fun restoreSetupInputSnapshotRecreatesAbsentState() {
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:619:        repository.saveSetupInput(SetupConfigInput(brokerHost = "created.example"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryTest.kt:620:        restoreSetupInputSnapshot(setupInputFile, snapshot)
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ForwardsViewModelTest.kt:389:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> = onWrite()
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ForwardsViewModelTest.kt:552:                override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+app/src/main/java/com/phillipchin/webrtctunnel/ui/SettingsAdvanced.kt:30:            onClick = { vm.savePreferences(prefs.copy(advancedSettingsEnabled = !prefs.advancedSettingsEnabled)) },
+app/src/main/java/com/phillipchin/webrtctunnel/ui/SettingsAdvanced.kt:37:            ) { vm.savePreferences(prefs.copy(debugLogsEnabled = it)) }
+app/src/main/java/com/phillipchin/webrtctunnel/ui/SettingsAdvanced.kt:40:                onSelect = { vm.savePreferences(prefs.copy(androidIceMode = it)) },
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:71:        override fun saveSetupInput(input: SetupConfigInput) {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:74:            super.saveSetupInput(input)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:80:        override fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:86:            return super.restoreSetupInputFileSnapshot(snapshot)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:110:            presentRepo.saveSetupInput(SetupConfigInput())
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:195:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:216:                configRepo.readConfig(),
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:248:                throwingConfigRepo.readConfig(),
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:262:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:265:            return super.writeConfigAtomically(contents)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:273:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:336:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:366:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:369:            return super.writeConfigAtomically(contents)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:372:        override fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:380:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetExactSnapshotTest.kt:404:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigurationMutationIntegrationTest.kt:66:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigurationMutationIntegrationTest.kt:69:            return super.writeConfigAtomically(contents)
+app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigurationMutationIntegrationTest.kt:142:                persistPreferences = { deps.configRepository.savePreferences(it) },
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetTestFixtures.kt:78:    override fun saveSetupInput(input: SetupConfigInput) {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetTestFixtures.kt:81:        super.saveSetupInput(input)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetTestFixtures.kt:87:    override fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetTestFixtures.kt:93:        return super.restoreSetupInputFileSnapshot(snapshot)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetTestFixtures.kt:108:    override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetTestFixtures.kt:111:        return super.writeConfigAtomically(contents)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetTestFixtures.kt:126:    override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetTestFixtures.kt:129:        return super.writeConfigAtomically(contents)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetTestFixtures.kt:135:    override fun saveSetupInput(input: SetupConfigInput) {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorRollbackReportingTest.kt:51:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorRollbackReportingTest.kt:74:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorRollbackReportingTest.kt:142:            assertEquals("Config must be unmodified after early failure", priorConfig, freshConfigRepo.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorRollbackReportingTest.kt:212:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorRollbackReportingTest.kt:257:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "test"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorRollbackReportingTest.kt:300:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "test"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorCancellationTest.kt:146:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorCancellationTest.kt:167:                configRepo.readConfig(),
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorCancellationTest.kt:183:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "prior-setup-input"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorCancellationTest.kt:243:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SetupViewModelTest.kt:36:        assertTrue(configRepository.readConfig().contains("broker.local"))
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SetupViewModelTest.kt:122:                    deps.configRepository.savePreferences(it)
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SetupViewModelTest.kt:160:                    deps.configRepository.savePreferences(it)
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SetupViewModelTest.kt:369:        deps.configRepository.saveSetupInput(
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetHardeningTest.kt:64:        override fun readConfig(): String = throw error
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetHardeningTest.kt:74:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetHardeningTest.kt:77:            return super.writeConfigAtomically(contents)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetHardeningTest.kt:88:        override fun saveSetupInput(input: SetupConfigInput) {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetHardeningTest.kt:91:            super.saveSetupInput(input)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetHardeningTest.kt:97:        override fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetHardeningTest.kt:102:                super.restoreSetupInputFileSnapshot(snapshot)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetHardeningTest.kt:108:        override fun saveSetupInput(input: SetupConfigInput): Unit =
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:78:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:85:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:91:        override fun saveSetupInput(input: SetupConfigInput): Unit = throw IOException("setup input write failed")
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:97:        override fun saveSetupInput(input: SetupConfigInput): Unit =
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:104:        override fun readConfig(): String = throw IOException("snapshot read failed")
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:119:        override fun saveSetupInput(input: SetupConfigInput) {
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:127:            super.saveSetupInput(input)
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:255:            assertEquals("format = \"committed\"\n", configRepository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:376:            configRepository.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:402:            configRepository.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:431:            configRepository.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:563:            configRepository.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:588:            configRepository.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:618:            configRepository.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinatorTest.kt:649:            configRepository.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/HomeViewModelTest.kt:48:            configRepository.savePreferences(
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SettingsViewModelTest.kt:222:            configRepository.saveSetupInput(priorSetupInput)
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SettingsViewModelTest.kt:226:                    override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/AllViewModelFailureRedactionTest.kt:44:                override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/AllViewModelFailureRedactionTest.kt:58:        vm.savePreferences(AndroidAppPreferences())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/AllViewModelFailureRedactionTest.kt:75:                override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorTest.kt:43:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorTest.kt:57:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorTest.kt:78:            assertTrue("Config should be absent after rollback", configRepo.readConfig().isEmpty())
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorTest.kt:86:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorTest.kt:105:            assertEquals(priorConfig, configRepo.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorTest.kt:118:            configRepo.saveSetupInput(priorInput)
+app/src/test/java/com/phillipchin/webrtctunnel/data/TransactionalResetCoordinatorTest.kt:282:            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "test"))
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:35:                override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:67:                override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:107:                    override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:162:        val baseline = configRepository.readConfig()
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:169:        assertEquals(baseline, configRepository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:176:        assertEquals(baseline, configRepository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:199:                writeText(configRepository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:216:                writeText(configRepository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:254:                writeText(configRepository.readConfig())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModelTest.kt:336:            ).apply { writeText(configRepository.readConfig()) }
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:42:            viewModel.savePreferences(AndroidAppPreferences())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:60:                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:83:            testViewModel.savePreferences(AndroidAppPreferences())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:107:                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:130:            testViewModel.savePreferences(AndroidAppPreferences())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:168:                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:183:            testViewModel.savePreferences(AndroidAppPreferences())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:201:                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:205:                            super.savePreferences(update)
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:219:            testViewModel.savePreferences(AndroidAppPreferences())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:227:            testViewModel.savePreferences(AndroidAppPreferences())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:243:                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:261:            testViewModel.savePreferences(AndroidAppPreferences())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:296:                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/NetworkPolicyViewModelTest.kt:310:            testViewModel.savePreferences(AndroidAppPreferences())
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveControllerTest.kt:452:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveControllerTest.kt:458:        override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+app/src/test/java/com/phillipchin/webrtctunnel/TunnelForegroundServiceTestFakes.kt:220:        runBlocking { configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = false)) }

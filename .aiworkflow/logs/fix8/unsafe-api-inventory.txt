@@ -1,0 +1,30 @@
+app/src/main/java/com/phillipchin/webrtctunnel/RustTunnelBridge.kt:49:        val load = runCatching { System.loadLibrary("p2p_mobile") }
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SettingsViewModel.kt:170:        runCatching {
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SettingsViewModel.kt:185:            runCatching { SensitiveDataRedactor.redactText(file.readText()) }
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModel.kt:101:            output.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupIdentityController.kt:132:                    runCatching {
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ForwardsViewModel.kt:323:            temp.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/security/IdentityRepository.kt:235:            output.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/security/IdentityRepository.kt:251:            output.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/security/IdentityRepository.kt:270:    runCatching {
+app/src/main/java/com/phillipchin/webrtctunnel/security/IdentityRepository.kt:298:        file.delete()
+app/src/main/java/com/phillipchin/webrtctunnel/security/IdentityRepository.kt:380:    destination.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/DiagnosticsRepository.kt:40:            output.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/BrokerSecretRepository.kt:64:                    passwordFile.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/BrokerSecretRepository.kt:83:    file.setReadable(false, false)
+app/src/main/java/com/phillipchin/webrtctunnel/data/BrokerSecretRepository.kt:84:    file.setReadable(true, true)
+app/src/main/java/com/phillipchin/webrtctunnel/data/BrokerSecretRepository.kt:85:    file.setWritable(false, false)
+app/src/main/java/com/phillipchin/webrtctunnel/data/BrokerSecretRepository.kt:86:    file.setWritable(true, true)
+app/src/main/java/com/phillipchin/webrtctunnel/data/BrokerSecretRepository.kt:101:    destination.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:177:        setupInputFile.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:207:        return runCatching { Json.decodeFromString<SetupConfigInput>(setupInputFile.readText()) }
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:326:    configFile.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt:400:        runCatching {
+app/src/main/java/com/phillipchin/webrtctunnel/data/ExactFileSnapshot.kt:109:        setupInputFile.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/ExactFileSnapshot.kt:112:        setupInputFile.delete()
+app/src/main/java/com/phillipchin/webrtctunnel/data/ExactFileSnapshot.kt:151:    destination.parentFile?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/ExactFileSnapshot.kt:154:    // `finally { runCatching { ... } }` dropped it entirely, worse than the other two
+app/src/main/java/com/phillipchin/webrtctunnel/data/ForwardsConfigStore.kt:124:            runCatching { readAndDecodeForwards() }
+app/src/main/java/com/phillipchin/webrtctunnel/data/ForwardsConfigStore.kt:168:                dir?.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/MutationHelpers.kt:68:    cacheDir.mkdirs()
+app/src/main/java/com/phillipchin/webrtctunnel/data/MutationHelpers.kt:168:    cacheDir.mkdirs()

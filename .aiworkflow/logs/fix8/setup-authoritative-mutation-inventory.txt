@@ -1,0 +1,7 @@
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupIdentityController.kt:92:                        deps.identityRepository.storeEncryptedIdentity(canonicalPrivate.toByteArray(), canonicalPublic)
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupIdentityController.kt:160:                        deps.identityRepository.storeEncryptedIdentity(privateIdentity.toByteArray(), publicIdentity)
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupForwardsController.kt:43:            deps.forwardsRepository.upsertWithReceipt(forward).fold(
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupForwardsController.kt:63:            deps.forwardsRepository.deleteWithReceipt(forwardId).fold(
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ForwardsViewModel.kt:96:                deps.forwardsRepository.upsertWithReceipt(forward).getOrElse { error ->
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ForwardsViewModel.kt:116:                deps.forwardsRepository.deleteWithReceipt(forwardId).getOrElse { error ->
+app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportService.kt:107:            deps.identityRepository.storeEncryptedIdentity(
