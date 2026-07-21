@@ -72,6 +72,127 @@ class NetworkPolicyManagerTest {
         }
     }
 
+    private class ThrowingReporter : NetworkPolicyDiagnosticReporter {
+        override fun report(
+            code: String,
+            message: String,
+        ) {
+            error("reporter boom")
+        }
+    }
+
+    // FIX7 P0-009-B: a throwing reporter must never prevent the fail-closed status from being
+    // assigned/delivered, and must never escape the Android callback (ConnectivityManager would
+    // have no handler for an uncaught exception from onAvailable/onLost/onCapabilitiesChanged).
+    @Test
+    fun throwingClassificationReporterDoesNotEscapeCallback() =
+        runBlocking {
+            val calls = AtomicInteger(0)
+            val manager =
+                NetworkPolicyManager({
+                    if (calls.getAndIncrement() == 0) {
+                        NetworkType.UnmeteredWifi to false
+                    } else {
+                        error("classify boom")
+                    }
+                })
+
+            val status = manager.monitor(ApplicationProvider.getApplicationContext(), ThrowingReporter()).first()
+
+            assertEquals(
+                "the fail-closed status must still be assigned even though the reporter threw",
+                NetworkType.Unknown,
+                status.networkType,
+            )
+            assertFalse(status.tunnelAllowed)
+        }
+
+    // FIX7 P0-009-B: proves the ORDER, not just the outcome — the fail-closed status must be
+    // assigned before the reporter is ever invoked, so an observer of `status` racing the
+    // reporter call always sees the safe value first.
+    @Test
+    fun classifierFailureAppliesBlockedUnknownBeforeReporterCall() =
+        runBlocking {
+            val calls = AtomicInteger(0)
+            val order = mutableListOf<String>()
+            val manager =
+                NetworkPolicyManager({
+                    if (calls.getAndIncrement() == 0) {
+                        NetworkType.UnmeteredWifi to false
+                    } else {
+                        error("classify boom")
+                    }
+                })
+            val orderingReporter =
+                NetworkPolicyDiagnosticReporter { _, _ ->
+                    order.add("report")
+                    assertEquals(
+                        "status must already be the fail-closed value by the time the " +
+                            "reporter is called",
+                        NetworkType.Unknown,
+                        manager.status.value.networkType,
+                    )
+                }
+
+            manager.monitor(ApplicationProvider.getApplicationContext(), orderingReporter).first()
+
+            assertEquals(listOf("report"), order)
+        }
+
+    // FIX7 P0-009-B: a throwing delivery reporter must not prevent the status flow's internal
+    // state from having already been updated (the assignment happens before delivery/reporting
+    // is even attempted).
+    @Test
+    fun throwingDeliveryReporterDoesNotPreventStatusUpdate() {
+        val failed = Channel<Unit>(Channel.RENDEZVOUS).trySend(Unit)
+        assertTrue(failed.isFailure)
+
+        // Must not throw.
+        NetworkPolicyManager.handlePolicyDeliveryResult(failed, ThrowingReporter())
+    }
+
+    // FIX7 P0-009-E: an unregister failure with a throwing reporter must not let the reporter's
+    // own exception escape cleanup either.
+    @Test
+    fun unregisterFailureReporterThrowDoesNotEscapeCleanup() {
+        // Must not throw.
+        NetworkPolicyManager.reportUnregisterFailure(ThrowingReporter()) {
+            throw IOException("unregister boom")
+        }
+    }
+
+    // FIX7 P0-009-B: NetworkPolicyManager's constructor (initial classification) has no reporter
+    // available at all — a throwing classifier must still fail closed rather than crash
+    // construction.
+    @Test
+    fun constructorClassificationFailureProducesBlockedUnknown() {
+        val manager = NetworkPolicyManager({ error("classify boom at construction") })
+
+        assertEquals(NetworkType.Unknown, manager.status.value.networkType)
+        assertFalse(manager.status.value.tunnelAllowed)
+    }
+
+    // FIX7 P0-009-B: refresh() also has no reporter available — a throwing classifier there must
+    // still fail closed rather than propagate.
+    @Test
+    fun refreshClassificationFailureProducesBlockedUnknown() {
+        val calls = AtomicInteger(0)
+        val manager =
+            NetworkPolicyManager({
+                if (calls.getAndIncrement() == 0) {
+                    NetworkType.UnmeteredWifi to false
+                } else {
+                    error("classify boom on refresh")
+                }
+            })
+        assertEquals(NetworkType.UnmeteredWifi, manager.status.value.networkType)
+
+        manager.refresh()
+
+        assertEquals(NetworkType.Unknown, manager.status.value.networkType)
+        assertFalse(manager.status.value.tunnelAllowed)
+    }
+
     // FIX6 P0-006-A: a classifier failure during monitoring must fail closed — report a
     // redacted diagnostic and emit a blocked Unknown status — rather than throwing out of an
     // Android callback.

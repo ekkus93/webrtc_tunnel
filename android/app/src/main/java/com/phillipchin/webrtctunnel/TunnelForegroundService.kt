@@ -32,6 +32,7 @@ import com.phillipchin.webrtctunnel.network.LocalAddressResolver
 import com.phillipchin.webrtctunnel.network.NetworkMonitorSupervisor
 import com.phillipchin.webrtctunnel.network.NetworkPolicyDiagnosticReporter
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+import com.phillipchin.webrtctunnel.network.reportNetworkDiagnosticSafely
 import com.phillipchin.webrtctunnel.notification.NotificationController
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CancellationException
@@ -284,33 +285,8 @@ class TunnelForegroundService
                             networkPolicyManager.monitor(this@TunnelForegroundService, networkPolicyReporter)
                         },
                         reporter = networkPolicyReporter,
-                        onSignal = {
-                            val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
-                            val policy =
-                                networkPolicyManager.evaluateWithPolicy(
-                                    prefs.allowMetered || allowMeteredForCurrentRun.get(),
-                                )
-                            repository.updateNetworkStatus(policy)
-                            if (policy.networkType == NetworkType.UnmeteredWifi) {
-                                submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
-                            } else if (!policy.tunnelAllowed) {
-                                submitLifecycleCommand(
-                                    LifecycleCommand.PolicyBlocked(
-                                        policy.blockReason
-                                            ?: "Tunnel paused: network policy blocks metered/cellular",
-                                    ),
-                                )
-                            }
-                        },
-                        onMonitorFailure = {
-                            // Q5: reuse the canonical evaluator for a fail-closed Unknown status.
-                            repository.updateNetworkStatus(
-                                NetworkPolicyManager.evaluate(NetworkType.Unknown to false, allowMetered = false),
-                            )
-                            submitLifecycleCommand(
-                                LifecycleCommand.PolicyBlocked("Tunnel paused: network policy monitor unavailable"),
-                            )
-                        },
+                        onSignal = { handleNetworkPolicySignal() },
+                        onMonitorFailure = { handleNetworkMonitorFailure(networkPolicyReporter) },
                     ).run()
                 }
         }
@@ -352,14 +328,19 @@ class TunnelForegroundService
         // overtaking START) despite the FIFO processor. trySubmit cannot suspend (the
         // channel is UNLIMITED), so this is safe to call from onStartCommand's thread and
         // from inside a command handler alike.
-        private fun submitLifecycleCommand(command: LifecycleCommand) {
-            if (coordinator.trySubmit(command)) return
+        // Returns whether the command was actually submitted, so a caller for whom a dropped
+        // command is more than routine post-destroy noise (FIX7 P0-009-C: the network monitor's
+        // fail-closed policy-blocked submission) can detect and escalate a dead control plane
+        // rather than silently treating it the same as every other post-destroy drop.
+        private fun submitLifecycleCommand(command: LifecycleCommand): Boolean {
+            if (coordinator.trySubmit(command)) return true
             // Only reachable after onDestroy has stopped the coordinator, which closes the
             // channel before cancelling an in-flight startup — so that startup's
             // StartupCompleted can still land here. Dropping is correct (onDestroy owns the
             // remaining cleanup) but must not be silent. Logs the command type only: a
             // command can carry a policy reason or error text, which must not be logged raw.
             Log.w(tag, "Dropped lifecycle command after coordinator shutdown: ${command.javaClass.simpleName}")
+            return false
         }
 
         // Removed: publishError was a thin wrapper; callers use reporter.publishError directly.
@@ -582,6 +563,59 @@ class TunnelForegroundService
         private val requireRuntimeStartAllowed: () -> Result<Unit> = {
             requireRuntimeStartAllowedFor(appInitialization.state.value, nativeRuntimeUncertain.get())
         }
+
+        // FIX7 P0-009: extracted out of onCreate's NetworkMonitorSupervisor construction (which
+        // pushed onCreate over detekt's LongMethod limit). A property (not a function) so it
+        // doesn't count against this class's detekt function budget for no behavioral reason.
+        private val handleNetworkPolicySignal: suspend () -> Unit = {
+            val prefs = withContext(ioDispatcher) { configRepository.preferences.first() }
+            val policy =
+                networkPolicyManager.evaluateWithPolicy(
+                    prefs.allowMetered || allowMeteredForCurrentRun.get(),
+                )
+            repository.updateNetworkStatus(policy)
+            if (policy.networkType == NetworkType.UnmeteredWifi) {
+                submitLifecycleCommand(LifecycleCommand.PolicyAllowed)
+            } else if (!policy.tunnelAllowed) {
+                submitLifecycleCommand(
+                    LifecycleCommand.PolicyBlocked(
+                        policy.blockReason ?: "Tunnel paused: network policy blocks metered/cellular",
+                    ),
+                )
+            }
+        }
+
+        /**
+         * FIX7 P0-009-C: fails closed (Unknown status) and submits the policy-blocked lifecycle
+         * command on a network-monitor lifecycle failure. Returns whether the lifecycle
+         * processor/control plane is still available — if the fail-closed command itself
+         * couldn't be submitted (only reachable post-destroy), that is a more serious,
+         * separately visible condition than the routine drop `submitLifecycleCommand` already
+         * logs, so it is surfaced explicitly and the supervisor is told to stop retrying against
+         * a dead control plane. A property (not a function) for the same detekt-budget reason as
+         * [handleNetworkPolicySignal].
+         */
+        private val handleNetworkMonitorFailure:
+            suspend (NetworkPolicyDiagnosticReporter) -> Boolean = { networkPolicyReporter ->
+                // Q5: reuse the canonical evaluator for a fail-closed Unknown status.
+                repository.updateNetworkStatus(
+                    NetworkPolicyManager.evaluate(NetworkType.Unknown to false, allowMetered = false),
+                )
+                val submitted =
+                    submitLifecycleCommand(
+                        LifecycleCommand.PolicyBlocked("Tunnel paused: network policy monitor unavailable"),
+                    )
+                if (!submitted) {
+                    reportNetworkDiagnosticSafely(
+                        networkPolicyReporter,
+                        code = "lifecycle_processor_unavailable",
+                        message =
+                            "Network policy monitor cannot submit its fail-closed command; " +
+                                "the lifecycle processor is unavailable",
+                    )
+                }
+                submitted
+            }
 
         /**
          * FIX7 P0-007-A: the one place that transitions the service into native-runtime

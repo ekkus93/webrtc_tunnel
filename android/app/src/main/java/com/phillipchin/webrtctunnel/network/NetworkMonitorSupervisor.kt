@@ -21,9 +21,25 @@ class BoundedExponentialBackoff(
     private val baseMs: Long = DEFAULT_BASE_MS,
     private val maxMs: Long = DEFAULT_MAX_MS,
 ) : NetworkMonitorBackoff {
+    init {
+        require(baseMs > 0) { "initialDelayMs must be > 0, was $baseMs" }
+        require(maxMs >= baseMs) { "maxDelayMs ($maxMs) must be >= initialDelayMs ($baseMs)" }
+    }
+
     override fun delayFor(attempt: Int): Long {
         val shift = attempt.coerceIn(0, MAX_SHIFT)
-        val scaled = baseMs shl shift
+        // FIX7 P0-009-D: `baseMs shl shift` wraps silently on overflow rather than throwing,
+        // and a wrapped-negative `scaled` would make `coerceIn(baseMs, maxMs)` return `baseMs`
+        // (the *minimum* bound a Long.coerceIn falls back to when the value is below it) —
+        // silently producing no backoff growth at all instead of the intended `maxMs` cap.
+        // Detecting the overflow explicitly and substituting Long.MAX_VALUE keeps the value
+        // above `maxMs`, so coerceIn correctly clamps to the cap either way.
+        val scaled =
+            if (shift > 0 && baseMs > (Long.MAX_VALUE shr shift)) {
+                Long.MAX_VALUE
+            } else {
+                baseMs shl shift
+            }
         return scaled.coerceIn(baseMs, maxMs)
     }
 
@@ -42,10 +58,15 @@ class BoundedExponentialBackoff(
  * the service kept running unrestricted. This supervisor wraps the entire
  * `monitor().collect { … }` in a retry loop that:
  *
- * - reports every non-cancellation failure via [reporter] (`network_policy_monitor_failed`),
- * - fails closed by invoking [onMonitorFailure] **before** the retry wait, so the tunnel is
- *   never left unrestricted during backoff,
- * - retries with bounded [backoff], resetting the attempt counter after a fully successful event,
+ * - fails closed by invoking [onMonitorFailure] **before** reporting or the retry wait, so the
+ *   tunnel is never left unrestricted during backoff,
+ * - reports every non-cancellation failure via [reporter] (`network_policy_monitor_failed`)
+ *   through [reportNetworkDiagnosticSafely], so a throwing reporter can never escape this loop,
+ * - retries with bounded [backoff] only while [onMonitorFailure] reports the lifecycle
+ *   processor/control plane is still available (FIX7 P0-009-C) — if it isn't, the loop exits
+ *   without retrying, since the failing fail-closed submission means the service is already
+ *   tearing down and further retries would be pointless,
+ * - resets the attempt counter after a fully successful event,
  * - and exits immediately on cancellation without reporting a failure or retrying.
  *
  * Extracted from `TunnelForegroundService` (RESPONSES Q1): the service sits at detekt's function
@@ -55,7 +76,7 @@ class NetworkMonitorSupervisor(
     private val monitorFlow: () -> Flow<NetworkPolicyStatus>,
     private val reporter: NetworkPolicyDiagnosticReporter,
     private val onSignal: suspend () -> Unit,
-    private val onMonitorFailure: suspend (String) -> Unit,
+    private val onMonitorFailure: suspend (String) -> Boolean,
     private val backoff: NetworkMonitorBackoff = BoundedExponentialBackoff(),
     private val delayFn: suspend (Long) -> Unit = { delay(it) },
 ) {
@@ -74,8 +95,9 @@ class NetworkMonitorSupervisor(
             } catch (error: Exception) {
                 val message =
                     SensitiveDataRedactor.redactText(error.message ?: "Network policy monitor failed")
-                reporter.report(code = "network_policy_monitor_failed", message = message)
-                onMonitorFailure(message)
+                val lifecycleProcessorAvailable = onMonitorFailure(message)
+                reportNetworkDiagnosticSafely(reporter, code = "network_policy_monitor_failed", message = message)
+                if (!lifecycleProcessorAvailable) return
                 delayFn(backoff.delayFor(attempt++))
             }
         }

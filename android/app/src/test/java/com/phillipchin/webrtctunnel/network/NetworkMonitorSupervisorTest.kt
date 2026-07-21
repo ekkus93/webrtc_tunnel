@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -61,7 +62,10 @@ class NetworkMonitorSupervisorTest {
                 monitorFlow = { flow { throw IOException("register boom password=secret") } },
                 reporter = reporter,
                 onSignal = {},
-                onMonitorFailure = { blocked.add(it) },
+                onMonitorFailure = {
+                    blocked.add(it)
+                    true
+                },
                 delayFn = { throw CancellationException("stop") },
             )
 
@@ -87,7 +91,10 @@ class NetworkMonitorSupervisorTest {
                 },
                 reporter = reporter,
                 onSignal = { signals++ },
-                onMonitorFailure = { blocked.add(it) },
+                onMonitorFailure = {
+                    blocked.add(it)
+                    true
+                },
                 delayFn = { throw CancellationException("stop") },
             )
 
@@ -99,6 +106,67 @@ class NetworkMonitorSupervisorTest {
         assertEquals(1, blocked.size)
     }
 
+    private class ThrowingReporter : NetworkPolicyDiagnosticReporter {
+        override fun report(
+            code: String,
+            message: String,
+        ) {
+            error("reporter boom")
+        }
+    }
+
+    // FIX7 P0-009-E: a reporter that throws must not prevent onMonitorFailure (the fail-closed
+    // block) from being invoked on a register failure — reporting and fail-closing are
+    // independent, and reportNetworkDiagnosticSafely must swallow the reporter's own exception.
+    @Test
+    fun registerFailureBlocksTunnelEvenWhenReporterThrows() {
+        val blocked = mutableListOf<String>()
+        val supervisor =
+            NetworkMonitorSupervisor(
+                monitorFlow = { flow { throw IOException("register boom") } },
+                reporter = ThrowingReporter(),
+                onSignal = {},
+                onMonitorFailure = {
+                    blocked.add(it)
+                    true
+                },
+                delayFn = { throw CancellationException("stop") },
+            )
+
+        runToCompletion(supervisor)
+
+        assertEquals("tunnel must be blocked even though the reporter threw", 1, blocked.size)
+    }
+
+    // FIX7 P0-009-E: same as above, but for an upstream collection failure after at least one
+    // successful event.
+    @Test
+    fun upstreamFailureBlocksTunnelEvenWhenReporterThrows() {
+        val blocked = mutableListOf<String>()
+        var signals = 0
+        val supervisor =
+            NetworkMonitorSupervisor(
+                monitorFlow = {
+                    flow<NetworkPolicyStatus> {
+                        emit(sampleStatus)
+                        throw IOException("upstream boom")
+                    }
+                },
+                reporter = ThrowingReporter(),
+                onSignal = { signals++ },
+                onMonitorFailure = {
+                    blocked.add(it)
+                    true
+                },
+                delayFn = { throw CancellationException("stop") },
+            )
+
+        runToCompletion(supervisor)
+
+        assertEquals(1, signals)
+        assertEquals("tunnel must be blocked even though the reporter threw", 1, blocked.size)
+    }
+
     @Test
     fun monitorRetriesWithBoundedBackoff() {
         val delays = mutableListOf<Long>()
@@ -107,7 +175,7 @@ class NetworkMonitorSupervisorTest {
                 monitorFlow = { flow { throw IOException("boom") } },
                 reporter = RecordingReporter(),
                 onSignal = {},
-                onMonitorFailure = {},
+                onMonitorFailure = { true },
                 backoff = BoundedExponentialBackoff(baseMs = 100, maxMs = 800),
                 delayFn = stopAfter(limit = 5, sink = delays),
             )
@@ -138,7 +206,7 @@ class NetworkMonitorSupervisorTest {
                 },
                 reporter = RecordingReporter(),
                 onSignal = {},
-                onMonitorFailure = {},
+                onMonitorFailure = { true },
                 backoff = BoundedExponentialBackoff(baseMs = 100, maxMs = 10_000),
                 delayFn = stopAfter(limit = 3, sink = delays),
             )
@@ -160,7 +228,10 @@ class NetworkMonitorSupervisorTest {
                 monitorFlow = { flow { throw CancellationException("cancelled") } },
                 reporter = reporter,
                 onSignal = {},
-                onMonitorFailure = { blocked.add(it) },
+                onMonitorFailure = {
+                    blocked.add(it)
+                    true
+                },
                 delayFn = { delays.add(it) },
             )
 
@@ -181,7 +252,10 @@ class NetworkMonitorSupervisorTest {
                 monitorFlow = { flow { throw IOException("boom") } },
                 reporter = RecordingReporter(),
                 onSignal = {},
-                onMonitorFailure = { order.add("block") },
+                onMonitorFailure = {
+                    order.add("block")
+                    true
+                },
                 delayFn = {
                     order.add("delay")
                     throw CancellationException("stop")
@@ -191,5 +265,108 @@ class NetworkMonitorSupervisorTest {
         runToCompletion(supervisor)
 
         assertEquals(listOf("block", "delay"), order)
+    }
+
+    // FIX7 P0-009-C: onMonitorFailure (fail-closed repository update + policy-blocked submission)
+    // must run before the monitor-failure reporter call, matching P0-009's required ordering.
+    @Test
+    fun monitorFailureSubmitsPolicyBlockedBeforeReporting() {
+        val order = mutableListOf<String>()
+        val reporter =
+            NetworkPolicyDiagnosticReporter { code, _ ->
+                order.add("report:$code")
+            }
+        val supervisor =
+            NetworkMonitorSupervisor(
+                monitorFlow = { flow { throw IOException("boom") } },
+                reporter = reporter,
+                onSignal = {},
+                onMonitorFailure = {
+                    order.add("submit")
+                    true
+                },
+                delayFn = { throw CancellationException("stop") },
+            )
+
+        runToCompletion(supervisor)
+
+        assertEquals(listOf("submit", "report:network_policy_monitor_failed"), order)
+    }
+
+    // FIX7 P0-009-C: when the fail-closed policy-blocked command cannot be submitted (the
+    // lifecycle processor/control plane is unavailable), the supervisor must stop retrying
+    // instead of backing off forever against a dead control plane — and the failure must still
+    // be visible via the reporter.
+    @Test
+    fun failedPolicyBlockedSubmissionStopsSupervisorAndIsVisible() {
+        val reporter = RecordingReporter()
+        val delays = mutableListOf<Long>()
+        val supervisor =
+            NetworkMonitorSupervisor(
+                monitorFlow = { flow { throw IOException("boom") } },
+                reporter = reporter,
+                onSignal = {},
+                onMonitorFailure = { false },
+                delayFn = { delays.add(it) },
+            )
+
+        runToCompletion(supervisor)
+
+        assertTrue(
+            "the supervisor must not retry once the lifecycle processor is unavailable",
+            delays.isEmpty(),
+        )
+        assertEquals(
+            "the monitor failure must still be reported even though the fail-closed submission failed",
+            "network_policy_monitor_failed",
+            reporter.reports.single().first,
+        )
+    }
+
+    // FIX7 P0-009-C: cancellation must exit without ever invoking the reporter, even one that
+    // would throw — proving the cancellation branch is fully separate from the failure-reporting
+    // path (no code path there could accidentally call a throwing reporter).
+    @Test
+    fun monitorCancellationWithThrowingReporterStillExitsWithoutRetry() {
+        val delays = mutableListOf<Long>()
+        val supervisor =
+            NetworkMonitorSupervisor(
+                monitorFlow = { flow { throw CancellationException("cancelled") } },
+                reporter = ThrowingReporter(),
+                onSignal = {},
+                onMonitorFailure = { true },
+                delayFn = { delays.add(it) },
+            )
+
+        runToCompletion(supervisor)
+
+        assertTrue("cancellation must not retry, even with a throwing reporter", delays.isEmpty())
+    }
+
+    // FIX7 P0-009-D.
+    @Test
+    fun invalidBackoffParametersAreRejected() {
+        assertThrows(IllegalArgumentException::class.java) {
+            BoundedExponentialBackoff(baseMs = 0, maxMs = 1_000)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            BoundedExponentialBackoff(baseMs = -5, maxMs = 1_000)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            BoundedExponentialBackoff(baseMs = 1_000, maxMs = 500)
+        }
+    }
+
+    // FIX7 P0-009-D: a large baseMs pushed through many attempts must not silently wrap to a
+    // negative delay (which coerceIn would then clamp to baseMs, producing no backoff growth) —
+    // it must clamp to maxMs instead.
+    @Test
+    fun backoffCalculationIsCappedAndCannotOverflow() {
+        val backoff = BoundedExponentialBackoff(baseMs = Long.MAX_VALUE / 2, maxMs = Long.MAX_VALUE)
+
+        val delay = backoff.delayFor(attempt = 32)
+
+        assertEquals(Long.MAX_VALUE, delay)
+        assertTrue("the calculated delay must never be negative", delay >= 0)
     }
 }

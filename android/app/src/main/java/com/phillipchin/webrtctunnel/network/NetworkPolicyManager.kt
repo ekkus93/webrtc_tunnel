@@ -34,20 +34,69 @@ fun interface NetworkPolicyDiagnosticReporter {
     )
 }
 
+private const val NETWORK_POLICY_TAG = "NetworkPolicyManager"
+
+/**
+ * FIX7 P0-009-A: every call site in this file/package routes its [reporter] call through here so
+ * a throwing reporter can never escape an Android callback (`ConnectivityManager.NetworkCallback`,
+ * `awaitClose`) or defeat a fail-closed state change that must happen regardless of whether
+ * reporting succeeds. Catches `Exception`, not `Throwable`; never recursively invokes the same
+ * failing [reporter] to report its own failure (that would risk an infinite loop if it always
+ * throws) — logs a fixed, redacted secondary message instead.
+ */
+internal fun reportNetworkDiagnosticSafely(
+    reporter: NetworkPolicyDiagnosticReporter,
+    code: String,
+    message: String,
+) {
+    try {
+        reporter.report(code, message)
+    } catch (error: Exception) {
+        Log.e(
+            NETWORK_POLICY_TAG,
+            "Network diagnostic reporter failed: " +
+                SensitiveDataRedactor.redactText(
+                    error.message ?: "unknown reporter failure",
+                ),
+        )
+    }
+}
+
 class NetworkPolicyManager(
     private val classifier: () -> Pair<NetworkType, Boolean>,
 ) {
     constructor(context: Context) : this({ classifyCurrentNetwork(context) })
 
-    private val _status = MutableStateFlow(evaluate(classifier(), allowMetered = false))
+    /**
+     * FIX7 P0-009-B: construction, [refresh], and [evaluateWithPolicy] have no
+     * [NetworkPolicyDiagnosticReporter] available (only [monitor] does), so a classifier failure
+     * here cannot be reported the same way — but it must still fail closed rather than let an
+     * arbitrary exception escape (crash construction, or propagate out of a caller like
+     * `onSignal`, which would otherwise be misclassified as a full monitor-lifecycle failure by
+     * [com.phillipchin.webrtctunnel.network.NetworkMonitorSupervisor]). Logs a redacted
+     * diagnostic directly since there is no reporter to call.
+     */
+    private fun classifySafely(): Pair<NetworkType, Boolean> =
+        try {
+            classifier()
+        } catch (error: Exception) {
+            Log.e(
+                NETWORK_POLICY_TAG,
+                "Network classification failed: " +
+                    SensitiveDataRedactor.redactText(error.message ?: "Network classification failed"),
+            )
+            NetworkType.Unknown to false
+        }
+
+    private val _status = MutableStateFlow(evaluate(classifySafely(), allowMetered = false))
     val status: StateFlow<NetworkPolicyStatus> = _status.asStateFlow()
 
     fun refresh() {
-        _status.value = evaluate(classifier(), allowMetered = false)
+        _status.value = evaluate(classifySafely(), allowMetered = false)
     }
 
     fun evaluateWithPolicy(allowMetered: Boolean): NetworkPolicyStatus {
-        val evaluated = evaluate(classifier(), allowMetered)
+        val evaluated = evaluate(classifySafely(), allowMetered)
         _status.value = evaluated
         return evaluated
     }
@@ -84,33 +133,42 @@ class NetworkPolicyManager(
         }.conflate()
 
     /**
-     * P0-006-A: classify the current network and emit its policy status, failing closed if
-     * classification throws. A classification failure reports a redacted diagnostic and emits a
-     * fail-closed [NetworkType.Unknown] status (whose `tunnelAllowed` is false) rather than
-     * letting an arbitrary exception escape an Android callback. Shared by every callback and the
-     * initial emission so all paths fail closed identically.
+     * P0-006-A/FIX7 P0-009-B: classify the current network and emit its policy status, failing
+     * closed if classification throws. A classification failure emits a fail-closed
+     * [NetworkType.Unknown] status (whose `tunnelAllowed` is false) rather than letting an
+     * arbitrary exception escape an Android callback. Shared by every callback and the initial
+     * emission so all paths fail closed identically.
+     *
+     * Ordering matters: the internal status is assigned and delivery is attempted FIRST,
+     * unconditionally; only then is the classification failure reported (via
+     * [reportNetworkDiagnosticSafely], so a throwing reporter can never prevent the fail-closed
+     * state from being assigned/delivered, nor escape this callback).
      */
     private fun ProducerScope<NetworkPolicyStatus>.evaluateAndEmit(reporter: NetworkPolicyDiagnosticReporter) {
-        val current =
+        var classificationFailure: Exception? = null
+        val snapshot =
             try {
-                evaluate(classifier(), allowMetered = false)
+                classifier()
             } catch (error: Exception) {
-                reporter.report(
-                    code = "network_policy_classification_failed",
-                    message =
-                        SensitiveDataRedactor.redactText(
-                            error.message ?: "Network policy classification failed",
-                        ),
-                )
-                evaluate(NetworkType.Unknown to false, allowMetered = false)
+                classificationFailure = error
+                NetworkType.Unknown to false
             }
+        val current = evaluate(snapshot, allowMetered = false)
         _status.value = current
         emitPolicyStatus(current, reporter)
+        classificationFailure?.let { error ->
+            reportNetworkDiagnosticSafely(
+                reporter,
+                code = "network_policy_classification_failed",
+                message =
+                    SensitiveDataRedactor.redactText(
+                        error.message ?: "Network policy classification failed",
+                    ),
+            )
+        }
     }
 
     companion object {
-        private const val TAG = "NetworkPolicyManager"
-
         private fun ProducerScope<NetworkPolicyStatus>.emitPolicyStatus(
             status: NetworkPolicyStatus,
             reporter: NetworkPolicyDiagnosticReporter,
@@ -133,8 +191,9 @@ class NetworkPolicyManager(
             val cause = result.exceptionOrNull()
             if (isExpectedChannelClose(cause)) return
             val message = redactedDeliveryFailureMessage(cause)
-            Log.w(TAG, "Network policy event delivery failed: $message")
-            reporter.report(
+            Log.w(NETWORK_POLICY_TAG, "Network policy event delivery failed: $message")
+            reportNetworkDiagnosticSafely(
+                reporter,
                 code = "network_policy_event_delivery_failed",
                 message = message,
             )
@@ -152,7 +211,8 @@ class NetworkPolicyManager(
             try {
                 unregister()
             } catch (error: Exception) {
-                reporter.report(
+                reportNetworkDiagnosticSafely(
+                    reporter,
                     code = "network_policy_unregister_failed",
                     message =
                         SensitiveDataRedactor.redactText(
