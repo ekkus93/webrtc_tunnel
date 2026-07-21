@@ -117,7 +117,7 @@ class ConfigRepositoryTest {
     @Test
     fun ensureDefaultConfigReturnsSuccessWithoutWritingWhenConfigExists() =
         runBlocking {
-            repository.writeConfig("existing")
+            repository.writeConfig("existing").getOrThrow()
 
             val result = repository.ensureDefaultConfig("default")
 
@@ -139,11 +139,11 @@ class ConfigRepositoryTest {
                 launch(ioDispatcher()) {
                     ensureStarted.complete(Unit)
                     gate.await()
-                    repository.ensureDefaultConfig("default-should-not-win")
+                    repository.ensureDefaultConfig("default-should-not-win").getOrThrow()
                 }
 
             ensureStarted.await()
-            repository.writeConfig("written-by-another-writer")
+            repository.writeConfig("written-by-another-writer").getOrThrow()
             gate.complete(Unit)
             ensure.join()
 
@@ -297,7 +297,7 @@ class ConfigRepositoryTest {
                 [webrtc]
                 android_ice_mode = "vnet_mux"
                 """.trimIndent(),
-            )
+            ).getOrThrow()
             repository.prepareActiveConfigForStart("native", "10.1.3.11")
         }
         val config = repository.readConfig()
@@ -360,7 +360,7 @@ class ConfigRepositoryTest {
                     advancedSettingsEnabled = true,
                     androidIceMode = "native",
                 )
-            repository.savePreferences(update)
+            repository.savePreferences(update).getOrThrow()
             assertEquals(update, repository.preferences.first())
         }
 
@@ -379,8 +379,8 @@ class ConfigRepositoryTest {
     @Test
     fun latestWriteWins() {
         runBlocking {
-            repository.writeConfig("first")
-            repository.writeConfig("second")
+            repository.writeConfig("first").getOrThrow()
+            repository.writeConfig("second").getOrThrow()
         }
         assertEquals("second", repository.readConfig())
         assertFalse(repository.readConfig().contains("first"))
@@ -389,7 +389,7 @@ class ConfigRepositoryTest {
     @Test
     fun atomicWriteReplacesConfig() {
         runBlocking {
-            repository.writeConfig("before")
+            repository.writeConfig("before").getOrThrow()
             repository.writeConfigAtomically("after")
         }
         assertEquals("after", repository.readConfig())

@@ -53,7 +53,7 @@ class HomeViewModelTest : AppViewModelTestBase() {
                     debugLogsEnabled = false,
                     advancedSettingsEnabled = false,
                 ),
-            )
+            ).getOrThrow()
             val viewModel = HomeViewModel(deps)
             viewModel.allowMeteredTemporarily()
             val started = Shadows.shadowOf(app).nextStartedService

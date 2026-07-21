@@ -191,7 +191,7 @@ class TransactionalResetExactSnapshotTest {
             // A cancellation at the LAST reset stage (Forwards) must roll back the
             // already-committed Config and SetupInput stages before propagating, exactly like an
             // ordinary Forwards failure already does.
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
             val fakeStore =
                 FakeForwardsStore(
@@ -225,7 +225,7 @@ class TransactionalResetExactSnapshotTest {
     @Test
     fun cancellationDuringSetupInputResetRestoresConfig() =
         runBlocking {
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             val throwingConfigRepo =
                 ThrowingSetupInputConfigRepository(
                     context,
@@ -269,7 +269,7 @@ class TransactionalResetExactSnapshotTest {
     @Test
     fun resetCancellationRollbackContinuesAfterRestoreFailure() =
         runBlocking {
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
             // Call 1 = Config's own reset (succeeds). Call 2 = Config's rollback restore,
             // triggered once the cancelled Forwards stage below rolls back (fails).
@@ -302,7 +302,7 @@ class TransactionalResetExactSnapshotTest {
     @Test
     fun resetCancellationRollbackFailureIsReportedAndSuppressed() =
         runBlocking {
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             val configRepo2 =
                 ConfigWriteFailsOnNthCall(context, failOnCallNumber = 2, error = IOException("config restore failed"))
             val fakeStore =
@@ -332,7 +332,7 @@ class TransactionalResetExactSnapshotTest {
     @Test
     fun oneRollbackFailureDoesNotPreventRemainingResetRestores() =
         runBlocking {
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
             val configRepo2 =
                 ConfigWriteFailsOnNthCall(context, failOnCallNumber = 2, error = IOException("config restore failed"))
@@ -376,7 +376,7 @@ class TransactionalResetExactSnapshotTest {
     @Test
     fun resetRollbackIncompleteListsEveryFailedRestore() =
         runBlocking {
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
             val doubleFailingRepo =
                 ConfigDoubleRollbackFailureRepository(

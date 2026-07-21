@@ -156,20 +156,14 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.3.11579264
         run: cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
 
-      - name: Run detekt
+      - name: Run full Gradle check (ktlint, type-resolved detekt, Android lint, unit tests)
         run: |
           cd android
-          ./gradlew --no-daemon detekt
-
-      - name: Run ktlintCheck
-        run: |
-          cd android
-          ./gradlew --no-daemon ktlintCheck
-
-      - name: Run lintDebug
-        run: |
-          cd android
-          ./gradlew --no-daemon lintDebug
+          ./gradlew --no-daemon check
+        # FIX7 P2-002-C: `check` (not a plain `detekt` task) is required here so the
+        # type-resolved detektMain/detektTest/detektDebugAndroidTest tasks actually run in CI —
+        # rules needing type resolution (InjectDispatcher, UseOrEmpty, IgnoredReturnValue's
+        # @CheckResult enforcement) were previously only exercised locally, never in CI.
 
       - name: Run foreground-service stop-failure truthfulness tests
         run: |

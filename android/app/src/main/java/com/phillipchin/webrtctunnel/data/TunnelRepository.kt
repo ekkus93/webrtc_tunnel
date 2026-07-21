@@ -1,5 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
+import androidx.annotation.CheckResult
 import com.phillipchin.webrtctunnel.RustTunnelBridge
 import com.phillipchin.webrtctunnel.TunnelNativeBridge
 import com.phillipchin.webrtctunnel.model.ForwardStatus
@@ -121,6 +122,7 @@ class TunnelRepository(
      * real owner's stop is still in flight or has actually failed into `Error`. Success here
      * requires [refreshStatusResult] to both succeed *and* observe [ServiceState.Stopped].
      */
+    @CheckResult
     fun stop(): Result<Unit> =
         bridge.stop().fold(
             onFailure = { Result.failure(it) },
@@ -151,7 +153,11 @@ class TunnelRepository(
         )
 
     fun refreshStatus() {
-        refreshStatusResult()
+        // FIX7 P2-002-A: refreshStatusResult() is @CheckResult — both outcomes are already
+        // published into [status] as a side effect inside it, so this caller deliberately has
+        // nothing further to do with the returned value; .also {} consumes it explicitly
+        // instead of discarding it as a bare statement.
+        refreshStatusResult().also { }
     }
 
     /**
@@ -161,6 +167,7 @@ class TunnelRepository(
      * Callers that only need "publish error into status, no direct result needed" should keep
      * using [refreshStatus] instead.
      */
+    @CheckResult
     fun refreshStatusResult(preservePolicyPaused: Boolean = true): Result<TunnelStatus> {
         // Expensive native/JSON work happens once, outside the atomic mutation (P0-002):
         // only the merge decision (which depends on whatever the *latest* status turns out

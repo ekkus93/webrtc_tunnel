@@ -148,7 +148,7 @@ class TransactionalResetHardeningTest {
     fun rollbackContinuesAfterConfigRestoreThrows() =
         runBlocking {
             // Seed via the plain repo so the throwing repo's call counter starts at reset.
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             // Config restore is the 2nd write on this repo (1 = reset stage, 2 = rollback restore).
             val writeRepo =
                 ConfigWriteThrowsOnNthCall(context, throwOnCall = 2, error = IOException("restore boom"))
@@ -172,7 +172,7 @@ class TransactionalResetHardeningTest {
     @Test
     fun rollbackContinuesAfterSetupRestoreThrows() =
         runBlocking {
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             // saveSetupInput throws on the 2nd call (1 = reset stage, 2 = rollback restore).
             val setupRepo =
                 ConfigSaveSetupThrowsOnNthCall(context, throwOnCall = 2, error = IOException("setup restore boom"))

@@ -1,5 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
+import androidx.annotation.CheckResult
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.security.IdentityRepository
@@ -191,6 +192,7 @@ class SetupPersistenceCoordinator(
             preferences = loadPreferences(),
         )
 
+    @CheckResult
     private suspend fun applyStage(
         stage: SetupPersistenceStage,
         request: SetupPersistenceRequest,

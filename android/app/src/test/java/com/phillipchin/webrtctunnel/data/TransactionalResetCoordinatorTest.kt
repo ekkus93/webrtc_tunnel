@@ -74,9 +74,9 @@ class TransactionalResetCoordinatorTest {
     fun successRestoresConfigSetupInputAndForwards() =
         runBlocking {
             // Seed a config, setup input, and forwards
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
-            forwardsRepo.resetForwards() // reset to empty list
+            forwardsRepo.resetForwards().getOrThrow() // reset to empty list
 
             val result = coordinator.resetConfiguration()
 
@@ -90,7 +90,7 @@ class TransactionalResetCoordinatorTest {
         runBlocking {
             // Config is absent. SetupInput has a value. Forwards has a forward.
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
-            forwardsRepo.resetForwards() // clear defaults for clean state
+            forwardsRepo.resetForwards().getOrThrow() // clear defaults for clean state
             forwardsRepo.upsertWithReceipt(forward("test")).getOrThrow()
 
             // Create a coordinator that will fail on the Forwards stage to trigger rollback.
@@ -117,7 +117,7 @@ class TransactionalResetCoordinatorTest {
     fun configPresentBeforeResetAndLaterFailureExactContentRestored() =
         runBlocking {
             val priorConfig = "format = \"prior-v3\"\n[node]\npeer_id = \"android-phone\""
-            configRepo.writeConfig(priorConfig)
+            configRepo.writeConfig(priorConfig).getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
 
             // Create a coordinator that will fail on the Forwards stage to trigger rollback.
@@ -177,7 +177,7 @@ class TransactionalResetCoordinatorTest {
     fun priorEmptyForwardsRestoredAndPersisted() =
         runBlocking {
             // Forwards starts as empty (reset to empty explicitly)
-            forwardsRepo.resetForwards()
+            forwardsRepo.resetForwards().getOrThrow()
             val priorForwards = forwardsRepo.current()
             assertTrue(priorForwards.isEmpty())
 
@@ -205,7 +205,7 @@ class TransactionalResetCoordinatorTest {
     fun priorNonEmptyForwardsRestoredAndPersisted() =
         runBlocking {
             // Clear defaults first for a clean known state
-            forwardsRepo.resetForwards()
+            forwardsRepo.resetForwards().getOrThrow()
 
             // Seed forwards with data
             val fwd = forward("persist-test", 3333)
@@ -313,7 +313,7 @@ class TransactionalResetCoordinatorTest {
             // When snapshot capture fails (e.g., setup input unreadable),
             // reset should abort before any stage mutates
             val priorConfig = "format = \"prior\"\n"
-            configRepo.writeConfig(priorConfig)
+            configRepo.writeConfig(priorConfig).getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "test"))
 
             // Corrupt the setup input to force snapshot capture failure
@@ -425,7 +425,7 @@ class TransactionalResetCoordinatorTest {
         runBlocking {
             // Seed a known config before attempting reset
             val priorConfig = "format = \"prior\"\n"
-            configRepo.writeConfig(priorConfig)
+            configRepo.writeConfig(priorConfig).getOrThrow()
 
             // Corrupt the setup input to force snapshot capture failure
             val corruptSetupInput = File(context.filesDir, "setup_input.json")
@@ -449,7 +449,7 @@ class TransactionalResetCoordinatorTest {
     fun corruptSetupInputLeavesForwardsUnmodified() =
         runBlocking {
             // Clear defaults first for a clean known state
-            forwardsRepo.resetForwards()
+            forwardsRepo.resetForwards().getOrThrow()
 
             // Seed forwards with a single known forward
             forwardsRepo.upsertWithReceipt(forward("unchanged", 4444)).getOrThrow()
@@ -511,7 +511,7 @@ class TransactionalResetCoordinatorTest {
         runBlocking {
             // Seed a config that will need to be restored during rollback
             val priorConfig = "format = \"prior-v3\"\n[node]\npeer_id = \"android-phone\""
-            configRepo.writeConfig(priorConfig)
+            configRepo.writeConfig(priorConfig).getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.local"))
 
             // Create a coordinator where Config stage succeeds but a later stage fails,
@@ -556,7 +556,7 @@ class TransactionalResetCoordinatorTest {
         runBlocking {
             // Create a coordinator where SetupInput stage succeeds but Forwards fails,
             // triggering rollback of Config and SetupInput.
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "test"))
 
             val fakeStore =
@@ -599,7 +599,7 @@ class TransactionalResetCoordinatorTest {
             // Create a scenario where Forwards stage fails during reset,
             // so Forwards is NOT in the mutated stages. But Config and SetupInput are.
             // This tests that Forwards is NOT in the rollback (since it didn't mutate).
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "test"))
 
             val fakeStore =
@@ -766,7 +766,7 @@ class TransactionalResetCoordinatorTest {
             // FIX7 P0-005-C/E: a cancellation at the LAST reset stage (Forwards) must roll back
             // the already-committed Config and SetupInput stages before propagating, exactly
             // like an ordinary Forwards failure already does.
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
             val fakeStore =
                 FakeForwardsStore(
@@ -847,7 +847,7 @@ class TransactionalResetCoordinatorTest {
     @Test
     fun resetStopsImmediatelyWhenSetupStageFails() =
         runBlocking {
-            configRepo.writeConfig("format = \"prior\"\n")
+            configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
 
             // Call 1 = SetupInput reset, forced to fail. Config's own reset (a separate
             // method, writeConfigAtomically) runs and succeeds normally first.
@@ -898,7 +898,7 @@ class TransactionalResetCoordinatorTest {
     fun configRollbackFailureIsReportedAsRollbackStageFailure() =
         runBlocking {
             val priorConfig = "format = \"prior-rollback-failure-test\"\n"
-            configRepo.writeConfig(priorConfig)
+            configRepo.writeConfig(priorConfig).getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "prior"))
 
             val failingRepo =

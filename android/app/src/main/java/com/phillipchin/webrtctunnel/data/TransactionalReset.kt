@@ -1,5 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
+import androidx.annotation.CheckResult
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.CancellationException
@@ -217,6 +218,7 @@ class TransactionalResetCoordinator(
     // coordinator has always had is preserved by still requiring loadSetupInputResult() to parse
     // successfully — that call's *value* is discarded; only its success/failure gates the
     // snapshot.
+    @CheckResult
     private fun captureSnapshot(): Result<ResetSnapshot> =
         try {
             val configExisted = configRepository.configFileExists

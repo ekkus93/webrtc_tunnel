@@ -1,5 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
+import androidx.annotation.CheckResult
 import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.io.IOException
@@ -74,6 +75,7 @@ internal fun createCandidateFile(
  * Cleanup failure must never replace the primary validation/write outcome, so callers
  * consume this separately rather than letting it escape from a `finally` (FIX6 INV-013).
  */
+@CheckResult
 internal fun deleteCandidateFileSafely(file: File): Result<Unit> =
     try {
         Files.deleteIfExists(file.toPath())
@@ -169,6 +171,7 @@ internal suspend fun <T> withTemporaryDirectory(
 }
 
 /** Deletes [root] and everything under it, returning the failure instead of throwing. */
+@CheckResult
 internal fun deleteDirectoryRecursivelySafely(root: File): Result<Unit> =
     try {
         root.walkBottomUp().forEach { entry ->

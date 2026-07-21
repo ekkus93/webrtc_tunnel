@@ -63,7 +63,7 @@ class ForwardsRepositoryTest {
     fun deleteWithReceiptRemovesForwardAndReturnsReceipt() =
         runBlocking {
             val forward = forward("d", 3333)
-            repo.upsertWithReceipt(forward)
+            repo.upsertWithReceipt(forward).getOrThrow()
             val before = repo.current()
 
             val result = repo.deleteWithReceipt("d")
@@ -128,7 +128,7 @@ class ForwardsRepositoryTest {
             val validRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
             validRepo.refresh()
 
-            validRepo.upsertWithReceipt(forward("keep", 1111))
+            validRepo.upsertWithReceipt(forward("keep", 1111)).getOrThrow()
             file.writeText("{ corrupt json")
 
             val result = validRepo.upsertWithReceipt(forward("added", 2222))
@@ -141,7 +141,7 @@ class ForwardsRepositoryTest {
     @Test
     fun validationFailureLeavesObservableStateUnchanged() =
         runBlocking {
-            repo.upsertWithReceipt(forward("a", 1111))
+            repo.upsertWithReceipt(forward("a", 1111)).getOrThrow()
             val before = repo.forwards.value
 
             val result = repo.upsertWithReceipt(forward("b", 1111)) // duplicate port
@@ -210,7 +210,7 @@ class ForwardsRepositoryTest {
             val receipt = repo.upsertWithReceipt(forward).getOrThrow()
 
             // Another mutation advances the revision.
-            repo.upsertWithReceipt(forward("y", 5555))
+            repo.upsertWithReceipt(forward("y", 5555)).getOrThrow()
 
             val rollbackResult = repo.rollbackReceipt(receipt)
 
@@ -238,7 +238,7 @@ class ForwardsRepositoryTest {
     @Test
     fun resetForwardsClearsStateAndLoadError() =
         runBlocking {
-            repo.upsertWithReceipt(forward("x", 1234))
+            repo.upsertWithReceipt(forward("x", 1234)).getOrThrow()
 
             val result = repo.resetForwards()
 
@@ -286,7 +286,7 @@ class ForwardsRepositoryTest {
     fun upsertCancellationPropagatesAndDoesNotPublish() {
         val cancelling = cancellingRepo()
         assertCancellationPropagates {
-            runBlocking { cancelling.upsertWithReceipt(forward("web", 9090)) }
+            runBlocking { cancelling.upsertWithReceipt(forward("web", 9090)).getOrThrow() }
         }
         assertTrue("a cancelled upsert must not publish", cancelling.current().isEmpty())
     }
@@ -295,7 +295,7 @@ class ForwardsRepositoryTest {
     fun deleteCancellationPropagatesAndDoesNotPublish() {
         val cancelling = cancellingRepo(listOf(forward("web", 9090)))
         assertCancellationPropagates {
-            runBlocking { cancelling.deleteWithReceipt("web") }
+            runBlocking { cancelling.deleteWithReceipt("web").getOrThrow() }
         }
         assertTrue(
             "a cancelled delete must not publish the removal",
@@ -311,7 +311,7 @@ class ForwardsRepositoryTest {
         // initial 0, to pass the revision guard and reach the cancelling save.
         val receipt = ForwardsMutationReceipt(before = emptyList(), after = emptyList(), committedRevision = 1)
         assertCancellationPropagates {
-            runBlocking { cancelling.rollbackReceipt(receipt) }
+            runBlocking { cancelling.rollbackReceipt(receipt).getOrThrow() }
         }
         assertTrue(cancelling.current().any { it.id == "web" })
     }
@@ -320,7 +320,7 @@ class ForwardsRepositoryTest {
     fun resetCancellationPropagatesAndDoesNotPublish() {
         val cancelling = cancellingRepo(listOf(forward("web", 9090)))
         assertCancellationPropagates {
-            runBlocking { cancelling.resetForwards() }
+            runBlocking { cancelling.resetForwards().getOrThrow() }
         }
         assertTrue("a cancelled reset must not publish the empty list", cancelling.current().any { it.id == "web" })
     }
@@ -329,7 +329,7 @@ class ForwardsRepositoryTest {
     fun transactionalRestoreCancellationPropagatesAndDoesNotPublish() {
         val cancelling = cancellingRepo(listOf(forward("web", 9090)))
         assertCancellationPropagates {
-            runBlocking { cancelling.restoreForTransactionalReset(listOf(forward("api", 9091))) }
+            runBlocking { cancelling.restoreForTransactionalReset(listOf(forward("api", 9091))).getOrThrow() }
         }
         assertFalse("a cancelled restore must not publish", cancelling.current().any { it.id == "api" })
     }

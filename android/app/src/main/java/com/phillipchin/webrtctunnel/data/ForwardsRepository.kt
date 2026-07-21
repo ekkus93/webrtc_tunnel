@@ -1,5 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
+import androidx.annotation.CheckResult
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -124,6 +125,7 @@ class ForwardsRepository(
      * this mutation (if the revision has not changed).
      * Returns failure if a load error is active (P1-003).
      */
+    @CheckResult
     suspend fun upsertWithReceipt(forward: ForwardConfig): Result<ForwardsMutationReceipt> =
         mutex.withLock {
             withContext(dispatchers.io) {
@@ -156,6 +158,7 @@ class ForwardsRepository(
      * P1-001: Atomically delete a forward and return a receipt.
      * Returns failure if a load error is active (P1-003).
      */
+    @CheckResult
     suspend fun deleteWithReceipt(forwardId: String): Result<ForwardsMutationReceipt> =
         mutex.withLock {
             withContext(dispatchers.io) {
@@ -179,6 +182,7 @@ class ForwardsRepository(
      * Fails with [ForwardsRevisionMismatchException] if the revision has changed
      * since the receipt was committed (P1-002).
      */
+    @CheckResult
     suspend fun rollbackReceipt(receipt: ForwardsMutationReceipt): Result<Unit> =
         mutex.withLock {
             if (revision != receipt.committedRevision) {
@@ -202,6 +206,7 @@ class ForwardsRepository(
      * P1-005: Atomic reset — clears disk, memory state, loadError, and advances
      * revision under one mutex acquisition so old forwards cannot reappear.
      */
+    @CheckResult
     suspend fun resetForwards(): Result<Unit> =
         mutex.withLock {
             withContext(dispatchers.io) {
@@ -221,6 +226,7 @@ class ForwardsRepository(
      * Save-then-publish; serialized. Advances revision on success.
      * Not exposed to ViewModels — only TransactionalResetCoordinator calls this.
      */
+    @CheckResult
     internal suspend fun restoreForTransactionalReset(forwards: List<ForwardConfig>): Result<Unit> =
         mutex.withLock {
             withContext(dispatchers.io) {

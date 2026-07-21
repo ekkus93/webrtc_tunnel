@@ -398,7 +398,7 @@ class SetupPersistenceCoordinatorTest {
     @Test
     fun configFailureRollsBackEveryEarlierStage() =
         runBlocking {
-            configRepository.writeConfig("format = \"prior\"\n")
+            configRepository.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepository.saveSetupInput(SetupConfigInput(brokerHost = "broker.prior"))
             identityRepository.storeEncryptedIdentity("prior-priv".toByteArray(), "prior-pub")
             val prefs = RecordingPreferences()

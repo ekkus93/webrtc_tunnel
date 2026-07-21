@@ -44,6 +44,7 @@ open class ConfigRepository(private val context: Context) {
             }
 
     // P1-016: Wrap preference writes so failures are visible.
+    @CheckResult
     open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
         var result = Result.success(Unit)
         try {
@@ -77,6 +78,7 @@ open class ConfigRepository(private val context: Context) {
      * Calls [writeConfigAtomicallyLocked] directly rather than [writeConfigAtomically]:
      * the latter takes [writeMutex], which is not reentrant and would deadlock here.
      */
+    @CheckResult
     open suspend fun ensureDefaultConfig(contents: String): Result<Unit> =
         writeMutex.withLock {
             if (configFile.exists()) {
@@ -235,6 +237,7 @@ open class ConfigRepository(private val context: Context) {
  * [ConfigRepository]'s detekt TooManyFunctions threshold — call sites (`configRepository
  * .writeConfig(...)`) are unaffected, since Kotlin resolves member and extension calls identically.
  */
+@CheckResult
 suspend fun ConfigRepository.writeConfig(contents: String): Result<Unit> = writeConfigAtomically(contents)
 
 /**
