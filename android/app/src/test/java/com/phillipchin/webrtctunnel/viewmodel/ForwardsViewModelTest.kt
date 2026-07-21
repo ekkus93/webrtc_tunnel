@@ -188,8 +188,10 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
                 dispatchers = realIoTestDispatchers(),
             )
         val vm = ForwardsViewModel(realIoDeps)
-        // Seeded default forwards include "ssh"; delete it rather than an added one.
-        assertTrue(realIoDeps.forwardsRepository.current().any { it.id == "ssh" })
+        // FIX7 P1-003-B: ForwardsRepository no longer reads its baseline at construction —
+        // the VM's init-triggered reload() is async, so wait for it before asserting on the
+        // seeded default forwards (which include "ssh"; delete it rather than an added one).
+        awaitCondition { realIoDeps.forwardsRepository.current().any { it.id == "ssh" } }
 
         recordingBridge.blockNextValidateConfig()
         vm.deleteForward("ssh")

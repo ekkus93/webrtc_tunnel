@@ -220,6 +220,9 @@ class TransactionalResetCoordinatorTest {
                     throwOnSave = true,
                 )
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            // FIX7 P1-003-B: construction no longer reads the store — refresh() so current()
+            // reflects fakeStore's seeded initialForwards before the coordinator snapshots it.
+            fakeForwardsRepo.refresh()
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()

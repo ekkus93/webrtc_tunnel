@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Explicit application-initialization readiness (FIX6 INV-010).
@@ -40,8 +41,26 @@ class AppInitializationCoordinator(
     private val _state = MutableStateFlow<AppInitializationState>(AppInitializationState.Initializing)
     val state: StateFlow<AppInitializationState> = _state.asStateFlow()
 
-    /** Launches initialization. Returns the job so teardown/tests can join it. */
-    fun start(): Job = scope.launch(ioDispatcher) { initialize() }
+    // FIX7 P1-003-C: remembers the Job from the first start() call so a repeated call
+    // returns it instead of launching a second, duplicate initialize().
+    private val startedJob = AtomicReference<Job?>(null)
+
+    /**
+     * Launches initialization exactly once; idempotent — a repeated call returns the same
+     * [Job] rather than launching a duplicate [initialize]. Returns the job so teardown/tests
+     * can join it.
+     */
+    fun start(): Job {
+        val existing = startedJob.get()
+        if (existing != null) return existing
+        val job = scope.launch(ioDispatcher) { initialize() }
+        return if (startedJob.compareAndSet(null, job)) {
+            job
+        } else {
+            job.cancel()
+            startedJob.get() ?: job
+        }
+    }
 
     /**
      * Runs initialization inline. Exposed so tests (and the test application) can reach a

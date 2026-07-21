@@ -18,6 +18,13 @@ class HomeViewModel(private val deps: AppDependencies) : ViewModel() {
     // Observe the shared forwards source of truth so Home reflects edits made elsewhere.
     val configuredForwards: StateFlow<List<ForwardConfig>> = deps.forwardsRepository.forwards
 
+    init {
+        // FIX7 P1-003-B: ForwardsRepository no longer reads its baseline at construction
+        // (that was main-thread I/O) — the first real load now happens here, off the main
+        // thread, instead of relying on a caller to trigger refreshForwards() manually.
+        refreshForwards()
+    }
+
     fun startTunnel(mode: TunnelMode) {
         val action =
             when (mode) {

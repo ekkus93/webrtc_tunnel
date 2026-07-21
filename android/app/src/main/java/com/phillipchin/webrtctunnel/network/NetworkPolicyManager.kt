@@ -88,7 +88,12 @@ class NetworkPolicyManager(
             NetworkType.Unknown to false
         }
 
-    private val _status = MutableStateFlow(evaluate(classifySafely(), allowMetered = false))
+    // FIX7 P1-003-B: seeded fail-closed (Unknown/not-allowed) rather than calling
+    // classifySafely() here — construction must never perform a synchronous Binder call
+    // (ConnectivityManager) on whichever thread constructs this (the main thread, via
+    // AppDependencies). The real classification happens on first [refresh]/
+    // [evaluateWithPolicy]/[monitor] call, all of which already run off the main thread.
+    private val _status = MutableStateFlow(evaluate(NetworkType.Unknown to false, allowMetered = false))
     val status: StateFlow<NetworkPolicyStatus> = _status.asStateFlow()
 
     fun refresh() {

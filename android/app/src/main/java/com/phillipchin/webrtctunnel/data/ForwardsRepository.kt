@@ -23,6 +23,22 @@ class ForwardsRevisionMismatchException(
 /** P1-003: Thrown when a forwards mutation is blocked due to an active load error. */
 class ForwardsMutationBlocked(message: String) : IllegalArgumentException(message)
 
+/**
+ * FIX7 P1-003-B: explicit baseline-load readiness. [ForwardsRepository] no longer reads the
+ * forwards file at construction (that eager read was main-thread I/O when constructed from
+ * `AppDependencies`), so there is a real window before the first [ForwardsRepository.refresh]
+ * completes during which the in-memory list is a placeholder, not the real baseline —
+ * [Initializing] blocks mutations during that window the same way [Failed] already does,
+ * rather than letting a mutation silently overwrite a baseline nobody has actually read yet.
+ */
+sealed interface ForwardsLoadState {
+    data object Initializing : ForwardsLoadState
+
+    data object Ready : ForwardsLoadState
+
+    data class Failed(val message: String) : ForwardsLoadState
+}
+
 /** P1-001: Receipt returned after a successful mutation, capturing the before/after list and the committed revision. */
 data class ForwardsMutationReceipt(
     val before: List<ForwardConfig>,
@@ -50,15 +66,19 @@ class ForwardsRepository(
 ) {
     private val mutex = Mutex()
 
-    private val initial = store.loadForwardsResult()
-    private val _forwards = MutableStateFlow(initial.getOrDefault(emptyList()))
+    // FIX7 P1-003-B: no disk read here — constructing this class must never perform
+    // synchronous file I/O (it is constructed from AppDependencies on the main thread).
+    // The in-memory list starts empty and _loadState starts Initializing; the real baseline
+    // arrives via the first refresh(), which every current caller (HomeViewModel,
+    // ForwardsViewModel) already performs off the main thread in its own init block.
+    private val _forwards = MutableStateFlow(emptyList<ForwardConfig>())
     val forwards: StateFlow<List<ForwardConfig>> = _forwards.asStateFlow()
 
-    private val _loadError =
-        MutableStateFlow(initial.exceptionOrNull()?.let { describeForwardsFailure(it) })
-    val loadError: StateFlow<String?> = _loadError.asStateFlow()
+    private val _loadState = MutableStateFlow<ForwardsLoadState>(ForwardsLoadState.Initializing)
+    val loadState: StateFlow<ForwardsLoadState> = _loadState.asStateFlow()
 
-    private var hasValidBaseline = initial.isSuccess
+    private val _loadError = MutableStateFlow<String?>(null)
+    val loadError: StateFlow<String?> = _loadError.asStateFlow()
 
     // P1-002: Revision counter for conditional rollback. Owned by the same mutex as all
     // other mutations. Incremented on every successful persistence change.
@@ -73,15 +93,30 @@ class ForwardsRepository(
                     .onSuccess {
                         _forwards.value = it
                         _loadError.value = null
-                        hasValidBaseline = true
+                        _loadState.value = ForwardsLoadState.Ready
                         // P1-002: Successful refresh advances revision to invalidate old receipts.
                         revision += 1
                     }
-                    .onFailure { _loadError.value = describeForwardsFailure(it) }
+                    .onFailure { error ->
+                        val message = describeForwardsFailure(error)
+                        _loadError.value = message
+                        _loadState.value = ForwardsLoadState.Failed(message)
+                    }
                 // onFailure keeps the existing in-memory list and baseline state.
             }
         }
     }
+
+    // FIX7 P1-003-B: shared guard for every mutation below — null only once a baseline has
+    // actually been read successfully (Ready). Blocks identically whether the baseline was
+    // never read yet (Initializing) or was read and found corrupt (Failed), so a mutation
+    // can never silently overwrite a baseline nobody has verified.
+    private fun blockedMutationReason(): String? =
+        when (val state = _loadState.value) {
+            ForwardsLoadState.Ready -> null
+            ForwardsLoadState.Initializing -> "Forwards have not finished loading yet; try again shortly"
+            is ForwardsLoadState.Failed -> state.message
+        }
 
     /**
      * P1-001: Atomically upsert a forward and return a receipt capturing the before/after
@@ -92,13 +127,9 @@ class ForwardsRepository(
     suspend fun upsertWithReceipt(forward: ForwardConfig): Result<ForwardsMutationReceipt> =
         mutex.withLock {
             withContext(dispatchers.io) {
-                // P1-003: Central guard — block mutation whenever loadError is active.
-                if (_loadError.value != null) {
-                    return@withContext Result.failure(
-                        ForwardsMutationBlocked(
-                            _loadError.value ?: "Saved forwards file is corrupt; cannot mutate",
-                        ),
-                    )
+                // P1-003: Central guard — block mutation whenever the baseline isn't Ready.
+                blockedMutationReason()?.let { reason ->
+                    return@withContext Result.failure(ForwardsMutationBlocked(reason))
                 }
                 val before = _forwards.value
                 val after =
@@ -128,13 +159,9 @@ class ForwardsRepository(
     suspend fun deleteWithReceipt(forwardId: String): Result<ForwardsMutationReceipt> =
         mutex.withLock {
             withContext(dispatchers.io) {
-                // P1-003: Central guard — block mutation whenever loadError is active.
-                if (_loadError.value != null) {
-                    return@withContext Result.failure(
-                        ForwardsMutationBlocked(
-                            _loadError.value ?: "Saved forwards file is corrupt; cannot mutate",
-                        ),
-                    )
+                // P1-003: Central guard — block mutation whenever the baseline isn't Ready.
+                blockedMutationReason()?.let { reason ->
+                    return@withContext Result.failure(ForwardsMutationBlocked(reason))
                 }
                 val before = _forwards.value
                 val after = before.filterNot { it.id == forwardId }
@@ -182,7 +209,7 @@ class ForwardsRepository(
                     store.saveForwards(emptyList())
                     _forwards.value = emptyList()
                     _loadError.value = null
-                    hasValidBaseline = true
+                    _loadState.value = ForwardsLoadState.Ready
                     revision += 1
                 }
             }

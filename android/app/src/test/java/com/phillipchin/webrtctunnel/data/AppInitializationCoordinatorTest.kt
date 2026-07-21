@@ -38,6 +38,17 @@ class AppInitializationCoordinatorTest {
         override suspend fun ensureDefaultConfig(contents: String): Result<Unit> = Result.failure(error)
     }
 
+    private class CountingConfigRepository(
+        context: android.content.Context,
+    ) : ConfigRepository(context) {
+        val ensureDefaultConfigCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
+        override suspend fun ensureDefaultConfig(contents: String): Result<Unit> {
+            ensureDefaultConfigCalls.incrementAndGet()
+            return super.ensureDefaultConfig(contents)
+        }
+    }
+
     private fun coordinatorFor(
         repository: ConfigRepository,
         scope: CoroutineScope,
@@ -54,6 +65,31 @@ class AppInitializationCoordinatorTest {
 
     private fun unconfinedScope(dispatcher: CoroutineDispatcher = Dispatchers.Unconfined): CoroutineScope =
         CoroutineScope(Job() + dispatcher)
+
+    // FIX7 P1-003-C: start() must be idempotent — a repeated call (e.g. a second
+    // Application.onCreate-equivalent race) must not launch a duplicate initialize().
+    @Test
+    fun initializationStartIsIdempotent() {
+        val scope = unconfinedScope()
+        val repository = CountingConfigRepository(context)
+        val coordinator = coordinatorFor(repository, scope)
+
+        val firstJob = coordinator.start()
+        val secondJob = coordinator.start()
+
+        assertEquals(
+            "a repeated start() must return the same Job, not launch a new one",
+            firstJob,
+            secondJob,
+        )
+        assertEquals(
+            "a repeated start() must not launch a duplicate initialize()",
+            1,
+            repository.ensureDefaultConfigCalls.get(),
+        )
+        assertEquals(AppInitializationState.Ready, coordinator.state.value)
+        scope.cancel()
+    }
 
     @Test
     fun readinessStartsAsInitializing() {

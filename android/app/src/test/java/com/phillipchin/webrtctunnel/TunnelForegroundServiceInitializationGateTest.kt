@@ -131,6 +131,36 @@ class TunnelForegroundServiceInitializationGateTest {
         assertFalse("a raw secret must not reach the visible error", message.contains("sentinel"))
     }
 
+    // FIX7 P1-003-C: the Failed state must be durable — a second start attempt after the
+    // first must still be blocked and visible, not merely the first one (proving Failed
+    // doesn't clear itself, unlike a transient/one-shot rejection).
+    @Test
+    fun startAfterFailedInitializationIsDurableAndVisible() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(
+            waitForCondition {
+                deps.tunnelRepository.status.value.lastError?.code == "config_initialization_failed"
+            },
+        )
+        assertEquals(0, bridge.startOfferCalls)
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 2)
+        assertTrue(
+            "a second start attempt after Failed must still be blocked and visible",
+            waitForCondition {
+                deps.tunnelRepository.status.value.lastError?.code == "config_initialization_failed"
+            },
+        )
+        assertEquals(
+            "the durable Failed state must still refuse a native call on a later attempt",
+            0,
+            bridge.startOfferCalls,
+        )
+    }
+
     @Test
     fun resumeAfterInitializationFailureAlsoRefusesWithoutNativeCall() {
         val deps = (service.applicationContext as HasAppDependencies).deps

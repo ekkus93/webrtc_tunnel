@@ -63,6 +63,13 @@ class ForwardsViewModel(
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
 
+    init {
+        // FIX7 P1-003-B: ForwardsRepository no longer reads its baseline at construction
+        // (that was main-thread I/O) — the first real load now happens here, off the main
+        // thread, instead of relying on a caller to trigger reload() manually.
+        reload()
+    }
+
     /**
      * Record a result and surface it through the app-wide snackbar. [failure] is the durable
      * P1-008 copy: a non-null value on a failed mutation (surviving a missing snackbar collector)

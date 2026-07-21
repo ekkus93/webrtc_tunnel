@@ -26,6 +26,10 @@ class ForwardsRepositoryTest {
         file.writeText("[]") // Write a valid empty array so the initial load succeeds.
         // Real dispatchers; suspend repository methods complete under runBlocking.
         repo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+        // FIX7 P1-003-B: construction no longer reads the file — refresh() once to reach
+        // Ready before any test mutates, matching how every real caller (HomeViewModel,
+        // ForwardsViewModel) refreshes in its own init block before mutating.
+        runBlocking { repo.refresh() }
     }
 
     private fun forward(
@@ -50,7 +54,9 @@ class ForwardsRepositoryTest {
             val receipt = result.getOrThrow()
             assertEquals(before, receipt.before)
             assertTrue(receipt.after.any { it.id == "x" })
-            assertEquals(1, receipt.committedRevision)
+            // FIX7 P1-003-B: setUp()'s refresh() (reaching Ready) already advances revision
+            // to 1, so the first mutation commits revision 2, not 1.
+            assertEquals(2, receipt.committedRevision)
         }
 
     @Test
@@ -73,6 +79,7 @@ class ForwardsRepositoryTest {
         runBlocking {
             file.writeText("{ corrupt json")
             val corruptRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+            corruptRepo.refresh()
 
             val result = corruptRepo.upsertWithReceipt(forward("x", 1234))
 
@@ -83,10 +90,26 @@ class ForwardsRepositoryTest {
         }
 
     @Test
+    fun mutationBlockedBeforeFirstRefreshCompletes() =
+        runBlocking {
+            // Even a valid on-disk baseline must not be mutated before it has actually been
+            // read: construction no longer reads the file (FIX7 P1-003-B), so a mutation
+            // arriving before the first refresh() must be blocked, not silently accepted
+            // against the placeholder empty in-memory list.
+            val freshRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+
+            val result = freshRepo.upsertWithReceipt(forward("x", 1234))
+
+            assertFalse(result.isSuccess)
+            assertTrue(result.exceptionOrNull() is ForwardsMutationBlocked)
+        }
+
+    @Test
     fun deleteBlockedWhenStartupBaselineIsCorrupt() =
         runBlocking {
             file.writeText("{ corrupt json")
             val corruptRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+            corruptRepo.refresh()
 
             val result = corruptRepo.deleteWithReceipt("anything")
 
@@ -103,6 +126,7 @@ class ForwardsRepositoryTest {
             // Ensure a valid initial baseline by writing a valid empty array first.
             file.writeText("[]")
             val validRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+            validRepo.refresh()
 
             validRepo.upsertWithReceipt(forward("keep", 1111))
             file.writeText("{ corrupt json")
@@ -131,6 +155,7 @@ class ForwardsRepositoryTest {
         runBlocking {
             file.writeText("{ corrupt json")
             val parseFailureRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+            parseFailureRepo.refresh()
             val parseMessage = parseFailureRepo.loadError.value
 
             file.delete()
@@ -138,6 +163,7 @@ class ForwardsRepositoryTest {
             assertTrue(file.setReadable(false))
             try {
                 val readFailureRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+                readFailureRepo.refresh()
                 val readMessage = readFailureRepo.loadError.value
 
                 // Both must be reported, but with distinct wording — a caller must not have
@@ -238,7 +264,13 @@ class ForwardsRepositoryTest {
     }
 
     private fun cancellingRepo(initial: List<ForwardConfig> = emptyList()): ForwardsRepository =
-        ForwardsRepository(CancellingSaveStore(initial), AppDispatchers())
+        ForwardsRepository(CancellingSaveStore(initial), AppDispatchers()).also {
+            // FIX7 P1-003-B: construction no longer reads a baseline — refresh() (a plain
+            // success against CancellingSaveStore.loadForwardsResult()) to reach Ready so
+            // these tests exercise cancellation during the mutation itself, not the
+            // now-separate not-yet-Ready block.
+            runBlocking { it.refresh() }
+        }
 
     private inline fun assertCancellationPropagates(block: () -> Unit) {
         var caught: CancellationException? = null
@@ -274,9 +306,10 @@ class ForwardsRepositoryTest {
     @Test
     fun rollbackCancellationPropagatesAndDoesNotPublish() {
         val cancelling = cancellingRepo(listOf(forward("web", 9090)))
-        // committedRevision 0 matches the repo's initial revision, so it passes the
-        // revision guard and reaches the cancelling save.
-        val receipt = ForwardsMutationReceipt(before = emptyList(), after = emptyList(), committedRevision = 0)
+        // FIX7 P1-003-B: cancellingRepo() now calls refresh() (reaching Ready) to advance
+        // the repo's revision to 1, so committedRevision must match that, not the pre-refresh
+        // initial 0, to pass the revision guard and reach the cancelling save.
+        val receipt = ForwardsMutationReceipt(before = emptyList(), after = emptyList(), committedRevision = 1)
         assertCancellationPropagates {
             runBlocking { cancelling.rollbackReceipt(receipt) }
         }

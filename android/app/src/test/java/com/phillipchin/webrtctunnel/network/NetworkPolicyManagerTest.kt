@@ -46,6 +46,9 @@ class NetworkPolicyManagerTest {
                 ),
             )
         val manager = NetworkPolicyManager({ sequence.removeFirst() })
+        // FIX7 P1-003-B: construction never classifies — the fail-closed seed shows first.
+        assertEquals(NetworkType.Unknown, manager.status.value.networkType)
+        manager.refresh()
         assertEquals(NetworkType.UnmeteredWifi, manager.status.value.networkType)
         manager.refresh()
         assertEquals(NetworkType.MeteredWifi, manager.status.value.networkType)
@@ -87,15 +90,7 @@ class NetworkPolicyManagerTest {
     @Test
     fun throwingClassificationReporterDoesNotEscapeCallback() =
         runBlocking {
-            val calls = AtomicInteger(0)
-            val manager =
-                NetworkPolicyManager({
-                    if (calls.getAndIncrement() == 0) {
-                        NetworkType.UnmeteredWifi to false
-                    } else {
-                        error("classify boom")
-                    }
-                })
+            val manager = NetworkPolicyManager({ error("classify boom") })
 
             val status = manager.monitor(ApplicationProvider.getApplicationContext(), ThrowingReporter()).first()
 
@@ -113,16 +108,8 @@ class NetworkPolicyManagerTest {
     @Test
     fun classifierFailureAppliesBlockedUnknownBeforeReporterCall() =
         runBlocking {
-            val calls = AtomicInteger(0)
             val order = mutableListOf<String>()
-            val manager =
-                NetworkPolicyManager({
-                    if (calls.getAndIncrement() == 0) {
-                        NetworkType.UnmeteredWifi to false
-                    } else {
-                        error("classify boom")
-                    }
-                })
+            val manager = NetworkPolicyManager({ error("classify boom") })
             val orderingReporter =
                 NetworkPolicyDiagnosticReporter { _, _ ->
                     order.add("report")
@@ -161,13 +148,23 @@ class NetworkPolicyManagerTest {
         }
     }
 
-    // FIX7 P0-009-B: NetworkPolicyManager's constructor (initial classification) has no reporter
-    // available at all — a throwing classifier must still fail closed rather than crash
-    // construction.
+    // FIX7 P1-003-B: construction must never perform a synchronous Binder call — the real
+    // classification is deferred to the first refresh()/evaluateWithPolicy()/monitor() call,
+    // all of which already run off the main thread.
     @Test
-    fun constructorClassificationFailureProducesBlockedUnknown() {
-        val manager = NetworkPolicyManager({ error("classify boom at construction") })
+    fun constructionNeverInvokesClassifier() {
+        val calls = AtomicInteger(0)
+        val manager =
+            NetworkPolicyManager({
+                calls.incrementAndGet()
+                NetworkType.UnmeteredWifi to false
+            })
 
+        assertEquals(
+            "construction must not classify the network (main-thread Binder call)",
+            0,
+            calls.get(),
+        )
         assertEquals(NetworkType.Unknown, manager.status.value.networkType)
         assertFalse(manager.status.value.tunnelAllowed)
     }
@@ -185,6 +182,7 @@ class NetworkPolicyManagerTest {
                     error("classify boom on refresh")
                 }
             })
+        manager.refresh()
         assertEquals(NetworkType.UnmeteredWifi, manager.status.value.networkType)
 
         manager.refresh()
@@ -199,16 +197,7 @@ class NetworkPolicyManagerTest {
     @Test
     fun classifierFailureEmitsBlockedUnknownPolicy() =
         runBlocking {
-            val calls = AtomicInteger(0)
-            val manager =
-                NetworkPolicyManager({
-                    // Succeed once (construction), then fail during the monitor's initial emit.
-                    if (calls.getAndIncrement() == 0) {
-                        NetworkType.UnmeteredWifi to false
-                    } else {
-                        error("classify boom password=secret")
-                    }
-                })
+            val manager = NetworkPolicyManager({ error("classify boom password=secret") })
             val reporter = RecordingReporter()
 
             val status = manager.monitor(ApplicationProvider.getApplicationContext(), reporter).first()
