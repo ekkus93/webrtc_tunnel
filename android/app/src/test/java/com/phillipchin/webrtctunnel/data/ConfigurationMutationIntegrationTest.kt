@@ -13,6 +13,7 @@ import com.phillipchin.webrtctunnel.viewmodel.ForwardsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.ImportExportViewModel
 import com.phillipchin.webrtctunnel.viewmodel.RecordingBridge
 import com.phillipchin.webrtctunnel.viewmodel.SettingsViewModel
+import com.phillipchin.webrtctunnel.viewmodel.SetupIdentityDraft
 import com.phillipchin.webrtctunnel.viewmodel.SetupSaveController
 import com.phillipchin.webrtctunnel.viewmodel.SetupStep
 import com.phillipchin.webrtctunnel.viewmodel.SetupWizardState
@@ -141,6 +142,7 @@ class ConfigurationMutationIntegrationTest {
                 loadPreferences = { deps.configRepository.preferences.first() },
                 persistPreferences = { deps.configRepository.savePreferences(it) },
                 access = access,
+                identityDraft = SetupIdentityDraft(),
             )
         return SetupHarness(controller, stateRef)
     }

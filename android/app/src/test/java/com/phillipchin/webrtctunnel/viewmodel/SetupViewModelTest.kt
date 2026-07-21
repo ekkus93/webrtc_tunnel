@@ -462,7 +462,7 @@ class SetupViewModelTest : AppViewModelTestBase() {
     // --- importPublicIdentityFromUri (P1-001) ---
 
     @Test
-    fun generateIdentitySucceedsAndPersistsIdentity() {
+    fun generateIdentitySucceedsAndPopulatesDraftWithoutPersisting() {
         val viewModel = SetupViewModel(deps)
         viewModel.setInput(viewModel.state.value.input.copy(localPeerId = "generated-peer"))
 
@@ -473,7 +473,9 @@ class SetupViewModelTest : AppViewModelTestBase() {
         assertEquals("canon", state.localPublicIdentity)
         assertEquals(null, state.errorMessage)
         assertEquals(false, state.isBusy)
-        assertEquals("canon", deps.identityRepository.readPublicIdentity())
+        // FIX8 P0-001-B: generation is draft-only — nothing is persisted before final save.
+        assertEquals("", deps.identityRepository.readPublicIdentity())
+        assertEquals(false, deps.identityRepository.hasEncryptedIdentity())
     }
 
     @Test
@@ -511,7 +513,7 @@ class SetupViewModelTest : AppViewModelTestBase() {
     }
 
     @Test
-    fun importIdentityFromUriSucceedsAndStoresIdentity() {
+    fun importIdentityFromUriSucceedsAndPopulatesDraftWithoutPersisting() {
         val file =
             File(app.filesDir, "uri_identity_success.toml").apply {
                 writeText("peer_id = \"android-phone\"\nsecret = \"abc\"")
@@ -525,7 +527,9 @@ class SetupViewModelTest : AppViewModelTestBase() {
         assertEquals("canon", state.localPublicIdentity)
         assertEquals(null, state.errorMessage)
         assertEquals(false, state.isBusy)
-        assertEquals("canon", deps.identityRepository.readPublicIdentity())
+        // FIX8 P0-001-B: URI import is draft-only — nothing is persisted before final save.
+        assertEquals("", deps.identityRepository.readPublicIdentity())
+        assertEquals(false, deps.identityRepository.hasEncryptedIdentity())
     }
 
     @Test

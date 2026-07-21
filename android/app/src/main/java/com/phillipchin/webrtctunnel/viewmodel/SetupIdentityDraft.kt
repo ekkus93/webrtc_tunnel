@@ -38,6 +38,17 @@ internal class SetupIdentityDraft {
             replacement?.wipe()
             replacement = null
         }
+
+    /**
+     * Test-only observation seam (spec §8: "exact ByteArray identity observation seams for
+     * wiping"). Returns the draft's *live* private byte array by reference — not a copy — so a
+     * test can hold the reference and prove it was zeroed after a [clear]/[replace]. Never call
+     * this from production code.
+     */
+    internal fun peekLivePrivateBytesForTest(): ByteArray? =
+        synchronized(lock) {
+            replacement?.privateIdentity
+        }
 }
 
 /**

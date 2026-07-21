@@ -52,14 +52,18 @@ class WizardStateAccess(
     val setForwards: (List<ForwardConfig>) -> Unit,
 )
 
-class SetupSaveController(
+internal class SetupSaveController(
     private val deps: AppDependencies,
     private val scope: CoroutineScope,
     private val loadPreferences: suspend () -> AndroidAppPreferences,
     private val persistPreferences: suspend (AndroidAppPreferences) -> Result<Unit>,
     private val access: WizardStateAccess,
-    private val ioDispatcher: CoroutineDispatcher = deps.dispatchers.io,
+    private val identityDraft: SetupIdentityDraft,
 ) {
+    // Injected via deps (not a Dispatchers.IO literal), so InjectDispatcher is satisfied without
+    // adding an 8th constructor parameter (LongParameterList).
+    private val ioDispatcher: CoroutineDispatcher = deps.dispatchers.io
+
     // FIX6 P0-003: commit the setup save transactionally. Built from the injected preference
     // lambdas (not deps') so preference-persistence test seams still drive the Preferences stage.
     private val persistence =
@@ -163,6 +167,9 @@ class SetupSaveController(
             }
         return outcome.fold(
             onSuccess = { identity ->
+                // FIX8 P0-001-D: a committed save clears the draft (its private bytes were
+                // wiped in validateAndCommit's finally); a failed save leaves the draft for retry.
+                identityDraft.clear()
                 access.applyState(
                     current.copy(
                         localPublicIdentity = identity.publicIdentity,
@@ -260,6 +267,12 @@ class SetupSaveController(
     }
 
     private suspend fun resolveSaveIdentity(current: SetupWizardState): ResolvedIdentity {
+        // FIX8 P0-001-D: a wizard-generated/imported identity is resolved from the draft's
+        // save-owned bytes (no import-path re-read / TOCTOU). The draft copy is wiped by
+        // validateAndCommit's finally like any other resolved identity.
+        identityDraft.copyForSave()?.let { draft ->
+            return ResolvedIdentity(draft.privateIdentity, draft.publicIdentity, draft.peerId, fromImport = true)
+        }
         val resolved =
             if (current.importIdentityPath.isNotBlank()) {
                 withContext(ioDispatcher) { importPrivateIdentity(deps, current.importIdentityPath) }

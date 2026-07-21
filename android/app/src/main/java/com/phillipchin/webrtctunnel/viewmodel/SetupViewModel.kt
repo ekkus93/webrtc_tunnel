@@ -70,16 +70,22 @@ class SetupViewModel(
             setForwards = { _forwards.value = it },
         )
 
-    val save =
+    // FIX8 P0-001-A/B: the wizard's generated/imported private identity lives here, never in
+    // authoritative storage or observable UI state, until the final setup transaction. `internal`
+    // (not `private`) only so same-module tests can assert its byte/wiping lifecycle (spec §8).
+    internal val identityDraft = SetupIdentityDraft()
+
+    internal val save =
         SetupSaveController(
             deps = deps,
             scope = viewModelScope,
             loadPreferences = loadPreferences,
             persistPreferences = persistPreferences,
             access = stateAccess,
+            identityDraft = identityDraft,
         )
 
-    val identity = SetupIdentityController(deps, stateAccess, viewModelScope)
+    internal val identity = SetupIdentityController(deps, stateAccess, viewModelScope, identityDraft)
 
     val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope)
 
@@ -89,42 +95,39 @@ class SetupViewModel(
         forwardsEditor.refreshForwards()
     }
 
+    // Stamps `canAdvance` from the incoming state; the four setters below feed their `.copy(...)`
+    // straight in (no separate `updateState` helper, which would count against TooManyFunctions).
     private fun applyState(newState: SetupWizardState) {
         _state.value = newState.copy(canAdvance = canAdvance(deps, newState, _forwards.value))
     }
 
-    private fun updateState(transform: (SetupWizardState) -> SetupWizardState) {
-        val updated = transform(_state.value)
-        _state.value = updated.copy(canAdvance = canAdvance(deps, updated, _forwards.value))
-    }
-
     fun setInput(update: SetupConfigInput) {
-        updateState { current ->
-            current.copy(
+        applyState(
+            _state.value.copy(
                 input = update,
                 errorMessage = null,
                 saveResult = null,
                 brokerTestMessage = null,
-            )
-        }
+            ),
+        )
     }
 
     fun setImportIdentityPath(path: String) {
-        updateState { current -> current.copy(importIdentityPath = path, errorMessage = null, saveResult = null) }
+        applyState(_state.value.copy(importIdentityPath = path, errorMessage = null, saveResult = null))
     }
 
     fun setImportPublicIdentity(value: String) {
-        updateState { current ->
-            current.copy(
+        applyState(
+            _state.value.copy(
                 importPublicIdentity = value,
                 remoteIdentityPeerId = null,
                 errorMessage = null,
-            )
-        }
+            ),
+        )
     }
 
     fun setAdvancedExpanded(expanded: Boolean) {
-        updateState { current -> current.copy(advancedExpanded = expanded) }
+        applyState(_state.value.copy(advancedExpanded = expanded))
     }
 
     fun goBack() {
@@ -139,8 +142,17 @@ class SetupViewModel(
     }
 
     fun cancel() {
+        // FIX8 P0-001-A: abandoning setup wipes the draft private bytes and discards the
+        // draft forwards, then asynchronously reloads the untouched authoritative baseline.
+        identityDraft.clear()
         _state.value = SetupWizardState()
         forwardsEditor.refreshForwards()
+    }
+
+    override fun onCleared() {
+        // FIX8 P0-001-A: ViewModel teardown must not leave draft private bytes in memory.
+        identityDraft.clear()
+        super.onCleared()
     }
 
     fun goNext() {
