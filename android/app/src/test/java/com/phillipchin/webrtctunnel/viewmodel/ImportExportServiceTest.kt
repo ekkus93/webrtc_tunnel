@@ -53,7 +53,11 @@ class ImportExportServiceTest {
     private class CapturingIdentityCrypto : IdentityCrypto {
         var lastDecrypted: ByteArray? = null
 
-        override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
+        // FIX7 P2-001-B: no copy — the exact reference IdentityRepository.storeEncryptedIdentity
+        // passes in is what a private-identity-import test must observe being wiped afterward.
+        var lastEncrypted: ByteArray? = null
+
+        override fun encrypt(plaintext: ByteArray): ByteArray = plaintext.also { lastEncrypted = it }
 
         override fun decrypt(payload: ByteArray): ByteArray = payload.copyOf().also { lastDecrypted = it }
     }
@@ -342,6 +346,87 @@ class ImportExportServiceTest {
         assertTrue(
             "the identity plaintext buffer must be wiped even when cancelled",
             decrypted!!.all { it == 0.toByte() },
+        )
+    }
+
+    // FIX7 P2-001-B: ImportKind.PrivateIdentity's own wipe/cleanup-composition path had zero
+    // test coverage — every existing wipe test above drives ImportKind.Config's identity-for-
+    // validation *read*, a different caller. This drives the real import-a-new-private-identity
+    // caller (importPrivateIdentityContent's canonicalBytes) end to end through
+    // ImportExportService.importContent, observing the exact ByteArray instance via
+    // IdentityCrypto.encrypt (which storeEncryptedIdentity calls with that same reference).
+    @Test
+    fun privateIdentityImportCanonicalBytesWipedOnSuccess() {
+        val crypto = CapturingIdentityCrypto()
+        val service =
+            serviceWith(configRepository = ConfigRepository(app), identityRepository = IdentityRepository(app, crypto))
+
+        runBlocking {
+            service.importContent(ImportKind.PrivateIdentity, "peer_id = \"android-phone\"\nprivate_key = \"secret\"\n")
+        }
+
+        val encrypted = crypto.lastEncrypted
+        assertTrue("the canonical private-identity buffer must have been captured", encrypted != null)
+        assertTrue(
+            "the canonical private-identity buffer must be wiped after a successful import",
+            encrypted!!.all { it == 0.toByte() },
+        )
+    }
+
+    // FIX7 P2-001-B: the same buffer must be wiped even when persistence (the atomic identity
+    // replace) fails after the buffer was already allocated.
+    @Test
+    fun privateIdentityImportCanonicalBytesWipedOnPersistenceFailure() {
+        val crypto = CapturingIdentityCrypto()
+        val failingIdentityRepository =
+            IdentityRepository(app, crypto, atomicReplace = { _, _ -> throw IOException("disk full") })
+        val service =
+            serviceWith(configRepository = ConfigRepository(app), identityRepository = failingIdentityRepository)
+
+        try {
+            runBlocking {
+                service.importContent(
+                    ImportKind.PrivateIdentity,
+                    "peer_id = \"android-phone\"\nprivate_key = \"secret\"\n",
+                )
+            }
+        } catch (_: Exception) {
+            // Expected: persistence failure surfaces as a thrown failure.
+        }
+
+        val encrypted = crypto.lastEncrypted
+        assertTrue("the canonical private-identity buffer must have been captured", encrypted != null)
+        assertTrue(
+            "the canonical private-identity buffer must be wiped even when persistence fails",
+            encrypted!!.all { it == 0.toByte() },
+        )
+    }
+
+    // FIX7 P2-001-B: two real, sequential config imports through the actual ImportExportService
+    // call site must each use their own unique candidate workspace file — MutationHelpersTest's
+    // createCandidateFileProducesUniquePathsForTheSamePrefix only proves the helper is unique in
+    // isolation, never driven through a real caller.
+    @Test
+    fun twoRealSequentialConfigImportsUseDistinctCandidateFiles() {
+        val candidatePaths = mutableListOf<String>()
+        val service =
+            serviceWith(
+                configRepository = ConfigRepository(app),
+                deleteCandidateFile = { file ->
+                    candidatePaths.add(file.absolutePath)
+                    deleteCandidateFileSafely(file)
+                },
+            )
+
+        runBlocking {
+            service.importContent(ImportKind.Config, "format = \"first\"\n")
+            service.importContent(ImportKind.Config, "format = \"second\"\n")
+        }
+
+        assertEquals("both real imports must have used a candidate file", 2, candidatePaths.size)
+        assertTrue(
+            "each real import must use its own unique candidate workspace file, not a shared one",
+            candidatePaths[0] != candidatePaths[1],
         )
     }
 }

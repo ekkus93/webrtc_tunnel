@@ -71,6 +71,10 @@ class TunnelForegroundServiceStopFailureTest {
     private fun actionIntent(action: String) =
         Intent(ApplicationProvider.getApplicationContext(), TunnelForegroundService::class.java).setAction(action)
 
+    // FIX7 P2-001-A: a bounded poll for POSITIVE external-state convergence only (e.g. a
+    // StateFlow/bridge counter settling after real async work dispatched on a real thread pool,
+    // with no injected completion event to await instead). Never used here to prove absence,
+    // exactly-once, ordering, or overlap — those proofs use drainQueueWithStopBarrier below.
     private fun waitForCondition(
         timeoutMs: Long = 8_000,
         condition: () -> Boolean,
@@ -81,6 +85,23 @@ class TunnelForegroundServiceStopFailureTest {
             Thread.sleep(10)
         }
         return condition()
+    }
+
+    // FIX7 P2-001-A: submits an explicit STOP as a barrier and waits for ITS effect
+    // (bridge.stopCalls advancing), rather than polling for an earlier command's absence over
+    // an elapsed-time window. The command queue drains strictly FIFO on a single consumer
+    // (TunnelForegroundServiceOrderingTest's drainQueueWithStopBarrier uses the same technique),
+    // so once the barrier's STOP has visibly run, every command submitted before it has already
+    // been fully processed — a deterministic proof that a preceding command was rejected rather
+    // than "hasn't happened within N seconds".
+    private fun drainQueueWithStopBarrier(barrierId: Int) {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        val stopCallsBefore = bridge.stopCalls
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, barrierId)
+        assertTrue(
+            "the STOP barrier must be processed so the queue is provably drained",
+            waitForCondition { bridge.stopCalls >= stopCallsBefore + 1 },
+        )
     }
 
     @Test
@@ -143,9 +164,11 @@ class TunnelForegroundServiceStopFailureTest {
 
         val startCountBeforeRetry = bridge.startOfferCalls
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 3)
-        assertFalse(
+        drainQueueWithStopBarrier(barrierId = 4)
+        assertEquals(
             "a failed manual-pause stop must quarantine the runtime and block a later START",
-            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountBeforeRetry },
+            startCountBeforeRetry,
+            bridge.startOfferCalls,
         )
     }
 
@@ -172,6 +195,35 @@ class TunnelForegroundServiceStopFailureTest {
         )
     }
 
+    // FIX7 P2-001-B: every existing stop test here drives the fake bridge's own `state ==
+    // Connected` field as its precondition, but the REAL mapped ServiceState the app displays
+    // for "offer running, no active session yet" is Listening, not Connected (activeSessionCount
+    // == 0 in FailableRecordingBridge's status JSON — see TunnelRepositoryTest). stopServiceWork()
+    // has no ServiceState-dependent gating, so this proves that invariant directly against the
+    // real mapped status rather than relying on incidental overlap with the Connected-based tests.
+    @Test
+    fun stopWhileListeningStopsCleanlyAndNativeIsCalled() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(
+            "offer running with no active session must map to Listening, not Connected",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Listening },
+        )
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
+
+        assertTrue(
+            "stopping while Listening must still reach the real native stop call",
+            waitForCondition { bridge.stopCalls >= 1 },
+        )
+        assertTrue(
+            "a clean stop from Listening must converge to Stopped, not remain running",
+            waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Stopped },
+        )
+    }
+
     @Test
     fun resumeAfterPolicyPauseFailureDoesNotCallNative() {
         val bridge = TunnelForegroundServiceTestHooks.bridge
@@ -185,9 +237,11 @@ class TunnelForegroundServiceStopFailureTest {
 
         val startCountBeforeRetry = bridge.startOfferCalls
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_RESUME)).startCommand(0, 3)
-        assertFalse(
+        drainQueueWithStopBarrier(barrierId = 4)
+        assertEquals(
             "a failed policy-pause stop must quarantine the runtime and block a later RESUME",
-            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountBeforeRetry },
+            startCountBeforeRetry,
+            bridge.startOfferCalls,
         )
     }
 
@@ -524,9 +578,11 @@ class TunnelForegroundServiceStopFailureTest {
         val network = ShadowNetwork.newInstance(1)
         val startCountBeforeRetrySignal = bridge.startOfferCalls
         shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
-        assertFalse(
+        drainQueueWithStopBarrier(barrierId = 5)
+        assertEquals(
             "a stale/invalidated pending retry after quarantine must never call native start",
-            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountBeforeRetrySignal },
+            startCountBeforeRetrySignal,
+            bridge.startOfferCalls,
         )
     }
 
@@ -565,14 +621,18 @@ class TunnelForegroundServiceStopFailureTest {
 
         val startCountWhileQuarantined = bridge.startOfferCalls
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 3)
-        assertFalse(
-            "quarantine must block START",
-            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountWhileQuarantined },
-        )
 
-        // A verified successful explicit STOP clears the quarantine.
+        // A verified successful explicit STOP clears the quarantine. Waiting for its effect here
+        // (FIX7 P2-001-A) also proves — via FIFO single-consumer draining — that the START
+        // submitted just above has already been fully processed and rejected, without polling
+        // for its absence over a timed window.
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 4)
         assertTrue(waitForCondition { bridge.stopCalls >= 2 })
+        assertEquals(
+            "quarantine must block START",
+            startCountWhileQuarantined,
+            bridge.startOfferCalls,
+        )
 
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 5)
         assertTrue(
@@ -603,9 +663,11 @@ class TunnelForegroundServiceStopFailureTest {
 
         val startCountAfterSecondFailure = bridge.startOfferCalls
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 4)
-        assertFalse(
+        drainQueueWithStopBarrier(barrierId = 5)
+        assertEquals(
             "a second failed explicit STOP must not clear quarantine",
-            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountAfterSecondFailure },
+            startCountAfterSecondFailure,
+            bridge.startOfferCalls,
         )
     }
 }

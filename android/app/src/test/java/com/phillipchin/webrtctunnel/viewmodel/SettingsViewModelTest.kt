@@ -5,6 +5,7 @@ import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.ResetResult
 import com.phillipchin.webrtctunnel.data.ResetStage
 import com.phillipchin.webrtctunnel.data.RollbackStageResult
+import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -204,11 +205,22 @@ class SettingsViewModelTest : AppViewModelTestBase() {
             assertTrue("the underlying failure reason must not be discarded", message.contains(":"))
         }
 
+    // FIX7 P2-001-C: strengthens the prior version of this test, which only asserted
+    // lastOperationFailure stayed null. Config is reset FIRST (see TransactionalReset.kt's
+    // resetStages order), so a cancellation there mutates nothing — the durable proof is that
+    // every stage's live content survives completely untouched, not merely that no
+    // success/failure was reported.
     @Test
-    fun resetCancellationDoesNotReportSuccessOrOrdinaryFailure() =
+    fun resetCancellationDuringConfigStageLeavesEveryStageUntouchedAndNeverReportsSuccessOrFailure() =
         runBlocking {
-            // FIX7 P0-005-D: a cancelled reset must report no normal success/failure snackbar or
-            // durable operation-failure state.
+            val priorConfigContent = "peer_id = \"prior-peer\"\nbroker_host = \"prior.example.com\""
+            File(configRepository.configPath).apply {
+                parentFile?.mkdirs()
+                writeText(priorConfigContent)
+            }
+            val priorSetupInput = SetupConfigInput(brokerHost = "prior-setup-host")
+            configRepository.saveSetupInput(priorSetupInput)
+
             val cancellingConfigRepo =
                 object : ConfigRepository(app) {
                     override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
@@ -224,6 +236,17 @@ class SettingsViewModelTest : AppViewModelTestBase() {
             }
 
             assertEquals(null, viewModel.uiState.value.lastOperationFailure)
+            assertEquals(
+                "a reset cancelled at the very first (Config) stage must leave the live config " +
+                    "file completely untouched, not partially reset",
+                priorConfigContent,
+                File(configRepository.configPath).readText(),
+            )
+            assertEquals(
+                "a reset cancelled before the SetupInput stage even runs must leave it untouched",
+                priorSetupInput,
+                configRepository.loadSetupInputResult().getOrThrow(),
+            )
         }
 
     @Test

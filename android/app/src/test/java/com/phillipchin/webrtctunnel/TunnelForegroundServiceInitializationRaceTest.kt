@@ -121,6 +121,11 @@ class TunnelForegroundServiceInitializationRaceTest {
     private fun actionIntent(action: String) =
         Intent(ApplicationProvider.getApplicationContext(), TunnelForegroundService::class.java).setAction(action)
 
+    // FIX7 P2-001-A: a bounded poll for POSITIVE external-state convergence only (e.g. a
+    // StateFlow/bridge counter settling after real async work dispatched on a real thread pool,
+    // with no injected completion event to await instead). The race itself is already proven
+    // deterministically via CountDownLatch entered/release hooks; this poll only ever waits for
+    // eventual settling afterward, never for absence, exactly-once, ordering, or overlap.
     private fun waitForCondition(
         timeoutMs: Long = 8_000,
         condition: () -> Boolean,

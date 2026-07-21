@@ -360,14 +360,21 @@ class IdentityPersistenceAtomicityTest {
         }
     }
 
+    // FIX7 P2-001-A: replaces a Thread.sleep-widened race window with a deterministic barrier.
+    // The append thread signals [appendEntered] as soon as it is inside storageLock about to
+    // write authorized_keys, then blocks on [snapshotAttempting]; the snapshot thread waits for
+    // that signal, releases the append thread, and immediately attempts its own storageLock-
+    // guarded read — so the two genuinely contend on the real lock, with no elapsed-time guess.
     @Test
     fun concurrentSnapshotAndAuthorizedKeyAppendAreSerialized() {
+        val appendEntered = java.util.concurrent.CountDownLatch(1)
+        val snapshotAttempting = java.util.concurrent.CountDownLatch(1)
         val repo =
             IdentityRepository(context, PlaintextCrypto()) { dest, bytes ->
-                // Sleep BEFORE writing (not after): a snapshot that isn't serialized against this
-                // write could observe the pre-write state during the window; storageLock must
-                // force it to wait for the whole append (sleep included) to finish first.
-                if (dest.name == "authorized_keys") Thread.sleep(SERIALIZATION_WINDOW_MS)
+                if (dest.name == "authorized_keys") {
+                    appendEntered.countDown()
+                    snapshotAttempting.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                }
                 plainReplace(dest, bytes)
             }
 
@@ -375,7 +382,8 @@ class IdentityPersistenceAtomicityTest {
         val appendThread = Thread { repo.appendAuthorizedPublicIdentity("key-a peer=a").getOrThrow() }
         val snapshotThread =
             Thread {
-                Thread.sleep(SERIALIZATION_LEAD_IN_MS)
+                appendEntered.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                snapshotAttempting.countDown()
                 snapshots.add(repo.captureStorageSnapshot().authorizedKeys)
             }
         appendThread.start()
@@ -388,24 +396,30 @@ class IdentityPersistenceAtomicityTest {
         assertEquals("key-a peer=a", captured.bytes?.decodeToString())
     }
 
+    // FIX7 P2-001-A: same deterministic-barrier replacement as above, gating on the point
+    // between the encrypted-file write and the public-file write (the exact window a
+    // non-serialized snapshot could exploit to observe a mismatched pair).
     @Test
     fun concurrentSnapshotAndIdentityCommitAreSerialized() {
         encFile.writeBytes("old-priv".toByteArray())
         pubFile.writeText("old-pub")
+        val commitEnteredAfterEnc = java.util.concurrent.CountDownLatch(1)
+        val snapshotAttempting = java.util.concurrent.CountDownLatch(1)
         val repo =
             IdentityRepository(context, PlaintextCrypto()) { dest, bytes ->
                 plainReplace(dest, bytes)
-                // Sleep AFTER writing the encrypted file, still inside the lock, before the
-                // public file is written — the window a non-serialized snapshot could exploit
-                // to observe a mismatched pair (new encrypted, old public).
-                if (dest.name == "identity.enc") Thread.sleep(SERIALIZATION_WINDOW_MS)
+                if (dest.name == "identity.enc") {
+                    commitEnteredAfterEnc.countDown()
+                    snapshotAttempting.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                }
             }
 
         val snapshots = java.util.Collections.synchronizedList(mutableListOf<IdentityStorageSnapshot>())
         val commitThread = Thread { repo.storeEncryptedIdentity("new-priv".toByteArray(), "new-pub") }
         val snapshotThread =
             Thread {
-                Thread.sleep(SERIALIZATION_LEAD_IN_MS)
+                commitEnteredAfterEnc.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                snapshotAttempting.countDown()
                 snapshots.add(repo.captureStorageSnapshot())
             }
         commitThread.start()
@@ -521,11 +535,6 @@ class IdentityPersistenceAtomicityTest {
             is IdentityRestoreResult.Success -> file
             is IdentityRestoreResult.Failure -> file
         }
-
-    private companion object {
-        const val SERIALIZATION_WINDOW_MS = 40L
-        const val SERIALIZATION_LEAD_IN_MS = 10L
-    }
 }
 
 private fun containsSubsequence(

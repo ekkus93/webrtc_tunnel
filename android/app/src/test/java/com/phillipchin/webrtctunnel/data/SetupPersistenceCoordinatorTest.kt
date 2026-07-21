@@ -7,7 +7,9 @@ import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -102,21 +104,27 @@ class SetupPersistenceCoordinatorTest {
         override fun readConfig(): String = throw IOException("snapshot read failed")
     }
 
-    /** Records the maximum number of overlapping saveSetupInput calls to prove serialization. */
+    /**
+     * Records the maximum number of overlapping saveSetupInput calls to prove serialization.
+     * FIX7 P2-001-A: the first call blocks on a test-controlled [releaseFirst] barrier (never an
+     * elapsed-time guess) so the second call has an unbounded window to attempt entry while the
+     * first is still inside — a broken mutex would let it in, a working one cannot.
+     */
     private class ConcurrencyProbe(context: Context) : ConfigRepository(context) {
         val maxConcurrent = AtomicInteger(0)
         private val active = AtomicInteger(0)
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
 
         override fun saveSetupInput(input: SetupConfigInput) {
             val now = active.incrementAndGet()
             maxConcurrent.updateAndGet { existing -> maxOf(existing, now) }
-            Thread.sleep(OVERLAP_WINDOW_MS)
+            if (!firstEntered.isCompleted) {
+                firstEntered.complete(Unit)
+                runBlocking { releaseFirst.await() }
+            }
             active.decrementAndGet()
             super.saveSetupInput(input)
-        }
-
-        private companion object {
-            const val OVERLAP_WINDOW_MS = 30L
         }
     }
 
@@ -703,16 +711,30 @@ class SetupPersistenceCoordinatorTest {
 
     // --- Concurrency ---------------------------------------------------------------------------
 
+    // FIX7 P2-001-A: replaces a Thread.sleep-widened race window with a deterministic barrier.
+    // The first call is held open inside saveSetupInput (still holding the coordinator's real
+    // Mutex) until this test explicitly releases it. The second call is launched with
+    // CoroutineStart.UNDISPATCHED, which runs it synchronously, on this thread, up to its first
+    // suspension point before `launch` returns — since the mutex is currently held, that first
+    // suspension point is guaranteed to be the mutex acquisition itself. By the time the launch
+    // call returns, the second call has therefore definitely attempted entry while the first is
+    // still inside, with no elapsed-time guess anywhere.
     @Test
     fun twoSetupCoordinatorCallsCannotOverlap() =
         runBlocking {
             val probe = ConcurrencyProbe(context)
             val coordinator = coordinator(RecordingPreferences(), config = probe)
-            val jobs =
-                List(2) {
-                    launch(parallelDispatcher()) { coordinator.persist(request()) }
+
+            val firstJob = launch(parallelDispatcher()) { coordinator.persist(request()) }
+            probe.firstEntered.await()
+
+            val secondJob =
+                launch(parallelDispatcher(), start = CoroutineStart.UNDISPATCHED) {
+                    coordinator.persist(request())
                 }
-            jobs.joinAll()
+
+            probe.releaseFirst.complete(Unit)
+            joinAll(firstJob, secondJob)
 
             assertEquals("the coordinator mutex must serialize concurrent saves", 1, probe.maxConcurrent.get())
         }

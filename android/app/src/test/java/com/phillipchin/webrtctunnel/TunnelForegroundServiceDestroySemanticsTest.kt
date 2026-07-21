@@ -18,9 +18,19 @@ import java.util.concurrent.TimeUnit
 /**
  * FIX6 P1-010: destroy-time cleanup is best effort, not an authoritative stop. These prove the
  * truthful semantics: an explicit verified STOP is authoritative (destroy performs no redundant
- * native stop), an observed destroy-fallback failure is published and never recorded as a clean
- * stop, and a late startup completion after destroy cannot restart the tunnel or crash. Waits are
- * on observable published state, not elapsed time.
+ * native stop), and an observed destroy-fallback failure is published and never recorded as a
+ * clean stop. Waits are on observable published state, not elapsed time.
+ *
+ * FIX7 P2-001-B (deviation, see TODO signoff): a genuine "startup completes and submits
+ * StartupCompleted just as destroy has already closed the command queue but before
+ * cancelAndJoin reaches the startup job" race could not be forced deterministically with the
+ * existing blockNextStartOffer/awaitStartOfferEntered/releaseBlockedStartOffer hooks — releasing
+ * the block after destroy has requested cancellation reliably makes the startup coroutine
+ * observe that cancellation instead (see TunnelForegroundServiceStopFailureTest's
+ * pendingRetryThenDestroyDoesNotRestart), so this class does not cover that specific race.
+ * onDestroy()'s ordering (coordinator.stop() before cancelStartupJobAndJoinLocked()) and
+ * handleStartupCompleted's generation guard are the two mechanisms that would prevent it, per
+ * code inspection.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = TunnelForegroundServiceTestApplication::class)
@@ -54,6 +64,10 @@ class TunnelForegroundServiceDestroySemanticsTest {
     private fun actionIntent(action: String) =
         Intent(ApplicationProvider.getApplicationContext(), TunnelForegroundService::class.java).setAction(action)
 
+    // FIX7 P2-001-A: a bounded poll for POSITIVE external-state convergence only (e.g. a
+    // StateFlow/bridge counter settling after real async work dispatched on a real thread pool,
+    // with no injected completion event to await instead). Never used here to prove absence,
+    // exactly-once, ordering, or overlap — those proofs use an explicit barrier/latch instead.
     private fun waitForCondition(
         timeoutMs: Long = 8_000,
         condition: () -> Boolean,

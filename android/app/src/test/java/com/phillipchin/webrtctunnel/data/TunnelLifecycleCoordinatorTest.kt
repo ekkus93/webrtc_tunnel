@@ -223,6 +223,14 @@ class TunnelLifecycleCoordinatorTest {
             assertFalse(coordinator.trySubmit(LifecycleCommand.Pause))
         }
 
+    // FIX7 P2-001-C (partial, see deviation note in the TODO signoff): proves the coordinator's
+    // OWN plumbing in isolation (a throwing onError callback of any kind stops the processor and
+    // closes acceptance) using a bare CoordinatorOperations double — this class only unit-tests
+    // TunnelLifecycleCoordinator, so it cannot construct the real StatusReporter/
+    // NotificationController wiring. A service-level test forcing the real reporter.publishError
+    // callback to throw was attempted and abandoned: doing so safely (without also breaking the
+    // background status-notification path used to reach a running state at all) needs deeper,
+    // out-of-scope changes to how notification failures are isolated per call site.
     @Test
     fun errorReporterFailureStopsProcessorAndRejectsLaterCommands() =
         runTest {

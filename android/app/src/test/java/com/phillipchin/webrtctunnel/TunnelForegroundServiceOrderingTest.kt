@@ -61,6 +61,11 @@ class TunnelForegroundServiceOrderingTest {
     private fun actionIntent(action: String) =
         Intent(ApplicationProvider.getApplicationContext(), TunnelForegroundService::class.java).setAction(action)
 
+    // FIX7 P2-001-A: a bounded poll for POSITIVE external-state convergence only (e.g. a
+    // StateFlow/bridge counter settling after real async work dispatched on a real thread pool,
+    // with no injected completion event to await instead). Ordering itself is proven by the
+    // drainQueueWithStopBarrier technique below (FIFO single-consumer draining), not by this
+    // poll — this never proves absence, exactly-once, ordering, or overlap on its own.
     private fun waitForCondition(
         timeoutMs: Long = 8_000,
         condition: () -> Boolean,
