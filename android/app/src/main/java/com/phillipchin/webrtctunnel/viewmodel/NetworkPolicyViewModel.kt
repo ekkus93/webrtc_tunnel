@@ -4,6 +4,8 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
+import com.phillipchin.webrtctunnel.data.ConfigurationOperation
 import com.phillipchin.webrtctunnel.data.OperationFailure
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
@@ -55,20 +57,35 @@ class NetworkPolicyViewModel(private val deps: AppDependencies) : ViewModel() {
         }
     val preferences = deps.configRepository.preferences
 
+    // FIX8 P0-002-B: preference writes now go through the same global configuration admission
+    // as setup save/import/forward-mutation/reset (spec §3.6/INV-016) — a concurrent setup
+    // save can no longer race or silently lose this write.
     fun savePreferences(updated: AndroidAppPreferences) {
         viewModelScope.launch {
-            deps.configRepository.savePreferences(updated).fold(
-                onSuccess = {
-                    clearOperationFailure()
-                    deps.snackbar.show("Network policy updated")
-                },
-                onFailure = { error ->
-                    val message =
-                        "Failed to update network policy: " +
-                            SensitiveDataRedactor.redactText(error.message ?: "unknown error")
-                    publishOperationFailure("network_preference_save_failed", message)
-                },
-            )
+            when (
+                val admission =
+                    deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.PreferenceMutation) {
+                        deps.configRepository.savePreferences(updated)
+                    }
+            ) {
+                is ConfigurationAdmission.Busy -> {
+                    val message = "Another configuration operation is already in progress: ${admission.active}"
+                    publishOperationFailure("configuration_operation_busy", message)
+                }
+                is ConfigurationAdmission.Completed ->
+                    admission.value.fold(
+                        onSuccess = {
+                            clearOperationFailure()
+                            deps.snackbar.show("Network policy updated")
+                        },
+                        onFailure = { error ->
+                            val message =
+                                "Failed to update network policy: " +
+                                    SensitiveDataRedactor.redactText(error.message ?: "unknown error")
+                            publishOperationFailure("network_preference_save_failed", message)
+                        },
+                    )
+            }
         }
     }
 

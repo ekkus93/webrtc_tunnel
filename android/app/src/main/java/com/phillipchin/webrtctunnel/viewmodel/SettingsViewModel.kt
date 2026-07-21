@@ -100,19 +100,35 @@ class SettingsViewModel(
     }
 
     // P1-016: Surface preference-write failures.
+    // FIX8 P0-002-B: preference writes now go through the same global configuration admission
+    // as setup save/import/forward-mutation/reset (spec §3.6/INV-016) — a concurrent setup
+    // save can no longer race or silently lose this write.
     fun savePreferences(updated: AndroidAppPreferences) {
         viewModelScope.launch {
-            deps.configRepository.savePreferences(updated).fold(
-                onSuccess = {
-                    clearOperationFailure()
-                    deps.snackbar.show("Preferences saved")
-                },
-                onFailure = { error ->
-                    val message =
-                        "Preferences save failed: ${SensitiveDataRedactor.redactText(error.message ?: "unknown error")}"
-                    publishOperationFailure("preferences_save_failed", message)
-                },
-            )
+            when (
+                val admission =
+                    deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.PreferenceMutation) {
+                        deps.configRepository.savePreferences(updated)
+                    }
+            ) {
+                is ConfigurationAdmission.Busy -> {
+                    val message = "Another configuration operation is already in progress: ${admission.active}"
+                    publishOperationFailure("configuration_operation_busy", message)
+                }
+                is ConfigurationAdmission.Completed ->
+                    admission.value.fold(
+                        onSuccess = {
+                            clearOperationFailure()
+                            deps.snackbar.show("Preferences saved")
+                        },
+                        onFailure = { error ->
+                            val message =
+                                "Preferences save failed: " +
+                                    SensitiveDataRedactor.redactText(error.message ?: "unknown error")
+                            publishOperationFailure("preferences_save_failed", message)
+                        },
+                    )
+            }
         }
     }
 

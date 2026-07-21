@@ -257,7 +257,7 @@ internal class SetupSaveController(
                     androidIceMode = prefs.androidIceMode,
                     brokerPasswordPath = resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path),
                 )
-            commitSetup(input, commitCandidate, identity, authorizedLine)
+            commitSetup(input, commitCandidate, identity, authorizedLine, prefs)
             return identity
         } finally {
             // Wipe the plaintext identity buffer; only the public id/peer id are used afterward.
@@ -362,14 +362,18 @@ internal class SetupSaveController(
         candidate: String,
         identity: ResolvedIdentity,
         authorizedLine: String?,
+        prefs: AndroidAppPreferences,
     ) {
-        val existing = loadPreferences()
+        // FIX8 P0-002-C: reuse the one preference snapshot already read by validateAndCommit for
+        // rendering, rather than re-reading here — final config rendering and the persisted
+        // request must derive from the same object, not two separate reads that could observe
+        // different values.
         val request =
             SetupPersistenceRequest(
                 configContents = candidate,
                 setupInput = input,
                 preferences =
-                    existing.copy(
+                    prefs.copy(
                         allowMetered = input.allowMetered,
                         resumeOnUnmetered = input.resumeOnUnmetered,
                     ),

@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.data
 import android.content.Context
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
+import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
@@ -11,6 +12,7 @@ import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import com.phillipchin.webrtctunnel.viewmodel.ForwardsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.ImportExportViewModel
+import com.phillipchin.webrtctunnel.viewmodel.NetworkPolicyViewModel
 import com.phillipchin.webrtctunnel.viewmodel.RecordingBridge
 import com.phillipchin.webrtctunnel.viewmodel.SettingsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.SetupIdentityDraft
@@ -68,6 +70,20 @@ class ConfigurationMutationIntegrationTest {
             entered.complete(Unit)
             release.await()
             return super.writeConfigAtomically(contents)
+        }
+    }
+
+    /** FIX8 P0-002-D: gates `savePreferences` itself, so a test can hold PreferenceMutation
+     * admission open and prove a concurrent setup save/import/forward/reset is rejected. */
+    private class GatedPreferencesConfigRepository(
+        context: Context,
+        private val entered: CompletableDeferred<Unit>,
+        private val release: CompletableDeferred<Unit>,
+    ) : ConfigRepository(context) {
+        override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
+            entered.complete(Unit)
+            release.await()
+            return super.savePreferences(update)
         }
     }
 
@@ -270,6 +286,107 @@ class ConfigurationMutationIntegrationTest {
             assertTrue(errorMessage.contains("ConfigurationReset"))
 
             release.complete(Unit)
+        }
+    }
+
+    @Test
+    fun settingsPreferenceMutationBlocksConcurrentSetupSaveDurably() {
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val deps = createDeps(GatedPreferencesConfigRepository(app, entered, release))
+            val settingsViewModel = SettingsViewModel(deps)
+            val setup = buildValidSetupHarness(deps)
+
+            settingsViewModel.savePreferences(AndroidAppPreferences())
+            withTimeout(5_000) { entered.await() }
+            assertEquals(
+                ConfigurationOperation.PreferenceMutation,
+                deps.configurationMutationCoordinator.activeOperationForTest(),
+            )
+
+            setup.controller.saveAndApplyConfig()
+            val errorMessage = withTimeout(5_000) { awaitNonNull { setup.stateRef.get().errorMessage } }
+            assertTrue(errorMessage.contains("PreferenceMutation"))
+
+            release.complete(Unit)
+            // Wait for the preference-save coroutine to actually finish its (now-unblocked) real
+            // DataStore write (admission released) before the test returns — otherwise it
+            // survives past this test and can contend with a later, unrelated test's own
+            // DataStore access on the same Robolectric Application/file.
+            withTimeout(5_000) {
+                awaitNonNull {
+                    if (deps.configurationMutationCoordinator.activeOperationForTest() == null) Unit else null
+                }
+            }
+        }
+    }
+
+    @Test
+    fun setupSaveBlocksConcurrentNetworkPreferenceMutationDurably() {
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val deps = createDeps(GatedConfigRepository(app, entered, release))
+            val setup = buildValidSetupHarness(deps)
+            val networkPolicyViewModel = NetworkPolicyViewModel(deps)
+
+            setup.controller.saveAndApplyConfig()
+            withTimeout(5_000) { entered.await() }
+            assertEquals(
+                ConfigurationOperation.SetupSave,
+                deps.configurationMutationCoordinator.activeOperationForTest(),
+            )
+
+            networkPolicyViewModel.savePreferences(AndroidAppPreferences())
+            val failure =
+                withTimeout(5_000) { awaitNonNull { networkPolicyViewModel.uiState.value.lastOperationFailure } }
+            assertEquals("configuration_operation_busy", failure.code)
+            assertTrue(failure.message.contains("SetupSave"))
+
+            release.complete(Unit)
+            withTimeout(5_000) {
+                awaitNonNull { setup.stateRef.get().saveResult ?: setup.stateRef.get().errorMessage }
+            }
+        }
+    }
+
+    // FIX8 P0-002-D/INV-016: a concurrent preference write is rejected (not silently lost or
+    // overwritten) while a setup save is in flight, and once the setup save finishes, the
+    // preference save is free to run and actually commit — proving the write can be retried
+    // to completion rather than being permanently dropped by the setup transaction.
+    @Test
+    fun concurrentPreferenceWriteCannotBeLostBySetupRollback() {
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val deps = createDeps(GatedConfigRepository(app, entered, release))
+            val setup = buildValidSetupHarness(deps)
+            val networkPolicyViewModel = NetworkPolicyViewModel(deps)
+
+            setup.controller.saveAndApplyConfig()
+            withTimeout(5_000) { entered.await() }
+
+            val updated = AndroidAppPreferences(allowMetered = true)
+            networkPolicyViewModel.savePreferences(updated)
+            withTimeout(5_000) { awaitNonNull { networkPolicyViewModel.uiState.value.lastOperationFailure } }
+
+            release.complete(Unit)
+            withTimeout(5_000) {
+                awaitNonNull { setup.stateRef.get().saveResult ?: setup.stateRef.get().errorMessage }
+            }
+
+            // The rejected write is retried after setup save releases admission, and now commits.
+            networkPolicyViewModel.savePreferences(updated)
+            withTimeout(5_000) {
+                var current = deps.configRepository.preferences.first()
+                while (current.allowMetered != updated.allowMetered) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    delay(5)
+                    current = deps.configRepository.preferences.first()
+                }
+            }
+            assertEquals(updated.allowMetered, deps.configRepository.preferences.first().allowMetered)
         }
     }
 
