@@ -1626,43 +1626,43 @@ related tests
 
 ## P1-002-A — Clear stale fields in every invalid-status branch
 
-- [ ] Decode failure clears remote peer, active sessions, MQTT connected, and stale active forward/session metrics.
-- [ ] Unknown native mode does the same.
-- [ ] Missing required status field does the same.
-- [ ] Terminal state continues clearing peer.
-- [ ] Model comments describe that these are current truth, not last-known truth.
+- [x] Decode failure clears remote peer, active sessions, MQTT connected, and stale active forward/session metrics. (aabb1bf)
+- [x] Unknown native mode does the same. (aabb1bf)
+- [x] Missing required status field does the same. (aabb1bf — deviation: `NativeRuntimeStatusDto.state` is the only field with neither a default nor nullability, so a missing/malformed required field is a `kotlinx.serialization` decode failure, not a separate branch; it already routes through the same decode-failure path.)
+- [x] Terminal state continues clearing peer. (aabb1bf — unchanged, pre-existing `withoutActivePeer()`)
+- [x] Model comments describe that these are current truth, not last-known truth. (aabb1bf)
 
-Add a helper so branches cannot diverge.
+Add a helper so branches cannot diverge. (aabb1bf — `TunnelStatus.asInvalidNativeStatus`, shared by both branches)
 
 ## P1-002-B — Observe lifecycle processor completion
 
-- [ ] Expose processor state or completion callback.
-- [ ] Differentiate expected `stop()` from unexpected cancellation/failure.
-- [ ] Unexpected death sets durable `lifecycle_processor_failed`.
-- [ ] If native runtime may be active, enter runtime quarantine.
-- [ ] Stop accepting start/resume.
-- [ ] Service stops or enters explicit Error; do not merely log dropped commands.
+- [x] Expose processor state or completion callback. (aabb1bf — `CoordinatorOperations.onProcessorFailed`)
+- [x] Differentiate expected `stop()` from unexpected cancellation/failure. (aabb1bf — `TunnelLifecycleCoordinator.stopRequested`)
+- [x] Unexpected death sets durable `lifecycle_processor_failed`. (aabb1bf)
+- [x] If native runtime may be active, enter runtime quarantine. (aabb1bf — routes through the existing `enterNativeRuntimeQuarantine` central helper, so `native_runtime_quarantined` is still the final durable code per RESPONSES item 2)
+- [x] Stop accepting start/resume. (aabb1bf — the dead processor's closed channel already refuses every command; quarantine additionally blocks any surviving in-flight admission)
+- [x] Service stops or enters explicit Error; do not merely log dropped commands. (aabb1bf — `onProcessorFailed` calls `stopSelf()` after quarantining)
 
 ## P1-002-C — Submission failure mapping
 
-- [ ] Every required `trySubmit == false` site consumes the false result.
-- [ ] Teardown-late benign submissions may be logged at debug only when service is known destroyed.
-- [ ] Active-service submission failure is durable and escalated.
+- [x] Every required `trySubmit == false` site consumes the false result. (aabb1bf — the sole choke point is `submitLifecycleCommand`, already consuming/branching on it)
+- [x] Teardown-late benign submissions may be logged at debug only when service is known destroyed. (aabb1bf — new `serviceDestroying` flag, set at the top of `onDestroy()`)
+- [x] Active-service submission failure is durable and escalated. (aabb1bf — routed through `reporter.publishErrorSafely`, visible without overwriting the durable quarantine code)
 
 ## P1-002-D — Tests
 
-- [ ] `decodeFailureClearsPreviousRemotePeerSessionAndMqttTruth`
-- [ ] `unknownNativeModeClearsPreviousRemotePeerSessionAndMqttTruth`
-- [ ] `newValidStatusAfterInvalidStatusUsesOnlyNewFields`
-- [ ] `unexpectedLifecycleProcessorFailureIsDurable`
-- [ ] `unexpectedLifecycleProcessorFailureQuarantinesPossibleRuntime`
-- [ ] `activeServiceCommandSubmissionFailureIsNotSilentlyDropped`
-- [ ] `teardownLateSubmissionRemainsBenignAndDoesNotCrash`
+- [x] `decodeFailureClearsPreviousRemotePeerSessionAndMqttTruth` (aabb1bf)
+- [x] `unknownNativeModeClearsPreviousRemotePeerSessionAndMqttTruth` (aabb1bf)
+- [x] `newValidStatusAfterInvalidStatusUsesOnlyNewFields` (aabb1bf)
+- [x] `unexpectedLifecycleProcessorFailureIsDurable` (aabb1bf)
+- [x] `unexpectedLifecycleProcessorFailureQuarantinesPossibleRuntime` (aabb1bf)
+- [x] `activeServiceCommandSubmissionFailureIsNotSilentlyDropped` (aabb1bf)
+- [x] `teardownLateSubmissionRemainsBenignAndDoesNotCrash` (aabb1bf)
 
 ## Acceptance
 
-- [ ] Invalid status never displays stale live connection truth.
-- [ ] A dead processor cannot leave the service pretending to be controlled.
+- [x] Invalid status never displays stale live connection truth. (aabb1bf)
+- [x] A dead processor cannot leave the service pretending to be controlled. (aabb1bf)
 
 ---
 
