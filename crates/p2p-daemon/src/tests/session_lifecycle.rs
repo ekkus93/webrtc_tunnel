@@ -128,7 +128,8 @@ async fn active_offer_session_ignores_duplicate_signal_and_processes_later_valid
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "pending-offer".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "pending-offer".to_owned() }))
+    .expect("test message construction");
     let (outbound_envelope, outbound_payload) =
         offer_codec.encode_for_peer(&remote, &outbound_message, false).expect("offer encodes");
     session.signaling.ack_tracker.register(
@@ -138,11 +139,9 @@ async fn active_offer_session_ignores_duplicate_signal_and_processes_later_valid
         0,
     );
 
-    let duplicate_ack = answer_codec.build_ack(
-        offer.identity.peer_id.clone(),
-        session_id,
-        p2p_core::MsgId::random(),
-    );
+    let duplicate_ack = answer_codec
+        .build_ack(offer.identity.peer_id.clone(), session_id, p2p_core::MsgId::random())
+        .expect("test message construction");
     let (_duplicate_envelope, duplicate_payload) = answer_codec
         .encode_for_peer(
             answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),
@@ -175,11 +174,9 @@ async fn active_offer_session_ignores_duplicate_signal_and_processes_later_valid
     .expect("duplicate ack should be ignored rather than abort the session");
     assert_eq!(duplicate, OfferSessionPayloadOutcome::Ignored);
 
-    let valid_ack = answer_codec.build_ack(
-        offer.identity.peer_id.clone(),
-        session_id,
-        outbound_envelope.msg_id,
-    );
+    let valid_ack = answer_codec
+        .build_ack(offer.identity.peer_id.clone(), session_id, outbound_envelope.msg_id)
+        .expect("test message construction");
     let (_valid_envelope, valid_payload) = answer_codec
         .encode_for_peer(
             answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),
@@ -231,7 +228,8 @@ async fn answer_session_does_not_initiate_reconnect_from_remote_requests() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::IceRestartRequest);
+    .build(MessageBody::IceRestartRequest)
+    .expect("test message construction");
     handle_answer_session_message(&ice_restart_request, &mut session)
         .await
         .expect("answer session should ignore remote ice restart request");
@@ -243,7 +241,8 @@ async fn answer_session_does_not_initiate_reconnect_from_remote_requests() {
     )
     .build(MessageBody::RenegotiateRequest(p2p_signaling::RenegotiateRequestBody {
         reason: "offer-side recovery only".to_owned(),
-    }));
+    }))
+    .expect("test message construction");
     handle_answer_session_message(&renegotiate_request, &mut session)
         .await
         .expect("answer session should ignore remote renegotiate request");
@@ -300,7 +299,8 @@ async fn pending_answer_session_is_replaced_by_same_peer_offer() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: replacement_offer_sdp }));
+    .build(MessageBody::Offer(OfferBody { sdp: replacement_offer_sdp }))
+    .expect("test message construction");
     let (_envelope, replacement_payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),

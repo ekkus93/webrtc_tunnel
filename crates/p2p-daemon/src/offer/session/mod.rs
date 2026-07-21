@@ -133,7 +133,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                 &remote.peer_id,
                 session.session_id,
                 "offer",
-            ),
+            )?,
             response: false,
         },
     )
@@ -164,7 +164,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                 config.node.peer_id.clone(),
                 session.remote_peer_id.clone(),
             )
-            .build(MessageBody::Offer(OfferBody { sdp: offer_sdp })),
+            .build(MessageBody::Offer(OfferBody { sdp: offer_sdp }))?,
             response: false,
         },
     )
@@ -386,7 +386,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                                             session.session_id,
                                             FailureCode::IceFailed,
                                             "ice connection failed",
-                                        ),
+                                        )?,
                                         response: false,
                                     },
                                 ).await?;
@@ -438,7 +438,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                                         session.session_id,
                                         FailureCode::IceFailed,
                                         "ice connection failed",
-                                    ),
+                                    )?,
                                     response: false,
                                 },
                             ).await?;
@@ -474,7 +474,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                             .build(MessageBody::Close(CloseBody {
                                 reason_code: "session_closed".to_owned(),
                                 message: None,
-                            })),
+                            }))?,
                             response: false,
                         },
                     )
@@ -538,7 +538,7 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
                             .build(MessageBody::Close(CloseBody {
                                 reason_code: "session_closed".to_owned(),
                                 message: None,
-                            })),
+                            }))?,
                             response: false,
                         },
                     )

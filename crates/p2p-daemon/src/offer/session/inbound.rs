@@ -95,7 +95,7 @@ pub(crate) async fn process_offer_session_payload<T: DaemonSignalingTransport>(
                     remote.peer_id.clone(),
                     session.session_id,
                     envelope.msg_id,
-                ),
+                )?,
                 response: true,
             },
         )
@@ -120,7 +120,8 @@ pub(crate) async fn maybe_ack_duplicate_active_session_message<T: DaemonSignalin
         &session.remote_peer_id,
         payload,
         error,
-    ) else {
+    )?
+    else {
         return Ok(false);
     };
 

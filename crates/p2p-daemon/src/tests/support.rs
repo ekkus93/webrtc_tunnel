@@ -429,7 +429,8 @@ impl AnswerRoutingFixture {
             self.offer_identity.identity.peer_id.clone(),
             self.local_identity.peer_id.clone(),
         )
-        .build(body);
+        .build(body)
+        .expect("test message construction");
         let (_envelope, payload) = offer_codec
             .encode_for_peer(
                 self.offer_keys.get_by_peer_id(&self.local_identity.peer_id).expect("answer key"),

@@ -25,4 +25,4 @@ pub use protocol::{
     DATA_CHANNEL_RELIABLE, DaemonState, END_OF_CANDIDATES_MESSAGE_TYPE, FRAME_VERSION, FailureCode,
     MessageType, PROTOCOL_MAGIC, PROTOCOL_SUITE, PROTOCOL_VERSION, TunnelFrameType,
 };
-pub use time::{resolve_unix_ms, unix_time_ms};
+pub use time::{resolve_optional_unix_ms, unix_time_ms};

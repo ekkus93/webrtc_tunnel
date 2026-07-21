@@ -34,7 +34,8 @@ fn duplicate_active_session_message_builds_re_ack_for_original_msg_id() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "duplicate retry".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -51,6 +52,7 @@ fn duplicate_active_session_message_builds_re_ack_for_original_msg_id() {
         &payload,
         &duplicate_error,
     )
+    .expect("test clock available")
     .expect("duplicate active-session message should be re-acknowledged");
 
     assert_eq!(ack.session_id, session_id);
@@ -81,7 +83,8 @@ fn duplicate_active_session_message_ack_policy_matches_message_type() {
             offer.identity.peer_id.clone(),
             answer.identity.peer_id.clone(),
         )
-        .build(body);
+        .build(body)
+        .expect("test message construction");
         let (envelope, payload) =
             offer_codec.encode_for_peer(offer_remote, &message, false).expect("message encodes");
 
@@ -93,6 +96,7 @@ fn duplicate_active_session_message_ack_policy_matches_message_type() {
             &payload,
             &duplicate_error,
         )
+        .expect("test clock available")
         .unwrap_or_else(|| panic!("{name} duplicate should be re-acknowledged"));
 
         assert!(matches!(
@@ -107,7 +111,8 @@ fn duplicate_active_session_message_ack_policy_matches_message_type() {
             offer.identity.peer_id.clone(),
             answer.identity.peer_id.clone(),
         )
-        .build(body);
+        .build(body)
+        .expect("test message construction");
         let (_envelope, payload) =
             offer_codec.encode_for_peer(offer_remote, &message, false).expect("message encodes");
 
@@ -118,7 +123,8 @@ fn duplicate_active_session_message_ack_policy_matches_message_type() {
             &offer.identity.peer_id,
             &payload,
             &duplicate_error,
-        );
+        )
+        .expect("test clock available");
 
         assert!(ack.is_none(), "{name} duplicate must not be re-acknowledged");
     }
@@ -190,7 +196,8 @@ async fn answer_session_reacks_duplicate_same_session_ack_required_messages() {
             offer.identity.peer_id.clone(),
             answer_identity.peer_id.clone(),
         )
-        .build(body);
+        .build(body)
+        .expect("test message construction");
         let (envelope, payload) = offer_codec
             .encode_for_peer(
                 offer_keys.get_by_peer_id(&answer_identity.peer_id).expect("answer key"),
@@ -273,7 +280,8 @@ async fn answer_session_ignores_duplicate_different_session_before_ack() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "different-session duplicate".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -337,7 +345,8 @@ async fn answer_session_ping_pong_do_not_emit_normal_acks() {
             offer.identity.peer_id.clone(),
             answer.identity.peer_id.clone(),
         )
-        .build(body);
+        .build(body)
+        .expect("test message construction");
         let (_envelope, payload) = offer_codec
             .encode_for_peer(
                 offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -408,7 +417,8 @@ async fn active_session_retry_and_duplicate_reack_flow_retires_pending_ack() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "retry me".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (outbound_envelope, outbound_payload) = offer_codec
         .encode_for_peer(&remote, &outbound_message, false)
         .expect("outbound message encodes");
@@ -433,7 +443,8 @@ async fn active_session_retry_and_duplicate_reack_flow_retires_pending_ack() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "duplicate inbound".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (duplicate_envelope, duplicate_payload) = answer_codec
         .encode_for_peer(
             answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),
@@ -451,6 +462,7 @@ async fn active_session_retry_and_duplicate_reack_flow_retires_pending_ack() {
         &duplicate_payload,
         &duplicate_error,
     )
+    .expect("test clock available")
     .expect("duplicate inbound payload should be re-acknowledged");
 
     assert!(matches!(
@@ -458,11 +470,9 @@ async fn active_session_retry_and_duplicate_reack_flow_retires_pending_ack() {
         MessageBody::Ack(AckBody { ack_msg_id }) if ack_msg_id == duplicate_envelope.msg_id.into_bytes()
     ));
 
-    let inbound_ack = answer_codec.build_ack(
-        offer.identity.peer_id.clone(),
-        session_id,
-        outbound_envelope.msg_id,
-    );
+    let inbound_ack = answer_codec
+        .build_ack(offer.identity.peer_id.clone(), session_id, outbound_envelope.msg_id)
+        .expect("test message construction");
     handle_offer_session_message(&inbound_ack, &mut session)
         .await
         .expect("inbound ack should retire pending outbound message");
@@ -510,7 +520,8 @@ async fn duplicate_active_session_message_is_reacked_only_once_per_msg_id() {
         candidate: Some("candidate:1 1 udp 2130706431 127.0.0.1 3478 typ host".to_owned()),
         sdp_mid: Some("0".to_owned()),
         sdp_mline_index: Some(0),
-    }));
+    }))
+    .expect("test message construction");
     let (_duplicate_envelope, duplicate_payload) = answer_codec
         .encode_for_peer(
             answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),

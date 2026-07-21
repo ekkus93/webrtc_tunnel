@@ -118,7 +118,7 @@ async fn reconnect_with_offer<T: DaemonSignalingTransport>(
                     ctx.config.node.peer_id.clone(),
                     session.remote_peer_id.clone(),
                 )
-                .build(MessageBody::Offer(OfferBody { sdp: offer_sdp })),
+                .build(MessageBody::Offer(OfferBody { sdp: offer_sdp }))?,
                 response: false,
             },
         )
@@ -160,7 +160,7 @@ async fn reconnect_with_offer<T: DaemonSignalingTransport>(
                     ctx.config.node.peer_id.clone(),
                     replacement.remote_peer_id.clone(),
                 )
-                .build(MessageBody::Offer(OfferBody { sdp: offer_sdp })),
+                .build(MessageBody::Offer(OfferBody { sdp: offer_sdp }))?,
                 response: false,
             },
         )

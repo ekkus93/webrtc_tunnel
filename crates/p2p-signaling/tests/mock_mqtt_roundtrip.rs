@@ -43,7 +43,8 @@ fn two_node_signaling_round_trip_over_mocked_mqtt() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() }))
+    .expect("test message construction");
     let (_env, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -65,7 +66,8 @@ fn two_node_signaling_round_trip_over_mocked_mqtt() {
         answer.identity.peer_id.clone(),
         offer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Answer(AnswerBody { sdp: "answer-sdp".to_owned() }));
+    .build(MessageBody::Answer(AnswerBody { sdp: "answer-sdp".to_owned() }))
+    .expect("test message construction");
     let (_env, payload) = answer_codec
         .encode_for_peer(
             answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),
@@ -99,7 +101,8 @@ fn offer_answer_session_setup_and_candidate_exchange() {
         candidate: Some("candidate:1 1 udp 123 192.0.2.10 4567 typ host".to_owned()),
         sdp_mid: Some("data".to_owned()),
         sdp_mline_index: Some(0),
-    }));
+    }))
+    .expect("test message construction");
     let (_env, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -117,7 +120,8 @@ fn offer_answer_session_setup_and_candidate_exchange() {
         answer.identity.peer_id.clone(),
         offer.identity.peer_id.clone(),
     )
-    .build(MessageBody::EndOfCandidates(EndOfCandidatesBody::default()));
+    .build(MessageBody::EndOfCandidates(EndOfCandidatesBody::default()))
+    .expect("test message construction");
     let (_env, payload) = answer_codec
         .encode_for_peer(
             answer_keys.get_by_peer_id(&offer.identity.peer_id).expect("offer key"),
@@ -147,7 +151,8 @@ fn ice_failure_path_sends_encrypted_error() {
         code: FailureCode::IceFailed.as_str().to_owned(),
         message: "ice connection failed".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (_env, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -181,7 +186,8 @@ fn unauthorized_peer_is_rejected() {
         rogue.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "rogue".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "rogue".to_owned() }))
+    .expect("test message construction");
     let (_env, payload) = rogue_codec
         .encode_for_peer(
             rogue_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -207,7 +213,8 @@ fn replayed_message_is_rejected() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() }))
+    .expect("test message construction");
     let (_env, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),

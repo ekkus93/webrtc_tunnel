@@ -177,7 +177,8 @@ fn idle_replay_cache_rejects_replayed_offer_across_iterations() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -213,7 +214,8 @@ fn idle_replay_cache_rejects_replayed_ack_required_message_across_iterations() {
         code: FailureCode::IceFailed.as_str().to_owned(),
         message: "ice failed".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -270,7 +272,8 @@ fn strict_active_session_decode_rejects_foreign_offer() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "offer-sdp".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),

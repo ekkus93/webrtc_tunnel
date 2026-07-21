@@ -26,6 +26,8 @@ pub enum SignalingError {
     Options(Box<rumqttc::OptionError>),
     #[error("cbor error: {0}")]
     Cbor(#[from] serde_cbor::Error),
+    #[error("system clock is unavailable: {0}")]
+    Clock(std::time::SystemTimeError),
 }
 
 impl SignalingError {

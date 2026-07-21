@@ -195,7 +195,13 @@ pub(crate) async fn mark_transport_unusable(
     error: &SignalingError,
 ) {
     ctx.runtime.mqtt_connected = false;
-    ctx.runtime.last_transport_failure_at_ms = Some(current_time_ms());
+    // FIX7 P0-010-A: this internal backoff-suppression bookkeeping (not a wire-protocol
+    // timestamp, not verified by any peer) is diagnostics-only — a clock failure degrades to
+    // `None` ("failure time unknown") rather than propagating a hard error through this
+    // non-`Result` status-transition helper. `None` here is safe, not stale: it simply means
+    // `mark_transport_usable_after_publish` cannot apply its suppression window and lets
+    // recovery proceed immediately, which is the conservative direction to fail in.
+    ctx.runtime.last_transport_failure_at_ms = current_time_ms().ok();
     write_daemon_status(ctx, snapshot).await;
     tracing::warn!(
         reason = %error,
@@ -225,8 +231,12 @@ pub(crate) async fn mark_transport_usable_after_publish(
     ctx: &mut RuntimeContext<'_>,
     snapshot: StatusSnapshot,
 ) {
+    // A clock failure while checking elapsed time degrades the same way as above: treat the
+    // suppression window as not (verifiably) in effect and let recovery proceed.
     if ctx.runtime.last_transport_failure_at_ms.is_some_and(|failure_at| {
-        current_time_ms().saturating_sub(failure_at) < DAEMON_RUNTIME_RETRY_DELAY.as_millis() as u64
+        current_time_ms().ok().is_some_and(|now| {
+            now.saturating_sub(failure_at) < DAEMON_RUNTIME_RETRY_DELAY.as_millis() as u64
+        })
     }) {
         return;
     }
@@ -324,7 +334,7 @@ pub(crate) async fn send_local_candidate<T: DaemonSignalingTransport>(
                 ctx.config.node.peer_id.clone(),
                 session.remote_peer_id.clone(),
             )
-            .build(body),
+            .build(body)?,
             response: false,
         },
     )
@@ -380,7 +390,7 @@ pub(crate) async fn publish_message<T: DaemonSignalingTransport>(
             envelope.msg_id,
             outgoing.message.message_type,
             payload,
-            current_time_ms(),
+            current_time_ms()?,
         );
     }
     Ok(())
@@ -496,7 +506,7 @@ pub(crate) async fn retry_pending_acks<T: DaemonSignalingTransport>(
     snapshot: StatusSnapshot,
     session: &mut ActiveSession,
 ) -> Result<(), DaemonError> {
-    let mut retries = session.signaling.ack_tracker.retry_due(current_time_ms());
+    let mut retries = session.signaling.ack_tracker.retry_due(current_time_ms()?);
     while let Some((_msg_id, payload)) = retries.pop() {
         match transport
             .publish_signal(&session.remote_peer_id, &ctx.config.broker.topic_prefix, payload)

@@ -3,7 +3,7 @@
 //! unique temp paths, and a process-wide unused-port allocator.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use p2p_core::{
@@ -13,12 +13,18 @@ use p2p_core::{
 };
 use p2p_crypto::{AuthorizedKeys, GeneratedIdentity, IdentityFile};
 
+// FIX7 P0-010: a process-wide counter guarantees uniqueness on its own, so a clock read
+// failure degrades to a 0 timestamp component (harmless here — this path only needs to be
+// unique, not a real timestamp) instead of panicking the test harness.
+static UNIQUE_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn unique_path(name: &str) -> PathBuf {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system time should be after unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!("p2ptunnel-{name}-{suffix}"))
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let counter = UNIQUE_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("p2ptunnel-{name}-{suffix}-{counter}"))
 }
 
 pub(crate) fn sample_config(

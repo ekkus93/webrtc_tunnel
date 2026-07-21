@@ -76,7 +76,8 @@ async fn answer_daemon_routes_only_authenticated_sender_and_session() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "route me".to_owned(),
         fatal: false,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_b_codec
         .encode_for_peer(
             offer_b_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
@@ -170,7 +171,8 @@ async fn forged_outer_sender_kid_is_not_routed_to_matching_peer_session() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "forged route".to_owned(),
         fatal: false,
-    }));
+    }))
+    .expect("test message construction");
     let (mut envelope, _payload) = offer_b_codec
         .encode_for_peer(
             offer_b_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
@@ -243,7 +245,8 @@ async fn answer_daemon_ignores_unknown_authenticated_non_offer() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "unknown session".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
@@ -326,7 +329,8 @@ async fn answer_daemon_does_not_peer_fallback_route_unknown_non_offer() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "unknown session must not fallback-route".to_owned(),
         fatal: false,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
@@ -478,7 +482,8 @@ async fn answer_daemon_unknown_same_peer_offer_enters_session_policy() {
         offer.identity.peer_id.clone(),
         local_identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "unrelated second offer".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "unrelated second offer".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),

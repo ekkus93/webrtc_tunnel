@@ -35,7 +35,8 @@ fn inner_message_encrypt_decrypt_round_trip() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = codec
         .encode_for_peer(
             &offer_keys
@@ -54,6 +55,99 @@ fn inner_message_encrypt_decrypt_round_trip() {
     assert_eq!(decoded_message.message_type, MessageType::Offer);
 }
 
+/// A genuine `SystemTimeError`, synthesized without touching the real system clock: asking for
+/// the duration since a point strictly in the future always fails this way (FIX7 P0-010-F —
+/// "do not mutate system clock in tests").
+fn synthetic_clock_error() -> std::time::SystemTimeError {
+    let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    std::time::SystemTime::now()
+        .duration_since(future)
+        .expect_err("a point strictly in the future must make duration_since fail")
+}
+
+fn failing_clock() -> Result<u64, std::time::SystemTimeError> {
+    Err(synthetic_clock_error())
+}
+
+// FIX7 P0-010-G: a decode-time clock failure must return the typed error rather than panic.
+#[test]
+fn signaling_decode_clock_failure_returns_typed_error_and_does_not_panic() {
+    let (offer, answer, offer_keys, answer_keys) = codecs();
+    let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+    let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+    let message = InnerMessageBuilder::new(
+        SessionId::random(),
+        offer.identity.peer_id.clone(),
+        answer.identity.peer_id.clone(),
+    )
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
+    let (_envelope, payload) = offer_codec
+        .encode_for_peer(
+            offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer peer exists"),
+            &message,
+            false,
+        )
+        .expect("encode");
+
+    let mut replay_cache = ReplayCache::new(32);
+    let result = answer_codec.decode_with_replay_status_and_clock(
+        &payload,
+        &mut replay_cache,
+        None,
+        failing_clock,
+    );
+
+    match result {
+        Err(SignalingError::Clock(_)) => {}
+        Ok(_) => panic!("expected a typed clock error, got Ok"),
+        Err(other) => panic!("expected a typed clock error, got a different error: {other}"),
+    }
+}
+
+// FIX7 P0-010-G: a decode aborted by a clock failure must never record a replay entry — the
+// `now_ms: clock()?` read happens as part of constructing the `ReplayCheck` argument, so
+// `check_and_record_status` is never even called when the clock fails. Proven here by decoding
+// the SAME payload again with a real clock afterward and confirming it is still accepted as
+// fresh, not rejected as a duplicate.
+#[test]
+fn signaling_decode_clock_failure_does_not_record_replay_entry() {
+    let (offer, answer, offer_keys, answer_keys) = codecs();
+    let offer_codec = SignalCodec::new(&offer.identity, &offer_keys, 120, 300);
+    let answer_codec = SignalCodec::new(&answer.identity, &answer_keys, 120, 300);
+    let message = InnerMessageBuilder::new(
+        SessionId::random(),
+        offer.identity.peer_id.clone(),
+        answer.identity.peer_id.clone(),
+    )
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
+    let (_envelope, payload) = offer_codec
+        .encode_for_peer(
+            offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer peer exists"),
+            &message,
+            false,
+        )
+        .expect("encode");
+
+    let mut replay_cache = ReplayCache::new(32);
+    let first = answer_codec.decode_with_replay_status_and_clock(
+        &payload,
+        &mut replay_cache,
+        None,
+        failing_clock,
+    );
+    assert!(matches!(first, Err(SignalingError::Clock(_))));
+
+    let second = answer_codec.decode(&payload, &mut replay_cache, None);
+    match second {
+        Ok(_) => {}
+        Err(error) => panic!(
+            "a decode aborted by a clock failure must not have recorded a replay entry, got {error}"
+        ),
+    }
+}
+
 #[test]
 fn reject_wrong_recipient_kid() {
     let (offer, answer, offer_keys, answer_keys) = codecs();
@@ -63,7 +157,8 @@ fn reject_wrong_recipient_kid() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     let (mut envelope, _) = codec
         .encode_for_peer(
             &offer_keys
@@ -90,7 +185,8 @@ fn reject_invalid_signature() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     let (mut envelope, _) = codec
         .encode_for_peer(
             &offer_keys
@@ -121,7 +217,8 @@ fn reject_duplicate_msg_id() {
         code: "busy".to_owned(),
         message: "already in use".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) = codec
         .encode_for_peer(
             &offer_keys
@@ -152,7 +249,8 @@ fn decode_with_replay_status_reports_fresh_and_duplicate_same_session() {
         code: "busy".to_owned(),
         message: "already in use".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) = codec
         .encode_for_peer(
             &offer_keys
@@ -204,7 +302,8 @@ fn decode_with_replay_status_reports_duplicate_different_session() {
         code: "busy".to_owned(),
         message: "first".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let second = InnerMessageBuilder::new(
         SessionId::random(),
         offer.identity.peer_id.clone(),
@@ -214,7 +313,8 @@ fn decode_with_replay_status_reports_duplicate_different_session() {
         code: "busy".to_owned(),
         message: "second".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (_first_envelope, first_payload) = codec
         .encode_for_peer_with_msg_id(&answer_key, &first, false, reused_msg_id)
         .expect("first encodes");
@@ -253,7 +353,8 @@ fn decode_with_replay_status_rejects_expected_session_mismatch_before_status() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = codec
         .encode_for_peer(
             &offer_keys
@@ -286,7 +387,8 @@ fn reject_wrong_sender_peer_id() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     message.sender_peer_id = "wrong-sender".parse().expect("peer id");
     let (_envelope, payload) = codec
         .encode_for_peer(
@@ -317,7 +419,8 @@ fn reject_unsupported_inner_message_version() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     message.version = 2;
     let (_envelope, payload) = codec
         .encode_for_peer(
@@ -348,7 +451,8 @@ fn reject_wrong_recipient_peer_id() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     message.recipient_peer_id = "some-other-peer".parse().expect("peer id");
     let (_envelope, payload) = codec
         .encode_for_peer(
@@ -383,7 +487,8 @@ fn reject_unauthorized_sender() {
         intruder.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = codec
         .encode_for_peer(
             &offer_keys
@@ -414,7 +519,8 @@ fn reject_stale_session_when_expected_session_is_set() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = codec
         .encode_for_peer(
             &offer_keys
@@ -443,7 +549,8 @@ fn reject_stale_timestamp() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }))
+    .expect("test message construction");
     message.timestamp_ms = 1;
     let (_envelope, payload) = codec
         .encode_for_peer(

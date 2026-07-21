@@ -4,7 +4,7 @@
 
 use std::sync::atomic::AtomicU64;
 
-use p2p_core::{resolve_unix_ms, unix_time_ms};
+use p2p_core::{resolve_optional_unix_ms, unix_time_ms};
 use p2p_daemon::{DaemonStatus, ShutdownToken};
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
@@ -105,13 +105,17 @@ pub(crate) fn reset_runtime_metadata(state: &mut AndroidRuntimeStatus) {
 }
 
 pub(crate) fn record_start_error(inner: &mut RuntimeInner, message: String) -> String {
+    // FIX7 P0-010-E: the primary runtime state above is set unconditionally — a clock failure
+    // only ever skips the optional log entry below, never the authoritative error state.
     inner.state.state = AndroidRuntimeState::Error;
     inner.state.active = false;
     inner.state.last_error = Some(message.clone());
-    push_log(
-        &inner.logs,
-        AndroidLogEvent { unix_ms: unix_ms(), level: "error".to_owned(), message: message.clone() },
-    );
+    if let Some(unix_ms) = unix_ms() {
+        push_log(
+            &inner.logs,
+            AndroidLogEvent { unix_ms, level: "error".to_owned(), message: message.clone() },
+        );
+    }
     message
 }
 
@@ -129,7 +133,12 @@ pub(crate) fn push_log(logs: &LogBuffer, event: AndroidLogEvent) {
 /// timestamp degrades to a real prior value instead of an invented zero (FIX6 P2-002).
 static LAST_UNIX_MS: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn unix_ms() -> u64 {
+/// Diagnostics-only timestamp (FIX7 P0-010-E): `None` when the clock has never once succeeded
+/// (no invented zero), otherwise the fresh reading or the last known-good value on a subsequent
+/// failure. Callers must skip the optional log entry / leave `started_at_unix_ms` unset on
+/// `None` rather than substitute zero — runtime state and `last_error` are unaffected either
+/// way, since neither depends on this value.
+pub(crate) fn unix_ms() -> Option<u64> {
     let fresh = match unix_time_ms() {
         Ok(ms) => Some(ms),
         Err(err) => {
@@ -137,5 +146,5 @@ pub(crate) fn unix_ms() -> u64 {
             None
         }
     };
-    resolve_unix_ms(fresh, &LAST_UNIX_MS)
+    resolve_optional_unix_ms(fresh, &LAST_UNIX_MS)
 }

@@ -1,7 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use p2p_core::{MessageType, MsgId, PeerId, ProtocolError, SessionId};
+use p2p_core::{MessageType, MsgId, PeerId, ProtocolError, SessionId, unix_time_ms};
 use serde::{Deserialize, Serialize};
+
+use crate::error::SignalingError;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InnerMessage {
@@ -59,19 +59,34 @@ impl InnerMessageBuilder {
         Self { session_id, sender_peer_id, recipient_peer_id }
     }
 
-    pub fn build(self, body: MessageBody) -> InnerMessage {
-        InnerMessage {
+    /// FIX7 P0-010-A/P0-010-D: the wire timestamp a peer's freshness check verifies is
+    /// correctness-sensitive — fallible because the clock read is, propagating a typed error
+    /// rather than panicking or inventing a timestamp. A message must never be built with a
+    /// fabricated `timestamp_ms`.
+    pub fn build(self, body: MessageBody) -> Result<InnerMessage, SignalingError> {
+        self.build_with_clock(body, unix_time_ms)
+    }
+
+    /// FIX7 P0-010-F: injectable clock seam so tests can deterministically exercise a clock
+    /// failure without mutating the real system clock. `pub(crate)` — only this crate's own
+    /// tests need it; [`build`] is the public API and always uses the real clock.
+    pub(crate) fn build_with_clock(
+        self,
+        body: MessageBody,
+        clock: fn() -> Result<u64, std::time::SystemTimeError>,
+    ) -> Result<InnerMessage, SignalingError> {
+        Ok(InnerMessage {
             version: 1,
             message_type: body.message_type(),
             session_id: self.session_id,
             sender_peer_id: self.sender_peer_id,
             recipient_peer_id: self.recipient_peer_id,
-            timestamp_ms: current_time_ms(),
+            timestamp_ms: clock().map_err(SignalingError::Clock)?,
             body,
-        }
+        })
     }
 
-    pub fn ack(self, ack_msg_id: MsgId) -> InnerMessage {
+    pub fn ack(self, ack_msg_id: MsgId) -> Result<InnerMessage, SignalingError> {
         self.build(MessageBody::Ack(AckBody { ack_msg_id: ack_msg_id.into_bytes() }))
     }
 }
@@ -248,13 +263,6 @@ struct RawInnerMessage {
     body: serde_cbor::Value,
 }
 
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time is before unix epoch")
-        .as_millis() as u64
-}
-
 fn as_protocol(error: serde_cbor::Error) -> ProtocolError {
     ProtocolError::InvalidMessage(error.to_string())
 }
@@ -299,6 +307,41 @@ mod tests {
             timestamp_ms: 42,
             body: MessageBody::Offer(OfferBody { sdp: "v=0\r\n".to_owned() }),
         }
+    }
+
+    /// A genuine `SystemTimeError`, synthesized without touching the real system clock: asking
+    /// for the duration since a point strictly in the future always fails this way (FIX7
+    /// P0-010-F — "do not mutate system clock in tests").
+    fn synthetic_clock_error() -> std::time::SystemTimeError {
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::time::SystemTime::now()
+            .duration_since(future)
+            .expect_err("a point strictly in the future must make duration_since fail")
+    }
+
+    fn failing_clock() -> Result<u64, std::time::SystemTimeError> {
+        Err(synthetic_clock_error())
+    }
+
+    // FIX7 P0-010-G: a message must never be built with a fabricated timestamp on clock
+    // failure — the typed error propagates instead.
+    #[test]
+    fn daemon_message_build_clock_failure_returns_error() {
+        let builder = InnerMessageBuilder::new(
+            SessionId::new([1_u8; 16]),
+            peer_id("offer-home"),
+            peer_id("answer-office"),
+        );
+
+        let result = builder.build_with_clock(
+            MessageBody::Offer(OfferBody { sdp: "v=0".to_owned() }),
+            failing_clock,
+        );
+
+        assert!(
+            matches!(result, Err(SignalingError::Clock(_))),
+            "expected a typed clock error, got {result:?}"
+        );
     }
 
     #[test]

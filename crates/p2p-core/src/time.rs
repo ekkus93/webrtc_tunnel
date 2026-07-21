@@ -15,16 +15,24 @@ pub fn unix_time_ms() -> Result<u64, SystemTimeError> {
 }
 
 /// Resolve a timestamp for diagnostics/timing that degrades safely on clock failure: on success
-/// it records and returns the `fresh` value; on failure (`None`) it reuses the last known-good
-/// value in `last` rather than inventing zero. `fresh` is [`unix_time_ms`]`().ok()` at the call
-/// site, so the caller can log the underlying error before degrading.
-pub fn resolve_unix_ms(fresh: Option<u64>, last: &AtomicU64) -> u64 {
+/// it records and returns `Some(fresh)`; on failure it reuses the last known-good value in
+/// `last`, but only if one has actually been recorded — the very first clock failure (before
+/// any success has ever stored a value) must yield `None`, never the atomic's zero
+/// initializer masquerading as a real timestamp (FIX7 P0-010-B; this replaces the old
+/// `resolve_unix_ms`, whose `u64` return had no way to distinguish "no prior value" from a
+/// genuine zero timestamp and so returned 0 on a first-ever failure). `fresh` is
+/// [`unix_time_ms`]`().ok()` at the call site, so the caller can log the underlying error before
+/// degrading. Zero is a sentinel only inside `last` and never escapes as a timestamp.
+pub fn resolve_optional_unix_ms(fresh: Option<u64>, last: &AtomicU64) -> Option<u64> {
     match fresh {
         Some(ms) => {
             last.store(ms, Ordering::Relaxed);
-            ms
+            Some(ms)
         }
-        None => last.load(Ordering::Relaxed),
+        None => {
+            let prior = last.load(Ordering::Relaxed);
+            (prior != 0).then_some(prior)
+        }
     }
 }
 
@@ -41,17 +49,26 @@ mod tests {
     }
 
     #[test]
-    fn resolve_unix_ms_records_and_returns_fresh_values() {
+    fn resolve_optional_unix_ms_records_and_returns_fresh_values() {
         let last = AtomicU64::new(0);
-        assert_eq!(resolve_unix_ms(Some(1_000), &last), 1_000);
+        assert_eq!(resolve_optional_unix_ms(Some(1_000), &last), Some(1_000));
         assert_eq!(last.load(Ordering::Relaxed), 1_000);
     }
 
     #[test]
-    fn resolve_unix_ms_reuses_last_known_value_on_failure_instead_of_zero() {
+    fn subsequent_diagnostic_clock_failure_may_reuse_non_zero_known_timestamp() {
         let last = AtomicU64::new(0);
-        resolve_unix_ms(Some(42), &last);
+        resolve_optional_unix_ms(Some(42), &last);
         // A subsequent clock failure must reuse 42, never invent 0.
-        assert_eq!(resolve_unix_ms(None, &last), 42);
+        assert_eq!(resolve_optional_unix_ms(None, &last), Some(42));
+    }
+
+    // FIX7 P0-010-B/P0-010-G: the very first clock failure (before any success has ever stored a
+    // value) must yield None, never the atomic's zero initializer masquerading as a real
+    // timestamp — this is the exact gap the old u64-returning resolve_unix_ms had.
+    #[test]
+    fn first_clock_failure_returns_none_for_diagnostic_timestamp_not_zero() {
+        let last = AtomicU64::new(0);
+        assert_eq!(resolve_optional_unix_ms(None, &last), None);
     }
 }

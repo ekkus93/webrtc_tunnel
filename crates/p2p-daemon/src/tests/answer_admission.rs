@@ -51,7 +51,8 @@ async fn answer_daemon_admits_unknown_authenticated_offer() {
         offer.identity.peer_id.clone(),
         local_identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: offer_sdp }));
+    .build(MessageBody::Offer(OfferBody { sdp: offer_sdp }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
@@ -149,7 +150,8 @@ async fn answer_daemon_rejects_sender_session_owner_mismatch() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "wrong owner".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_b_codec
         .encode_for_peer(
             offer_b_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
@@ -249,7 +251,8 @@ async fn duplicate_signal_for_one_session_does_not_route_to_another_session() {
         code: FailureCode::ProtocolError.as_str().to_owned(),
         message: "duplicate me".to_owned(),
         fatal: true,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_a_codec
         .encode_for_peer(
             offer_a_keys.get_by_peer_id(&local_identity.peer_id).expect("answer key"),
@@ -351,7 +354,8 @@ async fn active_same_peer_unrelated_offer_gets_encrypted_busy() {
         offer.identity.peer_id.clone(),
         answer_identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "new unrelated offer".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "new unrelated offer".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer_identity.peer_id).expect("answer key"),

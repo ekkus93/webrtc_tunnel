@@ -15,6 +15,23 @@ fn android_state_mapping_covers_connection_phases() {
     assert_eq!(android_state_from_daemon(DaemonState::Closed), AndroidRuntimeState::Stopped);
 }
 
+// FIX7 P0-010-E/P0-010-G: the primary runtime state (state/active/last_error) that
+// record_start_error sets is authoritative regardless of whether the accompanying diagnostic
+// log entry can be pushed — the state assignment happens unconditionally, before the log
+// attempt is even considered, so it structurally cannot depend on the diagnostic timestamp
+// (unix_ms()) being available.
+#[test]
+fn mobile_log_clock_failure_preserves_primary_runtime_state() {
+    let mut inner = RuntimeInner::default();
+
+    let returned = record_start_error(&mut inner, "boom".to_owned());
+
+    assert_eq!(returned, "boom");
+    assert_eq!(inner.state.state, AndroidRuntimeState::Error);
+    assert_eq!(inner.state.last_error, Some("boom".to_owned()));
+    assert!(!inner.state.active);
+}
+
 #[test]
 fn snapshot_status_overlays_daemon_status_when_active() {
     let mut inner = RuntimeInner::default();

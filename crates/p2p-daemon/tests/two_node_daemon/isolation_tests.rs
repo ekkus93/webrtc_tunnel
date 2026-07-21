@@ -537,19 +537,22 @@ async fn malformed_authenticated_signaling_is_rejected_without_cross_session_dam
             "offer-home".parse().expect("home peer id"),
             "answer-office".parse().expect("answer peer id"),
         )
-        .build(MessageBody::Ping(PingBody { seq: 1 })),
+        .build(MessageBody::Ping(PingBody { seq: 1 }))
+        .expect("test message construction"),
         InnerMessageBuilder::new(
             desktop_session_id,
             "offer-home".parse().expect("home peer id"),
             "answer-office".parse().expect("answer peer id"),
         )
-        .build(MessageBody::Ping(PingBody { seq: 2 })),
+        .build(MessageBody::Ping(PingBody { seq: 2 }))
+        .expect("test message construction"),
         InnerMessageBuilder::new(
             home_session_id,
             "offer-home".parse().expect("home peer id"),
             "answer-office".parse().expect("answer peer id"),
         )
-        .build(MessageBody::Answer(AnswerBody { sdp: "not-valid-for-answer-state".to_owned() })),
+        .build(MessageBody::Answer(AnswerBody { sdp: "not-valid-for-answer-state".to_owned() }))
+        .expect("test message construction"),
     ];
 
     for (index, message) in malformed_messages.iter().enumerate() {

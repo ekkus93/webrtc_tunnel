@@ -375,7 +375,8 @@ async fn route_scoped_publish_failure_does_not_break_other_active_peer() {
     .build(MessageBody::Close(CloseBody {
         reason_code: "test_route_scoped_failure".to_owned(),
         message: None,
-    }));
+    }))
+    .expect("test message construction");
     let (_envelope, payload) =
         home_codec.encode_for_peer(&answer_recipient, &close, false).expect("close should encode");
 

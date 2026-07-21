@@ -90,11 +90,17 @@ struct AndroidLogLayer {
 
 impl<S: Subscriber> Layer<S> for AndroidLogLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        // FIX7 P0-010-E: a clock failure here only ever drops this one optional tracing
+        // event, never invents a zero timestamp.
+        let Some(unix_ms) = unix_ms() else {
+            eprintln!("system clock is before the unix epoch; dropping tracing event");
+            return;
+        };
         let metadata = event.metadata();
         let mut visitor = MessageVisitor::new(metadata.target());
         event.record(&mut visitor);
         let result = self.buffer.push(AndroidLogEvent {
-            unix_ms: unix_ms(),
+            unix_ms,
             level: level_str(*metadata.level()).to_owned(),
             message: visitor.finish(),
         });

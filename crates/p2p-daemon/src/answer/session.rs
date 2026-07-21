@@ -154,7 +154,7 @@ async fn run_answer_session_task_inner(
                                     session.session_id,
                                     FailureCode::IceFailed,
                                     "ice connection failed",
-                                ),
+                                )?,
                                 response: false,
                             },
                             true,
@@ -191,7 +191,7 @@ async fn run_answer_session_task_inner(
                                 session.session_id,
                                 FailureCode::TargetConnectFailed,
                                 message,
-                            ),
+                            )?,
                             response: false,
                         },
                         true,
@@ -220,7 +220,7 @@ async fn run_answer_session_task_inner(
                         .build(MessageBody::Close(CloseBody {
                             reason_code: "session_closed".to_owned(),
                             message: None,
-                        })),
+                        }))?,
                         response: false,
                     },
                     true,
@@ -277,7 +277,7 @@ async fn publish_from_answer_session(
             published.msg_id,
             published.message_type,
             published.payload,
-            current_time_ms(),
+            current_time_ms()?,
         );
     }
     Ok(())
@@ -289,7 +289,7 @@ async fn retry_pending_answer_session_acks(
     generation: SessionGeneration,
     session: &mut ActiveSession,
 ) -> Result<(), DaemonError> {
-    let mut retries = session.signaling.ack_tracker.retry_due(current_time_ms());
+    let mut retries = session.signaling.ack_tracker.retry_due(current_time_ms()?);
     while let Some((_msg_id, payload)) = retries.pop() {
         request_raw_session_publish(
             event_tx,
@@ -343,7 +343,7 @@ async fn send_answer_session_local_candidate(
                 config.node.peer_id.clone(),
                 session.remote_peer_id.clone(),
             )
-            .build(body),
+            .build(body)?,
             response: false,
         },
         true,
@@ -399,7 +399,7 @@ pub(crate) async fn process_answer_session_signal(
                     sender.peer_id.clone(),
                     message.session_id,
                     envelope.msg_id,
-                ),
+                )?,
                 response: true,
             },
             false,
@@ -522,7 +522,7 @@ async fn maybe_replace_pending_same_peer_session(
                 config.node.peer_id.clone(),
                 replacement_remote_peer_id,
             )
-            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp })),
+            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp }))?,
             response: false,
         },
         true,
@@ -574,7 +574,7 @@ async fn publish_busy_for_same_peer_offer(
                 rejected_session_id,
                 FailureCode::Busy,
                 "answer daemon already has an active session for this peer",
-            ),
+            )?,
             response: true,
         },
         false,
@@ -605,7 +605,7 @@ async fn handle_active_answer_offer_via_events(
                 config.node.peer_id.clone(),
                 session.remote_peer_id.clone(),
             )
-            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp })),
+            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp }))?,
             response: false,
         },
         true,

@@ -159,11 +159,17 @@ pub unsafe extern "C" fn p2ptunnel_recent_logs_json(
             // still visible in the app's log feed rather than silently swallowed.
             let events = match controller.recent_logs(max_events) {
                 Ok(events) => events,
-                Err(reason) => vec![AndroidLogEvent {
-                    unix_ms: crate::runtime::bridge_unix_ms(),
-                    level: "error".to_owned(),
-                    message: format!("failed to read recent logs: {reason}"),
-                }],
+                Err(reason) => match crate::runtime::bridge_unix_ms() {
+                    Some(unix_ms) => vec![AndroidLogEvent {
+                        unix_ms,
+                        level: "error".to_owned(),
+                        message: format!("failed to read recent logs: {reason}"),
+                    }],
+                    // FIX7 P0-010-E: an extremely rare double failure (log buffer AND clock
+                    // both unavailable) falls back to an empty list rather than inventing a
+                    // zero timestamp for the synthetic error entry.
+                    None => Vec::new(),
+                },
             };
             serde_json::to_string(&events).map_err(|error| error.to_string())
         })?

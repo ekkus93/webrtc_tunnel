@@ -78,14 +78,16 @@ fn apply_daemon_completion_result(
             inner.state.config_path = None;
             inner.state.last_error = None;
             reset_runtime_metadata(&mut inner.state);
-            push_log(
-                &inner.logs,
-                AndroidLogEvent {
-                    unix_ms: unix_ms(),
-                    level: "info".to_owned(),
-                    message: "runtime completed".to_owned(),
-                },
-            );
+            if let Some(unix_ms) = unix_ms() {
+                push_log(
+                    &inner.logs,
+                    AndroidLogEvent {
+                        unix_ms,
+                        level: "info".to_owned(),
+                        message: "runtime completed".to_owned(),
+                    },
+                );
+            }
         }
         Err(error) => {
             inner.state.state = AndroidRuntimeState::Error;
@@ -93,14 +95,16 @@ fn apply_daemon_completion_result(
             inner.state.active = false;
             // Preserve config_path for diagnostics; clear uptime/measured fields.
             reset_runtime_metadata(&mut inner.state);
-            push_log(
-                &inner.logs,
-                AndroidLogEvent {
-                    unix_ms: unix_ms(),
-                    level: "error".to_owned(),
-                    message: error.to_string(),
-                },
-            );
+            if let Some(unix_ms) = unix_ms() {
+                push_log(
+                    &inner.logs,
+                    AndroidLogEvent {
+                        unix_ms,
+                        level: "error".to_owned(),
+                        message: error.to_string(),
+                    },
+                );
+            }
         }
     }
 }
@@ -253,7 +257,7 @@ impl AndroidTunnelController {
         inner.state.mode = Some(mode);
         inner.state.config_path = Some(config_path);
         inner.state.last_error = None;
-        inner.state.started_at_unix_ms = Some(unix_ms());
+        inner.state.started_at_unix_ms = unix_ms();
         inner.state.active = true;
         inner.task = Some(task);
         inner.runtime = Some(runtime);
@@ -269,14 +273,16 @@ impl AndroidTunnelController {
                     .map(|offer| (forward.id.clone(), offer.listen_host.clone(), offer.listen_port))
             })
             .collect();
-        push_log(
-            &inner.logs,
-            AndroidLogEvent {
-                unix_ms: unix_ms(),
-                level: "info".to_owned(),
-                message: "runtime started".to_owned(),
-            },
-        );
+        if let Some(unix_ms) = unix_ms() {
+            push_log(
+                &inner.logs,
+                AndroidLogEvent {
+                    unix_ms,
+                    level: "info".to_owned(),
+                    message: "runtime started".to_owned(),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -368,14 +374,16 @@ impl AndroidTunnelController {
                 inner.state.config_path = None;
                 inner.state.last_error = None;
                 reset_runtime_metadata(&mut inner.state);
-                push_log(
-                    &inner.logs,
-                    AndroidLogEvent {
-                        unix_ms: unix_ms(),
-                        level: "info".to_owned(),
-                        message: "runtime stopped".to_owned(),
-                    },
-                );
+                if let Some(unix_ms) = unix_ms() {
+                    push_log(
+                        &inner.logs,
+                        AndroidLogEvent {
+                            unix_ms,
+                            level: "info".to_owned(),
+                            message: "runtime stopped".to_owned(),
+                        },
+                    );
+                }
             }
             StopOutcome::Graceful => {}
             StopOutcome::ForcedAbort { grace_period } => {
@@ -384,20 +392,24 @@ impl AndroidTunnelController {
                 inner.state.last_error = Some(message.clone());
                 // Preserve config_path for diagnostics.
                 reset_runtime_metadata(&mut inner.state);
-                push_log(
-                    &inner.logs,
-                    AndroidLogEvent { unix_ms: unix_ms(), level: "error".to_owned(), message },
-                );
+                if let Some(unix_ms) = unix_ms() {
+                    push_log(
+                        &inner.logs,
+                        AndroidLogEvent { unix_ms, level: "error".to_owned(), message },
+                    );
+                }
             }
             StopOutcome::TaskJoinFailed { reason } => {
                 let message = format!("runtime task join failed: {reason}");
                 inner.state.state = AndroidRuntimeState::Error;
                 inner.state.last_error = Some(message.clone());
                 reset_runtime_metadata(&mut inner.state);
-                push_log(
-                    &inner.logs,
-                    AndroidLogEvent { unix_ms: unix_ms(), level: "error".to_owned(), message },
-                );
+                if let Some(unix_ms) = unix_ms() {
+                    push_log(
+                        &inner.logs,
+                        AndroidLogEvent { unix_ms, level: "error".to_owned(), message },
+                    );
+                }
             }
             StopOutcome::NotRunning => unreachable!("handled by the early return above"),
         }

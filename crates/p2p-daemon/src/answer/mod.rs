@@ -683,6 +683,27 @@ pub(crate) async fn handle_answer_daemon_payload<T: DaemonSignalingTransport>(
             if registry.session_by_peer.contains_key(&decoded.sender.peer_id)
                 || registry.sessions_by_id.len() >= ANSWER_SESSION_CAPACITY
             {
+                let busy_message = match build_error_message(
+                    &config.node.peer_id,
+                    &decoded.sender.peer_id,
+                    decoded.message.session_id,
+                    FailureCode::Busy,
+                    "answer daemon session capacity reached",
+                ) {
+                    Ok(message) => message,
+                    // FIX7 P0-010-D: a clock failure here only skips this one best-effort
+                    // rejection (matching the existing failed-to-publish handling just below,
+                    // not a daemon-fatal outcome) rather than inventing a timestamp.
+                    Err(error) => {
+                        tracing::warn!(
+                            reason = %error,
+                            session_id = %decoded.message.session_id,
+                            sender_peer_id = %decoded.sender.peer_id,
+                            "failed to build best-effort busy rejection message",
+                        );
+                        return;
+                    }
+                };
                 if let Err(error) = publish_message(
                     ctx,
                     codec,
@@ -693,16 +714,7 @@ pub(crate) async fn handle_answer_daemon_payload<T: DaemonSignalingTransport>(
                     },
                     None,
                     &decoded.sender,
-                    OutgoingSignal {
-                        message: build_error_message(
-                            &config.node.peer_id,
-                            &decoded.sender.peer_id,
-                            decoded.message.session_id,
-                            FailureCode::Busy,
-                            "answer daemon session capacity reached",
-                        ),
-                        response: true,
-                    },
+                    OutgoingSignal { message: busy_message, response: true },
                 )
                 .await
                 {
@@ -784,7 +796,7 @@ async fn start_answer_session_from_offer<T: DaemonSignalingTransport>(
                     sender.peer_id.clone(),
                     message.session_id,
                     envelope.msg_id,
-                ),
+                )?,
                 response: true,
             },
         )
@@ -816,7 +828,7 @@ async fn start_answer_session_from_offer<T: DaemonSignalingTransport>(
                 config.node.peer_id.clone(),
                 session.remote_peer_id.clone(),
             )
-            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp })),
+            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp }))?,
             response: false,
         },
     )
@@ -990,7 +1002,7 @@ pub(crate) async fn maybe_replace_pending_answer_session<T: DaemonSignalingTrans
                     sender.peer_id.clone(),
                     message.session_id,
                     envelope.msg_id,
-                ),
+                )?,
                 response: true,
             },
         )
@@ -1052,7 +1064,7 @@ pub(crate) async fn maybe_replace_pending_answer_session<T: DaemonSignalingTrans
                 config.node.peer_id.clone(),
                 replacement.remote_peer_id.clone(),
             )
-            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp })),
+            .build(MessageBody::Answer(AnswerBody { sdp: answer_sdp }))?,
             response: false,
         },
     )

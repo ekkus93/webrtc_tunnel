@@ -23,7 +23,8 @@ fn active_answer_busy_offer_replies_only_to_allowed_peers() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "second-offer".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "second-offer".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -59,7 +60,8 @@ fn active_answer_busy_offer_duplicate_is_suppressed_per_session() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "second-offer".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "second-offer".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -103,7 +105,8 @@ fn replayed_active_busy_offer_is_detected_before_full_decode() {
         offer.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "second-offer".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "second-offer".to_owned() }))
+    .expect("test message construction");
     let (envelope, _payload) = offer_codec
         .encode_for_peer(
             offer_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -147,7 +150,8 @@ fn active_answer_busy_offer_ignores_authorized_but_disallowed_peer() {
         disallowed.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "guest-offer".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "guest-offer".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = disallowed_codec
         .encode_for_peer(
             disallowed_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),
@@ -184,7 +188,8 @@ fn active_answer_busy_offer_ignores_unauthorized_peer() {
         rogue.identity.peer_id.clone(),
         answer.identity.peer_id.clone(),
     )
-    .build(MessageBody::Offer(OfferBody { sdp: "rogue-offer".to_owned() }));
+    .build(MessageBody::Offer(OfferBody { sdp: "rogue-offer".to_owned() }))
+    .expect("test message construction");
     let (_envelope, payload) = rogue_codec
         .encode_for_peer(
             rogue_keys.get_by_peer_id(&answer.identity.peer_id).expect("answer key"),

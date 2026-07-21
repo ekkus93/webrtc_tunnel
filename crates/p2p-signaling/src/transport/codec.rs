@@ -3,9 +3,7 @@
 //! (signature, AEAD decryption, freshness, and replay status) back into a
 //! [`DecodedSignal`].
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use p2p_core::{MsgId, PeerId, SessionId};
+use p2p_core::{MsgId, PeerId, SessionId, unix_time_ms};
 use p2p_crypto::{
     AuthorizedKey, AuthorizedKeys, IdentityFile, decrypt_message, derive_aead_key,
     derive_aead_key_from_shared_secret, encrypt_message, generate_ephemeral_secret,
@@ -123,6 +121,25 @@ impl<'a> SignalCodec<'a> {
         replay_cache: &mut ReplayCache,
         expected_session: Option<SessionId>,
     ) -> Result<DecodedSignal, SignalingError> {
+        self.decode_with_replay_status_and_clock(
+            payload,
+            replay_cache,
+            expected_session,
+            unix_time_ms,
+        )
+    }
+
+    /// FIX7 P0-010-F: injectable clock seam so tests can deterministically exercise a decode-time
+    /// clock failure without mutating the real system clock. `pub(crate)` — only this crate's
+    /// own tests need it; [`decode_with_replay_status`] is the public API and always uses the
+    /// real clock.
+    pub(crate) fn decode_with_replay_status_and_clock(
+        &self,
+        payload: &[u8],
+        replay_cache: &mut ReplayCache,
+        expected_session: Option<SessionId>,
+        clock: fn() -> Result<u64, std::time::SystemTimeError>,
+    ) -> Result<DecodedSignal, SignalingError> {
         let envelope = OuterEnvelope::decode(payload)?;
         let local_kid = self.local_identity.signing_kid();
         if envelope.recipient_kid != local_kid {
@@ -180,7 +197,7 @@ impl<'a> SignalCodec<'a> {
             ReplayCheck {
                 session_id: message.session_id,
                 timestamp_ms: message.timestamp_ms,
-                now_ms: current_time_ms(),
+                now_ms: clock().map_err(SignalingError::Clock)?,
                 max_clock_skew_secs: self.max_clock_skew_secs,
                 max_message_age_secs: self.max_message_age_secs,
                 expected_session,
@@ -195,15 +212,8 @@ impl<'a> SignalCodec<'a> {
         recipient_peer_id: PeerId,
         session_id: SessionId,
         ack_msg_id: MsgId,
-    ) -> InnerMessage {
+    ) -> Result<InnerMessage, SignalingError> {
         InnerMessageBuilder::new(session_id, self.local_identity.peer_id.clone(), recipient_peer_id)
             .ack(ack_msg_id)
     }
-}
-
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before unix epoch")
-        .as_millis() as u64
 }
