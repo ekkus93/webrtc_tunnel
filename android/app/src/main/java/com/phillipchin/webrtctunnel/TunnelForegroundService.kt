@@ -90,6 +90,38 @@ private fun stopFailureCode(error: Throwable): String =
         "stop_failed"
     }
 
+// RESPONSES item 3/FIX7 P0-007-D: the native-runtime-quarantine check runs FIRST, before app
+// initialization readiness, so an uncertain runtime always blocks a restart regardless of
+// initialization state. Top-level (not a class member) so it doesn't count against
+// TunnelForegroundService's function budget for no behavioral reason.
+private fun requireRuntimeStartAllowedFor(
+    readiness: AppInitializationState,
+    nativeRuntimeUncertain: Boolean,
+): Result<Unit> =
+    when {
+        nativeRuntimeUncertain ->
+            Result.failure(
+                NativeRuntimeQuarantinedException(
+                    "Native runtime state is uncertain; explicit STOP is required before restart.",
+                ),
+            )
+
+        readiness is AppInitializationState.Failed ->
+            Result.failure(
+                AppInitializationIncompleteException(readiness.code, readiness.message),
+            )
+
+        readiness !is AppInitializationState.Ready ->
+            Result.failure(
+                AppInitializationIncompleteException(
+                    "app_initialization_failed",
+                    "App initialization has not completed yet.",
+                ),
+            )
+
+        else -> Result.success(Unit)
+    }
+
 // P0-001: Coordinator-owned cleanup for verified-start failure (P0-001).
 // Uses StartOutcome from the data layer for startup classification.
 
@@ -374,15 +406,10 @@ class TunnelForegroundService
                                     nativeRuntimeUncertain.set(false)
                                 },
                                 onFailure = { error ->
-                                    nativeStopVerified.set(false)
-                                    nativeRuntimeUncertain.set(true)
-                                    reporter.publishError(
+                                    // FIX7 P0-007-B: quarantine through the central helper.
+                                    enterNativeRuntimeQuarantine(
                                         code = "destroy_fallback_stop_failed",
-                                        message =
-                                            SensitiveDataRedactor.redactText(
-                                                error.message
-                                                    ?: "Destroy fallback stop failed",
-                                            ),
+                                        message = error.message ?: "Destroy fallback stop failed",
                                     )
                                 },
                             )
@@ -449,6 +476,28 @@ class TunnelForegroundService
                 repository.setLocalError(code = code, message = redacted, state = state)
                 Log.e(tag, redacted)
                 notifications.show(notifications.buildStatusNotification(state, redacted))
+            }
+
+            /**
+             * FIX7 P0-007-A: publishes the visible log/notification for a specific diagnostic
+             * WITHOUT touching `repository.setLocalError` — unlike [publishError]. Used after
+             * [enterNativeRuntimeQuarantine] has already durably set the canonical
+             * `native_runtime_quarantined` code, so this narrower diagnostic can't silently
+             * overwrite that durable state. Never throws: a notification-building failure must
+             * not be able to hide that quarantine already happened.
+             */
+            fun publishErrorSafely(
+                message: String,
+                code: String,
+                state: ServiceState = ServiceState.Error,
+            ) {
+                try {
+                    val redacted = SensitiveDataRedactor.redactText(message)
+                    Log.e(tag, redacted)
+                    notifications.show(notifications.buildStatusNotification(state, redacted))
+                } catch (error: Exception) {
+                    Log.e(tag, "Failed to publish quarantine diagnostic (code=$code)", error)
+                }
             }
 
             fun loadingNotification(body: String): Notification =
@@ -524,31 +573,50 @@ class TunnelForegroundService
         // Extends the existing guard rather than adding a second one: all start/resume
         // paths already route through here, and this class is at detekt's function limit.
         // Single-return `when` because ReturnCount caps at 2.
-        private fun requireRuntimeStartAllowed(): Result<Unit> {
-            val readiness = appInitialization.state.value
-            return when {
-                readiness is AppInitializationState.Failed ->
-                    Result.failure(
-                        AppInitializationIncompleteException(readiness.code, readiness.message),
-                    )
+        //
+        // FIX7 RESPONSES item 3: nativeRuntimeUncertain is checked FIRST (not adding a
+        // separate AppInitializationCoordinator.requireReady() gate) — a quarantined
+        // runtime must block start/resume regardless of app-initialization state.
+        // A property (not a function) so it doesn't count against this class's detekt
+        // function budget for no behavioral reason.
+        private val requireRuntimeStartAllowed: () -> Result<Unit> = {
+            requireRuntimeStartAllowedFor(appInitialization.state.value, nativeRuntimeUncertain.get())
+        }
 
-                readiness !is AppInitializationState.Ready ->
-                    Result.failure(
-                        AppInitializationIncompleteException(
-                            "app_initialization_failed",
-                            "App initialization has not completed yet.",
-                        ),
-                    )
-
-                nativeRuntimeUncertain.get() ->
-                    Result.failure(
-                        NativeRuntimeQuarantinedException(
-                            "Native runtime state is uncertain; explicit STOP is required before restart.",
-                        ),
-                    )
-
-                else -> Result.success(Unit)
-            }
+        /**
+         * FIX7 P0-007-A: the one place that transitions the service into native-runtime
+         * quarantine, so every stop-like failure applies the SAME safety-state changes before
+         * reporting (rather than each call site duplicating them ad hoc, as `stopServiceWork`
+         * and the destroy fallback previously did — and `pause`/`pauseForPolicy` previously
+         * didn't do at all, a real gap this closes). [code]/[message] are the specific,
+         * caller-supplied diagnostic (e.g. `manual_pause_stop_failed`); the durable repository
+         * state is always the canonical `native_runtime_quarantined` — set before the
+         * (possibly-failing) visible-notification call so a notification failure can never hide
+         * that quarantine already happened, and never overwritten by it afterward since
+         * [StatusReporter.publishErrorSafely] does not touch `repository.setLocalError`.
+         */
+        private fun enterNativeRuntimeQuarantine(
+            code: String,
+            message: String,
+        ) {
+            nativeStopVerified.set(false)
+            nativeRuntimeUncertain.set(true)
+            invalidatePendingPolicyRetry()
+            val redacted = SensitiveDataRedactor.redactText(message)
+            // First, the caller's specific diagnostic (e.g. "stop_status_verification_failed")
+            // — TunnelRepository.setLocalError's own sticky-cleanup-history set keys off these
+            // exact codes (P1-005), so this call must still happen for that history to work.
+            repository.setLocalError(code = code, message = redacted)
+            // Then the canonical quarantine code becomes the final/durable lastError. RESPONSES
+            // item 2: this must not be overwritten back to the narrower code afterward — which
+            // is why the visible notification below goes through publishErrorSafely (log +
+            // notification only), not publishError (which would call setLocalError again with
+            // the narrower [code]).
+            repository.setLocalError(
+                code = "native_runtime_quarantined",
+                message = "Native runtime state is uncertain; a verified stop is required",
+            )
+            reporter.publishErrorSafely(code = code, message = redacted)
         }
 
         private val coordinatorOps: CoordinatorOperations =
@@ -719,10 +787,9 @@ class TunnelForegroundService
                                     generation,
                                     lifecycleGeneration,
                                     reporter::stopStatusPollingAndJoin,
-                                    { repository.stop().getOrThrow() },
+                                    { repository.stop() },
                                     nativeStopVerified,
-                                    nativeRuntimeUncertain,
-                                    reporter::publishError,
+                                    ::enterNativeRuntimeQuarantine,
                                 ),
                             )
                         }
@@ -947,9 +1014,12 @@ class TunnelForegroundService
                                 reporter.publishStatus(getString(R.string.service_msg_paused))
                             },
                             onFailure = {
-                                reporter.publishError(
-                                    message = it.message ?: "Unable to stop tunnel",
+                                // FIX7 P0-007-B: a failed manual-pause stop must quarantine the
+                                // runtime, exactly like a failed explicit STOP already does —
+                                // previously this only reported the error.
+                                enterNativeRuntimeQuarantine(
                                     code = stopFailureCode(it),
+                                    message = it.message ?: "Unable to stop tunnel",
                                 )
                             },
                         )
@@ -979,9 +1049,12 @@ class TunnelForegroundService
                                 // unconditionally rather than restoring a stale prior
                                 // value, so a retry/reevaluation path stays open.
                                 pausedByPolicy.set(false)
-                                reporter.publishError(
-                                    message = it.message ?: "Failed stopping tunnel after policy block",
+                                // FIX7 P0-007-B: a failed policy-pause stop must quarantine the
+                                // runtime, exactly like a failed explicit STOP already does —
+                                // previously this only reported the error.
+                                enterNativeRuntimeQuarantine(
                                     code = stopFailureCode(it),
+                                    message = it.message ?: "Failed stopping tunnel after policy block",
                                 )
                             },
                         )
@@ -1010,13 +1083,13 @@ class TunnelForegroundService
                             stopSelf()
                         },
                         onFailure = {
-                            // P0-005: Stop failure path — remain alive and foreground.
-                            nativeStopVerified.set(false)
-                            nativeRuntimeUncertain.set(true)
-                            invalidatePendingPolicyRetry()
-                            reporter.publishError(
-                                message = it.message ?: "Unable to stop tunnel cleanly",
+                            // P0-005/FIX7 P0-007-B: Stop failure path — remain alive and
+                            // foreground; quarantine through the central helper (covers both
+                            // an outright stop failure and a stop-status-verification failure,
+                            // per stopFailureCode's distinction).
+                            enterNativeRuntimeQuarantine(
                                 code = stopFailureCode(it),
+                                message = it.message ?: "Unable to stop tunnel cleanly",
                             )
                             // Service remains foreground; user can retry STOP.
                         },

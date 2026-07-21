@@ -93,7 +93,7 @@ class TunnelForegroundServiceDestroySemanticsTest {
     }
 
     @Test
-    fun destroyFallbackFailureMarksRuntimeUncertainWhenObserved() {
+    fun destroyFallbackStopFailureEntersRuntimeQuarantineWhenObserved() {
         val deps = (service.applicationContext as HasAppDependencies).deps
         val bridge = TunnelForegroundServiceTestHooks.bridge
         startConnected()
@@ -102,12 +102,19 @@ class TunnelForegroundServiceDestroySemanticsTest {
         controller.destroy()
 
         assertTrue("destroy fallback stop must be attempted", waitForCondition { bridge.stopCalls >= 1 })
+        // FIX7 P0-007-A/RESPONSES item 2: the durable lastError becomes the canonical
+        // native_runtime_quarantined code (not overwritten back to the narrower one), while
+        // the specific diagnostic is still recorded as sticky cleanup-failure history.
         assertTrue(
-            "an observed destroy-fallback stop failure must be published",
+            "an observed destroy-fallback stop failure must durably quarantine the runtime",
             waitForCondition {
-                deps.tunnelRepository.status.value.lastError?.code == "destroy_fallback_stop_failed"
+                deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined"
             },
         )
+        // Note: "destroy_fallback_stop_failed" is not one of TunnelRepository.setLocalError's
+        // sticky-cleanup-history codes (only stop_failed/stop_status_verification_failed/
+        // start_verification_cleanup_failed are), so unlike those, it is not expected to also
+        // land in lastCleanupError.
     }
 
     @Test
@@ -123,7 +130,7 @@ class TunnelForegroundServiceDestroySemanticsTest {
 
         assertTrue(
             waitForCondition {
-                deps.tunnelRepository.status.value.lastError?.code == "destroy_fallback_stop_failed"
+                deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined"
             },
         )
         assertNotEquals(

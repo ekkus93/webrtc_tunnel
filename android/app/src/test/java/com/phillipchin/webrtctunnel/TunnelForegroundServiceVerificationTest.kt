@@ -121,13 +121,15 @@ class TunnelForegroundServiceVerificationTest {
     }
 
     /**
-     * P0-001: Regression test for cleanup failure preservation on verified-start failure.
+     * P0-001/FIX7 P0-007-B: regression test for cleanup failure preservation on verified-start
+     * failure, and quarantine entry.
      *
-     * Simulates a `StartStatusVerificationException` followed by a failing cleanup stop.
-     * The error must contain both the original verification failure and the cleanup failure.
+     * Simulates a `StartStatusVerificationException` followed by a failing cleanup stop. The
+     * durable lastError must become the canonical quarantine code, while the specific cleanup
+     * failure remains inspectable via sticky cleanup history.
      */
     @Test
-    fun startVerificationCleanupFailurePreservesBothErrors() {
+    fun startVerificationCleanupFailureEntersRuntimeQuarantine() {
         val deps = (service.applicationContext as HasAppDependencies).deps
         val bridge = TunnelForegroundServiceTestHooks.bridge
 
@@ -147,15 +149,23 @@ class TunnelForegroundServiceVerificationTest {
             },
         )
 
-        // The error code must indicate cleanup failure.
+        // FIX7 P0-007-A/RESPONSES item 2: the durable lastError becomes the canonical
+        // native_runtime_quarantined code — a cleanup failure quarantines the runtime, exactly
+        // like every other stop-like failure — while the specific diagnostic is preserved as
+        // sticky cleanup-failure history.
         assertEquals(
-            "error code must be start_verification_cleanup_failed when cleanup fails",
-            "start_verification_cleanup_failed",
+            "lastError must be the canonical quarantine code once cleanup fails",
+            "native_runtime_quarantined",
             deps.tunnelRepository.status.value.lastError?.code,
+        )
+        assertEquals(
+            "the specific cleanup-failure diagnostic must remain in sticky cleanup history",
+            "start_verification_cleanup_failed",
+            deps.tunnelRepository.status.value.lastCleanupError?.code,
         )
 
         // The error message must indicate cleanup failure.
-        val errorMessage = deps.tunnelRepository.status.value.lastError?.message
+        val errorMessage = deps.tunnelRepository.status.value.lastCleanupError?.message
         assertTrue(
             "error message must contain stop/cleanup failure indicator",
             errorMessage?.contains("stop") == true ||

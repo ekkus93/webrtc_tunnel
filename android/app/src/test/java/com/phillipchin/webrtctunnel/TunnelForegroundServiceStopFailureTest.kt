@@ -102,6 +102,96 @@ class TunnelForegroundServiceStopFailureTest {
     }
 
     @Test
+    fun manualPauseStopFailureEntersRuntimeQuarantine() {
+        // FIX7 P0-007-B: a failed manual PAUSE stop must quarantine the runtime exactly
+        // like a failed explicit STOP already does — previously this only reported the
+        // error, without quarantining.
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        bridge.failNextStop()
+        runBlocking { service.offer.pause() }
+
+        assertTrue(bridge.stopCalls >= 1)
+        assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
+        assertEquals(
+            "quarantine must have set the canonical lastError code",
+            "native_runtime_quarantined",
+            deps.tunnelRepository.status.value.lastError?.code,
+        )
+    }
+
+    @Test
+    fun startAfterManualPauseFailureDoesNotCallNative() {
+        // Drives pause() directly and synchronously (matching failedPolicyStopForces
+        // PausedByPolicyFalseEvenFromStaleTruePrecondition's technique) rather than
+        // racing the async intent queue. Proof is the NATIVE START CALL COUNT, not
+        // bridge.state: a failed stop() never resets bridge.state away from the prior
+        // Connected, so checking `bridge.state == Connected` would be true either way
+        // and prove nothing.
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        bridge.failNextStop()
+        runBlocking { service.offer.pause() }
+        assertTrue(bridge.stopCalls >= 1)
+
+        val startCountBeforeRetry = bridge.startOfferCalls
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 3)
+        assertFalse(
+            "a failed manual-pause stop must quarantine the runtime and block a later START",
+            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountBeforeRetry },
+        )
+    }
+
+    @Test
+    fun policyPauseStopFailureEntersRuntimeQuarantine() {
+        // FIX7 P0-007-B: a failed policy-pause stop must quarantine the runtime exactly
+        // like a failed explicit STOP already does — previously this only reported the
+        // error, without quarantining.
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        bridge.failNextStop()
+        runBlocking { service.offer.pauseForPolicy("forced policy pause") }
+
+        assertTrue(bridge.stopCalls >= 1)
+        assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
+        assertEquals(
+            "quarantine must have set the canonical lastError code",
+            "native_runtime_quarantined",
+            deps.tunnelRepository.status.value.lastError?.code,
+        )
+    }
+
+    @Test
+    fun resumeAfterPolicyPauseFailureDoesNotCallNative() {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        bridge.failNextStop()
+        runBlocking { service.offer.pauseForPolicy("forced policy pause") }
+        assertTrue(bridge.stopCalls >= 1)
+
+        val startCountBeforeRetry = bridge.startOfferCalls
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_RESUME)).startCommand(0, 3)
+        assertFalse(
+            "a failed policy-pause stop must quarantine the runtime and block a later RESUME",
+            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountBeforeRetry },
+        )
+    }
+
+    @Test
     fun stopServiceWorkWithFailingStopStillReportsErrorNotClean() {
         val deps = (service.applicationContext as HasAppDependencies).deps
         val bridge = TunnelForegroundServiceTestHooks.bridge
@@ -357,6 +447,166 @@ class TunnelForegroundServiceStopFailureTest {
             waitForCondition { deps.tunnelRepository.status.value.serviceState == ServiceState.Error },
         )
         assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
+    }
+
+    /**
+     * Establishes a genuine pending policy retry, mirroring
+     * [PendingRetryInvalidationTest.pendingRetryThenDestroyDoesNotRestart]'s technique exactly:
+     * policy-pause first (so a PolicyAllowed event isn't a stale no-op), then a first
+     * PolicyAllowed resumes immediately (blocked mid-native-start), then a second PolicyAllowed
+     * while that resume is still in flight becomes the pending retry.
+     */
+    private fun establishPendingPolicyRetry(bridge: FailableRecordingBridge) {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        runBlocking { deps.configRepository.savePreferences(AndroidAppPreferences(resumeOnUnmetered = true)) }
+        runBlocking { service.offer.pauseForPolicy("policy pause before pending retry") }
+        assertTrue(service.pausedByPolicy.get())
+
+        val connectivityManager =
+            ApplicationProvider.getApplicationContext<android.content.Context>()
+                .getSystemService(ConnectivityManager::class.java)
+        val shadowConnectivityManager = Shadows.shadowOf(connectivityManager)
+        val network = ShadowNetwork.newInstance(1)
+
+        bridge.blockNextStartOffer()
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        assertTrue(bridge.awaitStartOfferEntered(5_000))
+
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        assertTrue(
+            "a pending policy retry must be recorded",
+            waitForCondition { service.pendingPolicyResumeGenerationForTest != null },
+        )
+    }
+
+    @Test
+    fun quarantineClearsPendingPolicyRetry() {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        establishPendingPolicyRetry(bridge)
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 3)
+        bridge.failNextStop()
+        bridge.releaseBlockedStartOffer()
+
+        assertTrue(
+            "the failed pause-owned stop must be reached",
+            waitForCondition { bridge.stopCalls >= 1 },
+        )
+        assertTrue(
+            "quarantine must invalidate any pending policy retry",
+            waitForCondition { service.pendingPolicyResumeGenerationForTest == null },
+        )
+    }
+
+    @Test
+    fun pendingPolicyRetryAfterQuarantineDoesNotCallNative() {
+        // Same setup as quarantineClearsPendingPolicyRetry, then proves a later network signal
+        // that would otherwise fire the (now-invalidated) pending retry performs no native start.
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+
+        establishPendingPolicyRetry(bridge)
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_PAUSE)).startCommand(0, 3)
+        bridge.failNextStop()
+        bridge.releaseBlockedStartOffer()
+        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+        assertTrue(waitForCondition { service.pendingPolicyResumeGenerationForTest == null })
+
+        val connectivityManager =
+            ApplicationProvider.getApplicationContext<android.content.Context>()
+                .getSystemService(ConnectivityManager::class.java)
+        val shadowConnectivityManager = Shadows.shadowOf(connectivityManager)
+        val network = ShadowNetwork.newInstance(1)
+        val startCountBeforeRetrySignal = bridge.startOfferCalls
+        shadowConnectivityManager.networkCallbacks.forEach { it.onAvailable(network) }
+        assertFalse(
+            "a stale/invalidated pending retry after quarantine must never call native start",
+            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountBeforeRetrySignal },
+        )
+    }
+
+    @Test
+    fun quarantineGuardFailureIsDurableAndVisible() {
+        // The quarantine guard's failure (blocking a subsequent START) must be reported through
+        // the same durable, visible reporter every other guard failure uses — not silently
+        // dropped by a policy-retry helper — matching handlePolicyAllowed's own reporting path.
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        bridge.failNextStop()
+        runBlocking { service.offer.pause() }
+        assertTrue(
+            waitForCondition { deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined" },
+        )
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 2)
+        assertTrue(
+            "the quarantine guard failure must remain durably visible after a blocked retry",
+            waitForCondition { deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined" },
+        )
+    }
+
+    @Test
+    fun verifiedExplicitStopClearsQuarantineAndAllowsLaterStart() {
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        bridge.failNextStop()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
+        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+
+        val startCountWhileQuarantined = bridge.startOfferCalls
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 3)
+        assertFalse(
+            "quarantine must block START",
+            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountWhileQuarantined },
+        )
+
+        // A verified successful explicit STOP clears the quarantine.
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 4)
+        assertTrue(waitForCondition { bridge.stopCalls >= 2 })
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 5)
+        assertTrue(
+            "a verified explicit STOP must clear quarantine and allow a later START",
+            waitForCondition { bridge.state == ServiceState.Connected },
+        )
+    }
+
+    @Test
+    fun failedExplicitStopDoesNotClearQuarantine() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+        assertTrue(waitForCondition { bridge.state == ServiceState.Connected })
+        bridge.failNextStop()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
+        assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+        assertTrue(
+            waitForCondition { deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined" },
+        )
+
+        // A second explicit STOP also fails — quarantine must remain in effect, not be cleared
+        // by the mere attempt.
+        bridge.failNextStop()
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 3)
+        assertTrue(waitForCondition { bridge.stopCalls >= 2 })
+
+        val startCountAfterSecondFailure = bridge.startOfferCalls
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 4)
+        assertFalse(
+            "a second failed explicit STOP must not clear quarantine",
+            waitForCondition(timeoutMs = 2_000) { bridge.startOfferCalls > startCountAfterSecondFailure },
+        )
     }
 }
 
