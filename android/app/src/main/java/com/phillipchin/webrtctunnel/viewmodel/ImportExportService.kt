@@ -59,7 +59,9 @@ class ImportExportService(
                         try {
                             deps.identityRepository.readPrivateIdentityPlaintext()
                         } catch (error: Exception) {
-                            error("Identity exists but could not be loaded: ${error.message}")
+                            // FIX7 P1-004-C: a fixed safe message, not the raw underlying
+                            // error — identity-read failures must never echo unredacted text.
+                            error("Identity exists but could not be loaded")
                         }
                     } else {
                         null

@@ -260,7 +260,11 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
 
         assertEquals(0, recordingBridge.validateConfigWithIdentityCalls)
         assertEquals(0, recordingBridge.validateConfigCalls)
-        assertTrue(vm.state.value.resultMessage?.contains("Identity exists but could not be loaded") == true)
+        // FIX7 P1-004-C: the message is redacted at the ViewModel boundary (defense in depth),
+        // which also masks the literal word "identity" — assert the visible, safe part of the
+        // diagnostic survives and the raw underlying decrypt error never does.
+        assertTrue(vm.state.value.resultMessage?.contains("could not be loaded") == true)
+        assertFalse(vm.state.value.resultMessage?.contains("decrypt boom") == true)
     }
 
     @Test

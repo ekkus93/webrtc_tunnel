@@ -56,7 +56,9 @@ class SetupViewModel(
     private val steps = SetupStep.entries
     val networkStatus =
         combine(deps.networkPolicyManager.status, state) { _, wizardState ->
-            deps.networkPolicyManager.evaluateWithPolicy(wizardState.input.allowMetered)
+            // FIX7 P1-004-B: same defensive wrapper as NetworkPolicyViewModel — an
+            // evaluateWithPolicy exception must never terminate this combine's flow.
+            evaluateNetworkPolicySafely { deps.networkPolicyManager.evaluateWithPolicy(wizardState.input.allowMetered) }
         }
     val preferences = deps.configRepository.preferences
 

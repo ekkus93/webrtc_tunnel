@@ -40,7 +40,9 @@ internal fun describeForwardsFailure(error: Throwable): String =
         is ForwardsReadException -> "Unable to read saved forwards; check storage permissions."
         is ForwardsParseException -> "Saved forwards file is corrupt."
         is ForwardsWriteException -> "Unable to save forwards; check available storage."
-        else -> error.message ?: "Forwards operation failed"
+        // FIX7 P1-004-C: an unrecognized failure type's raw message is not known-safe —
+        // redact before it can reach a durable OperationFailure/snackbar.
+        else -> SensitiveDataRedactor.redactText(error.message ?: "Forwards operation failed")
     }
 
 /**

@@ -9,6 +9,7 @@ import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
 import com.phillipchin.webrtctunnel.data.ConfigurationMutationCoordinator
 import com.phillipchin.webrtctunnel.data.ConfigurationOperation
 import com.phillipchin.webrtctunnel.data.OperationFailure
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.SnackbarController
 import com.phillipchin.webrtctunnel.data.mutationResult
 import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
@@ -177,7 +178,13 @@ private class ImportExportOps(
                 // to a stale failure snackbar as though it were an ordinary error.
                 val result = withContext(io) { mutationResult { block() } }
                 if (result.isSuccess) onSuccess()
-                val message = result.fold({ successMessage }, { it.message ?: failureFallback })
+                // FIX7 P1-004-C: redact on failure — the underlying exception's raw message
+                // is not known-safe (disk/ContentResolver/native validation errors).
+                val message =
+                    result.fold(
+                        { successMessage },
+                        { SensitiveDataRedactor.redactText(it.message ?: failureFallback) },
+                    )
                 // P1-008: on failure keep a durable copy in state (mirroring the snackbar/result
                 // message) so it survives without a collector; on success clear it.
                 val failure = result.exceptionOrNull()?.let { OperationFailure("import_export_failed", message) }
@@ -222,7 +229,13 @@ private class ImportExportOps(
                 is ConfigurationAdmission.Completed -> {
                     val result = admission.value
                     if (result.isSuccess) onSuccess()
-                    val message = result.fold({ successMessage }, { it.message ?: failureFallback })
+                    // FIX7 P1-004-C: redact on failure — the underlying exception's raw
+                    // message is not known-safe.
+                    val message =
+                        result.fold(
+                            { successMessage },
+                            { SensitiveDataRedactor.redactText(it.message ?: failureFallback) },
+                        )
                     val failure =
                         result.exceptionOrNull()?.let { OperationFailure(importExportFailureCode(it), message) }
                     state.value = state.value.copy(resultMessage = message, lastOperationFailure = failure)

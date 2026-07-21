@@ -74,8 +74,7 @@ class ForwardsViewModel(
      * Record a result and surface it through the app-wide snackbar. [failure] is the durable
      * P1-008 copy: a non-null value on a failed mutation (surviving a missing snackbar collector)
      * or null on success (clearing any prior failure). These messages are already redacted at
-     * their source — the config-write path redacts; the identity-unreadable diagnostic is kept
-     * verbatim by design — so this does not re-redact (expanding redaction is P1-009).
+     * their source (FIX7 P1-004-C) — this does not re-redact.
      */
     private fun report(
         message: String,
@@ -266,6 +265,22 @@ private data class RegenerationInputs(
     val brokerPasswordPath: String?,
 )
 
+// FIX7 P1-004-C: extracted to top level so its throw doesn't count against
+// regenerateWithValidatedCandidate's detekt ThrowsCount budget. Identity absent vs.
+// present-but-unreadable differ: only the former falls back to identity-less validation; an
+// unreadable present identity is a visible failure (P1-001), with a fixed safe message — the
+// raw underlying error is attached only as [cause], never surfaced as diagnostic text.
+private fun readIdentityBytesOrThrow(deps: AppDependencies): ByteArray? =
+    if (deps.identityRepository.hasEncryptedIdentity()) {
+        try {
+            deps.identityRepository.readPrivateIdentityPlaintext()
+        } catch (error: Exception) {
+            throw IdentityUnreadableException("Identity exists but could not be loaded", error)
+        }
+    } else {
+        null
+    }
+
 // FIX7 P0-003-E: the actual render+validate+commit path, extracted to top level (rather than an
 // inline `run { ... }` lambda inside regenerateActiveConfig) to keep that function's nesting
 // depth under detekt's NestedBlockDepth threshold.
@@ -298,16 +313,7 @@ private suspend fun regenerateWithValidatedCandidate(
             // Identity absent vs. present-but-unreadable differ: only the former falls back
             // to identity-less validation; an unreadable present identity is a visible
             // failure (P1-001).
-            val identityBytes =
-                if (deps.identityRepository.hasEncryptedIdentity()) {
-                    try {
-                        deps.identityRepository.readPrivateIdentityPlaintext()
-                    } catch (error: Exception) {
-                        error("Identity exists but could not be loaded: ${error.message}")
-                    }
-                } else {
-                    null
-                }
+            val identityBytes = readIdentityBytesOrThrow(deps)
             identity = identityBytes
             temp.parentFile?.mkdirs()
             temp.writeText(candidate)
@@ -332,17 +338,18 @@ private suspend fun regenerateWithValidatedCandidate(
         throw cancelled
     } catch (regenerationFailure: ForwardsRegenerationFailedException) {
         ValidationResult(false, regenerationFailure.message)
+    } catch (identityUnreadable: IdentityUnreadableException) {
+        ValidationResult(false, identityUnreadable.message)
     } catch (cleanupFailure: CandidateCleanupException) {
         ValidationResult(
             false,
             "Config saved but the temporary candidate file could not be removed " +
-                "(candidate_cleanup_failed): ${cleanupFailure.cause?.message ?: "unknown cleanup failure"}",
+                "(candidate_cleanup_failed): " +
+                SensitiveDataRedactor.redactText(cleanupFailure.cause?.message ?: "unknown cleanup failure"),
         )
     } catch (error: Exception) {
-        // Message kept as-is to preserve existing behavior (e.g. the identity-unreadable
-        // diagnostic); holistic redaction of these ViewModel messages is P1-009. The
-        // write-failure path already redacts its own message.
-        ValidationResult(false, error.message ?: "Failed to regenerate config")
+        // FIX7 P1-004-C: redact — an unexpected exception's raw message is not known-safe.
+        ValidationResult(false, SensitiveDataRedactor.redactText(error.message ?: "Failed to regenerate config"))
     } finally {
         // Wipe the plaintext identity buffer regardless of success/failure/cleanup outcome.
         identity?.fill(0)
@@ -354,6 +361,12 @@ private suspend fun regenerateWithValidatedCandidate(
  * can tell a real failure apart from a cleanup-only failure on top of an actual success
  * (FIX7 P1-001-C). */
 private class ForwardsRegenerationFailedException(message: String) : Exception(message)
+
+/** FIX7 P1-004-C: a stored identity that exists but could not be read/decrypted — carries only
+ * a fixed, already-safe message so the underlying read/decrypt error's raw text is never
+ * threaded through to a durable OperationFailure/snackbar. The original error is attached as
+ * [cause] (not lost) but never read for its message. */
+private class IdentityUnreadableException(message: String, cause: Throwable) : Exception(message, cause)
 
 // FIX7 P0-003-E: the managed broker-secret path is expected to already exist when configured;
 // a missing file means setup persistence and forward activation have drifted apart, which must

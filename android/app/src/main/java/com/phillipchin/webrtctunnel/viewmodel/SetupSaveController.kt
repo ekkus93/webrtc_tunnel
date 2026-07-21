@@ -259,7 +259,9 @@ class SetupSaveController(
         val resolved =
             if (current.importIdentityPath.isNotBlank()) {
                 withContext(ioDispatcher) { importPrivateIdentity(deps, current.importIdentityPath) }
-                    .getOrElse { saveError(it.message ?: "Failed importing private identity", redact = false) }
+                    // FIX7 P1-004-C: redact — this is a raw exception message from private
+                    // identity import (file read/native validation), not a known-safe value.
+                    .getOrElse { saveError(it.message ?: "Failed importing private identity", redact = true) }
             } else if (!deps.identityRepository.hasEncryptedIdentity()) {
                 // Absence and present-but-unreadable are different states (P1-001/P1-007): only
                 // absence may report "missing" — a present identity that fails to load/validate

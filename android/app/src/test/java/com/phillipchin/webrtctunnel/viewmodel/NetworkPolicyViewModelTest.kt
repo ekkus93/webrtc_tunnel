@@ -158,6 +158,132 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
             )
         }
 
+    // FIX7 P1-004-A: a required preference-save failure must survive in ViewModel state, not
+    // only in a one-shot snackbar — a missing/late collector must not lose it.
+    @Test
+    fun networkPreferenceFailureRemainsInStateWithoutSnackbarCollector() =
+        runBlocking {
+            val failingRepository =
+                object : ConfigRepository(app) {
+                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+                        Result.failure(RuntimeException("disk full"))
+                }
+            val testDeps =
+                AppDependencies(
+                    context = app,
+                    nativeBridgeFactory = { recordingBridge },
+                    configRepository = failingRepository,
+                    networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                    identityRepository = deps.identityRepository,
+                    dispatchers = inlineTestDispatchers(),
+                )
+            val testViewModel = NetworkPolicyViewModel(testDeps)
+
+            // No snackbar collector subscribed at all.
+            testViewModel.savePreferences(AndroidAppPreferences())
+            withTimeout(5_000) {
+                while (testViewModel.uiState.value.lastOperationFailure == null) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    yield()
+                }
+            }
+
+            val failure = testViewModel.uiState.value.lastOperationFailure
+            assertEquals("network_preference_save_failed", failure?.code)
+        }
+
+    @Test
+    fun networkPreferenceSuccessClearsPriorFailure() =
+        runBlocking {
+            val toggle = java.util.concurrent.atomic.AtomicBoolean(true)
+            val flakyRepository =
+                object : ConfigRepository(app) {
+                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+                        if (toggle.getAndSet(false)) {
+                            Result.failure(RuntimeException("disk full"))
+                        } else {
+                            super.savePreferences(update)
+                        }
+                }
+            val testDeps =
+                AppDependencies(
+                    context = app,
+                    nativeBridgeFactory = { recordingBridge },
+                    configRepository = flakyRepository,
+                    networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                    identityRepository = deps.identityRepository,
+                    dispatchers = inlineTestDispatchers(),
+                )
+            val testViewModel = NetworkPolicyViewModel(testDeps)
+
+            testViewModel.savePreferences(AndroidAppPreferences())
+            withTimeout(5_000) {
+                while (testViewModel.uiState.value.lastOperationFailure == null) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    yield()
+                }
+            }
+
+            testViewModel.savePreferences(AndroidAppPreferences())
+            withTimeout(5_000) {
+                while (testViewModel.uiState.value.lastOperationFailure != null) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    yield()
+                }
+            }
+
+            assertEquals(null, testViewModel.uiState.value.lastOperationFailure)
+        }
+
+    @Test
+    fun networkPolicyFailureMessageRedactsPasswordTokenApiKeyAndPrivateKey() =
+        runBlocking {
+            val failingRepository =
+                object : ConfigRepository(app) {
+                    override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
+                        Result.failure(
+                            RuntimeException(
+                                "write failed password=hunter2 token=abc123 api_key=xyz789 private_key=zzz",
+                            ),
+                        )
+                }
+            val testDeps =
+                AppDependencies(
+                    context = app,
+                    nativeBridgeFactory = { recordingBridge },
+                    configRepository = failingRepository,
+                    networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                    identityRepository = deps.identityRepository,
+                    dispatchers = inlineTestDispatchers(),
+                )
+            val testViewModel = NetworkPolicyViewModel(testDeps)
+
+            testViewModel.savePreferences(AndroidAppPreferences())
+            withTimeout(5_000) {
+                while (testViewModel.uiState.value.lastOperationFailure == null) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    yield()
+                }
+            }
+
+            val message = testViewModel.uiState.value.lastOperationFailure?.message.orEmpty()
+            assertFalse(message.contains("hunter2"))
+            assertFalse(message.contains("abc123"))
+            assertFalse(message.contains("xyz789"))
+            assertFalse(message.contains("zzz"))
+            assertTrue(message.contains("***REDACTED***"))
+        }
+
+    // FIX7 P1-004-B: an evaluateWithPolicy exception must never propagate out of the combine
+    // lambda and terminate the networkStatus flow — it must fail closed instead.
+    @Test
+    fun networkStatusEvaluationFailureEmitsBlockedUnknownAndFlowContinues() {
+        val status = evaluateNetworkPolicySafely { error("classification boom") }
+
+        assertEquals(NetworkType.Unknown, status.networkType)
+        assertFalse(status.tunnelAllowed)
+    }
+
     @Test
     fun preferencesReflectsRepository() =
         runBlocking {
