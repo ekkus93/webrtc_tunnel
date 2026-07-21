@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.CandidateCleanupException
 import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
 import com.phillipchin.webrtctunnel.data.ConfigurationMutationCoordinator
 import com.phillipchin.webrtctunnel.data.ConfigurationOperation
@@ -222,7 +223,8 @@ private class ImportExportOps(
                     val result = admission.value
                     if (result.isSuccess) onSuccess()
                     val message = result.fold({ successMessage }, { it.message ?: failureFallback })
-                    val failure = result.exceptionOrNull()?.let { OperationFailure("import_export_failed", message) }
+                    val failure =
+                        result.exceptionOrNull()?.let { OperationFailure(importExportFailureCode(it), message) }
                     state.value = state.value.copy(resultMessage = message, lastOperationFailure = failure)
                     snackbar.show(message)
                 }
@@ -230,3 +232,13 @@ private class ImportExportOps(
         }
     }
 }
+
+/**
+ * FIX7 P1-001-C: a candidate-cleanup-only failure (the import itself — validation and write —
+ * succeeded, only the temp candidate file couldn't be removed afterward) gets its own durable
+ * code distinct from an ordinary import failure, so it is never silently indistinguishable from
+ * a real validation/write failure. Top-level (not a class member) so it doesn't count against
+ * this file's detekt function budget for no behavioral reason.
+ */
+private fun importExportFailureCode(error: Throwable): String =
+    if (error is CandidateCleanupException) "candidate_cleanup_failed" else "import_export_failed"

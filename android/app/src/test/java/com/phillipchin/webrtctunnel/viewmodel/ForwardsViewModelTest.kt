@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.viewmodel
 import android.os.Looper
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ConfigRepository
+import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ValidationResult
@@ -386,7 +387,10 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
         override suspend fun writeConfigAtomically(contents: String): Result<Unit> = onWrite()
     }
 
-    private fun forwardsViewModelWith(configRepository: ConfigRepository): ForwardsViewModel =
+    private fun forwardsViewModelWith(
+        configRepository: ConfigRepository,
+        deleteCandidateFile: (File) -> Result<Unit> = ::deleteCandidateFileSafely,
+    ): ForwardsViewModel =
         ForwardsViewModel(
             AppDependencies(
                 context = app,
@@ -396,7 +400,66 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
                 identityRepository = deps.identityRepository,
                 dispatchers = inlineTestDispatchers(),
             ),
+            deleteCandidateFile = deleteCandidateFile,
         )
+
+    // FIX7 P1-001-C/P1-001-E: a candidate-cleanup failure after an otherwise-successful write
+    // must prevent "Forward saved" from being reported — the leftover secret-bearing candidate
+    // is serious enough that the mutation is rolled back like any other post-write failure.
+    @Test
+    fun forwardCandidateCleanupFailurePreventsSavedSuccess() {
+        val vm =
+            forwardsViewModelWith(
+                WriteFailingConfigRepository(app) { Result.success(Unit) },
+                deleteCandidateFile = { Result.failure(java.io.IOException("cleanup boom")) },
+            )
+        recordingBridge.validationResult = ValidationResult(true, null)
+        val forward =
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+
+        vm.saveForward(forward)
+
+        awaitMessage(vm) { it != null }
+        assertFalse(
+            "a candidate-cleanup failure must not be reported as a successful save",
+            vm.message.value == "Forward saved",
+        )
+        assertTrue(
+            "the cleanup failure must be visible in the reported message",
+            vm.message.value?.contains("candidate_cleanup_failed") == true,
+        )
+        assertTrue(
+            "the mutation must be rolled back, just like any other post-write failure",
+            vm.forwards.value.none { it.id == "web" },
+        )
+    }
+
+    // FIX7 P1-001-E: when validation/write itself fails AND candidate cleanup also fails, the
+    // original failure message must remain the one reported — not silently replaced.
+    @Test
+    fun forwardPrimaryFailurePreservedWhenCleanupAlsoFails() {
+        val vm =
+            forwardsViewModelWith(
+                WriteFailingConfigRepository(app) { Result.failure(java.io.IOException("disk full")) },
+                deleteCandidateFile = { Result.failure(java.io.IOException("cleanup boom")) },
+            )
+        recordingBridge.validationResult = ValidationResult(true, null)
+
+        vm.saveForward(
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true),
+        )
+
+        awaitMessage(vm) { it != null }
+        assertTrue(
+            "the primary write failure must be surfaced, not replaced by the cleanup " +
+                "failure: ${vm.message.value}",
+            vm.message.value?.contains("disk full") == true,
+        )
+        assertFalse(
+            "the cleanup-only failure message must not mask the real write failure",
+            vm.message.value?.contains("candidate_cleanup_failed") == true,
+        )
+    }
 
     @Test
     fun configWriteCancellationDuringActivationIsNotReportedAsFailure() {

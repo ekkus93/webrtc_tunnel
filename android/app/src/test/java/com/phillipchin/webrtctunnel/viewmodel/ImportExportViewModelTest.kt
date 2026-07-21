@@ -11,7 +11,10 @@ import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -54,6 +57,93 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
             vm.state.value.resultMessage,
         )
     }
+
+    // FIX7 P1-001-B: cancellation must also clear isBusy and leave no durable failure record —
+    // not just avoid an ordinary result message.
+    @Test
+    fun cancelledImportClearsBusyAndEmitsNoOrdinaryResult() {
+        val cancellingConfigRepo =
+            object : ConfigRepository(app) {
+                override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+                    throw CancellationException("cancelled during import write")
+            }
+        val cancellingDeps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = { recordingBridge },
+                configRepository = cancellingConfigRepo,
+                networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                identityRepository = deps.identityRepository,
+                dispatchers = inlineTestDispatchers(),
+            )
+        val vm = ImportExportViewModel(cancellingDeps)
+        val importFile =
+            File(app.filesDir, "cancel-clears-busy-config.toml").apply { writeText("format = \"x\"\n") }
+        vm.updateState { it.copy(configImportPath = importFile.absolutePath) }
+        recordingBridge.validationResult = ValidationResult(true, null)
+
+        vm.importConfig()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        assertFalse("a cancelled import must clear isBusy", vm.state.value.isBusy)
+        assertNull(
+            "a cancelled import must not produce an ordinary result message",
+            vm.state.value.resultMessage,
+        )
+        assertNull(
+            "a cancelled import must not produce a durable failure record",
+            vm.state.value.lastOperationFailure,
+        )
+    }
+
+    // FIX7 P1-001-A: a second import while one is already in flight must be visibly rejected —
+    // never silently dropped.
+    @Test
+    fun secondConfigImportIsRejectedVisiblyWithActiveOperation() =
+        runBlocking {
+            val gate = CompletableDeferred<Unit>()
+            val blockingConfigRepo =
+                object : ConfigRepository(app) {
+                    override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+                        gate.await()
+                        return Result.success(Unit)
+                    }
+                }
+            val blockingDeps =
+                AppDependencies(
+                    context = app,
+                    nativeBridgeFactory = { recordingBridge },
+                    configRepository = blockingConfigRepo,
+                    networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                    identityRepository = deps.identityRepository,
+                    dispatchers = inlineTestDispatchers(),
+                )
+            val vm = ImportExportViewModel(blockingDeps)
+            val importFile =
+                File(app.filesDir, "second-import-blocking-config.toml").apply { writeText("format = \"x\"\n") }
+            vm.updateState { it.copy(configImportPath = importFile.absolutePath) }
+            recordingBridge.validationResult = ValidationResult(true, null)
+
+            vm.importConfig()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+            vm.importConfig()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+            assertEquals(
+                "a second import while one is active must be rejected with the durable " +
+                    "configuration_operation_busy code",
+                "configuration_operation_busy",
+                vm.state.value.lastOperationFailure?.code,
+            )
+            assertTrue(
+                "the busy rejection must be visible in the result message",
+                vm.state.value.resultMessage?.contains("already in progress") == true,
+            )
+
+            gate.complete(Unit)
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+        }
 
     @Test
     fun importExportViewModelRequiresConfirmationForRawConfigExport() {

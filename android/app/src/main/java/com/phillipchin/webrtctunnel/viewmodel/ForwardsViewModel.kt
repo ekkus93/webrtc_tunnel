@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.CandidateCleanupException
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
 import com.phillipchin.webrtctunnel.data.ConfigurationOperation
@@ -11,10 +12,10 @@ import com.phillipchin.webrtctunnel.data.ForwardsMutationReceipt
 import com.phillipchin.webrtctunnel.data.ForwardsRevisionMismatchException
 import com.phillipchin.webrtctunnel.data.OperationFailure
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
-import com.phillipchin.webrtctunnel.data.createCandidateFile
 import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
 import com.phillipchin.webrtctunnel.data.describeForwardsFailure
 import com.phillipchin.webrtctunnel.data.resolveBrokerPasswordPath
+import com.phillipchin.webrtctunnel.data.withCandidateFile
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
@@ -34,9 +35,15 @@ import java.net.Socket
 
 private const val LOCAL_PORT_TEST_TIMEOUT_MS = 1200
 
+/**
+ * [deleteCandidateFile] is injectable (FIX7 P1-001-C/P1-001-E) so tests can force the
+ * forward-activation candidate cleanup to fail with a fake instead of a flaky filesystem
+ * permission trick — production always uses the real [deleteCandidateFileSafely].
+ */
 class ForwardsViewModel(
     private val deps: AppDependencies,
     private val ioDispatcher: CoroutineDispatcher = deps.dispatchers.io,
+    private val deleteCandidateFile: (File) -> Result<Unit> = ::deleteCandidateFileSafely,
 ) : ViewModel() {
     val status: StateFlow<TunnelStatus> = deps.tunnelRepository.status
 
@@ -234,72 +241,112 @@ class ForwardsViewModel(
         // (rather than an inline `run { ... }` lambda) to keep nesting under detekt's
         // NestedBlockDepth threshold.
         return missingBrokerPasswordFailure(deps, brokerPasswordPath)
-            ?: regenerateWithValidatedCandidate(deps, input, forwards, prefs, brokerPasswordPath)
+            ?: regenerateWithValidatedCandidate(
+                deps,
+                RegenerationInputs(input, forwards, prefs, brokerPasswordPath),
+                deleteCandidateFile,
+            )
     }
 }
+
+// FIX7 P1-001-C: bundles regenerateWithValidatedCandidate's render inputs so adding
+// deleteCandidateFile (the injectable cleanup seam) doesn't push the function over detekt's
+// LongParameterList threshold.
+private data class RegenerationInputs(
+    val input: SetupConfigInput,
+    val forwards: List<ForwardConfig>,
+    val prefs: com.phillipchin.webrtctunnel.model.AndroidAppPreferences,
+    val brokerPasswordPath: String?,
+)
 
 // FIX7 P0-003-E: the actual render+validate+commit path, extracted to top level (rather than an
 // inline `run { ... }` lambda inside regenerateActiveConfig) to keep that function's nesting
 // depth under detekt's NestedBlockDepth threshold.
 private suspend fun regenerateWithValidatedCandidate(
     deps: AppDependencies,
-    input: SetupConfigInput,
-    forwards: List<ForwardConfig>,
-    prefs: com.phillipchin.webrtctunnel.model.AndroidAppPreferences,
-    brokerPasswordPath: String?,
+    inputs: RegenerationInputs,
+    deleteCandidateFile: (File) -> Result<Unit>,
 ): ValidationResult {
     val candidate =
         deps.configRepository.renderOfferConfig(
-            input,
-            forwards,
-            prefs.debugLogsEnabled,
-            prefs.androidIceMode,
-            brokerPasswordPath,
+            inputs.input,
+            inputs.forwards,
+            inputs.prefs.debugLogsEnabled,
+            inputs.prefs.androidIceMode,
+            inputs.brokerPasswordPath,
         )
-    // P1-005: a unique candidate file per validation so two concurrent forward
-    // mutations can never share (and clobber) one fixed candidate path.
-    val temp = createCandidateFile(deps.context.cacheDir, "forwards-config-")
+    // FIX7 P1-001-C: withCandidateFile composes the unique candidate file's cleanup with the
+    // block's own outcome (P1-005/FIX6 INV-012 unique-per-validation naming preserved), so a
+    // cleanup-only failure (write succeeded, temp file couldn't be deleted) can never be
+    // silently discarded — it surfaces as a CandidateCleanupException instead. Treated the same
+    // as any other post-write failure below: the already-committed config write is rolled back
+    // via the receipt mechanism, since a leftover secret-bearing candidate file is serious enough
+    // that "saved" must not be reported without a guarantee it was actually cleaned up.
+    var identity: ByteArray? = null
     // FIX6 P0-005: explicit try/catch (not runCatching) — it wraps the suspend
     // writeConfigAtomically, so a cancellation must propagate, not become an invalid
     // result.
     return try {
-        // Identity absent vs. present-but-unreadable differ: only the former falls back
-        // to identity-less validation; an unreadable present identity is a visible
-        // failure (P1-001).
-        val identity =
-            if (deps.identityRepository.hasEncryptedIdentity()) {
-                try {
-                    deps.identityRepository.readPrivateIdentityPlaintext()
-                } catch (error: Exception) {
-                    error("Identity exists but could not be loaded: ${error.message}")
+        withCandidateFile(deps.context.cacheDir, "forwards-config-", deleteCandidateFile) { temp ->
+            // Identity absent vs. present-but-unreadable differ: only the former falls back
+            // to identity-less validation; an unreadable present identity is a visible
+            // failure (P1-001).
+            val identityBytes =
+                if (deps.identityRepository.hasEncryptedIdentity()) {
+                    try {
+                        deps.identityRepository.readPrivateIdentityPlaintext()
+                    } catch (error: Exception) {
+                        error("Identity exists but could not be loaded: ${error.message}")
+                    }
+                } else {
+                    null
                 }
-            } else {
-                null
-            }
-        try {
+            identity = identityBytes
             temp.parentFile?.mkdirs()
             temp.writeText(candidate)
             val result =
-                if (identity != null) {
-                    deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identity)
+                if (identityBytes != null) {
+                    deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identityBytes)
                 } else {
                     deps.identityValidation.validateConfig(temp.absolutePath)
                 }
-            commitRegeneratedForwardsConfig(deps.configRepository, candidate, result)
-        } finally {
-            // Wipe the plaintext identity buffer regardless of success/failure.
-            identity?.fill(0)
-            deleteCandidateFileSafely(temp)
+            val committed = commitRegeneratedForwardsConfig(deps.configRepository, candidate, result)
+            // FIX7 P1-001-C: a real validation/write failure must THROW here (not return
+            // normally) so withCandidateFile's cleanup composition can tell it apart from a
+            // genuine success — otherwise a cleanup failure on top of a real failure would
+            // silently replace the real failure's message with a generic cleanup one instead
+            // of preserving it (P1-001-E).
+            if (!committed.valid) {
+                throw ForwardsRegenerationFailedException(committed.message ?: "Failed to regenerate config")
+            }
+            committed
         }
     } catch (cancelled: CancellationException) {
         throw cancelled
+    } catch (regenerationFailure: ForwardsRegenerationFailedException) {
+        ValidationResult(false, regenerationFailure.message)
+    } catch (cleanupFailure: CandidateCleanupException) {
+        ValidationResult(
+            false,
+            "Config saved but the temporary candidate file could not be removed " +
+                "(candidate_cleanup_failed): ${cleanupFailure.cause?.message ?: "unknown cleanup failure"}",
+        )
     } catch (error: Exception) {
         // Message kept as-is to preserve existing behavior (e.g. the identity-unreadable
         // diagnostic); holistic redaction of these ViewModel messages is P1-009. The
         // write-failure path already redacts its own message.
         ValidationResult(false, error.message ?: "Failed to regenerate config")
+    } finally {
+        // Wipe the plaintext identity buffer regardless of success/failure/cleanup outcome.
+        identity?.fill(0)
     }
 }
+
+/** Signals a real validation/write failure (as opposed to a genuine success) out of the
+ * [withCandidateFile] block in [regenerateWithValidatedCandidate], so its cleanup composition
+ * can tell a real failure apart from a cleanup-only failure on top of an actual success
+ * (FIX7 P1-001-C). */
+private class ForwardsRegenerationFailedException(message: String) : Exception(message)
 
 // FIX7 P0-003-E: the managed broker-secret path is expected to already exist when configured;
 // a missing file means setup persistence and forward activation have drifted apart, which must

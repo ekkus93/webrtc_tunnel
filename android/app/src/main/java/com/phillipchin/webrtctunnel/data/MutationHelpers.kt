@@ -104,14 +104,19 @@ private inline fun <T> withCleanupComposition(
  * Runs [block] against a freshly created unique candidate file, composing its cleanup with the
  * block's outcome via [withCleanupComposition] so no caller can accidentally discard a cleanup
  * failure (FIX7 P0-002-C).
+ *
+ * [deleteCandidate] is injectable (the same seam [withTemporaryDirectory]'s [deleteRecursively]
+ * uses) so tests can force a cleanup failure with a fake instead of a flaky filesystem
+ * permission trick — FIX7 P1-001-C.
  */
 internal suspend fun <T> withCandidateFile(
     cacheDir: File,
     prefix: String,
+    deleteCandidate: (File) -> Result<Unit> = ::deleteCandidateFileSafely,
     block: suspend (File) -> T,
 ): T {
     val candidate = createCandidateFile(cacheDir, prefix)
-    return withCleanupComposition(cleanup = { deleteCandidateFileSafely(candidate) }) { block(candidate) }
+    return withCleanupComposition(cleanup = { deleteCandidate(candidate) }) { block(candidate) }
 }
 
 /**

@@ -2,7 +2,9 @@ package com.phillipchin.webrtctunnel.viewmodel
 
 import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.CandidateCleanupException
 import com.phillipchin.webrtctunnel.data.ConfigRepository
+import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
@@ -44,27 +46,36 @@ class ImportExportServiceTest {
         override suspend fun writeConfigAtomically(contents: String): Result<Unit> = onWrite()
     }
 
-    private fun serviceWith(configRepository: ConfigRepository): ImportExportService {
-        // No encrypted identity is stored, so import uses identity-less validation, and the
-        // shared RecordingBridge's validateConfig returns valid by default.
+    /** Passes bytes through unchanged but records the exact array instance [decrypt] returns,
+     * so a test can verify the caller wiped that specific buffer afterward (FIX7 P1-001-D). A
+     * fresh copy is returned each time so the recorded reference is decoupled from the file's
+     * own on-disk byte array. */
+    private class CapturingIdentityCrypto : IdentityCrypto {
+        var lastDecrypted: ByteArray? = null
+
+        override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
+
+        override fun decrypt(payload: ByteArray): ByteArray = payload.copyOf().also { lastDecrypted = it }
+    }
+
+    private fun serviceWith(
+        configRepository: ConfigRepository,
+        identityRepository: IdentityRepository = IdentityRepository(app, CapturingIdentityCrypto()),
+        deleteCandidateFile: (File) -> Result<Unit> = ::deleteCandidateFileSafely,
+    ): ImportExportService {
+        // No encrypted identity is stored unless the caller sets one up via identityRepository,
+        // so import uses identity-less validation by default, and the shared RecordingBridge's
+        // validateConfig returns valid by default.
         val deps =
             AppDependencies(
                 context = app,
                 nativeBridgeFactory = { RecordingBridge() },
                 configRepository = configRepository,
                 networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
-                identityRepository =
-                    IdentityRepository(
-                        app,
-                        object : IdentityCrypto {
-                            override fun encrypt(plaintext: ByteArray): ByteArray = plaintext
-
-                            override fun decrypt(payload: ByteArray): ByteArray = payload
-                        },
-                    ),
+                identityRepository = identityRepository,
                 dispatchers = inlineTestDispatchers(),
             )
-        return ImportExportService(deps)
+        return ImportExportService(deps, deleteCandidateFile)
     }
 
     @Test
@@ -142,5 +153,195 @@ class ImportExportServiceTest {
 
         assertFalse("the raw secret must not reach the import failure", message.orEmpty().contains("sentinel"))
         assertTrue(message.orEmpty().contains("***REDACTED***"))
+    }
+
+    // FIX7 P1-001-C/P1-001-E: a candidate-cleanup failure after an otherwise-successful
+    // write must never be silently discarded — it must surface as a visible failure, not as
+    // "Config imported".
+    @Test
+    fun configImportCleanupFailureAfterWriteSuccessReportsFailureNotImported() {
+        val service =
+            serviceWith(
+                WriteResultConfigRepository(app) { Result.success(Unit) },
+                deleteCandidateFile = { Result.failure(IOException("cleanup boom")) },
+            )
+
+        var thrown: Throwable? = null
+        try {
+            runBlocking { service.importContent(ImportKind.Config, "format = \"imported\"\n") }
+        } catch (error: Exception) {
+            thrown = error
+        }
+
+        assertTrue(
+            "a cleanup-only failure after a successful write must surface as a visible " +
+                "CandidateCleanupException, not a silent success",
+            thrown is CandidateCleanupException,
+        )
+    }
+
+    // FIX7 P1-001-E: when the write itself fails AND cleanup also fails, the original write
+    // failure must remain the primary, reported error — never replaced by the cleanup failure.
+    @Test
+    fun configImportPrimaryFailurePreservedWhenCleanupAlsoFails() {
+        val service =
+            serviceWith(
+                WriteResultConfigRepository(app) { Result.failure(IOException("disk full password=sentinel")) },
+                deleteCandidateFile = { Result.failure(IOException("cleanup boom")) },
+            )
+
+        var thrown: Throwable? = null
+        try {
+            runBlocking { service.importContent(ImportKind.Config, "format = \"imported\"\n") }
+        } catch (error: Exception) {
+            thrown = error
+        }
+
+        assertTrue(
+            "the primary write failure must be the reported error, got $thrown",
+            thrown is IOException && thrown.message.orEmpty().contains("REDACTED"),
+        )
+        assertTrue(
+            "the cleanup failure must still be attached (not silently dropped)",
+            thrown?.suppressed?.any { it.message?.contains("cleanup boom") == true } == true,
+        )
+    }
+
+    // FIX7 P1-001-E: a genuine cancellation must propagate even when cleanup also fails —
+    // never converted into an ordinary CandidateCleanupException/failure.
+    @Test
+    fun configImportCancellationPreservedWhenCleanupAlsoFails() {
+        val service =
+            serviceWith(
+                WriteResultConfigRepository(app) { throw CancellationException("cancelled during write") },
+                deleteCandidateFile = { Result.failure(IOException("cleanup boom")) },
+            )
+
+        var caught: CancellationException? = null
+        try {
+            runBlocking { service.importContent(ImportKind.Config, "format = \"imported\"\n") }
+        } catch (cancelled: CancellationException) {
+            caught = cancelled
+        }
+
+        assertTrue(
+            "cancellation must propagate even when cleanup also fails",
+            caught != null,
+        )
+        assertTrue(
+            "the cleanup failure must still be attached to the propagated cancellation",
+            caught?.suppressed?.any { it.message?.contains("cleanup boom") == true } == true,
+        )
+    }
+
+    private fun identityRepositoryWithStoredIdentity(crypto: CapturingIdentityCrypto): IdentityRepository {
+        val repo = IdentityRepository(app, crypto)
+        repo.storeEncryptedIdentity("private-identity-bytes".toByteArray(), "public-identity-line")
+        return repo
+    }
+
+    // FIX7 P1-001-D: the plaintext identity buffer read for identity-aware config validation
+    // must be wiped after a successful import.
+    @Test
+    fun importedPrivateBytesWipedOnSuccess() {
+        val crypto = CapturingIdentityCrypto()
+        val service =
+            serviceWith(
+                WriteResultConfigRepository(app) { Result.success(Unit) },
+                identityRepository = identityRepositoryWithStoredIdentity(crypto),
+            )
+
+        runBlocking { service.importContent(ImportKind.Config, "format = \"imported\"\n") }
+
+        val decrypted = crypto.lastDecrypted
+        assertTrue("the identity plaintext buffer must have been captured", decrypted != null)
+        assertTrue(
+            "the identity plaintext buffer must be wiped after a successful import",
+            decrypted!!.all { it == 0.toByte() },
+        )
+    }
+
+    // FIX7 P1-001-D: the plaintext identity buffer must be wiped even when config validation
+    // (using that identity) fails.
+    @Test
+    fun importedPrivateBytesWipedOnValidationFailure() {
+        val crypto = CapturingIdentityCrypto()
+        val deps =
+            AppDependencies(
+                context = app,
+                nativeBridgeFactory = {
+                    RecordingBridge().apply {
+                        validationResult = com.phillipchin.webrtctunnel.model.ValidationResult(false, "invalid")
+                    }
+                },
+                configRepository = WriteResultConfigRepository(app) { Result.success(Unit) },
+                networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                identityRepository = identityRepositoryWithStoredIdentity(crypto),
+                dispatchers = inlineTestDispatchers(),
+            )
+        val service = ImportExportService(deps)
+
+        try {
+            runBlocking { service.importContent(ImportKind.Config, "format = \"imported\"\n") }
+        } catch (_: Exception) {
+            // Expected: validation failure surfaces as a thrown IllegalArgumentException.
+        }
+
+        val decrypted = crypto.lastDecrypted
+        assertTrue("the identity plaintext buffer must have been captured", decrypted != null)
+        assertTrue(
+            "the identity plaintext buffer must be wiped even when validation fails",
+            decrypted!!.all { it == 0.toByte() },
+        )
+    }
+
+    // FIX7 P1-001-D: the plaintext identity buffer must be wiped even when the config write
+    // (persistence) fails after validation succeeded.
+    @Test
+    fun importedPrivateBytesWipedOnPersistenceFailure() {
+        val crypto = CapturingIdentityCrypto()
+        val service =
+            serviceWith(
+                WriteResultConfigRepository(app) { Result.failure(IOException("disk full")) },
+                identityRepository = identityRepositoryWithStoredIdentity(crypto),
+            )
+
+        try {
+            runBlocking { service.importContent(ImportKind.Config, "format = \"imported\"\n") }
+        } catch (_: Exception) {
+            // Expected: persistence failure surfaces as a thrown IOException.
+        }
+
+        val decrypted = crypto.lastDecrypted
+        assertTrue("the identity plaintext buffer must have been captured", decrypted != null)
+        assertTrue(
+            "the identity plaintext buffer must be wiped even when persistence fails",
+            decrypted!!.all { it == 0.toByte() },
+        )
+    }
+
+    // FIX7 P1-001-D: the plaintext identity buffer must be wiped even when the import is
+    // cancelled mid-flight.
+    @Test
+    fun importedPrivateBytesWipedOnCancellation() {
+        val crypto = CapturingIdentityCrypto()
+        val service =
+            serviceWith(
+                WriteResultConfigRepository(app) { throw CancellationException("cancelled during write") },
+                identityRepository = identityRepositoryWithStoredIdentity(crypto),
+            )
+
+        try {
+            runBlocking { service.importContent(ImportKind.Config, "format = \"imported\"\n") }
+        } catch (_: CancellationException) {
+            // Expected: cancellation propagates.
+        }
+
+        val decrypted = crypto.lastDecrypted
+        assertTrue("the identity plaintext buffer must have been captured", decrypted != null)
+        assertTrue(
+            "the identity plaintext buffer must be wiped even when cancelled",
+            decrypted!!.all { it == 0.toByte() },
+        )
     }
 }
