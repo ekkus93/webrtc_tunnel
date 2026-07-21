@@ -1844,44 +1844,139 @@ Snackbar remains convenience-only.
 
 **Review findings addressed:** MEDIUM-7 through MEDIUM-11 and Test-quality discrepancies.
 
+**Code:** `b93292e`. Two items left as explicit, documented deviations (not silently skipped):
+late-startup-completion-after-destroy (P2-001-B) and the real-reporter-callback proof
+(P2-001-C rule 5) — see the deviation notes inline below for the full reasoning.
+
 ## P2-001-A — Remove proof sleeps
 
-- [ ] Replace the remaining setup overlap `Thread.sleep` with a `CompletableDeferred`/barrier.
-- [ ] Search all Android tests.
-- [ ] A bounded poll may remain only for positive external state convergence where no event seam exists; document each remaining occurrence.
-- [ ] No `Thread.sleep` proves absence, exactly-once, ordering, or overlap.
+- [x] Replace the remaining setup overlap `Thread.sleep` with a `CompletableDeferred`/barrier.
+      `SetupPersistenceCoordinatorTest.twoSetupCoordinatorCallsCannotOverlap` rewritten with a
+      `CompletableDeferred` entered/release barrier + `CoroutineStart.UNDISPATCHED` (proves the
+      second call genuinely attempted the mutex before release, confirmed by temporarily
+      sabotaging the coordinator's real `Mutex` and observing the test correctly fail, then
+      reverting). `IdentityPersistenceAtomicityTest`'s two `concurrentSnapshotAnd*AreSerialized`
+      tests rewritten with `CountDownLatch` entered/attempting barriers (same sabotage-and-revert
+      confirmation against the real `storageLock`).
+- [x] Search all Android tests. (grep for `Thread.sleep` across `app/src/test`, all 16 sites
+      inventoried.)
+- [x] A bounded poll may remain only for positive external state convergence where no event seam
+      exists; document each remaining occurrence. Every shared `waitForCondition` helper (10
+      `TunnelForegroundService*Test.kt` files) now carries a doc comment stating it is
+      convergence-only, never an absence/ordering/overlap proof.
+- [x] No `Thread.sleep` proves absence, exactly-once, ordering, or overlap. Found 5
+      `assertFalse(waitForCondition(timeoutMs = 2_000) { ... })` absence-proof sites in
+      `TunnelForegroundServiceStopFailureTest.kt`; replaced with a `drainQueueWithStopBarrier`
+      helper (mirrors `TunnelForegroundServiceOrderingTest`'s existing technique: submit an
+      explicit STOP as a barrier, wait for *its* effect, then assert the earlier command's
+      absence synchronously — FIFO single-consumer draining makes this deterministic).
 
 ## P2-001-B — Remove misleading coverage claims
 
 Replace or rename tests so the following behaviors have exact production-path tests:
 
-- [ ] validation performs no live persistent mutation;
-- [ ] cancellation at every setup stage rolls back prior state;
-- [ ] plaintext identity wipe on success, validation failure, persistence failure, and cancellation;
-- [ ] two real rapid imports use global admission and unique workspace/candidate behavior;
-- [ ] cleanup composition at real import and forward callers;
-- [ ] exact Initializing start gate;
-- [ ] exact Ready start path;
-- [ ] late startup completion after destroy;
-- [ ] first-use Rust clock failure;
-- [ ] offer stop while Listening.
+- [x] validation performs no live persistent mutation — already exactly covered by
+      `SetupValidationWorkspaceIntegrationTest`; no change needed.
+- [x] cancellation at every setup stage rolls back prior state — already exactly covered by
+      `SetupPersistenceCoordinatorTest`'s per-stage `cancellationDuring*` tests; no change needed.
+- [x] plaintext identity wipe on success, validation failure, persistence failure, and
+      cancellation — already exactly covered for the setup-save caller
+      (`SetupSaveControllerTest`). Added new coverage for the previously **zero-coverage**
+      `ImportExportService.importPrivateIdentityContent` caller: `privateIdentityImport-
+      CanonicalBytesWipedOnSuccess`/`...WipedOnPersistenceFailure` (no separate
+      validation-failure case exists for this caller — `require(validated.valid)` throws before
+      the canonical byte array is ever allocated).
+- [x] two real rapid imports use global admission and unique workspace/candidate behavior —
+      admission already covered by `ImportExportViewModelTest.secondConfigImportIsRejected-
+      VisiblyWithActiveOperation`. Added `twoRealSequentialConfigImportsUseDistinctCandidateFiles`
+      (drives two real `ImportExportService.importContent` calls, captures each candidate file
+      path via the injectable `deleteCandidateFile` seam) — `MutationHelpersTest`'s existing
+      uniqueness test only proved the helper in isolation, never through a real caller.
+- [x] cleanup composition at real import and forward callers — `ForwardsConfigStoreTest`/
+      `SetupPersistenceCoordinatorTest` already cover forward/setup callers. Added coverage for
+      the real `ImportExportService.importPrivateIdentityContent` caller (see wipe tests above,
+      which also prove the `finally`-wipe composes with both success and persistence failure).
+- [x] exact Initializing start gate — already exactly covered by
+      `TunnelForegroundServiceInitializationRaceTest.startWhileExactlyInitializingDoesNotCallNative`.
+- [x] exact Ready start path — already exactly covered by the same file's
+      `startAfterReadyCallsNative`.
+- [ ] late startup completion after destroy — **deviation**: attempted, not completed. See
+      `TunnelForegroundServiceDestroySemanticsTest.kt`'s class doc for the full reasoning: the
+      specific race (a startup naturally completing and attempting `StartupCompleted` after
+      `coordinator.stop()` has closed the queue but before `cancelAndJoin()` reaches the startup
+      job) could not be forced deterministically with the existing block/release hooks —
+      releasing the block after destroy has requested cancellation reliably makes the startup
+      coroutine observe that cancellation instead, exercising a different (already-covered)
+      path. `onDestroy()`'s ordering and `handleStartupCompleted`'s generation guard are the two
+      mechanisms that would prevent this by code inspection, but a genuinely-forced test needs a
+      new production seam (e.g. an injectable pause point between `coordinator.stop()` and
+      `cancelStartupJobAndJoinLocked()`), which is out of scope for a test-quality-only task.
+- [x] first-use Rust clock failure — already exactly covered on the Rust side:
+      `crates/p2p-core/src/time.rs`'s `first_clock_failure_returns_none_for_diagnostic_timestamp_not_zero`
+      injects failure (`None`) with `last` never having stored a value, before any success. This
+      behavior has no Kotlin/Android-side seam or test (native clock sampling is Rust-only); no
+      Android test claims to cover it, so nothing misleading was found there.
+- [x] offer stop while Listening — added
+      `TunnelForegroundServiceStopFailureTest.stopWhileListeningStopsCleanlyAndNativeIsCalled`.
+      By code inspection `stopServiceWork()` has no `ServiceState`-dependent gating at all (stops
+      unconditionally), so this exercises identical code to the existing Connected-based stop
+      tests, but previously nothing asserted the Listening precondition explicitly — every
+      existing stop test asserted on the fake bridge's own `state == Connected` field, never the
+      real mapped `ServiceState.Listening` an offer with no active session actually produces.
 
-Do not retain an old test name if the body does not prove it.
+Do not retain an old test name if the body does not prove it. (Confirmed: no existing test name
+was found whose body proved something looser than its name claimed, beyond the deviation above,
+which is now documented rather than silently left as a misleading class-doc claim.)
 
 ## P2-001-C — Test quality rules
 
-- [ ] Rollback-failure tests fail a restore operation, not a forward operation.
-- [ ] Cancellation tests assert durable state after rollback, not only thrown exception.
-- [ ] Wipe tests observe the actual ByteArray instance through a seam.
-- [ ] Concurrency tests prove the first operation acquired admission before starting the second.
-- [ ] Reporter-failure tests throw from the actual production reporter callback.
-- [ ] Clock tests inject failure before any successful clock sample.
+- [x] Rollback-failure tests fail a restore operation, not a forward operation. Already
+      compliant (`TransactionalResetHardeningTest`, `SetupPersistenceCoordinatorTest`); no
+      change needed.
+- [x] Cancellation tests assert durable state after rollback, not only thrown exception. Found
+      one violation: `SettingsViewModelTest.resetCancellationDoesNotReportSuccessOrOrdinaryFailure`
+      only checked `lastOperationFailure == null`. Renamed to
+      `resetCancellationDuringConfigStageLeavesEveryStageUntouchedAndNeverReportsSuccessOrFailure`
+      and strengthened to assert the live config file and setup-input content are byte-for-byte
+      unchanged after the cancellation (Config is reset *first*, so nothing is mutated yet —
+      the durable proof is that the whole stage sequence never started, not merely no error).
+- [x] Wipe tests observe the actual ByteArray instance through a seam. Already compliant
+      (`SetupSaveControllerTest`, `IdentityRepositoryTest`); the new P2-001-B wipe tests added
+      above follow the same established `encrypt()`-returns-same-reference technique.
+- [x] Concurrency tests prove the first operation acquired admission before starting the second.
+      Already compliant (`ConfigurationMutationIntegrationTest`, `SetupViewModelTest`,
+      `ForwardsViewModelTest`); the rewritten P2-001-A concurrency tests above follow the same
+      standard (`CoroutineStart.UNDISPATCHED`/`CountDownLatch` barriers).
+- [ ] Reporter-failure tests throw from the actual production reporter callback — **deviation**:
+      attempted, not completed. `TunnelLifecycleCoordinatorTest.errorReporterFailureStopsProcessor-
+      AndRejectsLaterCommands` (a coordinator-unit test with a fake `CoordinatorOperations`) had
+      its doc comment corrected to accurately describe its scope as coordinator-plumbing-only,
+      with an explanation of why the real-reporter version was abandoned: constructing a
+      `TunnelForegroundService` whose real `NotificationController.notifyAction` throws (via a
+      new injectable factory) either broke the background status-notification path needed to
+      reach a running state at all (when armed unconditionally), or — once narrowly armed only
+      around the triggering STOP command — never actually reached the processor-death branch,
+      because every real command handler already catches its own exceptions and converts them to
+      `Result`/quarantine (per the P1-005 runCatching audit), so a raw regular `Exception`
+      reaching `processCommand`'s `onError` branch appears to have no remaining real production
+      trigger; only a fake `CoordinatorOperations.startOffer` (as the existing coordinator test
+      already does) can synthesize one. Confirmed no Android test currently reaches
+      `lifecycle_command_failed` outside that one coordinator-unit test (grepped for the
+      literal).
+- [x] Clock tests inject failure before any successful clock sample. Already covered on the Rust
+      side (see P2-001-B's first-use-clock-failure item above) — no Android-side violation found
+      since there is no Android-side clock test at all.
 
 ## Acceptance
 
-- [ ] Test names and bodies agree.
-- [ ] No elapsed-time proof remains.
-- [ ] Every FIX7 invariant has at least one exact negative-path test.
+- [x] Test names and bodies agree, except the two recorded deviations above (reporter-failure
+      real-callback proof; late-startup-completion-after-destroy), both left as pre-existing
+      coordinator-unit-test coverage with corrected, accurate scope-describing doc comments
+      rather than a misleading claim.
+- [x] No elapsed-time proof remains, except the documented positive-convergence bounded polls
+      (P2-001-A).
+- [x] Every FIX7 invariant has at least one exact negative-path test, except the two deviations
+      above, which retain their pre-existing (narrower-scope, honestly-labeled) coverage.
 
 ---
 
