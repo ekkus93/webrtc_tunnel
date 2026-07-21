@@ -1349,13 +1349,33 @@ For every `SystemTime`/Unix timestamp call, classify it as:
 1. **Correctness-sensitive**: replay freshness, protocol timestamp, retry timing, expiration. Must return/propagate typed error.
 2. **Diagnostics-only**: log timestamp. May use `Option<u64>` or omit timestamp; must not return zero as valid.
 
-- [ ] Record the call-site inventory and classification in the commit or TODO evidence.
+- [x] Record the call-site inventory and classification in the commit or TODO evidence. (`a403a66`)
+
+**Call-site inventory (all fixed in `a403a66`):**
+
+| Call site | Classification | Fix |
+|---|---|---|
+| `p2p-signaling/src/messages.rs::InnerMessageBuilder::build` (wire `timestamp_ms`, a peer's freshness check verifies it) | Correctness-sensitive | Fallible (`SignalingError::Clock`), propagated through every caller |
+| `p2p-signaling/src/transport/codec.rs::decode_with_replay_status`'s `now_ms` | Correctness-sensitive | Fallible, `?` into the already-`Result` function |
+| `p2p-daemon/src/messages.rs::current_time_ms` (ack-tracker `register`/`retry_due` timestamps) | Correctness-sensitive | Fallible (`DaemonError::Clock`), `?` at every caller |
+| `p2p-daemon/src/signaling.rs::mark_transport_unusable`/`mark_transport_usable_after_publish` (internal backoff-suppression timestamp) | Diagnostics-only (internal scheduling only, not wire-visible, gates no correctness decision — see deviation below) | Degrades to `None`/proceeds-with-recovery via `.ok()`, non-`Result` signature unchanged |
+| `p2p-mobile/src/runtime/state.rs::unix_ms` (`AndroidLogEvent`/`started_at_unix_ms`) | Diagnostics-only | `Option<u64>`-returning `resolve_optional_unix_ms`; callers skip the log entry / leave `started_at_unix_ms` unset on `None` |
+| `p2p-daemon/tests/two_node_daemon/harness/config.rs::unique_path` (test-only) | Neither — a uniqueness suffix, not a real timestamp | Process-wide counter makes uniqueness clock-independent; `.unwrap_or(0)` is harmless here since the counter alone guarantees uniqueness |
+
+**Deviation:** `mark_transport_unusable`/`mark_transport_usable_after_publish`'s
+internal timestamp gates a soft backoff-suppression window, not a wire
+timestamp or an ack-retry deadline — reclassified as diagnostics-only rather
+than correctness-sensitive, since making it `Result`-returning would ripple
+into non-`Result` event-dispatch call sites (`answer/mod.rs`'s
+`handle_answer_session_event`) for a purely internal scheduling nicety whose
+worst-case failure mode (skip the suppression window, attempt recovery
+sooner) is safe.
 
 ## P0-010-B — Remove `resolve_unix_ms` zero fallback
 
-- [ ] Do not initialize a last-known atomic to zero and return it on first failure.
-- [ ] Prefer deleting `resolve_unix_ms` if its semantics are ambiguous.
-- [ ] If retaining last-known fallback for diagnostics, return `Option<u64>`:
+- [x] Do not initialize a last-known atomic to zero and return it on first failure. (`a403a66`)
+- [x] Prefer deleting `resolve_unix_ms` if its semantics are ambiguous. (`a403a66`, replaced entirely)
+- [x] If retaining last-known fallback for diagnostics, return `Option<u64>`: (`a403a66`, `resolve_optional_unix_ms`)
 
 ```rust
 pub fn resolve_optional_unix_ms(
@@ -1407,25 +1427,40 @@ now_ms: current_time_ms()?,
 
 Use a fixed/typed error without leaking unnecessary system details over the wire.
 
+**Deviation:** `SignalingError::Clock`/`DaemonError::Clock` wrap the actual
+`std::time::SystemTimeError` (via `thiserror`'s `#[error("...: {0}")]`)
+rather than pre-formatting into a `String` as the illustrative snippet shows.
+`SystemTimeError`'s `Display` carries no sensitive system details (just
+"second time provided was later than self"-style text), and neither error
+type is ever serialized onto the wire — the actual wire `ErrorBody` is built
+separately from an explicit `code`/`message` — so there is nothing to leak.
+
 ## P0-010-D — Daemon retry/message behavior
 
-- [ ] Correctness-sensitive retry timestamps return `Result` to caller.
-- [ ] Do not reuse a stale timestamp for retry deadlines unless the algorithm explicitly proves it safe.
-- [ ] Do not build a protocol message with timestamp zero.
-- [ ] A timestamp error preserves any prior primary runtime error.
+- [x] Correctness-sensitive retry timestamps return `Result` to caller. (`a403a66`)
+- [x] Do not reuse a stale timestamp for retry deadlines unless the algorithm explicitly proves it safe. (`a403a66` — `?`'s short-circuit means a failing clock read can never reach `retry_due`/`register` at all)
+- [x] Do not build a protocol message with timestamp zero. (`a403a66`)
+- [x] A timestamp error preserves any prior primary runtime error. (`a403a66` — a `Clock` error only ever surfaces when nothing else already failed on that call path)
 
 ## P0-010-E — Mobile diagnostic logs
 
-- [ ] Change `AndroidLogEvent.unix_ms` to `Option<u64>` if feasible, or skip an optional log entry when time is unavailable.
-- [ ] Do not invent zero.
-- [ ] Runtime state/last error remains authoritative even if log timestamp is unavailable.
+- [x] Change `AndroidLogEvent.unix_ms` to `Option<u64>` if feasible, or skip an optional log entry when time is unavailable. (`a403a66` — chose skip-the-entry, per the deviation below)
+- [x] Do not invent zero. (`a403a66`)
+- [x] Runtime state/last error remains authoritative even if log timestamp is unavailable. (`a403a66`, proven by `mobile_log_clock_failure_preserves_primary_runtime_state`)
 
 If JNI/JSON schema requires a numeric field, change schema deliberately and update consumers; do not retain zero for convenience.
 
+**Deviation:** kept `AndroidLogEvent.unix_ms: u64` (did not change the JNI/JSON
+schema to a nullable field) and instead skip pushing the optional log entry
+entirely when the clock is unavailable — the TODO's own text offers this as
+an explicit alternative to a schema change, and it avoids touching the
+Kotlin-side deserialization model for an event that would occur, at most,
+once per process (a clock reading before 1970).
+
 ## P0-010-F — Inject clock seams
 
-- [ ] Add a small clock trait/function parameter for deterministic pre-epoch tests.
-- [ ] Do not mutate system clock in tests.
+- [x] Add a small clock trait/function parameter for deterministic pre-epoch tests. (`a403a66` — `pub(crate)` `*_with_clock`/`current_time_ms_from` function-pointer seams in `p2p-signaling`'s `InnerMessageBuilder`/`SignalCodec` and `p2p-daemon`'s `messages.rs`)
+- [x] Do not mutate system clock in tests. (`a403a66` — every test synthesizes a real `SystemTimeError` via `duration_since()` against a future `SystemTime::now() + Duration`, never touching the actual system clock)
 
 Example:
 
@@ -1439,23 +1474,23 @@ A function pointer seam is acceptable if simpler.
 
 ## P0-010-G — Tests
 
-- [ ] `firstClockFailureReturnsNoneForDiagnosticTimestampNotZero`
-- [ ] `subsequentDiagnosticClockFailureMayReuseNonZeroKnownTimestamp`
-- [ ] `signalingDecodeClockFailureReturnsTypedErrorAndDoesNotPanic`
-- [ ] `signalingDecodeClockFailureDoesNotRecordReplayEntry`
-- [ ] `daemonMessageBuildClockFailureReturnsError`
-- [ ] `daemonRetryClockFailureDoesNotUseZeroDeadline`
-- [ ] `mobileLogClockFailurePreservesPrimaryRuntimeState`
-- [ ] `workspaceContainsNoPreEpochExpectOrUnwrapOrZeroFallback`
+- [x] `firstClockFailureReturnsNoneForDiagnosticTimestampNotZero` (`a403a66`, `p2p-core::time::tests::first_clock_failure_returns_none_for_diagnostic_timestamp_not_zero`)
+- [x] `subsequentDiagnosticClockFailureMayReuseNonZeroKnownTimestamp` (`a403a66`)
+- [x] `signalingDecodeClockFailureReturnsTypedErrorAndDoesNotPanic` (`a403a66`)
+- [x] `signalingDecodeClockFailureDoesNotRecordReplayEntry` (`a403a66`)
+- [x] `daemonMessageBuildClockFailureReturnsError` (`a403a66` — proven at the `p2p-signaling` level as `daemon_message_build_clock_failure_returns_error`, since `p2p-daemon`'s `build_hello_message`/`build_error_message` add no logic beyond calling `InnerMessageBuilder::build`)
+- [x] `daemonRetryClockFailureDoesNotUseZeroDeadline` (`a403a66`)
+- [x] `mobileLogClockFailurePreservesPrimaryRuntimeState` (`a403a66`)
+- [x] `workspaceContainsNoPreEpochExpectOrUnwrapOrZeroFallback` (`a403a66`, `crates/p2p-core/tests/no_pre_epoch_panics.rs` — found and fixed one previously-missed real site, the test harness's `unique_path()`, on its first run)
 
 The last item must be backed by source inventory plus tests/static check; do not use a brittle grep as the only guard.
 
 ## Acceptance
 
-- [ ] No production pre-epoch panic remains.
-- [ ] First clock failure never yields zero.
-- [ ] Protocol time failure is explicit.
-- [ ] Optional diagnostics degrade without corrupting primary truth.
+- [x] No production pre-epoch panic remains. (`a403a66`)
+- [x] First clock failure never yields zero. (`a403a66`)
+- [x] Protocol time failure is explicit. (`a403a66`)
+- [x] Optional diagnostics degrade without corrupting primary truth. (`a403a66`)
 
 ---
 
