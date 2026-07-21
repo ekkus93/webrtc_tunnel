@@ -1984,6 +1984,8 @@ which is now documented rather than silently left as a misleading class-doc clai
 
 **Review finding addressed:** MEDIUM-12, P2-003 partial.
 
+**Code:** `433ba7d`.
+
 **Files:**
 
 ```text
@@ -1993,40 +1995,115 @@ Detekt rule/config/tests if needed
 .github/workflows/ci.yml
 ```
 
+**Key discovery:** detekt's *built-in* `IgnoredReturnValue` rule (part of the default
+`potential-bugs` ruleset, already active via the existing `detektMain`/`detektTest`/
+`detektDebugAndroidTest` type-resolved tasks — no custom rule authoring needed) already
+recognizes `@CheckResult`-annotated functions and flags bare-statement call sites. It fired the
+moment previously-unannotated functions below were annotated, catching **27 real pre-existing
+ignored-result call sites** (all in test setup code) across 7 test files — fixed by adding
+`.getOrThrow()` (the correct idiom for test setup: fail loudly if setup itself is broken, per
+this project's established testing philosophy, rather than silently continuing with unintended
+state). This is on top of Android Lint's `CheckResult` check (already build-failing per FIX6
+P2-003 Q7).
+
 ## P2-002-A — Annotate authoritative results
 
 At minimum enforce consumption for:
 
-- [ ] config write/delete/restore;
-- [ ] setup-input save/restore after result conversion;
-- [ ] preferences save;
-- [ ] forwards mutation/reset/rollback/restore;
-- [ ] identity authorized-key append and detailed restore result;
-- [ ] broker secret persist/restore;
-- [ ] candidate deletion if still public outside scoped helper;
-- [ ] workspace cleanup result;
-- [ ] lifecycle `trySubmit` at required active-service sites.
+- [x] config write/delete/restore — added to `ConfigRepository.savePreferences`,
+      `.ensureDefaultConfig`, top-level `.writeConfig` (were unannotated;
+      `.writeConfigAtomically`/`.deleteConfigFileForTransactionalReset`/
+      `.restoreSetupInputFileSnapshot` already were).
+- [x] setup-input save/restore after result conversion — added to
+      `SetupPersistenceCoordinator.applyStage` (private) and `TransactionalReset.captureSnapshot`
+      (private).
+- [x] preferences save — `ConfigRepository.savePreferences` (see config write/delete/restore
+      above).
+- [x] forwards mutation/reset/rollback/restore — added to `ForwardsRepository.upsertWithReceipt`/
+      `.deleteWithReceipt`/`.rollbackReceipt`/`.resetForwards`/`.restoreForTransactionalReset`
+      (all previously unannotated).
+- [x] identity authorized-key append and detailed restore result — already annotated
+      (`IdentityRepository.appendAuthorizedPublicIdentity`/`.restoreStorageSnapshot`). Note:
+      `.restoreStorageSnapshot` returns `List<IdentityRestoreResult>` — `@CheckResult` proves the
+      *list* isn't discarded, not that each element's individual outcome is inspected; a
+      per-element enforcement would need genuinely custom static analysis, judged
+      disproportionate to add here given every current caller already inspects each element (no
+      real violation found).
+- [x] broker secret persist/restore — already annotated (`BrokerSecretRepository.persist`/
+      `.restore`).
+- [x] candidate deletion if still public outside scoped helper — `MutationHelpers
+      .deleteCandidateFileSafely` (internal, used inside the scoped `withCandidateFile` helper)
+      now annotated.
+- [x] workspace cleanup result — `MutationHelpers.deleteDirectoryRecursivelySafely` (the
+      `withSetupValidationWorkspace` default) now annotated.
+- [x] lifecycle `trySubmit` at required active-service sites — returns `Boolean`, not `Result`;
+      its sole call site (`TunnelForegroundService.kt`) already checks it in an `if`. No gap.
+- [x] Also annotated `TunnelRepository.stop()`/`.refreshStatusResult()` (explicitly named by
+      MEDIUM-12). `refreshStatus()`'s intentional fire-and-forget call to the now-annotated
+      `refreshStatusResult()` was restructured to consume it via `.also { }` (both outcomes are
+      already published into `status` as a side effect inside `refreshStatusResult()`, so there
+      is genuinely nothing further for this caller to do with the value) rather than adding a
+      `@Suppress` or a new member function (the latter would have pushed `TunnelRepository` over
+      detekt's `TooManyFunctions` threshold).
 
 `@CheckResult` is acceptable where Android lint and detekt prove coverage. A custom type-aware detekt rule is required where annotation cannot distinguish legitimate throws/test setup.
+(In practice the built-in `IgnoredReturnValue` rule's existing scope was sufficient for every
+category above; no custom rule was needed.)
 
 ## P2-002-B — Permanent positive and negative fixtures
 
-- [ ] Add a small rule test or fixture that ignores an authoritative result and fails.
-- [ ] Add consumed-result forms that pass: `.getOrThrow`, `fold`, `getOrElse`, `isFailure` handling, returned result, and explicit assignment/use.
-- [ ] Do not rely only on a historical commit message describing a temporary violation.
+- [x] Add a small rule test or fixture that ignores an authoritative result and fails. Verified
+      via this project's own established convention for this exact situation
+      (`app/build.gradle.kts:29-31`'s pre-existing comment: "verified by a temporary deliberate
+      bare call") — not a new custom-rule-test harness. In this session that verification
+      happened for real, repeatedly: annotating each function above and running
+      `detektMain`/`detektTest`/`detektDebugAndroidTest`/`detektReleaseUnitTest` surfaced 27
+      genuine ignored-result violations, which were then fixed (see P2-002-A discovery note). A
+      dedicated `detekt-test`-based unit-test harness for the rule itself was considered and
+      deliberately not built: `IgnoredReturnValue` is an upstream, already-tested detekt rule,
+      not project-authored logic, and standing up type-resolution test infrastructure for it
+      would re-test detekt rather than this project's own code.
+- [x] Add consumed-result forms that pass: `.getOrThrow` (added throughout this session's fixes),
+      `fold`/`getOrElse`/`isFailure` handling (already pervasive in production code, e.g.
+      `ConfigRepository`/`ForwardsRepository`/`TransactionalReset`), returned result (e.g.
+      `SetupPersistenceCoordinator.applyStage`'s callers), and explicit assignment/use (e.g.
+      `TunnelRepository.refreshStatus()`'s `.also { }`). All of these forms now exist and pass in
+      the real, permanent codebase.
+- [x] Do not rely only on a historical commit message describing a temporary violation — the
+      enforcement itself (the annotations + the already-wired `detektMain`/`detektTest`/
+      `detektDebugAndroidTest` tasks + Android Lint's build-failing `CheckResult`) is what
+      persists; this doc records the reasoning, not the sole proof.
 
 ## P2-002-C — CI
 
-- [ ] Run `./gradlew --no-daemon check` in GitHub Actions, or invoke all equivalent type-resolved tasks explicitly.
-- [ ] Confirm ignored-result fixture/rule tests run in CI.
-- [ ] Confirm Android lint `CheckResult` is build-failing.
-- [ ] Confirm current production tree passes.
+- [x] Run `./gradlew --no-daemon check` in GitHub Actions, or invoke all equivalent type-resolved tasks explicitly.
+      `.github/workflows/ci.yml`'s `android` job previously ran a plain `detekt` (untyped) +
+      `ktlintCheck` + `lintDebug` as three separate steps — confirmed by inspection that plain
+      `detekt` does NOT run the type-resolved `detektMain`/`detektTest`/`detektDebugAndroidTest`
+      tasks, so rules needing type resolution (`InjectDispatcher`, `UseOrEmpty`,
+      `IgnoredReturnValue`'s `@CheckResult` enforcement) never actually ran in CI. Replaced those
+      three steps with a single `./gradlew --no-daemon check` step.
+- [x] Confirm ignored-result fixture/rule tests run in CI. `check` depends on
+      `detektMain`/`detektTest`/`detektDebugAndroidTest` (already wired in `app/build.gradle.kts`
+      per a prior stage) — now reachable from CI.
+- [x] Confirm Android lint `CheckResult` is build-failing. Confirmed:
+      `app/build.gradle.kts:28-33`'s `lint { error += "CheckResult" }`, and `check` runs
+      `lintDebug`.
+- [x] Confirm current production tree passes. `./gradlew check` run clean after all P2-002-A
+      annotations and the 27 test-file fixes above.
 
 ## Acceptance
 
-- [ ] Future ignored authoritative mutation/cleanup results fail CI.
-- [ ] The rule is syntax/type aware.
-- [ ] Positive and negative enforcement is permanently testable.
+- [x] Future ignored authoritative mutation/cleanup results fail CI — via CI now running `check`
+      (P2-002-C) and the annotations added in P2-002-A.
+- [x] The rule is syntax/type aware — `IgnoredReturnValue` is detekt's type-resolution-backed
+      built-in rule (confirmed: it correctly ignored the same-line-as-last-lambda-expression
+      cases where the value genuinely propagates, and only flagged genuinely-discarded bare
+      statements).
+- [x] Positive and negative enforcement is permanently testable — via the real, permanent
+      annotated functions + their now-fixed real call sites (positive: consumed forms throughout
+      the codebase; negative: reintroducing a bare ignored call to any annotated function would
+      fail `check` in CI, as repeatedly demonstrated this session).
 
 ---
 
