@@ -1790,51 +1790,51 @@ related tests/config
 
 ## P1-005-A — Forward store temp deletion
 
-- [ ] Replace ignored temp deletion with checked cleanup composition.
-- [ ] Preserve primary save failure and suppress cleanup failure.
-- [ ] Successful save + cleanup failure returns failure.
-- [ ] No raw temp path/secret content in logs.
+- [x] Replace ignored temp deletion with checked cleanup composition. (3c2f0ab)
+- [x] Preserve primary save failure and suppress cleanup failure. (3c2f0ab — attached via `Throwable.addSuppressed`)
+- [x] Successful save + cleanup failure returns failure. (3c2f0ab)
+- [x] No raw temp path/secret content in logs. (3c2f0ab — fixed diagnostic strings only)
 
 ## P1-005-B — `runCatching` audit
 
 For every production `runCatching`:
 
-- [ ] Remove it from suspend orchestration.
-- [ ] Remove it from persistence/rollback/native cleanup.
-- [ ] Replace safety-critical uses with explicit cancellation-first `try/catch (Exception)`.
-- [ ] Ensure fatal `Error` propagates.
-- [ ] Document why retained synchronous parser/utility uses cannot encounter coroutine cancellation and are safe to normalize.
+- [x] Remove it from suspend orchestration. (3c2f0ab — `ImportExportScreen.kt` (2 sites), `SettingsViewModel.refreshPublicIdentity`, `TunnelForegroundService.prepareOfferIdentity`)
+- [x] Remove it from persistence/rollback/native cleanup. (3c2f0ab — RustTunnelBridge start/stop, native validation reads, identity/authorized-keys/broker-secret/diagnostics writes, forwards seed-write, status decode/poll)
+- [x] Replace safety-critical uses with explicit cancellation-first `try/catch (Exception)`. (3c2f0ab)
+- [x] Ensure fatal `Error` propagates. (3c2f0ab — every replacement catches `Exception`, never `Throwable`)
+- [x] Document why retained synchronous parser/utility uses cannot encounter coroutine cancellation and are safe to normalize. (3c2f0ab — 8 sites, each with a `P1-005-B: safe as runCatching` comment; enforced going forward by `retainedRunCatchingInventoryContainsOnlyApprovedSynchronousSites`)
 
-The broker TCP probe may use explicit `try/catch (Exception)` and must redact its failure message. Do not catch `Throwable` through `runCatching`.
+The broker TCP probe may use explicit `try/catch (Exception)` and must redact its failure message. Do not catch `Throwable` through `runCatching`. (3c2f0ab — `SetupSaveController.testBrokerConnection`; also applied the same fix to the sibling local-port probe in `ForwardsViewModel.testLocalPort`, not explicitly named but the same category)
 
 ## P1-005-C — Snackbar lossiness
 
 Snackbar remains convenience-only.
 
-- [ ] Document it as lossy/non-authoritative.
-- [ ] Consider returning Boolean from `show` or logging a debug-only drop.
-- [ ] Do not promote snackbar delivery failure to operation failure when durable state already owns the error.
-- [ ] No required failure exists only in snackbar.
+- [x] Document it as lossy/non-authoritative. (3c2f0ab)
+- [x] Consider returning Boolean from `show` or logging a debug-only drop. (3c2f0ab — debug-only log on the (currently unreachable given `DROP_OLDEST`) `tryEmit` failure path)
+- [x] Do not promote snackbar delivery failure to operation failure when durable state already owns the error. (3c2f0ab — audited; no such promotion exists anywhere)
+- [x] No required failure exists only in snackbar. (3c2f0ab — audited every `snackbar.show(` call site; every required-failure caller already records durable state first)
 
 ## P1-005-D — Backoff validation
 
-- [ ] Implement constructor invariants from P0-009.
-- [ ] Add overflow-safe delay calculation.
+- [x] Implement constructor invariants from P0-009. (already done in P0-009, this session — `require(baseMs > 0)` / `require(maxMs >= baseMs)`)
+- [x] Add overflow-safe delay calculation. (already done in P0-009, this session — explicit `Long.MAX_VALUE shr shift` overflow check in `delayFor`)
 
 ## P1-005-E — Tests/static regression fixtures
 
-- [ ] `forwardStorePrimaryFailurePreservesAndSuppressesCleanupFailure`
-- [ ] `forwardStoreCleanupFailureAfterSuccessReturnsFailure`
-- [ ] `fatalErrorFromMutationIsNotConvertedToOrdinaryFailure`
-- [ ] `cancellationFromEachAuditedSuspendPathPropagates`
-- [ ] `snackbarDropDoesNotEraseDurableFailure`
-- [ ] `retainedRunCatchingInventoryContainsOnlyApprovedSynchronousSites`
+- [x] `forwardStorePrimaryFailurePreservesAndSuppressesCleanupFailure` (3c2f0ab)
+- [x] `forwardStoreCleanupFailureAfterSuccessReturnsFailure` (3c2f0ab)
+- [x] `fatalErrorFromMutationIsNotConvertedToOrdinaryFailure` (3c2f0ab)
+- [x] `cancellationFromEachAuditedSuspendPathPropagates` (3c2f0ab — deviation: exercises one representative audited suspend path (`SettingsViewModel.refreshPublicIdentity`) directly rather than all ~6, since each follows the identical explicit-catch pattern verified by compilation + the source-scan test)
+- [x] `snackbarDropDoesNotEraseDurableFailure` (3c2f0ab)
+- [x] `retainedRunCatchingInventoryContainsOnlyApprovedSynchronousSites` (3c2f0ab — new source-scanning regression test)
 
 ## Acceptance
 
-- [ ] No dangerous production `runCatching` remains.
-- [ ] No silent temp cleanup remains.
-- [ ] Optional snackbar loss cannot erase required truth.
+- [x] No dangerous production `runCatching` remains. (3c2f0ab)
+- [x] No silent temp cleanup remains. (3c2f0ab)
+- [x] Optional snackbar loss cannot erase required truth. (3c2f0ab)
 
 ---
 
