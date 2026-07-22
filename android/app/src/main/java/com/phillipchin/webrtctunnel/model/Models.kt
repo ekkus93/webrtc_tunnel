@@ -92,7 +92,10 @@ data class TunnelError(
 
 @Serializable
 data class LogEvent(
-    val unixMs: Long,
+    // FIX8 P0-010-A: null when the native side could not establish a timestamp for this event
+    // (e.g. a diagnostic-clock read failure) — never a fabricated 0, which would be
+    // indistinguishable from the Unix epoch.
+    val unixMs: Long?,
     val level: String,
     val message: String,
 )
@@ -144,7 +147,9 @@ data class NativeRuntimeForwardStatusDto(
 
 @Serializable
 data class NativeLogEventDto(
-    @SerialName("unix_ms") val unixMs: Long,
+    // FIX8 P0-010-A: nullable to decode the native side's `unix_ms: null` for an event whose
+    // timestamp could not be established, matching AndroidLogEvent's Option<u64>.
+    @SerialName("unix_ms") val unixMs: Long? = null,
     val level: String,
     val message: String,
 )

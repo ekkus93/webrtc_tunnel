@@ -56,7 +56,13 @@ import java.time.format.DateTimeFormatter
 private val logTimestampFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
 
-private fun formatLogTimestamp(unixMs: Long): String = logTimestampFormatter.format(Instant.ofEpochMilli(unixMs))
+// FIX8 P0-010-A: null (no timestamp could be established for this event) formats as a fixed,
+// non-numeric string — never as an epoch-derived "0" that would misleadingly read as a real time.
+// internal (not private): directly unit tested from FormatLogTimestampTest.
+internal fun formatLogTimestamp(
+    unixMs: Long?,
+    unavailableText: String,
+): String = unixMs?.let { logTimestampFormatter.format(Instant.ofEpochMilli(it)) } ?: unavailableText
 
 private const val LOG_REFRESH_INTERVAL_MS = 2_000L
 
@@ -83,8 +89,9 @@ fun LogsScreen(
 
     val state = collectLogsScreenState(vm, networkVm)
 
+    val logTimestampUnavailableText = stringResource(R.string.log_timestamp_unavailable)
     val copyLogs = {
-        clipboard.setText(AnnotatedString(redactedLogsText(state.visibleLogs)))
+        clipboard.setText(AnnotatedString(redactedLogsText(state.visibleLogs, logTimestampUnavailableText)))
         vm.onLogsCopied()
     }
     val exportDiagnostics = {
@@ -324,7 +331,7 @@ private fun LogRow(event: LogEvent) {
         }
     StatusCard {
         Text(
-            formatLogTimestamp(event.unixMs),
+            formatLogTimestamp(event.unixMs, stringResource(R.string.log_timestamp_unavailable)),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -333,7 +340,13 @@ private fun LogRow(event: LogEvent) {
     }
 }
 
-private fun redactedLogsText(logs: List<LogEvent>): String =
+// FIX8 P0-010-A: an event with no established timestamp must render as [unavailableText], never
+// as a bare "0" that would misleadingly read as a real (Unix-epoch) time. internal (not
+// private): directly unit tested from RedactedLogsTextTest.
+internal fun redactedLogsText(
+    logs: List<LogEvent>,
+    unavailableText: String,
+): String =
     logs
         .map(SensitiveDataRedactor::redactLogEvent)
-        .joinToString("\n") { "${it.unixMs} ${it.level} ${it.message}" }
+        .joinToString("\n") { "${it.unixMs ?: unavailableText} ${it.level} ${it.message}" }

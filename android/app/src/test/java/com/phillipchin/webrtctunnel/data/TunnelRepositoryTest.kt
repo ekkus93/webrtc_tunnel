@@ -232,6 +232,18 @@ class TunnelRepositoryTest {
         assertEquals("ok", result.logs.first().message)
     }
 
+    // FIX8 P0-010-D: kotlinDecodesNullNativeLogTimestamp — a native log event with no
+    // established timestamp (`"unix_ms":null`) decodes cleanly to a null LogEvent.unixMs,
+    // rather than failing to decode or silently defaulting to zero.
+    @Test
+    fun kotlinDecodesNullNativeLogTimestamp() {
+        bridge.logsJson = """[{"unix_ms":null,"level":"error","message":"clock unavailable"}]"""
+        val result = repository.recentLogs(10)
+        assertEquals(1, result.logs.size)
+        assertNull(result.logs.first().unixMs)
+        assertEquals("clock unavailable", result.logs.first().message)
+    }
+
     @Test
     fun recentLogsSurfacesErrorEventOnInvalidJsonAndMarksError() {
         // P0-005: Invalid native log output must not affect tunnel lifecycle state.
