@@ -1461,11 +1461,19 @@ related tests
 
 ## P1-002-A — Lazy winner-only start
 
-- [ ] Create candidate job with `CoroutineStart.LAZY`. (`SHA: ______`)
-- [ ] CAS the lazy job into `startedJob`. (`SHA: ______`)
-- [ ] Only the winner calls `start()`. (`SHA: ______`)
-- [ ] Cancel the losing lazy job before it can execute. (`SHA: ______`)
-- [ ] Repeated callers return the same winner job. (`SHA: ______`)
+- [x] Create candidate job with `CoroutineStart.LAZY`. (`SHA: f97c043`)
+- [x] CAS the lazy job into `startedJob`. (`SHA: f97c043`)
+- [x] Only the winner calls `start()`. (`SHA: f97c043`)
+- [x] Cancel the losing lazy job before it can execute. (`SHA: f97c043`)
+- [x] Repeated callers return the same winner job. (`SHA: f97c043`)
+
+Implemented exactly per the suggested target below (the prior code launched the candidate
+eagerly, so it began running `initialize()` immediately — before the `compareAndSet` decided a
+winner — meaning two concurrent callers could each run `initialize()` concurrently; the loser's
+`job.cancel()` came after the fact and could not undo work already done). Verified the new tests
+actually catch this: reverted `start()` to the old eager-launch code, ran the 8-thread
+concurrent-start tests 3 times (failed 2 of 3, a genuine timing-dependent race), then restored the
+fix and reconfirmed 3/3 clean.
 
 Target:
 
@@ -1488,16 +1496,22 @@ fun start(): Job {
 
 ## P1-002-B — Tests
 
-- [ ] `concurrentInitializationStartRunsInitializeExactlyOnce` (`SHA: ______`)
-- [ ] `losingLazyInitializationJobExecutesNoInstruction` (`SHA: ______`)
-- [ ] `allConcurrentCallersReceiveSameWinnerJob` (`SHA: ______`)
-- [ ] `initializationFailureStillPublishesOneFailedState` (`SHA: ______`)
+- [x] `concurrentInitializationStartRunsInitializeExactlyOnce` (`SHA: f97c043`)
+- [x] `losingLazyInitializationJobExecutesNoInstruction` (`SHA: f97c043`)
+- [x] `allConcurrentCallersReceiveSameWinnerJob` (`SHA: f97c043`)
+- [x] `initializationFailureStillPublishesOneFailedState` (`SHA: f97c043`)
 
 Use a barrier at the first line of `initialize`; assert entry count exactly one.
 
+All four use a real (non-`Unconfined`) `Dispatchers.IO`-backed scope/dispatcher and 8 real OS
+threads releasing simultaneously via a `CountDownLatch`, since an `Unconfined` dispatcher never
+leaves the eager-vs-lazy race window open regardless of which implementation is under test. The
+"barrier at the first line of `initialize`" is a `BarrierConfigRepository` counting entries into
+`ensureDefaultConfig` (the only instruction `initialize` executes before publishing its result).
+
 ## Acceptance
 
-- [ ] Initialization is genuinely exactly-once, not cancel-after-start. (`SHA: ______`)
+- [x] Initialization is genuinely exactly-once, not cancel-after-start. (`SHA: f97c043`)
 
 ---
 
