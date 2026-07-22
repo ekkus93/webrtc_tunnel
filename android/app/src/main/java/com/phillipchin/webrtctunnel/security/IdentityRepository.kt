@@ -511,7 +511,8 @@ private fun identityAtomicReplace(
     destination: File,
     bytes: ByteArray,
 ) {
-    destination.parentFile?.mkdirs()
+    // FIX8 P0-008-C: checked, not an ignored mkdirs() Boolean.
+    destination.parentFile?.let { Files.createDirectories(it.toPath()) }
     val temp = Files.createTempFile(destination.parentFile?.toPath(), "${destination.name}.tmp-", ".partial")
     // FIX7 P1-005-B/A: the temp file's cleanup result is checked, not discarded. Previously a
     // cleanup failure was only logged — an otherwise-successful replace silently reported

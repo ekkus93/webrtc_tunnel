@@ -40,7 +40,7 @@ class SetupPersistenceCoordinatorExactBytesTest {
             }
             File(context.filesDir, "forwards.json").delete()
             identityRepository = IdentityRepository(context, PassthroughCrypto())
-            brokerSecretRepository = BrokerSecretRepository(context)
+            brokerSecretRepository = BrokerSecretRepository(context, permissionEnforcer = RecordingPermissionEnforcer())
             forwardsRepository = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
             forwardsRepository.refresh()
         }

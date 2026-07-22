@@ -98,7 +98,8 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
     fun exportConfig(confirmSensitive: Boolean) =
         io.run("Raw config exported", "Config export failed") {
             val output = java.io.File(_state.value.configExportPath.trim())
-            output.parentFile?.mkdirs()
+            // FIX8 P0-008-C: checked, not an ignored mkdirs() Boolean.
+            output.parentFile?.let { java.nio.file.Files.createDirectories(it.toPath()) }
             output.writeText(importService.configForExport(confirmSensitive))
         }
 

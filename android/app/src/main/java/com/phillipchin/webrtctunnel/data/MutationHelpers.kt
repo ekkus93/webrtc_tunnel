@@ -3,7 +3,6 @@ package com.phillipchin.webrtctunnel.data
 import androidx.annotation.CheckResult
 import kotlinx.coroutines.CancellationException
 import java.io.File
-import java.io.IOException
 import java.nio.file.Files
 
 /**
@@ -65,7 +64,8 @@ internal fun createCandidateFile(
     cacheDir: File,
     prefix: String,
 ): File {
-    cacheDir.mkdirs()
+    // FIX8 P0-008-C: checked, not an ignored mkdirs() Boolean.
+    Files.createDirectories(cacheDir.toPath())
     return Files.createTempFile(cacheDir.toPath(), prefix, ".toml").toFile()
 }
 
@@ -80,7 +80,11 @@ internal fun deleteCandidateFileSafely(file: File): Result<Unit> =
     try {
         Files.deleteIfExists(file.toPath())
         Result.success(Unit)
-    } catch (error: IOException) {
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        // FIX8 P0-008-C: catches every ordinary exception (not just IOException) — a
+        // SecurityException from a denied delete must surface as a failure too.
         Result.failure(error)
     }
 
@@ -92,41 +96,81 @@ internal class CandidateCleanupException(
     cause: Throwable,
 ) : Exception(message, cause)
 
+/** Outcome of [block] in [withCleanupComposition], captured so mandatory cleanup can run
+ * regardless of how [block] exited — including a fatal [Error] — before the exact original
+ * throwable (never a converted/re-wrapped one) is rethrown (FIX8 P0-008-B). */
+private sealed interface ScopedOutcome<out T> {
+    data class Value<T>(val value: T) : ScopedOutcome<T>
+
+    data class Failure(val throwable: Throwable) : ScopedOutcome<Nothing>
+}
+
 /**
  * Composes a scoped resource's cleanup with the block's own outcome so a caller cannot forget
  * to consume the cleanup result (FIX7 P0-002-C / INV-010):
- * - primary failure/cancellation + cleanup failure: primary is preserved, cleanup is attached
- *   as suppressed;
- * - primary success + cleanup failure: the overall call fails with [CandidateCleanupException];
- * - cleanup success: the primary outcome (value or exception) passes through unchanged.
+ * - primary failure/cancellation/fatal `Error` + cleanup failure: primary is preserved, cleanup
+ *   is attached as suppressed;
+ * - primary success + ordinary cleanup failure: the overall call fails with
+ *   [CandidateCleanupException];
+ * - primary success + fatal cleanup `Error`: that same `Error` propagates;
+ * - cleanup success: the primary outcome (value or exception) passes through unchanged, as the
+ *   exact original throwable instance — never re-wrapped.
+ *
+ * FIX8 P0-008-B: a fatal `Error` from [block] (e.g. `OutOfMemoryError`) must still run cleanup
+ * before propagating, since a skipped cleanup can leave a secret-bearing candidate file behind.
+ * Rather than one broad `catch (Throwable)`, [CancellationException], [Error], and [Exception]
+ * are caught in three explicit clauses — together exhaustive over the whole `Throwable`
+ * hierarchy — so this stays a normal, specific catch by detekt's `TooGenericExceptionCaught`
+ * rule; every captured throwable is rethrown unchanged immediately below, never swallowed or
+ * converted.
  */
 private inline fun <T> withCleanupComposition(
     cleanup: () -> Result<Unit>,
     block: () -> T,
 ): T {
     // Not a finally block (detekt forbids throwing from finally): the primary outcome is
-    // captured as a Result first, cleanup always runs next, and only then do we decide what to
+    // captured first, cleanup always runs next, and only then do we decide what to
     // return/throw — so a successful outcome can still be converted to a cleanup failure.
-    val outcome: Result<T> =
+    val outcome: ScopedOutcome<T> =
         try {
-            Result.success(block())
+            ScopedOutcome.Value(block())
         } catch (cancelled: CancellationException) {
-            Result.failure(cancelled)
-        } catch (error: Exception) {
-            Result.failure(error)
+            ScopedOutcome.Failure(cancelled)
+        } catch (fatal: Error) {
+            ScopedOutcome.Failure(fatal)
+        } catch (primary: Exception) {
+            ScopedOutcome.Failure(primary)
         }
 
-    val cleanupFailure = cleanup().exceptionOrNull()
-    if (cleanupFailure != null) {
-        val primary = outcome.exceptionOrNull()
-        if (primary != null) {
-            primary.addSuppressed(cleanupFailure)
-        } else {
-            throw CandidateCleanupException("Failed to remove temporary configuration candidate", cleanupFailure)
+    val cleanupFailure: Throwable? =
+        try {
+            cleanup().exceptionOrNull()
+        } catch (cancelled: CancellationException) {
+            cancelled
+        } catch (fatal: Error) {
+            fatal
+        } catch (failure: Exception) {
+            failure
         }
-    }
 
-    return outcome.getOrThrow()
+    val toThrow: Throwable? =
+        when {
+            outcome is ScopedOutcome.Failure -> {
+                cleanupFailure?.let(outcome.throwable::addSuppressed)
+                outcome.throwable
+            }
+            cleanupFailure == null -> null
+            // A cancellation or fatal Error from cleanup itself must propagate unchanged, the
+            // same as one from the primary block above — never wrapped into
+            // CandidateCleanupException, which is reserved for an ordinary cleanup failure.
+            cleanupFailure is CancellationException || cleanupFailure is Error -> cleanupFailure
+            else ->
+                CandidateCleanupException("Failed to remove temporary configuration candidate", cleanupFailure)
+        }
+
+    if (toThrow != null) throw toThrow
+    check(outcome is ScopedOutcome.Value)
+    return outcome.value
 }
 
 /**
@@ -165,7 +209,8 @@ internal suspend fun <T> withTemporaryDirectory(
     deleteRecursively: (File) -> Result<Unit> = ::deleteDirectoryRecursivelySafely,
     block: suspend (File) -> T,
 ): T {
-    cacheDir.mkdirs()
+    // FIX8 P0-008-C: checked, not an ignored mkdirs() Boolean.
+    Files.createDirectories(cacheDir.toPath())
     val root = Files.createTempDirectory(cacheDir.toPath(), prefix).toFile()
     return withCleanupComposition(cleanup = { deleteRecursively(root) }) { block(root) }
 }
@@ -178,6 +223,10 @@ internal fun deleteDirectoryRecursivelySafely(root: File): Result<Unit> =
             Files.deleteIfExists(entry.toPath())
         }
         Result.success(Unit)
-    } catch (error: IOException) {
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        // FIX8 P0-008-C: catches every ordinary exception (not just IOException) — a
+        // SecurityException from a denied delete must surface as a failure too.
         Result.failure(error)
     }

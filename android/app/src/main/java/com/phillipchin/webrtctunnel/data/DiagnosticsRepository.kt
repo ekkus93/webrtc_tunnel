@@ -8,6 +8,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.Files
 
 class DiagnosticsRepository(
     private val context: Context,
@@ -37,7 +38,8 @@ class DiagnosticsRepository(
     ): Result<Unit> =
         try {
             val output = File(outputPath)
-            output.parentFile?.mkdirs()
+            // FIX8 P0-008-C: checked, not an ignored mkdirs() Boolean.
+            output.parentFile?.let { Files.createDirectories(it.toPath()) }
             output.writeText(buildRedactedDiagnosticsPayload(status, logs, networkStatus))
             Result.success(Unit)
         } catch (cancelled: CancellationException) {

@@ -353,7 +353,8 @@ private fun validateCandidateOrThrow(
     candidate: String,
 ): ByteArray? {
     val identityBytes = readIdentityBytesOrThrow(deps)
-    temp.parentFile?.mkdirs()
+    // FIX8 P0-008-C: checked, not an ignored mkdirs() Boolean.
+    temp.parentFile?.let { java.nio.file.Files.createDirectories(it.toPath()) }
     temp.writeText(candidate)
     val result =
         if (identityBytes != null) {

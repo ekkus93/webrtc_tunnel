@@ -43,7 +43,7 @@ class SetupPersistenceCoordinatorForwardsTest {
             forwardsFile.delete()
             configRepository = ConfigRepository(context)
             identityRepository = IdentityRepository(context, PlaintextCrypto())
-            brokerSecretRepository = BrokerSecretRepository(context)
+            brokerSecretRepository = BrokerSecretRepository(context, permissionEnforcer = RecordingPermissionEnforcer())
         }
 
     private class PlaintextCrypto : IdentityCrypto {

@@ -22,6 +22,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
 
@@ -251,7 +252,8 @@ open class ConfigRepository internal constructor(
     // behavior — see P0-006). Production setup-transaction commits use
     // [saveSetupInputAtomically] instead.
     open fun saveSetupInput(input: SetupConfigInput) {
-        setupInputFile.parentFile?.mkdirs()
+        // FIX8 P0-008-C: checked, not an ignored mkdirs() Boolean.
+        setupInputFile.parentFile?.let { Files.createDirectories(it.toPath()) }
         setupInputFile.writeText(Json.encodeToString(input))
     }
 

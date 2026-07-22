@@ -179,13 +179,18 @@ class ForwardsConfigStore(
         val primaryFailure =
             try {
                 val dir = forwardsFile.parentFile
-                dir?.mkdirs()
+                // FIX8 P0-008-C: checked, not an ignored mkdirs() Boolean.
+                dir?.let { Files.createDirectories(it.toPath()) }
                 val created = File.createTempFile("forwards", ".json.tmp", dir)
                 temp = created
                 created.writeText(Json.encodeToString(forwards))
                 moveIntoPlace(created, forwardsFile)
                 null
-            } catch (error: IOException) {
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                // FIX8 P0-008-C: catches every ordinary exception (not just IOException) — a
+                // SecurityException from a denied file operation must surface as a failure too.
                 ForwardsWriteException(error)
             }
         // A successful move already removed temp; only a failed move can leave it behind.

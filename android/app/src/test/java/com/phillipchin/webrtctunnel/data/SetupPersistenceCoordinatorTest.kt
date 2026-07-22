@@ -50,7 +50,7 @@ class SetupPersistenceCoordinatorTest {
             File(context.filesDir, "forwards.json").delete()
             configRepository = ConfigRepository(context)
             identityRepository = IdentityRepository(context, PlaintextCrypto())
-            brokerSecretRepository = BrokerSecretRepository(context)
+            brokerSecretRepository = BrokerSecretRepository(context, permissionEnforcer = RecordingPermissionEnforcer())
             forwardsRepository = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
             // The Forwards stage's captureForTransaction() fails unless the baseline is Ready.
             forwardsRepository.refresh()
@@ -717,7 +717,12 @@ class SetupPersistenceCoordinatorTest {
         runBlocking {
             brokerSecretRepository.persist("prior-secret-success").getOrThrow()
             val trackedSuccess = "prior-secret-success".toByteArray()
-            val trackingSuccess = BrokerSecretRepository(context, readBytes = { trackedSuccess })
+            val trackingSuccess =
+                BrokerSecretRepository(
+                    context,
+                    readBytes = { trackedSuccess },
+                    permissionEnforcer = RecordingPermissionEnforcer(),
+                )
             val resultSuccess =
                 coordinator(RecordingPreferences(), brokerSecret = trackingSuccess).persist(
                     request(brokerSecretChange = BrokerSecretChange.Set("new-secret-success")),
@@ -730,7 +735,12 @@ class SetupPersistenceCoordinatorTest {
 
             brokerSecretRepository.persist("prior-secret-failure").getOrThrow()
             val trackedFailure = "prior-secret-failure".toByteArray()
-            val trackingFailure = BrokerSecretRepository(context, readBytes = { trackedFailure })
+            val trackingFailure =
+                BrokerSecretRepository(
+                    context,
+                    readBytes = { trackedFailure },
+                    permissionEnforcer = RecordingPermissionEnforcer(),
+                )
             val resultFailure =
                 coordinator(RecordingPreferences(), config = FailingConfig(context), brokerSecret = trackingFailure)
                     .persist(request(brokerSecretChange = BrokerSecretChange.Set("new-secret-failure")))
@@ -742,7 +752,12 @@ class SetupPersistenceCoordinatorTest {
 
             brokerSecretRepository.persist("prior-secret-cancel").getOrThrow()
             val trackedCancel = "prior-secret-cancel".toByteArray()
-            val trackingCancel = BrokerSecretRepository(context, readBytes = { trackedCancel })
+            val trackingCancel =
+                BrokerSecretRepository(
+                    context,
+                    readBytes = { trackedCancel },
+                    permissionEnforcer = RecordingPermissionEnforcer(),
+                )
             var caught: CancellationException? = null
             try {
                 coordinator(RecordingPreferences(), config = CancellingConfig(context), brokerSecret = trackingCancel)
