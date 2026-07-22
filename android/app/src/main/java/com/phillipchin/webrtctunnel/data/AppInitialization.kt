@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel.data
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,16 +50,26 @@ class AppInitializationCoordinator(
      * Launches initialization exactly once; idempotent — a repeated call returns the same
      * [Job] rather than launching a duplicate [initialize]. Returns the job so teardown/tests
      * can join it.
+     *
+     * FIX8 P1-002-A: the candidate job is [CoroutineStart.LAZY] — a default (eager) `launch`
+     * starts running [initialize] immediately, asynchronously, before this function has decided
+     * a winner via [AtomicReference.compareAndSet], so two concurrent callers could each launch a
+     * job that actually executes [initialize] concurrently; only the loser's `job.cancel()` came
+     * after the fact and could not undo work already done. A lazy job runs no instruction of
+     * [initialize] until [Job.start] is called on it, so only the winner (which alone calls
+     * `candidate.start()`) ever executes it; the loser's `cancel()` here always races a job that
+     * has not yet started, never one already mid-execution.
      */
     fun start(): Job {
-        val existing = startedJob.get()
-        if (existing != null) return existing
-        val job = scope.launch(ioDispatcher) { initialize() }
-        return if (startedJob.compareAndSet(null, job)) {
-            job
+        startedJob.get()?.let { return it }
+
+        val candidate = scope.launch(ioDispatcher, start = CoroutineStart.LAZY) { initialize() }
+        return if (startedJob.compareAndSet(null, candidate)) {
+            candidate.start()
+            candidate
         } else {
-            job.cancel()
-            startedJob.get() ?: job
+            candidate.cancel()
+            requireNotNull(startedJob.get())
         }
     }
 
