@@ -274,7 +274,7 @@ internal class SetupSaveController(
             return ResolvedIdentity(draft.privateIdentity, draft.publicIdentity, draft.peerId, fromImport = true)
         }
         val resolved =
-            if (!deps.identityRepository.hasEncryptedIdentity()) {
+            if (!deps.identityRepository.hasEncryptedIdentity) {
                 // Absence and present-but-unreadable are different states (P1-001/P1-007): only
                 // absence may report "missing" — a present identity that fails to load/validate
                 // must say so, not tell the user their identity vanished.

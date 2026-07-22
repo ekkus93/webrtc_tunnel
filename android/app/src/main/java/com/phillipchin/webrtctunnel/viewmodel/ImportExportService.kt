@@ -55,7 +55,7 @@ class ImportExportService(
                 // is non-suspending, so this cannot encounter coroutine cancellation, and
                 // catching Exception keeps the specific, useful diagnostic.
                 val identityBytes =
-                    if (deps.identityRepository.hasEncryptedIdentity()) {
+                    if (deps.identityRepository.hasEncryptedIdentity) {
                         try {
                             deps.identityRepository.readPrivateIdentityPlaintext()
                         } catch (error: Exception) {

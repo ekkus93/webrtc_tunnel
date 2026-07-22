@@ -76,7 +76,7 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
 
     @Test
     fun forwardsViewModelSaveUsesIdentityLessValidationWhenNoIdentity() {
-        assertFalse(deps.identityRepository.hasEncryptedIdentity())
+        assertFalse(deps.identityRepository.hasEncryptedIdentity)
         val vm = ForwardsViewModel(deps)
         recordingBridge.validationResult = ValidationResult(true, null)
         val forward =

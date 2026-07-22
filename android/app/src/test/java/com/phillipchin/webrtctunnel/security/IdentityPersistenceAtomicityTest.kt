@@ -290,7 +290,7 @@ class IdentityPersistenceAtomicityTest {
         pubFile.writeText("pub-a")
         authorizedKeysFile.writeText("key-a")
         val plainRepo = IdentityRepository(context, PlaintextCrypto())
-        val snapshot = plainRepo.captureStorageSnapshot()
+        val snapshot = plainRepo.captureStorageSnapshot
 
         // Mutate all three away from the snapshot.
         encFile.writeBytes("priv-b".toByteArray())
@@ -324,7 +324,7 @@ class IdentityPersistenceAtomicityTest {
     @Test
     fun restoreStorageSnapshotDeletesFilesThatWerePreviouslyAbsent() {
         val repo = IdentityRepository(context, PlaintextCrypto())
-        val snapshot = repo.captureStorageSnapshot() // nothing exists yet
+        val snapshot = repo.captureStorageSnapshot // nothing exists yet
 
         encFile.writeBytes("created".toByteArray())
         pubFile.writeText("created")
@@ -341,7 +341,7 @@ class IdentityPersistenceAtomicityTest {
     @Test
     fun failedDeleteIsReturnedAsRestoreFailure() {
         val repo = IdentityRepository(context, PlaintextCrypto())
-        val snapshot = repo.captureStorageSnapshot() // nothing exists -> snapshot records absence
+        val snapshot = repo.captureStorageSnapshot // nothing exists -> snapshot records absence
 
         // Make authorized_keys undeletable via Files.deleteIfExists: a non-empty directory in
         // its place, rather than a filesystem permission trick.
@@ -384,7 +384,7 @@ class IdentityPersistenceAtomicityTest {
             Thread {
                 appendEntered.await(5, java.util.concurrent.TimeUnit.SECONDS)
                 snapshotAttempting.countDown()
-                snapshots.add(repo.captureStorageSnapshot().authorizedKeys)
+                snapshots.add(repo.captureStorageSnapshot.authorizedKeys)
             }
         appendThread.start()
         snapshotThread.start()
@@ -420,7 +420,7 @@ class IdentityPersistenceAtomicityTest {
             Thread {
                 commitEnteredAfterEnc.await(5, java.util.concurrent.TimeUnit.SECONDS)
                 snapshotAttempting.countDown()
-                snapshots.add(repo.captureStorageSnapshot())
+                snapshots.add(repo.captureStorageSnapshot)
             }
         commitThread.start()
         snapshotThread.start()

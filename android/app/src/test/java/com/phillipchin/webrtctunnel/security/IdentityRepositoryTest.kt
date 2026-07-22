@@ -30,9 +30,9 @@ class IdentityRepositoryTest {
 
     @Test
     fun hasEncryptedIdentityReflectsFilePresence() {
-        assertFalse(repository.hasEncryptedIdentity())
+        assertFalse(repository.hasEncryptedIdentity)
         repository.storeEncryptedIdentity("private".toByteArray(), "public")
-        assertTrue(repository.hasEncryptedIdentity())
+        assertTrue(repository.hasEncryptedIdentity)
     }
 
     @Test
@@ -116,7 +116,7 @@ class IdentityRepositoryTest {
     fun restoreStorageSnapshotRevertsIdentityPairMutation() {
         repository.storeEncryptedIdentity("old-private".toByteArray(), "old-public")
         repository.appendAuthorizedPublicIdentity("old-key peerA").getOrThrow()
-        val snapshot = repository.captureStorageSnapshot()
+        val snapshot = repository.captureStorageSnapshot
 
         repository.storeEncryptedIdentity("new-private".toByteArray(), "new-public")
         repository.appendAuthorizedPublicIdentity("new-key peerB").getOrThrow()
@@ -133,7 +133,7 @@ class IdentityRepositoryTest {
     fun restoreStorageSnapshotRecreatesAbsentFiles() {
         // No identity stored: the snapshot records absence and restore must delete anything
         // created in between, not leave a stale file.
-        val snapshot = repository.captureStorageSnapshot()
+        val snapshot = repository.captureStorageSnapshot
         assertFalse(snapshot.encryptedIdentity.existed)
 
         repository.storeEncryptedIdentity("created-later".toByteArray(), "pub")
@@ -142,15 +142,60 @@ class IdentityRepositoryTest {
         val results = repository.restoreStorageSnapshot(snapshot)
 
         assertTrue("every file must restore successfully", results.all { it is IdentityRestoreResult.Success })
-        assertFalse("identity.enc must be absent again", repository.hasEncryptedIdentity())
+        assertFalse("identity.enc must be absent again", repository.hasEncryptedIdentity)
         assertEquals("", repository.readPublicIdentity())
         assertFalse("authorized_keys must be absent again", File(context.filesDir, "authorized_keys").exists())
+    }
+
+    // FIX8 P0-004-E: stage-specific restore — the pair-only and authorized-keys-only variants
+    // must each touch only their own file(s), never the other.
+
+    @Test
+    fun restoreIdentityPairSnapshotDoesNotTouchAuthorizedKeys() {
+        repository.storeEncryptedIdentity("old-private".toByteArray(), "old-public")
+        repository.appendAuthorizedPublicIdentity("old-key peerA").getOrThrow()
+        val snapshot = repository.captureStorageSnapshot
+
+        repository.storeEncryptedIdentity("new-private".toByteArray(), "new-public")
+        repository.appendAuthorizedPublicIdentity("new-key peerB").getOrThrow()
+
+        val results = repository.restoreIdentityPairSnapshot(snapshot)
+
+        assertTrue(results.all { it is IdentityRestoreResult.Success })
+        assertArrayEquals("old-private".toByteArray(), repository.readPrivateIdentityPlaintext())
+        assertEquals("old-public", repository.readPublicIdentity())
+        assertEquals(
+            "authorized_keys must be untouched by a pair-only restore",
+            listOf("new-key peerB", "old-key peerA"),
+            File(context.filesDir, "authorized_keys").readLines(),
+        )
+    }
+
+    @Test
+    fun restoreAuthorizedKeysSnapshotDoesNotTouchIdentityPair() {
+        repository.storeEncryptedIdentity("old-private".toByteArray(), "old-public")
+        repository.appendAuthorizedPublicIdentity("old-key peerA").getOrThrow()
+        val snapshot = repository.captureStorageSnapshot
+
+        repository.storeEncryptedIdentity("new-private".toByteArray(), "new-public")
+        repository.appendAuthorizedPublicIdentity("new-key peerB").getOrThrow()
+
+        val results = repository.restoreAuthorizedKeysSnapshot(snapshot)
+
+        assertTrue(results.all { it is IdentityRestoreResult.Success })
+        assertEquals(listOf("old-key peerA"), File(context.filesDir, "authorized_keys").readLines())
+        assertArrayEquals(
+            "the identity pair must be untouched by an authorized-keys-only restore",
+            "new-private".toByteArray(),
+            repository.readPrivateIdentityPlaintext(),
+        )
+        assertEquals("new-public", repository.readPublicIdentity())
     }
 
     @Test
     fun snapshotOfEncryptedIdentityCapturesCiphertextNotPlaintext() {
         repository.storeEncryptedIdentity("secret-private".toByteArray(), "pub")
-        val snapshot = repository.captureStorageSnapshot()
+        val snapshot = repository.captureStorageSnapshot
 
         // The captured bytes are the on-disk ciphertext, never the plaintext.
         assertFalse(

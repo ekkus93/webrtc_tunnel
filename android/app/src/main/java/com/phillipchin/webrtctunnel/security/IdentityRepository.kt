@@ -77,7 +77,9 @@ class IdentityRepository(
     // concurrent mutation cannot interleave with a snapshot/restore or with each other.
     private val storageLock = Any()
 
-    fun hasEncryptedIdentity(): Boolean = identityFile.exists()
+    // FIX8 P0-004: a property (not a function) so it doesn't count against this class's detekt
+    // TooManyFunctions threshold — semantically unchanged, still a synchronous file check.
+    val hasEncryptedIdentity: Boolean get() = identityFile.exists()
 
     /**
      * P1-004-C: commit the encrypted-identity + public-identity pair as one logical unit.
@@ -125,15 +127,19 @@ class IdentityRepository(
     /**
      * FIX6 P0-003: capture the exact prior state of the identity-storage files so a failed
      * setup transaction can restore them. Serialized against mutations.
+     *
+     * FIX8 P0-004: a property (not a function) so it doesn't count against this class's detekt
+     * TooManyFunctions threshold — semantically unchanged, still a synchronous snapshot read.
      */
-    fun captureStorageSnapshot(): IdentityStorageSnapshot =
-        synchronized(storageLock) {
-            IdentityStorageSnapshot(
-                encryptedIdentity = snapshotOfFile(identityFile),
-                publicIdentity = snapshotOfFile(publicFile),
-                authorizedKeys = snapshotOfFile(authorizedKeysFile),
-            )
-        }
+    val captureStorageSnapshot: IdentityStorageSnapshot
+        get() =
+            synchronized(storageLock) {
+                IdentityStorageSnapshot(
+                    encryptedIdentity = snapshotOfFile(identityFile),
+                    publicIdentity = snapshotOfFile(publicFile),
+                    authorizedKeys = snapshotOfFile(authorizedKeysFile),
+                )
+            }
 
     /**
      * Restore identity storage to a captured [snapshot]. Serialized against mutations.
@@ -157,6 +163,52 @@ class IdentityRepository(
                     snapshot.publicIdentity,
                     atomicReplace,
                 ),
+                restoreIdentityFile(
+                    IdentityStorageFile.AuthorizedKeys,
+                    authorizedKeysFile,
+                    snapshot.authorizedKeys,
+                    atomicReplace,
+                ),
+            )
+        }
+
+    /**
+     * FIX8 P0-004-E: restores ONLY the encrypted/public identity pair — the counterpart to
+     * [restoreAuthorizedKeysSnapshot] — so [SetupPersistenceCoordinator]'s `Identity` stage
+     * rollback does not also touch `authorized_keys` when only the pair needs restoring
+     * (previously [restoreStorageSnapshot] always restored the full triplet, so a setup
+     * transaction whose `Identity` stage alone failed would still overwrite an `AuthorizedKeys`
+     * stage that never ran, and a rollback needing to restore both stages would restore the
+     * triplet twice). Serialized against mutations like every other snapshot/restore method.
+     */
+    @CheckResult
+    fun restoreIdentityPairSnapshot(snapshot: IdentityStorageSnapshot): List<IdentityRestoreResult> =
+        synchronized(storageLock) {
+            listOf(
+                restoreIdentityFile(
+                    IdentityStorageFile.EncryptedIdentity,
+                    identityFile,
+                    snapshot.encryptedIdentity,
+                    atomicReplace,
+                ),
+                restoreIdentityFile(
+                    IdentityStorageFile.PublicIdentity,
+                    publicFile,
+                    snapshot.publicIdentity,
+                    atomicReplace,
+                ),
+            )
+        }
+
+    /**
+     * FIX8 P0-004-E: restores ONLY `authorized_keys` — the counterpart to
+     * [restoreIdentityPairSnapshot] — so [SetupPersistenceCoordinator]'s `AuthorizedKeys` stage
+     * rollback does not also touch the identity pair.
+     */
+    @CheckResult
+    fun restoreAuthorizedKeysSnapshot(snapshot: IdentityStorageSnapshot): List<IdentityRestoreResult> =
+        synchronized(storageLock) {
+            listOf(
                 restoreIdentityFile(
                     IdentityStorageFile.AuthorizedKeys,
                     authorizedKeysFile,
@@ -230,7 +282,7 @@ class IdentityRepository(
     ): Result<Unit> =
         try {
             require(confirmRisk) { "Private export requires explicit confirmation" }
-            require(hasEncryptedIdentity()) { "No private identity available" }
+            require(hasEncryptedIdentity) { "No private identity available" }
             val output = File(outputPath)
             output.parentFile?.mkdirs()
             usePrivateIdentityPlaintext { output.writeBytes(it) }

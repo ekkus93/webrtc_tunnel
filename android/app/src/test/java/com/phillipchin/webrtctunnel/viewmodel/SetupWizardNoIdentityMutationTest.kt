@@ -82,7 +82,7 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
 
         assertUnchanged(idBefore, identityFile, "encrypted identity")
         assertUnchanged(pubBefore, publicFile, "public identity")
-        assertFalse(deps.identityRepository.hasEncryptedIdentity())
+        assertFalse(deps.identityRepository.hasEncryptedIdentity)
         assertNotNull("generation must populate the draft", viewModel.identityDraft.copyForSave())
     }
 
@@ -99,7 +99,7 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
 
         assertUnchanged(idBefore, identityFile, "encrypted identity")
         assertUnchanged(pubBefore, publicFile, "public identity")
-        assertFalse(deps.identityRepository.hasEncryptedIdentity())
+        assertFalse(deps.identityRepository.hasEncryptedIdentity)
         assertNotNull("URI import must populate the draft", viewModel.identityDraft.copyForSave())
     }
 
@@ -117,7 +117,7 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
 
         assertUnchanged(idBefore, identityFile, "encrypted identity")
         assertUnchanged(pubBefore, publicFile, "public identity")
-        assertFalse(deps.identityRepository.hasEncryptedIdentity())
+        assertFalse(deps.identityRepository.hasEncryptedIdentity)
         assertNotNull("path import must populate the draft", viewModel.identityDraft.copyForSave())
     }
 
@@ -214,7 +214,7 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
         awaitState(viewModel) { it.saveResult == "Configuration saved" }
 
         assertNull("successful save must clear the draft", viewModel.identityDraft.copyForSave())
-        assertTrue("save must persist the identity", deps.identityRepository.hasEncryptedIdentity())
+        assertTrue("save must persist the identity", deps.identityRepository.hasEncryptedIdentity)
     }
 
     @Test
@@ -228,7 +228,7 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
         awaitState(viewModel) { it.errorMessage != null }
 
         assertNotNull("a failed save must retain the draft for retry", viewModel.identityDraft.copyForSave())
-        assertFalse("a failed save must not persist the identity", deps.identityRepository.hasEncryptedIdentity())
+        assertFalse("a failed save must not persist the identity", deps.identityRepository.hasEncryptedIdentity)
     }
 
     @Test

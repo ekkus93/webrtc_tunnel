@@ -23,7 +23,7 @@ private fun validateIdentityStep(
     deps: AppDependencies,
     state: SetupWizardState,
 ): String? {
-    val hasStored = deps.identityRepository.hasEncryptedIdentity()
+    val hasStored = deps.identityRepository.hasEncryptedIdentity
     return if (!hasStored && state.importIdentityPath.isBlank() && state.localPublicIdentity.isBlank()) {
         "Import or generate a private identity to continue"
     } else {

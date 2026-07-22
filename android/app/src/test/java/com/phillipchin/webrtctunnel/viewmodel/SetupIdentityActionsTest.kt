@@ -42,7 +42,7 @@ class SetupIdentityActionsTest : AppViewModelTestBase() {
         assertEquals(false, state.isBusy)
         // FIX8 P0-001-B: generation is draft-only — nothing is persisted before final save.
         assertEquals("", deps.identityRepository.readPublicIdentity())
-        assertEquals(false, deps.identityRepository.hasEncryptedIdentity())
+        assertEquals(false, deps.identityRepository.hasEncryptedIdentity)
     }
 
     @Test
@@ -96,7 +96,7 @@ class SetupIdentityActionsTest : AppViewModelTestBase() {
         assertEquals(false, state.isBusy)
         // FIX8 P0-001-B: URI import is draft-only — nothing is persisted before final save.
         assertEquals("", deps.identityRepository.readPublicIdentity())
-        assertEquals(false, deps.identityRepository.hasEncryptedIdentity())
+        assertEquals(false, deps.identityRepository.hasEncryptedIdentity)
     }
 
     @Test

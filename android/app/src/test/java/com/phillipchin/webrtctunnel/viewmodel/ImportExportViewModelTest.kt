@@ -209,7 +209,7 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
 
     @Test
     fun importExportViewModelUsesIdentityLessValidationWhenNoIdentity() {
-        assertTrue(!deps.identityRepository.hasEncryptedIdentity())
+        assertTrue(!deps.identityRepository.hasEncryptedIdentity)
         val vm = ImportExportViewModel(deps)
         val configFile =
             File(app.filesDir, "identity-less-import-config.toml").apply {

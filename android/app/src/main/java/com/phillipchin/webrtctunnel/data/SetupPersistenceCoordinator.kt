@@ -195,7 +195,7 @@ class SetupPersistenceCoordinator(
 
     private suspend fun captureSnapshot(): SetupSnapshot =
         SetupSnapshot(
-            identity = identityRepository.captureStorageSnapshot(),
+            identity = identityRepository.captureStorageSnapshot,
             brokerSecret = brokerSecretRepository.captureSnapshot().getOrThrow(),
             files = configRepository.captureFilesSnapshot().getOrThrow(),
             preferences = loadPreferences(),

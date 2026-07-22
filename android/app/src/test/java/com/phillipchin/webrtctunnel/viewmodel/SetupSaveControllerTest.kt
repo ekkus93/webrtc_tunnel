@@ -668,7 +668,7 @@ class SetupSaveControllerTest {
         // If blocked at Identity with a stored identity, that's fine - the save path
         // will resolve the stored identity. If no stored identity, we're testing the
         // "missing identity" path.
-        val hadStoredIdentity = deps.identityRepository.hasEncryptedIdentity()
+        val hadStoredIdentity = deps.identityRepository.hasEncryptedIdentity
 
         repeat(SetupStep.entries.size) {
             if (viewModel.state.value.currentStep == SetupStep.Review) return@repeat

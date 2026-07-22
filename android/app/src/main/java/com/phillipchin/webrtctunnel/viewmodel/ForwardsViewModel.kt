@@ -278,7 +278,7 @@ private data class RegenerationInputs(
 // unreadable present identity is a visible failure (P1-001), with a fixed safe message — the
 // raw underlying error is attached only as [cause], never surfaced as diagnostic text.
 private fun readIdentityBytesOrThrow(deps: AppDependencies): ByteArray? =
-    if (deps.identityRepository.hasEncryptedIdentity()) {
+    if (deps.identityRepository.hasEncryptedIdentity) {
         try {
             deps.identityRepository.readPrivateIdentityPlaintext()
         } catch (error: Exception) {
