@@ -126,92 +126,61 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
         assertTrue(vm.forwards.value.none { it.id == "web" })
     }
 
+    // FIX8 P0-005-C/D: validation now runs entirely before any authoritative mutation, so a
+    // validation failure can no longer coexist with an already-committed forwards mutation —
+    // the equivalent "rollback also fails" scenario is now the coordinator's own rollback of an
+    // already-committed Forwards stage after the Config stage fails. Block inside the Config
+    // stage's real write (forwards already committed by then) to create that window, then make
+    // the forwards-restore itself fail.
     @Test
-    fun forwardsViewModelSaveSurfacesRollbackFailureWhenRollbackPersistenceFails() {
-        // Inline (Unconfined) dispatchers would run save-to-rollback start-to-finish with
-        // no window to interleave a filesystem change, so use real IO dispatchers here —
-        // matching LogsViewModelTest's concurrentExportIsRejectedWhileOneIsAlreadyInFlight
-        // pattern — to genuinely suspend at withContext(ioDispatcher).
+    fun forwardsViewModelSaveSurfacesRollbackIncompleteWhenForwardsRestoreFails() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val blockingRepo =
+            object : ConfigRepository(app) {
+                override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+                    entered.countDown()
+                    release.await()
+                    return Result.failure(java.io.IOException("disk full"))
+                }
+            }
         val realIoDeps =
             AppDependencies(
                 context = app,
                 nativeBridgeFactory = { recordingBridge },
-                configRepository = configRepository,
+                configRepository = blockingRepo,
                 networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
                 identityRepository = deps.identityRepository,
                 dispatchers = realIoTestDispatchers(),
             )
+        runBlocking { realIoDeps.forwardsRepository.refresh() }
         val vm = ForwardsViewModel(realIoDeps)
-        val forward =
-            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
+        recordingBridge.validationResult = ValidationResult(true, null)
 
-        recordingBridge.blockNextValidateConfig()
-        vm.saveForward(forward)
-        // The upsert() call itself hops to a real IO dispatcher and back before
-        // regenerateActiveConfig() runs, so the launch must be resumed on the (Robolectric
-        // shadow) main looper in between — pump it while waiting for entry rather than
-        // blocking this thread, which is the only thread that can drain that queue.
-        awaitCondition { recordingBridge.validateConfigEnteredNow() }
-        // Mutation persistence (the upsert) happens before regenerateActiveConfig() calls
-        // into validation, so reaching the blocked call proves it already succeeded.
+        vm.saveForward(
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true),
+        )
+        // Wait until blocked inside the Config stage's write — the Forwards stage has already
+        // committed by this point (it runs first).
+        awaitCondition { entered.count == 0L }
         assertTrue(realIoDeps.forwardsRepository.current().any { it.id == "web" })
 
-        // Make rollback persistence fail: the real ForwardsConfigStore writes forwards.json
-        // under filesDir, so making that directory unwritable forces its temp-file create to
-        // throw — no production hook needed, per the TODO's instruction.
+        // Make the forwards-restore (rollback) fail: the real ForwardsConfigStore writes
+        // forwards.json under filesDir, so making that directory unwritable forces the
+        // restore's atomic replace to throw — no production hook needed.
         assertTrue(app.filesDir.setWritable(false))
         try {
-            recordingBridge.releaseBlockedValidateConfig(ValidationResult(false, "bad config"))
+            release.countDown()
             awaitMessage(vm) { it != null }
         } finally {
             app.filesDir.setWritable(true)
         }
 
         val message = requireNotNull(vm.message.value)
-        assertTrue("expected original failure in: $message", message.contains("bad config"))
-        assertTrue("expected rollback failure in: $message", message.contains("Rollback also failed"))
+        assertTrue("expected original failure in: $message", message.contains("disk full"))
         assertTrue(
-            "expected consistency-state wording in: $message",
-            message.contains("remains saved") && message.contains("not activated"),
-        )
-    }
-
-    @Test
-    fun forwardsViewModelDeleteSurfacesRollbackFailureWhenRollbackPersistenceFails() {
-        val realIoDeps =
-            AppDependencies(
-                context = app,
-                nativeBridgeFactory = { recordingBridge },
-                configRepository = configRepository,
-                networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
-                identityRepository = deps.identityRepository,
-                dispatchers = realIoTestDispatchers(),
-            )
-        val vm = ForwardsViewModel(realIoDeps)
-        // FIX7 P1-003-B: ForwardsRepository no longer reads its baseline at construction —
-        // the VM's init-triggered reload() is async, so wait for it before asserting on the
-        // seeded default forwards (which include "ssh"; delete it rather than an added one).
-        awaitCondition { realIoDeps.forwardsRepository.current().any { it.id == "ssh" } }
-
-        recordingBridge.blockNextValidateConfig()
-        vm.deleteForward("ssh")
-        awaitCondition { recordingBridge.validateConfigEnteredNow() }
-        assertTrue(realIoDeps.forwardsRepository.current().none { it.id == "ssh" })
-
-        assertTrue(app.filesDir.setWritable(false))
-        try {
-            recordingBridge.releaseBlockedValidateConfig(ValidationResult(false, "bad config"))
-            awaitMessage(vm) { it != null }
-        } finally {
-            app.filesDir.setWritable(true)
-        }
-
-        val message = requireNotNull(vm.message.value)
-        assertTrue("expected original failure in: $message", message.contains("bad config"))
-        assertTrue("expected rollback failure in: $message", message.contains("Rollback also failed"))
-        assertTrue(
-            "expected consistency-state wording in: $message",
-            message.contains("remains saved") && message.contains("not activated"),
+            "expected rollback-incomplete wording in: $message",
+            message.contains("could not be fully rolled back"),
         )
     }
 
@@ -330,6 +299,10 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
                 identityRepository = deps.identityRepository,
                 dispatchers = realIoTestDispatchers(),
             )
+        // FIX8 P0-005-D: the coordinator's Forwards stage calls forwardsRepository.
+        // captureForTransaction(), which fails unless the baseline has reached Ready — wait for
+        // it explicitly rather than racing the ViewModel's own init-triggered reload().
+        runBlocking { realIoDeps.forwardsRepository.refresh() }
         val vm = ForwardsViewModel(realIoDeps)
         val forward =
             ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true)
@@ -436,16 +409,20 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
         )
     }
 
-    // FIX7 P1-001-E: when validation/write itself fails AND candidate cleanup also fails, the
-    // original failure message must remain the one reported — not silently replaced.
+    // FIX8 P0-005-A/C/E: candidate cleanup now happens entirely before any authoritative
+    // mutation is even attempted, so a real config-write failure can no longer coexist with a
+    // cleanup failure the way it could before — the equivalent scenario is now a *validation*
+    // failure occurring alongside a cleanup failure: the original validation failure must remain
+    // the one reported, not silently replaced by the cleanup failure, and the mutation must
+    // never have been attempted at all.
     @Test
-    fun forwardPrimaryFailurePreservedWhenCleanupAlsoFails() {
+    fun forwardValidationFailurePreservedWhenCleanupAlsoFails() {
         val vm =
             forwardsViewModelWith(
-                WriteFailingConfigRepository(app) { Result.failure(java.io.IOException("disk full")) },
+                ConfigRepository(app),
                 deleteCandidateFile = { Result.failure(java.io.IOException("cleanup boom")) },
             )
-        recordingBridge.validationResult = ValidationResult(true, null)
+        recordingBridge.validationResult = ValidationResult(false, "bad config")
 
         vm.saveForward(
             ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true),
@@ -453,12 +430,16 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
 
         awaitMessage(vm) { it != null }
         assertTrue(
-            "the primary write failure must be surfaced, not replaced by the cleanup " +
+            "the primary validation failure must be surfaced, not replaced by the cleanup " +
                 "failure: ${vm.message.value}",
-            vm.message.value?.contains("disk full") == true,
+            vm.message.value?.contains("bad config") == true,
         )
         assertFalse(
-            "the cleanup-only failure message must not mask the real write failure",
+            "the mutation must never have been attempted when validation already failed",
+            vm.forwards.value.any { it.id == "web" },
+        )
+        assertFalse(
+            "the cleanup-only failure message must not mask the real validation failure",
             vm.message.value?.contains("candidate_cleanup_failed") == true,
         )
     }
@@ -536,7 +517,7 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
         awaitMessage(vm) { it != null }
         assertTrue(
             "the config-write failure must be surfaced, not swallowed: ${vm.message.value}",
-            vm.message.value?.contains("Failed to write active config") == true,
+            vm.message.value?.contains("Failed to apply forward configuration") == true,
         )
     }
 
@@ -564,6 +545,10 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
                 identityRepository = deps.identityRepository,
                 dispatchers = realIoTestDispatchers(),
             )
+        // FIX8 P0-005-D: the coordinator's Forwards stage calls forwardsRepository.
+        // captureForTransaction(), which fails unless the baseline has reached Ready — wait for
+        // the ViewModel's own init-triggered reload() to actually complete instead of racing it.
+        runBlocking { realIoDeps.forwardsRepository.refresh() }
         val vm = ForwardsViewModel(realIoDeps)
         recordingBridge.validationResult = ValidationResult(true, null)
 

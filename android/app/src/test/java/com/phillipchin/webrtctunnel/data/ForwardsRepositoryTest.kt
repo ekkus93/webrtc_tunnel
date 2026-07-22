@@ -385,14 +385,16 @@ class ForwardsRepositoryTest {
         }
 
     @Test
-    fun restoreForTransactionRevertsExactBytesListAndAdvancesRevision() =
+    fun restoreForTransactionRevertsExactBytesListAndAdvancesRevisionWhenStageWasApplied() =
         runBlocking {
             repo.upsertWithReceipt(forward("prior", 1111)).getOrThrow()
             val snapshot = repo.captureForTransaction().getOrThrow()
             val priorBytes = file.readBytes()
+            // Stands in for the transaction's own Forwards-stage apply, which is exactly what
+            // advances the revision by one before a rollback of that same stage runs.
             val receiptBeforeTransaction = repo.upsertWithReceipt(forward("during-transaction", 2222)).getOrThrow()
 
-            val result = repo.restoreForTransaction(snapshot)
+            val result = repo.restoreForTransaction(snapshot, stageWasApplied = true)
 
             assertTrue(result.isSuccess)
             org.junit.Assert.assertArrayEquals(priorBytes, file.readBytes())
@@ -404,6 +406,25 @@ class ForwardsRepositoryTest {
                 repo.rollbackReceipt(receiptBeforeTransaction).exceptionOrNull()
                     is ForwardsRevisionMismatchException,
             )
+        }
+
+    @Test
+    fun restoreForTransactionRefusesToOverwriteConcurrentMutationNotFromThisTransaction() =
+        runBlocking {
+            repo.upsertWithReceipt(forward("prior", 1111)).getOrThrow()
+            val snapshot = repo.captureForTransaction().getOrThrow()
+            // A mutation from outside this transaction (e.g. a direct edit while this
+            // transaction's own Forwards stage was never attempted) must not be silently
+            // clobbered by a stale restore — this is the P1-002 protection extended to
+            // transaction-scoped restores.
+            repo.upsertWithReceipt(forward("concurrent", 2222)).getOrThrow()
+            val bytesAfterConcurrentMutation = file.readBytes()
+
+            val result = repo.restoreForTransaction(snapshot, stageWasApplied = false)
+
+            assertTrue(result.exceptionOrNull() is ForwardsRevisionMismatchException)
+            org.junit.Assert.assertArrayEquals(bytesAfterConcurrentMutation, file.readBytes())
+            assertEquals(listOf(forward("prior", 1111), forward("concurrent", 2222)), repo.current())
         }
 
     /** Delegates every [ForwardsStore] call to [real] except [saveForwards] (performs the real

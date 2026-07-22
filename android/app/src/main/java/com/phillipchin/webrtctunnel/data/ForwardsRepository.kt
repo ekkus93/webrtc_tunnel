@@ -46,6 +46,10 @@ internal class ForwardsTransactionSnapshot(
     val list: List<ForwardConfig>,
     val loadState: ForwardsLoadState,
     val loadError: String?,
+    // FIX8 P0-005: the revision at capture time, so restoreForTransaction can detect and refuse
+    // to overwrite a newer concurrent mutation — the same protection rollbackReceipt already
+    // gives ForwardsMutationReceipt (P1-002).
+    val capturedRevision: Long,
 )
 
 /**
@@ -320,6 +324,7 @@ class ForwardsRepository(
                         list = _forwards.value,
                         loadState = _loadState.value,
                         loadError = _loadError.value,
+                        capturedRevision = revision,
                     )
                 }
             }
@@ -347,14 +352,29 @@ class ForwardsRepository(
         }
 
     /**
-     * FIX8 P0-004-D: restores this repository to exactly [snapshot]'s prior state for the setup
+     * FIX8 P0-004-D/P0-005: restores this repository to exactly [snapshot]'s prior state for a
      * transaction's `Forwards` stage rollback — disk first (exact bytes, not a re-serialized
      * list), then in-memory list/load-state/load-error, advancing [revision] on success so any
      * receipt issued mid-transaction is invalidated afterward.
+     *
+     * [stageWasApplied] tells this call the one fact it cannot otherwise know: whether *this*
+     * transaction's own `Forwards` stage actually committed (incrementing [revision] once)
+     * before this restore runs. The expected revision is [ForwardsTransactionSnapshot
+     * .capturedRevision] plus one only in that case — if the live revision doesn't match, a
+     * concurrent mutation from outside this transaction has happened since capture, and this
+     * restore must refuse to overwrite it (P1-002's protection, extended from
+     * [rollbackReceipt] to transaction-scoped restores).
      */
     @CheckResult
-    internal suspend fun restoreForTransaction(snapshot: ForwardsTransactionSnapshot): Result<Unit> =
+    internal suspend fun restoreForTransaction(
+        snapshot: ForwardsTransactionSnapshot,
+        stageWasApplied: Boolean,
+    ): Result<Unit> =
         mutex.withLock {
+            val expectedRevision = if (stageWasApplied) snapshot.capturedRevision + 1 else snapshot.capturedRevision
+            if (revision != expectedRevision) {
+                return@withLock Result.failure(ForwardsRevisionMismatchException(expectedRevision, revision))
+            }
             withContext(dispatchers.io) {
                 mutationResult {
                     store.restoreExactSnapshot(snapshot.exactFile).getOrThrow()

@@ -182,7 +182,7 @@ class SetupPersistenceCoordinator(
                             // FIX7 P0-004-C: wrapped in NonCancellable so an ordinary-failure
                             // rollback still runs to completion even if the caller's scope is
                             // concurrently cancelled (e.g. the user navigates away) while it runs.
-                            rollback = withContext(NonCancellable) { rollback(snapshot, attempted) },
+                            rollback = withContext(NonCancellable) { rollback(snapshot, attempted, applied) },
                         )
                     }
                     applied += stage
@@ -194,7 +194,7 @@ class SetupPersistenceCoordinator(
                 // cancellation) before propagating — otherwise a cancelled save silently leaves
                 // live storage in a partially-mutated state. Rollback runs under NonCancellable
                 // so the already-cancelled scope cannot abort it partway through.
-                val rollbackResults = withContext(NonCancellable) { rollback(snapshot, attempted) }
+                val rollbackResults = withContext(NonCancellable) { rollback(snapshot, attempted, applied) }
                 rollbackResults.filterIsInstance<SetupRollbackStageResult.Failure>().forEach { failure ->
                     cancelled.addSuppressed(SetupRollbackException(failure.stage, failure.reason))
                 }
@@ -269,10 +269,11 @@ class SetupPersistenceCoordinator(
     private suspend fun rollback(
         snapshot: SetupSnapshot,
         attempted: List<SetupPersistenceStage>,
+        applied: List<SetupPersistenceStage>,
     ): List<SetupRollbackStageResult> =
         attempted.asReversed().map { stage ->
             try {
-                restoreStage(stage, snapshot)
+                restoreStage(stage, snapshot, stageWasApplied = stage in applied)
                 SetupRollbackStageResult.Success(stage)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -284,6 +285,7 @@ class SetupPersistenceCoordinator(
     private suspend fun restoreStage(
         stage: SetupPersistenceStage,
         snapshot: SetupSnapshot,
+        stageWasApplied: Boolean,
     ) {
         when (stage) {
             // FIX8 P0-004-E: each stage restores only its own file(s) — Identity the pair,
@@ -301,7 +303,7 @@ class SetupPersistenceCoordinator(
                 configRepository.restoreSetupInputFileSnapshot(snapshot.files.setupInput).getOrThrow()
             SetupPersistenceStage.Preferences -> persistPreferences(snapshot.preferences).getOrThrow()
             SetupPersistenceStage.Forwards ->
-                forwardsRepository.restoreForTransaction(snapshot.forwards).getOrThrow()
+                forwardsRepository.restoreForTransaction(snapshot.forwards, stageWasApplied).getOrThrow()
             SetupPersistenceStage.Config ->
                 configRepository.restoreConfigSnapshot(snapshot.files.config).getOrThrow()
             SetupPersistenceStage.Snapshot -> Unit

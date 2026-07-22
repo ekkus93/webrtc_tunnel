@@ -4,23 +4,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.CandidateCleanupException
-import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
 import com.phillipchin.webrtctunnel.data.ConfigurationOperation
-import com.phillipchin.webrtctunnel.data.ForwardsMutationBlocked
-import com.phillipchin.webrtctunnel.data.ForwardsMutationReceipt
-import com.phillipchin.webrtctunnel.data.ForwardsRevisionMismatchException
+import com.phillipchin.webrtctunnel.data.ForwardConfigurationResult
+import com.phillipchin.webrtctunnel.data.ForwardConfigurationRollbackStageResult
 import com.phillipchin.webrtctunnel.data.OperationFailure
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
-import com.phillipchin.webrtctunnel.data.describeForwardsFailure
 import com.phillipchin.webrtctunnel.data.loadSetupInputResult
 import com.phillipchin.webrtctunnel.data.renderOfferConfig
 import com.phillipchin.webrtctunnel.data.resolveBrokerPasswordPath
 import com.phillipchin.webrtctunnel.data.withCandidateFile
-import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.TunnelStatus
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.CancellationException
@@ -93,42 +88,87 @@ class ForwardsViewModel(
 
     fun saveForward(forward: ForwardConfig) {
         runForwardMutation {
-            // P1-001: Use receipt-based atomic upsert.
-            val receipt: ForwardsMutationReceipt =
-                deps.forwardsRepository.upsertWithReceipt(forward).getOrElse { error ->
-                    val message = mapMutationError(error)
-                    report(message, OperationFailure("forward_mutation_failed", message))
-                    return@runForwardMutation
+            val current = deps.forwardsRepository.current()
+            val proposed =
+                current.toMutableList().apply {
+                    val index = indexOfFirst { it.id == forward.id }
+                    if (index >= 0) set(index, forward) else add(forward)
                 }
-
-            val sync = withContext(ioDispatcher) { regenerateActiveConfig() }
-            if (sync.valid) {
-                report("Forward saved")
-            } else {
-                // Config sync failed — attempt to rollback the mutation via receipt.
-                rollbackWithReceipt(receipt, sync.message ?: "Forward update failed")
-            }
+            applyForwardChange(proposed, "Forward saved")
         }
     }
 
     fun deleteForward(forwardId: String) {
         runForwardMutation {
-            // P1-001: Use receipt-based atomic delete.
-            val receipt: ForwardsMutationReceipt =
-                deps.forwardsRepository.deleteWithReceipt(forwardId).getOrElse { error ->
-                    val message = mapMutationError(error)
-                    report(message, OperationFailure("forward_mutation_failed", message))
-                    return@runForwardMutation
-                }
-
-            val sync = withContext(ioDispatcher) { regenerateActiveConfig() }
-            if (sync.valid) {
-                report("Forward deleted")
-            } else {
-                // Config sync failed — attempt to rollback the mutation via receipt.
-                rollbackWithReceipt(receipt, sync.message ?: "Forward delete failed")
-            }
+            val proposed = deps.forwardsRepository.current().filterNot { it.id == forwardId }
+            applyForwardChange(proposed, "Forward deleted")
         }
+    }
+
+    /**
+     * FIX8 P0-005-C/D: builds the proposed list in memory, validates it and renders+native-
+     * validates its candidate config entirely before any authoritative mutation — no receipt is
+     * created before validation — then commits both forwards and config atomically through
+     * [ForwardConfigurationCoordinator]. Replaces the previous mutate-forwards-then-roll-back-
+     * via-receipt-if-config-fails pattern (CRITICAL-4): a forward mutation is no longer visible
+     * on disk/in-memory at all until the whole activation has succeeded.
+     */
+    private suspend fun applyForwardChange(
+        proposed: List<ForwardConfig>,
+        successMessage: String,
+    ) {
+        val structuralError = deps.forwardsStore.validateForwards(proposed)
+        if (structuralError != null) {
+            report(structuralError, OperationFailure("forward_mutation_failed", structuralError))
+            return
+        }
+
+        // FIX8 P0-005-D: both the render/native-validate step and the coordinator's own apply()
+        // must run on ioDispatcher, not the caller's (Main) dispatcher — both suspend inside real
+        // file I/O (and, in tests, a fake that blocks a real thread), which must never run on the
+        // main thread. One withContext boundary (not one per step) so there is only a single
+        // Main<->IO dispatch hop for the whole activation.
+        val outcome =
+            withContext(ioDispatcher) {
+                when (val rendered = renderAndValidateCandidate(deps, proposed, deleteCandidateFile)) {
+                    is CandidateRenderResult.Failed -> ForwardActivationOutcome.RenderFailed(rendered.message)
+                    is CandidateRenderResult.Ready ->
+                        ForwardActivationOutcome.Applied(
+                            deps.forwardConfigurationCoordinator.apply(proposed, rendered.candidate),
+                        )
+                }
+            }
+
+        when (outcome) {
+            is ForwardActivationOutcome.RenderFailed ->
+                report(outcome.message, OperationFailure("forward_mutation_failed", outcome.message))
+            is ForwardActivationOutcome.Applied ->
+                when (val result = outcome.result) {
+                    is ForwardConfigurationResult.Success -> report(successMessage)
+                    is ForwardConfigurationResult.Failed -> reportForwardConfigurationFailure(result)
+                }
+        }
+    }
+
+    private fun reportForwardConfigurationFailure(result: ForwardConfigurationResult.Failed) {
+        val rollbackIncomplete = result.rollback.any { it is ForwardConfigurationRollbackStageResult.Failure }
+        val rollbackSkipped = result.rollback.any { it is ForwardConfigurationRollbackStageResult.Skipped }
+        val code =
+            when {
+                rollbackIncomplete -> "forward_activation_rollback_incomplete"
+                rollbackSkipped -> "forward_activation_forwards_changed_again"
+                else -> "forward_activation_failed"
+            }
+        val message =
+            when {
+                rollbackIncomplete ->
+                    "Forward activation failed and could not be fully rolled back ($code): ${result.reason}"
+                rollbackSkipped ->
+                    "Forward activation failed, but forwards changed again before rollback ran, so the " +
+                        "newer forwards were kept ($code): ${result.reason}"
+                else -> "Forward activation failed and was rolled back ($code): ${result.reason}"
+            }
+        report(message, OperationFailure(code, message))
     }
 
     // FIX7 P0-001-C: admission is the single cross-feature coordinator spanning the whole
@@ -154,48 +194,6 @@ class ForwardsViewModel(
                 is ConfigurationAdmission.Completed -> Unit
             }
         }
-    }
-
-    /** Maps a forwards mutation error to a user-visible message. */
-    private fun mapMutationError(error: Throwable): String {
-        return when (error) {
-            is ForwardsMutationBlocked -> error.message ?: "Forwards mutation blocked"
-            else -> describeForwardsFailure(error)
-        }
-    }
-
-    /**
-     * P1-001: Rolls the mutation back using the [receipt].
-     * If the rollback fails due to a revision mismatch (a newer mutation happened),
-     * that is preserved. Otherwise, the rollback failure is reported.
-     */
-    private suspend fun rollbackWithReceipt(
-        receipt: ForwardsMutationReceipt,
-        syncFailureMessage: String,
-    ) {
-        deps.forwardsRepository.rollbackReceipt(receipt).fold(
-            onSuccess = {
-                report(syncFailureMessage, OperationFailure("forward_activation_failed", syncFailureMessage))
-            },
-            onFailure = { rollbackError ->
-                when (rollbackError) {
-                    is ForwardsRevisionMismatchException -> {
-                        // Revision changed: newer mutation happened, don't overwrite it.
-                        val message =
-                            "Activation failed. Automatic rollback was skipped because " +
-                                "forwards changed again. The newer changes were left untouched."
-                        report(message, OperationFailure("forward_rollback_skipped", message))
-                    }
-                    else -> {
-                        val rollbackMessage = describeForwardsFailure(rollbackError)
-                        val message =
-                            "$syncFailureMessage. Rollback also failed; the forward change " +
-                                "remains saved but was not activated: $rollbackMessage"
-                        report(message, OperationFailure("forward_rollback_incomplete", message))
-                    }
-                }
-            },
-        )
     }
 
     fun validateForwardDraft(
@@ -231,46 +229,64 @@ class ForwardsViewModel(
             report(SensitiveDataRedactor.redactText(resultMessage))
         }
     }
-
-    private suspend fun regenerateActiveConfig(): ValidationResult {
-        // A corrupt setup draft must block config regeneration rather than silently rendering
-        // a config from reset defaults.
-        val input =
-            deps.configRepository.loadSetupInputResult().getOrElse {
-                return ValidationResult(false, "Saved setup is corrupt; re-run setup before changing forwards")
-            }
-        val forwards = deps.forwardsRepository.current().filter { it.enabled }
-        val prefs = deps.configRepository.preferences.first()
-        // FIX7 P0-003-E: reference the existing authoritative broker secret path without
-        // rewriting it — forward activation never mutates identity/authorized_keys/broker
-        // secret. If setup configured a password but the managed file is missing, fail visibly
-        // instead of silently rendering a config that points at a nonexistent file. Folded into
-        // one `?:` with the render below (rather than its own early return) to stay under
-        // detekt's ReturnCount threshold.
-        val brokerPasswordPath = resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path)
-        // Combined into one `?:` (rather than its own early return) so the function keeps
-        // exactly two `return` statements total for detekt's ReturnCount threshold: this early
-        // corrupt-input check above, and this one. The success path is a top-level function
-        // (rather than an inline `run { ... }` lambda) to keep nesting under detekt's
-        // NestedBlockDepth threshold.
-        return missingBrokerPasswordFailure(deps, brokerPasswordPath)
-            ?: regenerateWithValidatedCandidate(
-                deps,
-                RegenerationInputs(input, forwards, prefs, brokerPasswordPath),
-                deleteCandidateFile,
-            )
-    }
 }
 
-// FIX7 P1-001-C: bundles regenerateWithValidatedCandidate's render inputs so adding
-// deleteCandidateFile (the injectable cleanup seam) doesn't push the function over detekt's
-// LongParameterList threshold.
-private data class RegenerationInputs(
-    val input: SetupConfigInput,
-    val forwards: List<ForwardConfig>,
-    val prefs: com.phillipchin.webrtctunnel.model.AndroidAppPreferences,
-    val brokerPasswordPath: String?,
-)
+/** Outcome of [ForwardsViewModel.applyForwardChange]'s single ioDispatcher-bound section: either
+ * the render/native-validate step failed (the coordinator was never called), or it was and the
+ * coordinator's own result determines success/failure. */
+private sealed interface ForwardActivationOutcome {
+    data class RenderFailed(val message: String) : ForwardActivationOutcome
+
+    data class Applied(val result: ForwardConfigurationResult) : ForwardActivationOutcome
+}
+
+/** Result of rendering and native-validating a forwards-config candidate (FIX8 P0-005-C): either
+ * the validated candidate string (cleanup already succeeded) or a user-facing failure message. */
+private sealed interface CandidateRenderResult {
+    data class Ready(val candidate: String) : CandidateRenderResult
+
+    data class Failed(val message: String) : CandidateRenderResult
+}
+
+/** Result of resolving setup input/preferences and rendering the (not-yet-validated) candidate
+ * config text — split out of [renderAndValidateCandidate] so its own two validity gates (corrupt
+ * setup draft, missing broker password) don't count against that function's return-count budget. */
+private sealed interface CandidatePreparation {
+    data class Ready(val candidate: String) : CandidatePreparation
+
+    data class Failed(val message: String) : CandidatePreparation
+}
+
+private suspend fun prepareCandidateConfig(
+    deps: AppDependencies,
+    proposed: List<ForwardConfig>,
+): CandidatePreparation {
+    val inputResult = deps.configRepository.loadSetupInputResult()
+    return if (inputResult.isFailure) {
+        CandidatePreparation.Failed("Saved setup is corrupt; re-run setup before changing forwards")
+    } else {
+        val input = inputResult.getOrThrow()
+        val enabledForwards = proposed.filter { it.enabled }
+        val prefs = deps.configRepository.preferences.first()
+        // FIX7 P0-003-E: reference the existing authoritative broker secret path without
+        // rewriting it — forward activation never mutates identity/authorized_keys/broker secret.
+        val brokerPasswordPath = resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path)
+        val missingBrokerPassword = missingBrokerPasswordFailure(deps, brokerPasswordPath)
+        if (missingBrokerPassword != null) {
+            CandidatePreparation.Failed(missingBrokerPassword.message ?: "Broker password file missing")
+        } else {
+            CandidatePreparation.Ready(
+                deps.configRepository.renderOfferConfig(
+                    input,
+                    enabledForwards,
+                    prefs.debugLogsEnabled,
+                    prefs.androidIceMode,
+                    brokerPasswordPath,
+                ),
+            )
+        }
+    }
+}
 
 // FIX7 P1-004-C: extracted to top level so its throw doesn't count against
 // regenerateWithValidatedCandidate's detekt ThrowsCount budget. Identity absent vs.
@@ -288,83 +304,94 @@ private fun readIdentityBytesOrThrow(deps: AppDependencies): ByteArray? =
         null
     }
 
-// FIX7 P0-003-E: the actual render+validate+commit path, extracted to top level (rather than an
-// inline `run { ... }` lambda inside regenerateActiveConfig) to keep that function's nesting
-// depth under detekt's NestedBlockDepth threshold.
-private suspend fun regenerateWithValidatedCandidate(
+/**
+ * FIX8 P0-005-C: renders a candidate config from the proposed (not-yet-committed) forwards list
+ * and native-validates it against an isolated candidate file — no repository is mutated here.
+ * The candidate is only returned [CandidateRenderResult.Ready] once cleanup has already
+ * succeeded (FIX8 P0-005-A pattern); the caller performs the one authoritative mutation
+ * (of both forwards and config) afterward, through [ForwardConfigurationCoordinator].
+ */
+private suspend fun renderAndValidateCandidate(
     deps: AppDependencies,
-    inputs: RegenerationInputs,
+    proposed: List<ForwardConfig>,
     deleteCandidateFile: (File) -> Result<Unit>,
-): ValidationResult {
+): CandidateRenderResult {
     val candidate =
-        deps.configRepository.renderOfferConfig(
-            inputs.input,
-            inputs.forwards,
-            inputs.prefs.debugLogsEnabled,
-            inputs.prefs.androidIceMode,
-            inputs.brokerPasswordPath,
-        )
+        when (val prepared = prepareCandidateConfig(deps, proposed)) {
+            is CandidatePreparation.Failed -> return CandidateRenderResult.Failed(prepared.message)
+            is CandidatePreparation.Ready -> prepared.candidate
+        }
     // FIX7 P1-001-C: withCandidateFile composes the unique candidate file's cleanup with the
-    // block's own outcome (P1-005/FIX6 INV-012 unique-per-validation naming preserved), so a
-    // cleanup-only failure (write succeeded, temp file couldn't be deleted) can never be
-    // silently discarded — it surfaces as a CandidateCleanupException instead. Treated the same
-    // as any other post-write failure below: the already-committed config write is rolled back
-    // via the receipt mechanism, since a leftover secret-bearing candidate file is serious enough
-    // that "saved" must not be reported without a guarantee it was actually cleaned up.
+    // block's own outcome, so a cleanup-only failure (validation succeeded, temp file couldn't
+    // be deleted) can never be silently discarded — it surfaces as a CandidateCleanupException
+    // instead. FIX8 P0-005-A: no mutation happens inside this block at all anymore.
     var identity: ByteArray? = null
-    // FIX6 P0-005: explicit try/catch (not runCatching) — it wraps the suspend
-    // writeConfigAtomically, so a cancellation must propagate, not become an invalid
-    // result.
     return try {
         withCandidateFile(deps.context.cacheDir, "forwards-config-", deleteCandidateFile) { temp ->
-            // Identity absent vs. present-but-unreadable differ: only the former falls back
-            // to identity-less validation; an unreadable present identity is a visible
-            // failure (P1-001).
-            val identityBytes = readIdentityBytesOrThrow(deps)
-            identity = identityBytes
-            temp.parentFile?.mkdirs()
-            temp.writeText(candidate)
-            val result =
-                if (identityBytes != null) {
-                    deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identityBytes)
-                } else {
-                    deps.identityValidation.validateConfig(temp.absolutePath)
-                }
-            val committed = commitRegeneratedForwardsConfig(deps.configRepository, candidate, result)
-            // FIX7 P1-001-C: a real validation/write failure must THROW here (not return
-            // normally) so withCandidateFile's cleanup composition can tell it apart from a
-            // genuine success — otherwise a cleanup failure on top of a real failure would
-            // silently replace the real failure's message with a generic cleanup one instead
-            // of preserving it (P1-001-E).
-            if (!committed.valid) {
-                throw ForwardsRegenerationFailedException(committed.message ?: "Failed to regenerate config")
-            }
-            committed
+            identity = validateCandidateOrThrow(deps, temp, candidate)
         }
+        // Candidate cleanup has already succeeded at this point.
+        CandidateRenderResult.Ready(candidate)
     } catch (cancelled: CancellationException) {
         throw cancelled
-    } catch (regenerationFailure: ForwardsRegenerationFailedException) {
-        ValidationResult(false, regenerationFailure.message)
-    } catch (identityUnreadable: IdentityUnreadableException) {
-        ValidationResult(false, identityUnreadable.message)
-    } catch (cleanupFailure: CandidateCleanupException) {
-        ValidationResult(
-            false,
-            "Config saved but the temporary candidate file could not be removed " +
-                "(candidate_cleanup_failed): " +
-                SensitiveDataRedactor.redactText(cleanupFailure.cause?.message ?: "unknown cleanup failure"),
-        )
     } catch (error: Exception) {
-        // FIX7 P1-004-C: redact — an unexpected exception's raw message is not known-safe.
-        ValidationResult(false, SensitiveDataRedactor.redactText(error.message ?: "Failed to regenerate config"))
+        mapCandidateFailure(error)
     } finally {
         // Wipe the plaintext identity buffer regardless of success/failure/cleanup outcome.
         identity?.fill(0)
     }
 }
 
-/** Signals a real validation/write failure (as opposed to a genuine success) out of the
- * [withCandidateFile] block in [regenerateWithValidatedCandidate], so its cleanup composition
+/**
+ * Writes [candidate] to [temp] and native-validates it, returning the identity bytes used (if
+ * any) so the caller can wipe them. Identity absent vs. present-but-unreadable differ: only the
+ * former falls back to identity-less validation; an unreadable present identity is a visible
+ * failure (P1-001). A real validation failure must THROW here (not return normally) so
+ * [withCandidateFile]'s cleanup composition can tell it apart from a genuine success.
+ */
+private fun validateCandidateOrThrow(
+    deps: AppDependencies,
+    temp: File,
+    candidate: String,
+): ByteArray? {
+    val identityBytes = readIdentityBytesOrThrow(deps)
+    temp.parentFile?.mkdirs()
+    temp.writeText(candidate)
+    val result =
+        if (identityBytes != null) {
+            deps.identityValidation.validateConfigWithIdentity(temp.absolutePath, identityBytes)
+        } else {
+            deps.identityValidation.validateConfig(temp.absolutePath)
+        }
+    if (!result.valid) {
+        throw ForwardsRegenerationFailedException(result.message ?: "Config validation failed")
+    }
+    return identityBytes
+}
+
+/** Maps a failure out of [renderAndValidateCandidate]'s candidate-file block to a user-facing
+ * [CandidateRenderResult.Failed] — kept separate so the distinct failure messages don't count
+ * against [renderAndValidateCandidate]'s own cyclomatic-complexity budget. */
+private fun mapCandidateFailure(error: Exception): CandidateRenderResult.Failed =
+    when (error) {
+        is ForwardsRegenerationFailedException ->
+            CandidateRenderResult.Failed(error.message ?: "Config validation failed")
+        is IdentityUnreadableException ->
+            CandidateRenderResult.Failed(error.message ?: "Identity unreadable")
+        is CandidateCleanupException ->
+            CandidateRenderResult.Failed(
+                "Temporary candidate file could not be removed (candidate_cleanup_failed): " +
+                    SensitiveDataRedactor.redactText(error.cause?.message ?: "unknown cleanup failure"),
+            )
+        // FIX7 P1-004-C: redact — an unexpected exception's raw message is not known-safe.
+        else ->
+            CandidateRenderResult.Failed(
+                SensitiveDataRedactor.redactText(error.message ?: "Failed to regenerate config"),
+            )
+    }
+
+/** Signals a real validation failure (as opposed to a genuine success) out of the
+ * [withCandidateFile] block in [renderAndValidateCandidate], so its cleanup composition
  * can tell a real failure apart from a cleanup-only failure on top of an actual success
  * (FIX7 P1-001-C). */
 private class ForwardsRegenerationFailedException(message: String) : Exception(message)
@@ -390,26 +417,4 @@ private fun missingBrokerPasswordFailure(
         )
     } else {
         null
-    }
-
-// FIX6 P0-001-D: a failed config commit invalidates the result so the caller rolls the forward
-// mutation back, rather than reporting a false "saved". Top-level (not a class member) to keep
-// regenerateActiveConfig's own length under the detekt LongMethod threshold.
-private suspend fun commitRegeneratedForwardsConfig(
-    configRepository: ConfigRepository,
-    candidate: String,
-    validation: ValidationResult,
-): ValidationResult =
-    if (!validation.valid) {
-        validation
-    } else {
-        configRepository.writeConfigAtomically(candidate).fold(
-            onSuccess = { validation },
-            onFailure = { error ->
-                ValidationResult(
-                    valid = false,
-                    message = SensitiveDataRedactor.redactText(error.message ?: "Failed to write active config"),
-                )
-            },
-        )
     }

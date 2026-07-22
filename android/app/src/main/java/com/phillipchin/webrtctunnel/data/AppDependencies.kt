@@ -39,6 +39,13 @@ class AppDependencies(
     val transactionalResetCoordinator: TransactionalResetCoordinator =
         TransactionalResetCoordinator(configRepository, forwardsRepository)
 
+    // FIX8 P0-005-D: commits a forward-list mutation and its rendered config atomically —
+    // ForwardsViewModel validates the proposed list and candidate first, then applies both
+    // resources through this one coordinator instead of the previous mutate-forwards-then-
+    // rollback-via-receipt-if-config-fails pattern.
+    val forwardConfigurationCoordinator: ForwardConfigurationCoordinator =
+        ForwardConfigurationCoordinator(forwardsRepository, configRepository)
+
     // FIX7 P0-001: the single cross-feature admission guard for setup save, config import,
     // forward mutation+activation, and configuration reset (FIX7-INV-009). A body val (not a
     // constructor parameter) for the same reason as appInitializationCoordinator below.
