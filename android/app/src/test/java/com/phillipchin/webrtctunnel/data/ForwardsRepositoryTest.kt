@@ -330,13 +330,35 @@ class ForwardsRepositoryTest {
         assertTrue("a cancelled reset must not publish the empty list", cancelling.current().any { it.id == "web" })
     }
 
+    private class CancellingRestoreStore(
+        private val initial: List<ForwardConfig>,
+    ) : ForwardsStore {
+        override fun loadForwardsResult(): Result<List<ForwardConfig>> = Result.success(initial)
+
+        override fun saveForwards(forwards: List<ForwardConfig>) = Unit
+
+        override fun validateForwards(forwards: List<ForwardConfig>): String? = null
+
+        override fun captureExactSnapshot(): Result<ExactFileSnapshot> =
+            Result.success(ExactFileSnapshot(existed = true, bytes = ByteArray(0)))
+
+        override fun restoreExactSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
+            throw CancellationException("cancelled during restore")
+    }
+
     @Test
     fun transactionalRestoreCancellationPropagatesAndDoesNotPublish() {
-        val cancelling = cancellingRepo(listOf(forward("web", 9090)))
+        val cancelling =
+            ForwardsRepository(CancellingRestoreStore(listOf(forward("web", 9090))), AppDispatchers())
+                .also { runBlocking { it.refresh() } }
+        val snapshot = runBlocking { cancelling.captureForTransaction().getOrThrow() }
         assertCancellationPropagates {
-            runBlocking { cancelling.restoreForTransactionalReset(listOf(forward("api", 9091))).getOrThrow() }
+            runBlocking { cancelling.restoreForTransaction(snapshot, stageWasApplied = false).getOrThrow() }
         }
-        assertFalse("a cancelled restore must not publish", cancelling.current().any { it.id == "api" })
+        assertTrue(
+            "a cancelled restore must not publish",
+            cancelling.current().any { it.id == "web" },
+        )
     }
 
     // FIX8 P0-004-B/C: setup-transaction snapshot/replace/restore, and self-restoring mutations.

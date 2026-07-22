@@ -33,7 +33,8 @@ class TransactionalResetHardeningTest {
         File(context.filesDir, "setup_input.json").delete()
         File(context.filesDir, "forwards.json").delete()
         configRepo = ConfigRepository(context)
-        forwardsRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+        forwardsRepo =
+            ForwardsRepository(ForwardsConfigStore(context), AppDispatchers()).also { runBlocking { it.refresh() } }
     }
 
     private fun forward(id: String) =
@@ -66,7 +67,11 @@ class TransactionalResetHardeningTest {
         context: android.content.Context,
         private val error: Throwable,
     ) : ConfigRepository(context) {
-        override val configContents: String get() = throw error
+        override val captureConfigSnapshotForReset: Result<ExactFileSnapshot>
+            get() {
+                if (error is CancellationException) throw error
+                return Result.failure(error)
+            }
     }
 
     private class ConfigWriteThrowsOnNthCall(
@@ -90,10 +95,15 @@ class TransactionalResetHardeningTest {
     ) : ConfigRepository(context) {
         private var calls = 0
 
-        override fun saveSetupInput(input: SetupConfigInput) {
+        // FIX8 P0-006-B: the reset stage's own apply now goes through saveSetupInputAtomically
+        // instead of saveSetupInput.
+        override suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> {
             calls++
-            if (calls == throwOnCall) throw error
-            super.saveSetupInput(input)
+            return if (calls == throwOnCall) {
+                Result.failure(error as? Exception ?: Exception(error))
+            } else {
+                super.saveSetupInputAtomically(input)
+            }
         }
 
         // FIX7 P0-005-A: rollback-restore of setup-input now goes through this method instead of
@@ -110,12 +120,27 @@ class TransactionalResetHardeningTest {
     }
 
     private class ConfigRedactionFailRepo(context: android.content.Context) : ConfigRepository(context) {
-        override fun saveSetupInput(input: SetupConfigInput): Unit =
-            throw IOException("setup boom password=setupsecret")
+        override suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> =
+            Result.failure(IOException("setup boom password=setupsecret"))
 
         override suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> =
             Result.failure(IOException("delete boom password=deletesecret"))
     }
+
+    // FIX8 P0-006-A: forwards' own snapshot capture (captureForTransaction) requires the
+    // baseline to have reached Ready — a repository that never refreshed must abort the reset
+    // before any mutation, attributed to ResetStage.Forwards specifically.
+    @Test
+    fun forwardsSnapshotFailureAbortsBeforeMutationAndNamesForwardsStage() =
+        runBlocking {
+            val neverReadyForwards = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+            val coord = TransactionalResetCoordinator(ConfigRepository(context), neverReadyForwards)
+
+            val failed = coord.resetConfiguration() as ResetResult.Failed
+
+            assertEquals(ResetStage.Forwards, failed.failedStage)
+            assertTrue(failed.rollback.isEmpty())
+        }
 
     @Test
     fun configSnapshotReadExceptionAbortsBeforeMutation() =
@@ -124,7 +149,7 @@ class TransactionalResetHardeningTest {
             val coord =
                 TransactionalResetCoordinator(
                     ConfigReadThrows(context, IOException("read boom")),
-                    ForwardsRepository(fakeStore, AppDispatchers()),
+                    ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } },
                 )
 
             val failed = coord.resetConfiguration() as ResetResult.Failed
@@ -134,17 +159,27 @@ class TransactionalResetHardeningTest {
             assertEquals("forwards store must never be written", 0, fakeStore.saveCallCount)
         }
 
+    // FIX8 P0-006-D: corrupt-but-readable setup_input.json no longer blocks reset at all (the
+    // gate that used to require loadSetupInputResult() to parse before reset is gone) — a
+    // setup-input snapshot failure now only comes from a genuine read failure, and must be
+    // attributed to ResetStage.SetupInput specifically, not a hardcoded Config.
     @Test
-    fun setupSnapshotReadExceptionAbortsBeforeMutation() =
+    fun setupSnapshotReadExceptionAbortsBeforeMutationAndNamesSetupInputStage() =
         runBlocking {
-            File(context.filesDir, "setup_input.json").writeText("NOT JSON {{{")
+            File(context.filesDir, "setup_input.json").writeText("{}")
             val freshRepo = ConfigRepository(context)
             val fakeStore = FakeForwardsStore(initialForwards = listOf(forward("keep")))
-            val coord = TransactionalResetCoordinator(freshRepo, ForwardsRepository(fakeStore, AppDispatchers()))
+            val readError = IOException("setup input read boom")
+            val coord =
+                TransactionalResetCoordinator(
+                    freshRepo,
+                    ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } },
+                    setupInputReadBytes = { throw readError },
+                )
 
             val failed = coord.resetConfiguration() as ResetResult.Failed
 
-            assertEquals(ResetStage.Config, failed.failedStage)
+            assertEquals(ResetStage.SetupInput, failed.failedStage)
             assertTrue(failed.rollback.isEmpty())
             assertEquals(0, fakeStore.saveCallCount)
         }
@@ -158,12 +193,21 @@ class TransactionalResetHardeningTest {
             val writeRepo =
                 ConfigWriteThrowsOnNthCall(context, throwOnCall = 2, error = IOException("restore boom"))
             val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
-            val coord = TransactionalResetCoordinator(writeRepo, ForwardsRepository(fakeStore, AppDispatchers()))
+            val coord =
+                TransactionalResetCoordinator(
+                    writeRepo,
+                    ForwardsRepository(fakeStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
 
             val failed = coord.resetConfiguration() as ResetResult.Failed
 
             assertEquals(ResetStage.Forwards, failed.failedStage)
-            assertEquals("both mutated stages must have a rollback result", 2, failed.rollback.size)
+            // Every attempted stage has a rollback result — Config, SetupInput, and Forwards
+            // itself (FIX8 P0-006-C: attempted before apply, so the failing stage's own restore
+            // still runs, as a no-op success here).
+            assertEquals("every attempted stage must have a rollback result", 3, failed.rollback.size)
             assertTrue(
                 "the earlier-in-reverse SetupInput restore must be preserved",
                 failed.rollback.any { it is RollbackStageResult.Success && it.stage == ResetStage.SetupInput },
@@ -182,7 +226,13 @@ class TransactionalResetHardeningTest {
             val setupRepo =
                 ConfigSaveSetupThrowsOnNthCall(context, throwOnCall = 2, error = IOException("setup restore boom"))
             val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
-            val coord = TransactionalResetCoordinator(setupRepo, ForwardsRepository(fakeStore, AppDispatchers()))
+            val coord =
+                TransactionalResetCoordinator(
+                    setupRepo,
+                    ForwardsRepository(fakeStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
 
             val failed = coord.resetConfiguration() as ResetResult.Failed
 

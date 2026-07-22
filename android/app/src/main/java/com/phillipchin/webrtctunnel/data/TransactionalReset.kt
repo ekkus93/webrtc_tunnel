@@ -1,7 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
 import androidx.annotation.CheckResult
-import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -11,10 +10,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Thrown when snapshot capture fails during transactional reset.
- * Prevents partial mutation by failing before any stage executes.
+ * Thrown when snapshot capture fails during transactional reset — [stage] identifies which
+ * component's capture actually failed (FIX8 P0-006-A), so a caller never sees a fixed/wrong
+ * stage name regardless of which of Config/SetupInput/Forwards could not be read.
  */
 class SnapshotCaptureException(
+    val stage: ResetStage,
     message: String,
     cause: Throwable?,
 ) : Exception(message, cause)
@@ -31,13 +32,16 @@ class ResetRollbackException(
  * Snapshot of the exact state before a transactional reset begins. Config and setup-input use
  * [ExactFileSnapshot] (FIX7 P0-005-B) so an absent file restores as absent rather than as a
  * default-valued one (CRITICAL-3) — `setup_input.json` can hold a plaintext broker password, so
- * its snapshot bytes are secret-bearing and must be wiped once the transaction finishes
- * (see [ResetSnapshot.wipeSecrets]).
+ * its snapshot bytes are secret-bearing and must be wiped once the transaction finishes (see
+ * [ResetSnapshot.wipeSecrets]). Forwards uses the same exact, revision-tracked
+ * [ForwardsTransactionSnapshot] every other transaction captures (FIX8 P0-006-A) instead of a
+ * plain re-serializable list, so its restore is byte-exact and refuses to overwrite a newer
+ * concurrent mutation.
  */
-class ResetSnapshot(
+internal class ResetSnapshot(
     val config: ExactFileSnapshot,
     val setupInput: ExactFileSnapshot,
-    val forwards: List<ForwardConfig>,
+    val forwards: ForwardsTransactionSnapshot,
 ) {
     fun wipeSecrets() = setupInput.wipe()
 }
@@ -85,8 +89,11 @@ sealed interface ResetResult {
 /**
  * Transactional configuration reset with real snapshot/restore semantics (P0-001).
  *
- * Captures exact prior state before any mutation. On failure, restores from snapshot
- * rather than re-running reset operations. Every rollback stage is reported per-stage.
+ * Captures exact prior state before any mutation. On failure, restores from snapshot rather than
+ * re-running reset operations. Every stage is added to the attempted set BEFORE its own apply
+ * runs (FIX8 P0-006-C) — a stage that changes its destination and only then reports failure
+ * (e.g. a post-move cleanup failure) is still rolled back, not silently skipped. Every rollback
+ * stage is reported per-stage.
  */
 class TransactionalResetCoordinator(
     private val configRepository: ConfigRepository,
@@ -103,9 +110,10 @@ class TransactionalResetCoordinator(
             // Step 1: capture exact prior state (P0-001 snapshot)
             val snapshot =
                 captureSnapshot().getOrElse { error ->
-                    // Snapshot capture failed — abort before any mutation
+                    // Snapshot capture failed — abort before any mutation.
+                    val stage = (error as? SnapshotCaptureException)?.stage ?: ResetStage.Config
                     return@withLock ResetResult.Failed(
-                        failedStage = ResetStage.Config,
+                        failedStage = stage,
                         cause = safeResetReason(error, "Snapshot capture failed"),
                         rollback = emptyList(),
                     )
@@ -127,12 +135,14 @@ class TransactionalResetCoordinator(
     // call's own restore throws a (synthetic or real) CancellationException, it must propagate
     // directly rather than being caught here a second time and re-rolled-back.
     private suspend fun applyStagesAndBuildResult(snapshot: ResetSnapshot): ResetResult {
-        val mutatedStages = mutableListOf<ResetStage>()
+        val attempted = mutableListOf<ResetStage>()
+        val applied = mutableListOf<ResetStage>()
         val firstFailure =
             try {
-                applyStages(mutatedStages)
+                applyStages(attempted, applied)
             } catch (cancelled: CancellationException) {
-                val rollbackResults = withContext(NonCancellable) { rollbackFromSnapshot(snapshot, mutatedStages) }
+                val rollbackResults =
+                    withContext(NonCancellable) { rollbackFromSnapshot(snapshot, attempted, applied) }
                 rollbackResults.filterIsInstance<RollbackStageResult.Failure>().forEach { failure ->
                     cancelled.addSuppressed(ResetRollbackException(failure.stage, failure.reason))
                 }
@@ -146,18 +156,28 @@ class TransactionalResetCoordinator(
             ResetResult.Failed(
                 failedStage = firstFailure.stage,
                 cause = firstFailure.reason,
-                rollback = withContext(NonCancellable) { rollbackFromSnapshot(snapshot, mutatedStages) },
+                rollback = withContext(NonCancellable) { rollbackFromSnapshot(snapshot, attempted, applied) },
             )
         }
     }
 
-    private suspend fun applyStages(mutatedStages: MutableList<ResetStage>): ResetStageResult.Failure? {
+    // FIX8 P0-006-C: each stage is added to `attempted` BEFORE its own apply runs, so a stage
+    // that changes its destination and only then reports failure is still rolled back — the
+    // same fix already applied to SetupPersistenceCoordinator/ForwardConfigurationCoordinator
+    // (P0-003/P0-004/P0-005). `applied` (only stages whose apply genuinely returned success) is
+    // what tells a later restore whether this transaction's own Forwards-stage apply advanced
+    // ForwardsRepository's revision.
+    private suspend fun applyStages(
+        attempted: MutableList<ResetStage>,
+        applied: MutableList<ResetStage>,
+    ): ResetStageResult.Failure? {
         for (stage in resetStages) {
+            attempted.add(stage)
             val outcome = resetStage(stage)
             if (outcome is ResetStageResult.Failure) {
                 return outcome
             }
-            mutatedStages.add(stage)
+            applied.add(stage)
         }
         return null
     }
@@ -189,58 +209,49 @@ class TransactionalResetCoordinator(
                 )
         }
 
-    // P1-001: explicit try/catch (not runCatching) — mutation paths that can affect
-    // persistent state must rethrow cancellation rather than swallow it.
-    private fun resetSetupInputStage(): ResetStageResult {
-        return try {
-            configRepository.saveSetupInput(SetupConfigInput())
-            ResetStageResult.Success(ResetStage.SetupInput)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            ResetStageResult.Failure(
-                stage = ResetStage.SetupInput,
-                reason = safeResetReason(error, "Failed to reset setup input"),
-            )
-        }
-    }
-
-    // P1-002-A: contain every snapshot read so a read failure aborts before any mutation
-    // instead of throwing out of the coordinator mid-reset. configContents/current() are not
-    // Result-returning, so the whole capture is guarded, not just the setup-input read.
-    //
-    // FIX7 P0-005-A/B: config and setup-input are captured as exact ExactFileSnapshots (bytes +
-    // existed) rather than a parsed value, so an absent file restores as absent instead of as a
-    // default-valued one (CRITICAL-3). Config still goes through the existing configFileExists/
-    // configContents seam (unchanged from FIX6/P1-002, so existing read-failure/cancellation fault
-    // injection via a ConfigRepository subclass still works) rather than a raw file read, and is
-    // wrapped into an ExactFileSnapshot here. The corrupt-JSON-detection contract this
-    // coordinator has always had is preserved by still requiring loadSetupInputResult() to parse
-    // successfully — that call's *value* is discarded; only its success/failure gates the
-    // snapshot.
-    @CheckResult
-    private fun captureSnapshot(): Result<ResetSnapshot> =
-        try {
-            val configExisted = configRepository.configFileExists
-            // configContents is read unconditionally (not gated on configExisted) so a
-            // subclass-injected read failure/cancellation still fires regardless of whether the
-            // file happens to exist — matching the pre-P0-005 capture path exactly.
-            val configContents = configRepository.configContents
-            val configSnapshot =
-                ExactFileSnapshot(
-                    existed = configExisted,
-                    bytes = if (configExisted) configContents.toByteArray() else null,
+    // FIX8 P0-006-B: saveSetupInputAtomically (Result-returning, mutex-serialized, real atomic
+    // replace) instead of the non-atomic saveSetupInput — matching every other authoritative
+    // setup-input write in the app.
+    private suspend fun resetSetupInputStage(): ResetStageResult =
+        configRepository.saveSetupInputAtomically(SetupConfigInput()).fold(
+            onSuccess = { ResetStageResult.Success(ResetStage.SetupInput) },
+            onFailure = { error ->
+                ResetStageResult.Failure(
+                    ResetStage.SetupInput,
+                    safeResetReason(error, "Failed to reset setup input"),
                 )
-            configRepository.loadSetupInputResult().getOrThrow()
+            },
+        )
+
+    // FIX8 P0-006-A: exact-byte capture for all three components, with no parsing — a corrupt
+    // setup_input.json is captured/restored as raw bytes and no longer blocks reset (P0-006-D).
+    // Each capture is labeled with the stage that actually failed, instead of a hardcoded
+    // Config no matter which component's read failed.
+    @CheckResult
+    private suspend fun captureSnapshot(): Result<ResetSnapshot> =
+        try {
+            val configSnapshot =
+                configRepository.captureConfigSnapshotForReset.getOrElse { error ->
+                    throw SnapshotCaptureException(ResetStage.Config, "Failed to capture config snapshot", error)
+                }
             val setupInputSnapshot =
                 captureSetupInputFileSnapshot(configRepository.setupInputFileForSnapshot, setupInputReadBytes)
-                    .getOrThrow()
-            val forwards = forwardsRepository.current()
-            Result.success(ResetSnapshot(configSnapshot, setupInputSnapshot, forwards))
+                    .getOrElse { error ->
+                        throw SnapshotCaptureException(
+                            ResetStage.SetupInput,
+                            "Failed to capture setup input snapshot",
+                            error,
+                        )
+                    }
+            val forwardsSnapshot =
+                forwardsRepository.captureForTransaction().getOrElse { error ->
+                    throw SnapshotCaptureException(ResetStage.Forwards, "Failed to capture forwards snapshot", error)
+                }
+            Result.success(ResetSnapshot(configSnapshot, setupInputSnapshot, forwardsSnapshot))
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (error: Exception) {
-            Result.failure(SnapshotCaptureException("Failed to capture reset snapshot", error))
+        } catch (captureFailure: SnapshotCaptureException) {
+            Result.failure(captureFailure)
         }
 
     // P1-002-C: an explicit loop, so one restore stage throwing is recorded as a Failure and
@@ -248,13 +259,14 @@ class TransactionalResetCoordinator(
     // already computed and abort the whole rollback).
     private suspend fun rollbackFromSnapshot(
         snapshot: ResetSnapshot,
-        mutatedStages: List<ResetStage>,
+        attempted: List<ResetStage>,
+        applied: List<ResetStage>,
     ): List<RollbackStageResult> {
         val results = mutableListOf<RollbackStageResult>()
-        for (stage in mutatedStages.asReversed()) {
+        for (stage in attempted.asReversed()) {
             val result =
                 try {
-                    restoreStage(stage, snapshot)
+                    restoreStage(stage, snapshot, stageWasApplied = stage in applied)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
@@ -268,11 +280,12 @@ class TransactionalResetCoordinator(
     private suspend fun restoreStage(
         stage: ResetStage,
         snapshot: ResetSnapshot,
+        stageWasApplied: Boolean,
     ): RollbackStageResult =
         when (stage) {
             ResetStage.Config -> restoreConfig(snapshot.config)
             ResetStage.SetupInput -> restoreSetupInput(configRepository, snapshot.setupInput)
-            ResetStage.Forwards -> restoreForwards(snapshot.forwards)
+            ResetStage.Forwards -> restoreForwards(snapshot.forwards, stageWasApplied)
         }
 
     private suspend fun restoreConfig(snapshot: ExactFileSnapshot): RollbackStageResult {
@@ -297,9 +310,13 @@ class TransactionalResetCoordinator(
         }
     }
 
-    private suspend fun restoreForwards(forwards: List<ForwardConfig>): RollbackStageResult {
-        // Always restore forwards, even if empty — empty is a valid state that must be persisted
-        val result = forwardsRepository.restoreForTransactionalReset(forwards)
+    // FIX8 P0-006-A: byte-exact, revision-checked restore (mirroring every other transaction's
+    // Forwards stage) instead of re-saving a plain re-serializable list.
+    private suspend fun restoreForwards(
+        snapshot: ForwardsTransactionSnapshot,
+        stageWasApplied: Boolean,
+    ): RollbackStageResult {
+        val result = forwardsRepository.restoreForTransaction(snapshot, stageWasApplied)
         return if (result.isSuccess) {
             RollbackStageResult.Success(ResetStage.Forwards)
         } else {

@@ -228,6 +228,11 @@ class SettingsViewModelTest : AppViewModelTestBase() {
                         throw CancellationException("cancelled during config reset")
                 }
             val cancellingDeps = createTestDeps(cancellingConfigRepo)
+            // FIX8 P0-006-A: the reset coordinator's Forwards stage now captures an exact
+            // transaction snapshot, which requires the baseline to have reached Ready — refresh
+            // it here so the reset actually reaches (and is cancelled at) the Config stage,
+            // instead of failing immediately at an unready forwards snapshot capture.
+            runBlocking { cancellingDeps.forwardsRepository.refresh() }
             val viewModel = SettingsViewModel(cancellingDeps)
 
             viewModel.resetConfiguration()

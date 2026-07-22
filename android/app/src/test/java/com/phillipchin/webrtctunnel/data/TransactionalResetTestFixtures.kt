@@ -80,10 +80,16 @@ internal class ThrowingSetupInputConfigRepository(
 ) : ConfigRepository(context) {
     private var callCount = 0
 
-    override fun saveSetupInput(input: SetupConfigInput) {
+    // FIX8 P0-006-B: the reset stage's own apply now goes through saveSetupInputAtomically
+    // (Result-returning) instead of saveSetupInput — a fake targeting call 1 (the reset itself)
+    // must override this one instead, or it goes silently inert.
+    override suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> {
         callCount++
-        if (callCount == failOnCallNumber) throw error
-        super.saveSetupInput(input)
+        if (callCount == failOnCallNumber) {
+            if (error is CancellationException) throw error
+            return Result.failure(error as? Exception ?: Exception(error))
+        }
+        return super.saveSetupInputAtomically(input)
     }
 
     // FIX7 P0-005-A: rollback-restore of setup-input now goes through this method instead of
@@ -137,7 +143,6 @@ internal class ConfigRollbackFailureRepository(
     // Always fails — SetupInput's own reset must fail unconditionally to trigger
     // rollback, per the required scenario (config reset succeeds, setup reset
     // fails, config rollback is attempted and fails).
-    override fun saveSetupInput(input: SetupConfigInput) {
-        throw IOException("setup reset failed")
-    }
+    override suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> =
+        Result.failure(IOException("setup reset failed"))
 }

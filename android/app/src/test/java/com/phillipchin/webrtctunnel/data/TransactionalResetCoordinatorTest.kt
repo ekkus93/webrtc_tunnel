@@ -31,7 +31,8 @@ class TransactionalResetCoordinatorTest {
         File(context.filesDir, "forwards.json").delete()
 
         configRepo = ConfigRepository(context)
-        forwardsRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+        forwardsRepo =
+            ForwardsRepository(ForwardsConfigStore(context), AppDispatchers()).also { runBlocking { it.refresh() } }
         coordinator = TransactionalResetCoordinator(configRepo, forwardsRepo)
     }
 
@@ -64,7 +65,7 @@ class TransactionalResetCoordinatorTest {
                     initialForwards = forwardsRepo.current(),
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -91,7 +92,7 @@ class TransactionalResetCoordinatorTest {
                     initialForwards = forwardsRepo.current(),
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -123,7 +124,7 @@ class TransactionalResetCoordinatorTest {
                     initialForwards = forwardsRepo.current(),
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -152,7 +153,7 @@ class TransactionalResetCoordinatorTest {
                     initialForwards = priorForwards,
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -184,7 +185,7 @@ class TransactionalResetCoordinatorTest {
                     initialForwards = priorForwards,
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             // FIX7 P1-003-B: construction no longer reads the store — refresh() so current()
             // reflects fakeStore's seeded initialForwards before the coordinator snapshots it.
             fakeForwardsRepo.refresh()
@@ -211,7 +212,7 @@ class TransactionalResetCoordinatorTest {
                     initialForwards = forwardsRepo.current(),
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -234,7 +235,7 @@ class TransactionalResetCoordinatorTest {
                     initialForwards = forwardsRepo.current(),
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -243,57 +244,31 @@ class TransactionalResetCoordinatorTest {
             assertTrue("reset should fail when Forwards stage throws", result is ResetResult.Failed)
         }
 
+    // FIX8 P0-006-A/D: corrupt setup_input.json is captured/restored as raw bytes, with no
+    // parsing required — a corrupt draft must not block a reset the user needs precisely to
+    // escape that corruption (CRITICAL-2/HIGH-5), and reset must repair it to known defaults.
     @Test
-    fun corruptSetupInputFailsBeforeMutation() =
+    fun corruptSetupInputDoesNotPreventReset() =
         runBlocking {
-            // Create a corrupt setup input file that will fail to parse
             val corruptSetupInput = File(context.filesDir, "setup_input.json")
             corruptSetupInput.writeText("NOT VALID JSON {{{")
 
-            // Re-create repository to pick up the corrupt file
+            // Verify the file really is corrupt (would fail to parse) — proving reset
+            // succeeding below is despite the corruption, not because it was never corrupt.
             val freshConfigRepo = ConfigRepository(context)
-
-            // Verify the corrupt file is detected
-            val loadResult = freshConfigRepo.loadSetupInputResult()
-            assertTrue("Corrupt setup input should fail to load", loadResult.isFailure)
-
-            // Create coordinator and attempt reset
-            val coordinator = TransactionalResetCoordinator(freshConfigRepo, forwardsRepo)
-            val result = coordinator.resetConfiguration()
-
-            // Reset should fail before any mutation
-            assertTrue("Reset should fail on corrupt setup input", result is ResetResult.Failed)
-            val failed = result as ResetResult.Failed
-            assertEquals("Failed stage should be Config (snapshot capture)", ResetStage.Config, failed.failedStage)
             assertTrue(
-                "Cause should mention snapshot/setup failure",
-                failed.cause.contains("setup", ignoreCase = true) ||
-                    failed.cause.contains("Snapshot", ignoreCase = true),
+                "the setup input file must genuinely be corrupt for this test to be meaningful",
+                freshConfigRepo.loadSetupInputResult().isFailure,
             )
-        }
 
-    @Test
-    fun snapshotCaptureFailureAbortsBeforeMutation() =
-        runBlocking {
-            // When snapshot capture fails (e.g., setup input unreadable),
-            // reset should abort before any stage mutates
-            val priorConfig = "format = \"prior\"\n"
-            configRepo.writeConfig(priorConfig).getOrThrow()
-            configRepo.saveSetupInput(SetupConfigInput(brokerHost = "test"))
-
-            // Corrupt the setup input to force snapshot capture failure
-            val corruptSetupInput = File(context.filesDir, "setup_input.json")
-            corruptSetupInput.writeText("INVALID_JSON")
-
-            // Create fresh coordinator with the corrupt setup input
-            val freshConfigRepo = ConfigRepository(context)
             val coordinator = TransactionalResetCoordinator(freshConfigRepo, forwardsRepo)
             val result = coordinator.resetConfiguration()
 
-            // Should fail before any mutation
-            assertTrue("Should fail before mutation", result is ResetResult.Failed)
-            val failed = result as ResetResult.Failed
-            assertEquals("Should fail at Config stage", ResetStage.Config, failed.failedStage)
-            assertTrue("Rollback should be empty (no mutation)", failed.rollback.isEmpty())
+            assertTrue("reset must succeed despite a corrupt setup input draft", result is ResetResult.Success)
+            assertEquals(
+                "reset must repair the corrupt draft to known defaults",
+                SetupConfigInput(),
+                freshConfigRepo.loadSetupInputResult().getOrThrow(),
+            )
         }
 }

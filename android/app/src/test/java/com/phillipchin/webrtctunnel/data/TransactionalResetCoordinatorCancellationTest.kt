@@ -34,7 +34,8 @@ class TransactionalResetCoordinatorCancellationTest {
         File(context.filesDir, "forwards.json").delete()
 
         configRepo = ConfigRepository(context)
-        forwardsRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+        forwardsRepo =
+            ForwardsRepository(ForwardsConfigStore(context), AppDispatchers()).also { runBlocking { it.refresh() } }
         coordinator = TransactionalResetCoordinator(configRepo, forwardsRepo)
     }
 
@@ -72,7 +73,7 @@ class TransactionalResetCoordinatorCancellationTest {
                     error = IOException("rollback write failed"),
                 )
             val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val coordinator = TransactionalResetCoordinator(throwingConfigRepo, fakeForwardsRepo)
 
             val result = coordinator.resetConfiguration()
@@ -120,7 +121,7 @@ class TransactionalResetCoordinatorCancellationTest {
                 error = CancellationException("cancelled during setup rollback"),
             )
         val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
-        val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+        val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
         val coordinator = TransactionalResetCoordinator(throwingConfigRepo, fakeForwardsRepo)
 
         var caught: CancellationException? = null
@@ -150,7 +151,7 @@ class TransactionalResetCoordinatorCancellationTest {
                     throwOnSave = true,
                     error = CancellationException("cancelled during forwards reset"),
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val cancellingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             var caught: CancellationException? = null
@@ -186,7 +187,7 @@ class TransactionalResetCoordinatorCancellationTest {
             val failingConfigRepo =
                 ThrowingConfigWriteRepository(context, failOnCallNumber = 1, error = IOException("disk full"))
             val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current())
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(failingConfigRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -216,7 +217,7 @@ class TransactionalResetCoordinatorCancellationTest {
             val failingConfigRepo =
                 ThrowingSetupInputConfigRepository(context, failOnCallNumber = 1, error = IOException("disk full"))
             val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current())
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(failingConfigRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()

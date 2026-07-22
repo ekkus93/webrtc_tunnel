@@ -32,7 +32,8 @@ class TransactionalResetCoordinatorRollbackReportingTest {
         File(context.filesDir, "forwards.json").delete()
 
         configRepo = ConfigRepository(context)
-        forwardsRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+        forwardsRepo =
+            ForwardsRepository(ForwardsConfigStore(context), AppDispatchers()).also { runBlocking { it.refresh() } }
         coordinator = TransactionalResetCoordinator(configRepo, forwardsRepo)
     }
 
@@ -52,7 +53,7 @@ class TransactionalResetCoordinatorRollbackReportingTest {
 
             val failingConfigRepo = ConfigDeleteFailureRepository(context, IOException("delete failed"))
             val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(failingConfigRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -75,7 +76,7 @@ class TransactionalResetCoordinatorRollbackReportingTest {
 
             val failingConfigRepo = ConfigDeleteFailureRepository(context, IOException("delete failed"))
             val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(failingConfigRepo, fakeForwardsRepo)
 
             failingCoordinator.resetConfiguration()
@@ -117,84 +118,30 @@ class TransactionalResetCoordinatorRollbackReportingTest {
 
     // P1-004: early-failure tests — verify no mutation occurs before snapshot capture completes
 
+    // FIX8 P0-006-A/D: corrupt-but-readable setup_input.json no longer blocks snapshot capture
+    // (raw bytes, no parsing) — the whole reset transaction proceeds normally and repairs every
+    // component to known defaults, not just setup input.
     @Test
-    fun corruptSetupInputLeavesConfigUnmodified() =
+    fun corruptSetupInputDoesNotPreventConfigOrForwardsFromResetting() =
         runBlocking {
-            // Seed a known config before attempting reset
             val priorConfig = "format = \"prior\"\n"
             configRepo.writeConfig(priorConfig).getOrThrow()
-
-            // Corrupt the setup input to force snapshot capture failure
+            forwardsRepo.resetForwards().getOrThrow()
+            forwardsRepo.upsertWithReceipt(forward("unchanged", 4444)).getOrThrow()
             val corruptSetupInput = File(context.filesDir, "setup_input.json")
             corruptSetupInput.writeText("NOT VALID JSON {{{")
-
-            // Re-create repository to pick up the corrupt file
             val freshConfigRepo = ConfigRepository(context)
+
             val coordinator = TransactionalResetCoordinator(freshConfigRepo, forwardsRepo)
             val result = coordinator.resetConfiguration()
 
-            // Reset should fail before any mutation
-            assertTrue("Reset should fail on corrupt setup input", result is ResetResult.Failed)
-            val failed = result as ResetResult.Failed
-            assertEquals("Failed stage should be Config (snapshot capture)", ResetStage.Config, failed.failedStage)
-
-            // Config must remain unchanged — snapshot capture failed before any mutation
-            assertEquals("Config must be unmodified after early failure", priorConfig, freshConfigRepo.configContents)
-        }
-
-    @Test
-    fun corruptSetupInputLeavesForwardsUnmodified() =
-        runBlocking {
-            // Clear defaults first for a clean known state
-            forwardsRepo.resetForwards().getOrThrow()
-
-            // Seed forwards with a single known forward
-            forwardsRepo.upsertWithReceipt(forward("unchanged", 4444)).getOrThrow()
-            val priorForwards = forwardsRepo.current()
-            assertEquals("Prior forwards should have 1 entry", 1, priorForwards.size)
-
-            // Corrupt the setup input to force snapshot capture failure
-            val corruptSetupInput = File(context.filesDir, "setup_input.json")
-            corruptSetupInput.writeText("INVALID")
-
-            // Re-create repository to pick up the corrupt file
-            val freshConfigRepo = ConfigRepository(context)
-            val coordinator = TransactionalResetCoordinator(freshConfigRepo, forwardsRepo)
-            val result = coordinator.resetConfiguration()
-
-            // Reset should fail before any mutation
-            assertTrue("Reset should fail on corrupt setup input", result is ResetResult.Failed)
-            val failed = result as ResetResult.Failed
-            assertEquals("Failed stage should be Config (snapshot capture)", ResetStage.Config, failed.failedStage)
-
-            // Forwards must remain unchanged — snapshot capture failed before any mutation
+            assertTrue("reset must succeed despite a corrupt setup input draft", result is ResetResult.Success)
             assertEquals(
-                "Forwards must be unmodified after early failure",
-                priorForwards,
-                forwardsRepo.current(),
+                "config must reset to its default template",
+                freshConfigRepo.defaultConfigTemplate,
+                freshConfigRepo.configContents,
             )
-        }
-
-    @Test
-    fun snapshotFailureRollbackIsEmpty() =
-        runBlocking {
-            // Corrupt the setup input to force snapshot capture failure
-            val corruptSetupInput = File(context.filesDir, "setup_input.json")
-            corruptSetupInput.writeText("INVALID")
-
-            val freshConfigRepo = ConfigRepository(context)
-            val coordinator = TransactionalResetCoordinator(freshConfigRepo, forwardsRepo)
-            val result = coordinator.resetConfiguration()
-
-            // Reset should fail before any mutation
-            assertTrue("Reset should fail on corrupt setup input", result is ResetResult.Failed)
-            val failed = result as ResetResult.Failed
-
-            // No mutation occurred, so rollback list must be empty
-            assertTrue(
-                "Rollback should be empty when snapshot capture fails",
-                failed.rollback.isEmpty(),
-            )
+            assertTrue("forwards must reset to empty", forwardsRepo.current().isEmpty())
         }
 
     // P1-005: rollback-reporting tests. The next three prove rollback stages are
@@ -218,7 +165,7 @@ class TransactionalResetCoordinatorRollbackReportingTest {
                     initialForwards = forwardsRepo.current(),
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -228,14 +175,16 @@ class TransactionalResetCoordinatorRollbackReportingTest {
             val failed = result as ResetResult.Failed
             assertEquals("Failed stage should be Forwards", ResetStage.Forwards, failed.failedStage)
 
-            // Rollback should contain entries for the mutated stages (Config, SetupInput)
+            // Rollback covers every attempted stage (Config, SetupInput, and Forwards itself —
+            // FIX8 P0-006-C: attempted before apply, so the failing stage's own restore still
+            // runs, as a no-op success here).
             assertEquals(
-                "Rollback should cover Config and SetupInput",
-                2,
+                "Rollback should cover Config, SetupInput, and Forwards",
+                3,
                 failed.rollback.size,
             )
 
-            // Verify the rollback stage results — both should succeed in this scenario
+            // Verify the rollback stage results — all three should succeed in this scenario
             // (the real test is that rollback was attempted; P1-005 verifies the reporting)
             val rollbackStages =
                 failed.rollback.map {
@@ -261,7 +210,7 @@ class TransactionalResetCoordinatorRollbackReportingTest {
                     initialForwards = forwardsRepo.current(),
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -291,11 +240,13 @@ class TransactionalResetCoordinatorRollbackReportingTest {
         }
 
     @Test
-    fun forwardsIsExcludedFromRollbackWhenItIsTheFailingStage() =
+    fun forwardsFailingStageIsStillIncludedInRollbackAsANoOpRestore() =
         runBlocking {
-            // Create a scenario where Forwards stage fails during reset,
-            // so Forwards is NOT in the mutated stages. But Config and SetupInput are.
-            // This tests that Forwards is NOT in the rollback (since it didn't mutate).
+            // FIX8 P0-006-C: Forwards is added to `attempted` BEFORE its own apply runs, so even
+            // though it's the failing stage here (never actually mutated, since FakeForwardsStore
+            // throws before touching its backing state), its restore is still attempted — in
+            // case a real stage partially mutated before reporting failure. It succeeds as a
+            // no-op since nothing had changed.
             configRepo.writeConfig("format = \"prior\"\n").getOrThrow()
             configRepo.saveSetupInput(SetupConfigInput(brokerHost = "test"))
 
@@ -304,7 +255,7 @@ class TransactionalResetCoordinatorRollbackReportingTest {
                     initialForwards = forwardsRepo.current(),
                     throwOnSave = true,
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             val result = failingCoordinator.resetConfiguration()
@@ -314,17 +265,17 @@ class TransactionalResetCoordinatorRollbackReportingTest {
             val failed = result as ResetResult.Failed
             assertEquals("Failed stage should be Forwards", ResetStage.Forwards, failed.failedStage)
 
-            // Forwards should NOT be in the rollback (it was the failed stage, never mutated)
-            val rollbackStages =
-                failed.rollback.map {
-                    when (it) {
-                        is RollbackStageResult.Success -> it.stage
-                        is RollbackStageResult.Failure -> it.stage
-                    }
-                }
+            val forwardsRollback = failed.rollback.single { it.stageOf() == ResetStage.Forwards }
             assertTrue(
-                "Forwards should not be in rollback (it was the failing stage)",
-                ResetStage.Forwards !in rollbackStages,
+                "Forwards' own restore must still be attempted (and succeed as a no-op) even " +
+                    "though it was the failing stage",
+                forwardsRollback is RollbackStageResult.Success,
             )
         }
 }
+
+private fun RollbackStageResult.stageOf(): ResetStage =
+    when (this) {
+        is RollbackStageResult.Success -> stage
+        is RollbackStageResult.Failure -> stage
+    }

@@ -35,7 +35,8 @@ class TransactionalResetExactSnapshotTest {
         File(context.filesDir, "forwards.json").delete()
 
         configRepo = ConfigRepository(context)
-        forwardsRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+        forwardsRepo =
+            ForwardsRepository(ForwardsConfigStore(context), AppDispatchers()).also { runBlocking { it.refresh() } }
     }
 
     /** Fake ForwardsStore for testing the transactional reset coordinator. Allows injecting
@@ -73,10 +74,16 @@ class TransactionalResetExactSnapshotTest {
     ) : ConfigRepository(context) {
         private var callCount = 0
 
-        override fun saveSetupInput(input: SetupConfigInput) {
+        // FIX8 P0-006-B: the reset stage's own apply now goes through saveSetupInputAtomically
+        // (Result-returning) instead of saveSetupInput — a fake targeting call 1 (the reset
+        // itself) must override this one instead, or it goes silently inert.
+        override suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> {
             callCount++
-            if (callCount == failOnCallNumber) throw error
-            super.saveSetupInput(input)
+            if (callCount == failOnCallNumber) {
+                if (error is CancellationException) throw error
+                return Result.failure(error as? Exception ?: Exception(error))
+            }
+            return super.saveSetupInputAtomically(input)
         }
 
         // FIX7 P0-005-A: rollback-restore of setup-input now goes through this method instead of
@@ -102,7 +109,12 @@ class TransactionalResetExactSnapshotTest {
             val absentRepo = ConfigRepository(context)
             val absentStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
             val absentCoordinator =
-                TransactionalResetCoordinator(absentRepo, ForwardsRepository(absentStore, AppDispatchers()))
+                TransactionalResetCoordinator(
+                    absentRepo,
+                    ForwardsRepository(absentStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
             absentCoordinator.resetConfiguration()
             assertFalse(
                 "setup input absent before reset must be restored as absent, not written as default JSON",
@@ -115,7 +127,12 @@ class TransactionalResetExactSnapshotTest {
             presentRepo.saveSetupInput(SetupConfigInput())
             val presentStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
             val presentCoordinator =
-                TransactionalResetCoordinator(presentRepo, ForwardsRepository(presentStore, AppDispatchers()))
+                TransactionalResetCoordinator(
+                    presentRepo,
+                    ForwardsRepository(presentStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
             presentCoordinator.resetConfiguration()
             assertTrue(
                 "setup input present (even if default-valued) before reset must be restored as present",
@@ -129,7 +146,13 @@ class TransactionalResetExactSnapshotTest {
             File(context.filesDir, "setup_input.json").delete()
             val repo = ConfigRepository(context)
             val failingStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
-            val coord = TransactionalResetCoordinator(repo, ForwardsRepository(failingStore, AppDispatchers()))
+            val coord =
+                TransactionalResetCoordinator(
+                    repo,
+                    ForwardsRepository(failingStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
 
             val result = coord.resetConfiguration()
 
@@ -150,7 +173,13 @@ class TransactionalResetExactSnapshotTest {
             File(context.filesDir, "setup_input.json").writeText(exactPriorBytes)
             val repo = ConfigRepository(context)
             val failingStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
-            val coord = TransactionalResetCoordinator(repo, ForwardsRepository(failingStore, AppDispatchers()))
+            val coord =
+                TransactionalResetCoordinator(
+                    repo,
+                    ForwardsRepository(failingStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
 
             val result = coord.resetConfiguration()
 
@@ -172,7 +201,13 @@ class TransactionalResetExactSnapshotTest {
             try {
                 val repo = ConfigRepository(context)
                 val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current())
-                val coord = TransactionalResetCoordinator(repo, ForwardsRepository(fakeStore, AppDispatchers()))
+                val coord =
+                    TransactionalResetCoordinator(
+                        repo,
+                        ForwardsRepository(fakeStore, AppDispatchers()).also {
+                            runBlocking { it.refresh() }
+                        },
+                    )
 
                 val result = coord.resetConfiguration()
 
@@ -181,6 +216,11 @@ class TransactionalResetExactSnapshotTest {
                     result is ResetResult.Failed,
                 )
                 val failed = result as ResetResult.Failed
+                assertEquals(
+                    "the setup-input capture failure must be attributed to its own stage",
+                    ResetStage.SetupInput,
+                    failed.failedStage,
+                )
                 assertTrue("no stage may mutate when the setup-input snapshot read fails", failed.rollback.isEmpty())
                 assertEquals(0, fakeStore.saveCallCount)
             } finally {
@@ -204,7 +244,7 @@ class TransactionalResetExactSnapshotTest {
                     throwOnSave = true,
                     error = CancellationException("cancelled during forwards reset"),
                 )
-            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers())
+            val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val cancellingCoordinator = TransactionalResetCoordinator(configRepo, fakeForwardsRepo)
 
             var caught: CancellationException? = null
@@ -287,7 +327,12 @@ class TransactionalResetExactSnapshotTest {
                     error = CancellationException("cancelled during forwards reset"),
                 )
             val coordinator =
-                TransactionalResetCoordinator(configRepo2, ForwardsRepository(fakeStore, AppDispatchers()))
+                TransactionalResetCoordinator(
+                    configRepo2,
+                    ForwardsRepository(fakeStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
 
             var caught: CancellationException? = null
             try {
@@ -317,7 +362,12 @@ class TransactionalResetExactSnapshotTest {
                     error = CancellationException("cancelled during forwards reset"),
                 )
             val coordinator =
-                TransactionalResetCoordinator(configRepo2, ForwardsRepository(fakeStore, AppDispatchers()))
+                TransactionalResetCoordinator(
+                    configRepo2,
+                    ForwardsRepository(fakeStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
 
             var caught: CancellationException? = null
             try {
@@ -343,7 +393,12 @@ class TransactionalResetExactSnapshotTest {
                 ConfigWriteFailsOnNthCall(context, failOnCallNumber = 2, error = IOException("config restore failed"))
             val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
             val coordinator =
-                TransactionalResetCoordinator(configRepo2, ForwardsRepository(fakeStore, AppDispatchers()))
+                TransactionalResetCoordinator(
+                    configRepo2,
+                    ForwardsRepository(fakeStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
 
             val result = coordinator.resetConfiguration()
 
@@ -391,7 +446,12 @@ class TransactionalResetExactSnapshotTest {
                 )
             val fakeStore = FakeForwardsStore(initialForwards = forwardsRepo.current(), throwOnSave = true)
             val coordinator =
-                TransactionalResetCoordinator(doubleFailingRepo, ForwardsRepository(fakeStore, AppDispatchers()))
+                TransactionalResetCoordinator(
+                    doubleFailingRepo,
+                    ForwardsRepository(fakeStore, AppDispatchers()).also {
+                        runBlocking { it.refresh() }
+                    },
+                )
 
             val result = coordinator.resetConfiguration()
 

@@ -146,6 +146,16 @@ open class ConfigRepository internal constructor(
     internal val configFileExists: Boolean get() = configFile.exists()
 
     /**
+     * FIX8 P0-006-A: raw-byte snapshot capture for transactional reset — unlike [configContents]
+     * this never round-trips through a UTF-8 String, so non-UTF-8 bytes survive a snapshot/
+     * restore cycle intact. A property (not a `fun`, to stay under detekt's TooManyFunctions
+     * threshold) — open so tests can inject a capture failure the same way every other reset
+     * stage's apply/restore path can.
+     */
+    internal open val captureConfigSnapshotForReset: Result<ExactFileSnapshot>
+        get() = captureExactFileSnapshot(configFile)
+
+    /**
      * Prepare the active config for a tunnel start by surgically rewriting the two
      * network-dependent `[webrtc]` fields: `android_ice_mode` (the user's chosen [iceMode], or
      * the debug `getprop` override) and `advertised_local_ipv4` ([advertisedIpv4], or removed
