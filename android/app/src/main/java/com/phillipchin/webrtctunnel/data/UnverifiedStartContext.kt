@@ -3,7 +3,6 @@ package com.phillipchin.webrtctunnel.data
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -12,7 +11,11 @@ import java.util.concurrent.atomic.AtomicLong
  * [stop] returns a [Result] rather than throwing on failure — [cleanupUnverifiedStart] must be
  * able to distinguish a genuine stop failure (a normal `Result.failure`) from this coroutine
  * itself being cancelled, so the fallback stop is never wrapped in a `runCatching` that would
- * silently convert a real cancellation into an ordinary failure Result.
+ * silently convert a real cancellation into an ordinary failure Result. FIX8 P0-009: [stop]
+ * itself now owns recording the observed-stop-without-recovery transition on success (see
+ * `TunnelRepository.stop`'s `explicitVerifiedStop` parameter, which this context's wiring always
+ * leaves at its default `false` — a start-verification cleanup is never an explicit STOP), so
+ * this context no longer needs its own `nativeStopVerified` field.
  */
 data class UnverifiedStartContext(
     val error: Throwable,
@@ -20,7 +23,6 @@ data class UnverifiedStartContext(
     val currentGeneration: AtomicLong,
     val stopStatusPollingAndJoin: suspend () -> Unit,
     val stop: suspend () -> Result<Unit>,
-    val nativeStopVerified: AtomicBoolean,
     val enterQuarantine: (code: String, message: String) -> Unit,
 )
 
@@ -47,7 +49,6 @@ suspend fun cleanupUnverifiedStart(context: UnverifiedStartContext): Boolean =
             } catch (error: Exception) {
                 Result.failure(error)
             }
-        context.nativeStopVerified.set(stopResult.isSuccess)
         stopResult.onFailure {
             context.enterQuarantine(
                 "start_verification_cleanup_failed",

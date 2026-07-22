@@ -74,10 +74,17 @@ class AppDependencies(
         )
     }
 
+    // FIX8 P0-009 (CRITICAL-6/HIGH-10): the single application-scoped owner of native-runtime
+    // quarantine/stop-verification state, shared by every TunnelForegroundService instance
+    // across an Android-driven service recreation — see NativeRuntimeSafetyState. Internal (not
+    // a public val) because it's an internal type; TunnelForegroundService/OfferCoordinator,
+    // both in a different package, read it as internal members of the same module.
+    internal val nativeRuntimeSafetyState: NativeRuntimeSafetyState = NativeRuntimeSafetyState()
+
     // TunnelRepository (runtime/status) and IdentityValidationClient (config/identity
     // validation) are separate collaborators that must share a single native bridge,
     // created lazily on first use.
     private val sharedBridge: TunnelNativeBridge by lazy(nativeBridgeFactory)
-    val tunnelRepository: TunnelRepository = TunnelRepository { sharedBridge }
+    val tunnelRepository: TunnelRepository = TunnelRepository(nativeRuntimeSafetyState) { sharedBridge }
     val identityValidation: IdentityValidationClient = IdentityValidationClient { sharedBridge }
 }

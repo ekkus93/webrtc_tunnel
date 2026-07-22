@@ -29,7 +29,7 @@ class TunnelRepositoryTest {
     @Before
     fun setUp() {
         bridge = RecordingBridge()
-        repository = TunnelRepository(bridge)
+        repository = TunnelRepository(NativeRuntimeSafetyState(), bridge)
         validationClient = IdentityValidationClient(bridge)
     }
 

@@ -33,10 +33,17 @@ class StopStatusVerificationException(
     cause: Throwable? = null,
 ) : IllegalStateException(message, cause)
 
-class TunnelRepository(
+class TunnelRepository internal constructor(
+    // FIX8 P0-009: shared, application-scoped quarantine/stop-verification owner (see
+    // NativeRuntimeSafetyState) — internal constructor because it's an internal type, same
+    // pattern as BrokerSecretRepository's internal constructor.
+    private val safetyState: NativeRuntimeSafetyState,
     bridgeFactory: () -> TunnelNativeBridge = { RustTunnelBridge() },
 ) {
-    constructor(bridge: TunnelNativeBridge) : this({ bridge })
+    internal constructor(
+        safetyState: NativeRuntimeSafetyState,
+        bridge: TunnelNativeBridge,
+    ) : this(safetyState, { bridge })
 
     private val bridge: TunnelNativeBridge by lazy(bridgeFactory)
     private val _status =
@@ -119,38 +126,88 @@ class TunnelRepository(
     /**
      * Verified stop (P0-003): native JNI success alone is not sufficient proof of a clean
      * stop — a duplicate/no-op ("not running") success could otherwise be reported while the
-     * real owner's stop is still in flight or has actually failed into `Error`. Success here
-     * requires [refreshStatusResult] to both succeed *and* observe [ServiceState.Stopped].
+     * real owner's stop is still in flight or has actually failed into `Error`. Success requires
+     * observing [ServiceState.Stopped] from a fresh native status read.
+     *
+     * FIX8 P0-009-B/D: verification always reads the *raw* native truth, unaffected by any
+     * pre-existing quarantine — otherwise a quarantined runtime could never be verified stopped,
+     * and explicit-STOP recovery (the whole point of quarantine) would be impossible. Whether a
+     * verified stop may then clear the shared quarantine depends entirely on [explicitVerifiedStop]:
+     * only a genuine, user-facing explicit STOP ([explicitVerifiedStop] = true) may clear it — a
+     * pause, destroy-time fallback stop, or start-verification cleanup stop (the default, false)
+     * still records the observed stop (so a redundant second stop isn't attempted) without
+     * releasing quarantine from a different, still-unresolved failure. The published [status] is
+     * committed only after this decision, so it reflects the safety state atomically with the
+     * verification outcome — no window where a concurrent start could observe one without the
+     * other.
+     *
+     * FIX8 P0-009-E: [ifGenerationUnchanged], when supplied (only by the destroy-time fallback
+     * stop), skips the observed-stop transition if the shared generation has already advanced
+     * past it — a stale caller (e.g. an old service instance's fallback still in flight after a
+     * newer instance changed this shared state) must not overwrite that newer transition with
+     * outdated information. Not applied when [explicitVerifiedStop] is true: a deliberate,
+     * user-facing explicit STOP always wins.
      */
     @CheckResult
-    fun stop(): Result<Unit> =
-        bridge.stop().fold(
-            onFailure = { Result.failure(it) },
-            onSuccess = {
-                refreshStatusResult().fold(
-                    onFailure = { error ->
-                        Result.failure(
-                            StopStatusVerificationException(
-                                "Native stop returned success but final status could not be verified",
-                                error,
-                            ),
+    fun stop(
+        explicitVerifiedStop: Boolean = false,
+        ifGenerationUnchanged: Long? = null,
+    ): Result<Unit> {
+        val bridgeStopFailure = bridge.stop().exceptionOrNull()
+        // Single-return `if`/`else` because ReturnCount caps at 2 (the other return is the
+        // decode-failure early exit below, which cannot become a plain value: it must skip the
+        // rest of this function entirely).
+        return if (bridgeStopFailure != null) {
+            Result.failure(bridgeStopFailure)
+        } else {
+            val native =
+                try {
+                    Json.decodeFromString<NativeRuntimeStatusDto>(bridge.getStatusJson())
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    updateStatus { current ->
+                        SensitiveDataRedactor.redactStatus(
+                            current
+                                .asInvalidNativeStatus(
+                                    "status_decode_failed",
+                                    "Native status decode failed",
+                                    SensitiveDataRedactor.redactText(error.message ?: "unknown status decode error"),
+                                ).withNativeRuntimeSafetyOverlay(safetyState.state.value),
                         )
-                    },
-                    onSuccess = { verifiedStatus ->
-                        if (verifiedStatus.serviceState == ServiceState.Stopped) {
-                            Result.success(Unit)
-                        } else {
-                            Result.failure(
-                                StopStatusVerificationException(
-                                    "Native stop returned success but final state was " +
-                                        "${verifiedStatus.serviceState}",
-                                ),
-                            )
-                        }
-                    },
+                    }
+                    return Result.failure(
+                        StopStatusVerificationException(
+                            "Native stop returned success but final status could not be verified",
+                            error,
+                        ),
+                    )
+                }
+            val verifiedStopped = native.reportsVerifiedStop
+            if (verifiedStopped) {
+                when {
+                    explicitVerifiedStop -> safetyState.markVerifiedExplicitStop()
+                    ifGenerationUnchanged != null ->
+                        safetyState.markObservedStopWithoutRecoveryIfGenerationUnchanged(ifGenerationUnchanged)
+                    else -> safetyState.markObservedStopWithoutRecovery()
+                }
+            }
+            updateStatus { current ->
+                SensitiveDataRedactor.redactStatus(
+                    native.toTunnelStatus(current).withNativeRuntimeSafetyOverlay(safetyState.state.value),
                 )
-            },
-        )
+            }
+            if (verifiedStopped) {
+                Result.success(Unit)
+            } else {
+                Result.failure(
+                    StopStatusVerificationException(
+                        "Native stop returned success but final state was not verified as Stopped",
+                    ),
+                )
+            }
+        }
+    }
 
     fun refreshStatus() {
         // FIX7 P2-002-A: refreshStatusResult() is @CheckResult — both outcomes are already
@@ -182,12 +239,15 @@ class TunnelRepository(
                 throw cancelled
             } catch (error: Exception) {
                 updateStatus { current ->
-                    current.asInvalidNativeStatus(
-                        "status_decode_failed",
-                        "Native status decode failed",
-                        SensitiveDataRedactor.redactText(
-                            error.message ?: "unknown status decode error",
-                        ),
+                    SensitiveDataRedactor.redactStatus(
+                        current
+                            .asInvalidNativeStatus(
+                                "status_decode_failed",
+                                "Native status decode failed",
+                                SensitiveDataRedactor.redactText(
+                                    error.message ?: "unknown status decode error",
+                                ),
+                            ).withNativeRuntimeSafetyOverlay(safetyState.state.value),
                     )
                 }
                 return Result.failure(error)
@@ -212,7 +272,10 @@ class TunnelRepository(
                     } else {
                         mapped
                     }
-                SensitiveDataRedactor.redactStatus(resolved)
+                // FIX8 P0-009-D: a native status refresh alone (any state, including Stopped)
+                // must never overwrite a quarantined Error state — only a verified explicit STOP
+                // (see [stop]) may clear it.
+                SensitiveDataRedactor.redactStatus(resolved.withNativeRuntimeSafetyOverlay(safetyState.state.value))
             }
         return Result.success(committed)
     }
@@ -361,6 +424,40 @@ private val TunnelStatus.asInvalidNativeStatus: (code: String, message: String, 
             lastError = TunnelError(code = code, message = message, details = details),
         ).withoutActivePeer()
     }
+
+// FIX8 P0-009-D: applied as the last step of every status commit so a quarantined Error state
+// (from a different, unresolved stop-like failure) is never overwritten by a status read's own
+// mapped state — regardless of what that mapped state is, including a genuine Stopped. Always
+// uses the fixed canonical code/message (RESPONSES item 2), never `safety.code`/`safety.message`
+// (the narrower per-failure diagnostic) — a concurrent status poll racing
+// TunnelForegroundService.enterNativeRuntimeQuarantine's own two setLocalError calls must not be
+// able to leave the narrower code as the final, durably-published one. A property (not a
+// function): this file is at detekt's TooManyFunctions threshold.
+private val TunnelStatus.withNativeRuntimeSafetyOverlay: (NativeRuntimeSafetySnapshot) -> TunnelStatus
+    get() = { safety ->
+        if (safety.quarantined) {
+            copy(
+                serviceState = ServiceState.Error,
+                lastError =
+                    TunnelError(
+                        code = "native_runtime_quarantined",
+                        message = "Native runtime state is uncertain; a verified stop is required",
+                    ),
+            ).withoutActivePeer()
+        } else {
+            this
+        }
+    }
+
+// FIX8 P0-009: whether a native status genuinely reports a verified Stopped runtime — computed
+// from the raw native fields alone (never overlaid), so [stop]'s own verification can tell a
+// true stop apart from a pre-existing quarantine that would otherwise mask it. A property (not
+// a function) for the same detekt-budget reason as [withNativeRuntimeSafetyOverlay].
+private val NativeRuntimeStatusDto.reportsVerifiedStop: Boolean
+    get() =
+        resolveNativeMode(mode)?.let { modeValue ->
+            mapNativeServiceState(state, modeValue, activeSessionCount) == ServiceState.Stopped
+        } ?: false
 
 // Truthful mapping: native "running" only means the daemon task is alive. Reserve
 // Connected for an actual active session/tunnel; otherwise show a listening/serving

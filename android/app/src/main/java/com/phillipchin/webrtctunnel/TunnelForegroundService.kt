@@ -12,6 +12,7 @@ import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.CoordinatorOperations
 import com.phillipchin.webrtctunnel.data.IdentityValidationClient
 import com.phillipchin.webrtctunnel.data.LifecycleCommand
+import com.phillipchin.webrtctunnel.data.NativeRuntimeSafetyState
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.TunnelLifecycleCoordinator
 import com.phillipchin.webrtctunnel.data.TunnelRepository
@@ -164,11 +165,13 @@ class TunnelForegroundService
             pendingPolicyResumeGeneration.set(null)
         }
 
-        // P0-004: True when native runtime existence is uncertain after a cleanup/stop
-        // failure. Blocks all automatic restart (PolicyAllowed, RetryPolicyResume, auto-resume).
-        // Only a verified successful STOP clears the quarantine. internal (not private):
-        // OfferCoordinator, split into its own file, clears this on a verified stop success.
-        internal val nativeRuntimeUncertain = AtomicBoolean(false)
+        // FIX8 P0-009 (CRITICAL-6/HIGH-10): the shared, application-scoped owner of quarantine
+        // and stop-verification state (see NativeRuntimeSafetyState) — no longer service-owned
+        // fields, so an Android-driven service recreation cannot silently reset quarantine.
+        // Assigned in onCreate() from AppDependencies; internal (not private) because
+        // OfferCoordinator/ServiceCoordinatorOperations, split into their own file, read and
+        // mutate it directly.
+        internal lateinit var nativeRuntimeSafety: NativeRuntimeSafetyState
 
         // P1-002-C: true once onDestroy() has begun tearing this service down. Distinguishes a
         // benign post-destroy dropped command (onDestroy already owns the remaining cleanup)
@@ -184,12 +187,6 @@ class TunnelForegroundService
         // to those unsynchronized readers. internal (not private): OfferCoordinator, split
         // into its own file, both reads and writes this.
         internal val allowMeteredForCurrentRun = AtomicBoolean(false)
-
-        // P0-006: Tracks whether a verified native stop has succeeded. Set to false when
-        // a new startup begins, set to true only after repository.stop() returns verified
-        // success. onDestroy() checks this to avoid a redundant second native stop.
-        // internal (not private): OfferCoordinator, split into its own file, writes this.
-        internal val nativeStopVerified = AtomicBoolean(true)
 
         // AtomicLong (not a mutex-guarded plain Long): generation checks must be lock-free so
         // an explicit lifecycle transition can cancel-and-join the startup coroutine while
@@ -247,6 +244,7 @@ class TunnelForegroundService
             networkPolicyManager = deps.networkPolicyManager
             appInitialization = deps.appInitializationCoordinator
             localAddressResolver = deps.localAddressResolver
+            nativeRuntimeSafety = deps.nativeRuntimeSafetyState
             repository.updateSessionMeteredAllowance(false)
 
             // P0-001: command processor drains lifecycle commands in FIFO order.
@@ -354,11 +352,12 @@ class TunnelForegroundService
         /**
          * P1-010: destroy-time cleanup is BEST EFFORT, not an authoritative stop.
          *
-         * An explicit STOP (verified `repository.stop()`, which sets [nativeStopVerified]) is the
-         * only authoritative stop. Here we only run fallback cleanup when a verified stop has NOT
-         * already happened, and we set `nativeStopVerified = true` solely on an observed successful
-         * `repository.stop()` — never merely because cleanup was launched. An observed failure
-         * publishes the visible `destroy_fallback_stop_failed` and marks the runtime uncertain.
+         * An explicit STOP (a verified `repository.stop(explicitVerifiedStop = true)`) is the only
+         * authoritative stop. Here we only run fallback cleanup when [nativeRuntimeSafety] does not
+         * already show a verified stop, and `repository.stop()`'s default records the observed stop
+         * solely on success — without recovering a pre-existing quarantine (FIX8 P0-009-B) — never
+         * merely because cleanup was launched. An observed failure publishes the visible
+         * `destroy_fallback_stop_failed` and quarantines the runtime.
          *
          * The cleanup runs in a launched coroutine ([pendingStop]); Android may kill the process
          * before it finishes, so NO process-state invariant may depend on [pendingStop] completing
@@ -385,22 +384,26 @@ class TunnelForegroundService
                         cancelStartupJobAndJoinLocked()
                         reporter.stopStatusPollingAndJoin()
                         // Only perform fallback cleanup if native stop was not already verified.
-                        if (!nativeStopVerified.get()) {
+                        // FIX8 P0-009-B: a successful fallback stop here must NOT clear a
+                        // pre-existing quarantine from a different failure — repository.stop()'s
+                        // default (explicitVerifiedStop = false) already records the observed
+                        // stop without recovering it, so there is nothing further to do on
+                        // success here.
+                        // FIX8 P0-009-E: stamped with the generation observed right before this
+                        // fallback runs, so a newer service instance that has since changed the
+                        // shared safety state cannot have its transition overwritten by this
+                        // stale one.
+                        if (!nativeRuntimeSafety.state.value.stopVerified) {
+                            val observedGeneration = nativeRuntimeSafety.state.value.generation
                             withContext(ioDispatcher) {
-                                repository.stop()
-                            }.fold(
-                                onSuccess = {
-                                    nativeStopVerified.set(true)
-                                    nativeRuntimeUncertain.set(false)
-                                },
-                                onFailure = { error ->
-                                    // FIX7 P0-007-B: quarantine through the central helper.
-                                    enterNativeRuntimeQuarantine(
-                                        code = "destroy_fallback_stop_failed",
-                                        message = error.message ?: "Destroy fallback stop failed",
-                                    )
-                                },
-                            )
+                                repository.stop(ifGenerationUnchanged = observedGeneration)
+                            }.onFailure { error ->
+                                // FIX7 P0-007-B: quarantine through the central helper.
+                                enterNativeRuntimeQuarantine(
+                                    code = "destroy_fallback_stop_failed",
+                                    message = error.message ?: "Destroy fallback stop failed",
+                                )
+                            }
                         }
                         pausedByPolicy.set(false)
                         clearTemporaryMeteredAllowance()
@@ -576,7 +579,7 @@ class TunnelForegroundService
         // OfferCoordinator/ServiceCoordinatorOperations, split into their own file, call
         // this before every start/resume attempt.
         internal val requireRuntimeStartAllowed: () -> Result<Unit> = {
-            requireRuntimeStartAllowedFor(appInitialization.state.value, nativeRuntimeUncertain.get())
+            requireRuntimeStartAllowedFor(appInitialization.state.value, nativeRuntimeSafety.state.value.quarantined)
         }
 
         // FIX7 P0-009: extracted out of onCreate's NetworkMonitorSupervisor construction (which
@@ -651,8 +654,7 @@ class TunnelForegroundService
             code: String,
             message: String,
         ) {
-            nativeStopVerified.set(false)
-            nativeRuntimeUncertain.set(true)
+            nativeRuntimeSafety.quarantine(code, message)
             invalidatePendingPolicyRetry()
             val redacted = SensitiveDataRedactor.redactText(message)
             // First, the caller's specific diagnostic (e.g. "stop_status_verification_failed")

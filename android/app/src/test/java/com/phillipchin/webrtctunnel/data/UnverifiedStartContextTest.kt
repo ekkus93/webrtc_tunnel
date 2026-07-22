@@ -27,7 +27,6 @@ class UnverifiedStartContextTest {
     private fun context(
         stop: suspend () -> Result<Unit>,
         stopStatusPollingAndJoin: suspend () -> Unit = {},
-        nativeStopVerified: AtomicBoolean = AtomicBoolean(true),
         enterQuarantine: (code: String, message: String) -> Unit = { _, _ -> },
     ) = UnverifiedStartContext(
         error = IllegalStateException("verification failed"),
@@ -35,7 +34,6 @@ class UnverifiedStartContextTest {
         currentGeneration = AtomicLong(1),
         stopStatusPollingAndJoin = stopStatusPollingAndJoin,
         stop = stop,
-        nativeStopVerified = nativeStopVerified,
         enterQuarantine = enterQuarantine,
     )
 
@@ -91,18 +89,15 @@ class UnverifiedStartContextTest {
     fun cleanupFailureDuringCancellationQuarantinesThenPropagatesCancellation() =
         runBlocking {
             var quarantineCode: String? = null
-            val nativeStopVerified = AtomicBoolean(true)
             val ctx =
                 context(
                     stop = { Result.failure(RuntimeException("cleanup stop failed")) },
-                    nativeStopVerified = nativeStopVerified,
                     enterQuarantine = { code, _ -> quarantineCode = code },
                 )
 
             val result = cleanupUnverifiedStart(ctx)
 
             assertFalse("a genuine cleanup failure must be reported as unsuccessful", result)
-            assertFalse("nativeStopVerified must be false after a failed cleanup stop", nativeStopVerified.get())
             assertEquals(
                 "a real cleanup failure must quarantine the runtime",
                 "start_verification_cleanup_failed",
@@ -114,14 +109,12 @@ class UnverifiedStartContextTest {
     fun cleanupReporterFailureCannotPreventQuarantine() =
         runBlocking {
             // enterQuarantine's own visible-reporting side throwing must not prevent the
-            // state-changing part (recorded here via nativeStopVerified and the fact that
-            // enterQuarantine was actually invoked) from having already happened.
+            // state-changing part (recorded here via the fact that enterQuarantine was actually
+            // invoked) from having already happened.
             var quarantineInvoked = false
-            val nativeStopVerified = AtomicBoolean(true)
             val ctx =
                 context(
                     stop = { Result.failure(RuntimeException("cleanup stop failed")) },
-                    nativeStopVerified = nativeStopVerified,
                     enterQuarantine = { _, _ ->
                         quarantineInvoked = true
                         error("reporter failed")
@@ -136,10 +129,6 @@ class UnverifiedStartContextTest {
             }
 
             assertTrue("enterQuarantine must have been invoked before any reporter failure", quarantineInvoked)
-            assertFalse(
-                "nativeStopVerified must already be false regardless of a reporter failure",
-                nativeStopVerified.get(),
-            )
             assertTrue(
                 "a reporter failure inside enterQuarantine propagating is acceptable, but it " +
                     "must not have prevented the quarantine state change above",

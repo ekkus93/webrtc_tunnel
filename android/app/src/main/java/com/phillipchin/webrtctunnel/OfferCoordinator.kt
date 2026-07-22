@@ -182,9 +182,18 @@ internal class ServiceCoordinatorOperations(private val service: TunnelForegroun
     }
 
     override suspend fun handleRetryPolicyResume(expectedGeneration: Long) {
-        val allowed = service.requireRuntimeStartAllowed().getOrNull()
-        if (allowed == null) {
+        // FIX8 P0-009-C: previously `.getOrNull()` silently discarded a guard failure here —
+        // every other guarded call site (startOffer/resume/allowMeteredForSessionAndStart/
+        // handlePolicyAllowed) reports through the reporter on failure; this path must too.
+        service.requireRuntimeStartAllowed().getOrElse { error ->
             service.invalidatePendingPolicyRetry()
+            service.reporter.publishErrorSafely(
+                code = "native_runtime_recovery_required",
+                message =
+                    SensitiveDataRedactor.redactText(
+                        error.message ?: "Verified explicit stop is required before restart",
+                    ),
+            )
             return
         }
         if (service.lifecycleGeneration.get() != expectedGeneration ||
@@ -238,7 +247,6 @@ internal class ServiceCoordinatorOperations(private val service: TunnelForegroun
                         service.lifecycleGeneration,
                         service.reporter::stopStatusPollingAndJoin,
                         { service.repository.stop() },
-                        service.nativeStopVerified,
                         service::enterNativeRuntimeQuarantine,
                     ),
                 )
@@ -251,7 +259,10 @@ internal class ServiceCoordinatorOperations(private val service: TunnelForegroun
             }
             is StartOutcome.PolicyBlocked -> {
                 service.pausedByPolicy.set(true)
-                service.nativeStopVerified.set(true)
+                // FIX8 P0-009: this attempt never reached a native start, so undo the
+                // startOffer()-time markStartAttempted() without touching any pre-existing
+                // quarantine from an unrelated failure.
+                service.nativeRuntimeSafety.markObservedStopWithoutRecovery()
                 service.repository.setPolicyBlocked(outcome.reason)
                 service.reporter.publishStatus(outcome.reason)
             }
@@ -280,7 +291,7 @@ internal class OfferCoordinator(private val service: TunnelForegroundService) {
                 return
             }
             generation = service.lifecycleGeneration.incrementAndGet()
-            service.nativeStopVerified.set(false)
+            service.nativeRuntimeSafety.markStartAttempted()
             // Invalidate any pending retry when a new start begins.
             service.invalidatePendingPolicyRetry()
             val job =
@@ -432,8 +443,8 @@ internal class OfferCoordinator(private val service: TunnelForegroundService) {
             withContext(service.ioDispatcher) { service.repository.stop() }
                 .fold(
                     onSuccess = {
-                        // P1-011: Set nativeStopVerified true after verified successful pause.
-                        service.nativeStopVerified.set(true)
+                        // P1-011/FIX8 P0-009-B: repository.stop()'s default already records the
+                        // observed stop (without recovering a pre-existing quarantine).
                         service.clearTemporaryMeteredAllowance()
                         service.reporter.publishStatus(service.getString(R.string.service_msg_paused))
                     },
@@ -460,8 +471,8 @@ internal class OfferCoordinator(private val service: TunnelForegroundService) {
             withContext(service.ioDispatcher) { service.repository.stop() }
                 .fold(
                     onSuccess = {
-                        // P1-011: Set nativeStopVerified true after verified successful policy pause.
-                        service.nativeStopVerified.set(true)
+                        // P1-011/FIX8 P0-009-B: repository.stop()'s default already records the
+                        // observed stop (without recovering a pre-existing quarantine).
                         service.pausedByPolicy.set(true)
                         service.repository.setPolicyBlocked(reason)
                         service.clearTemporaryMeteredAllowance()
@@ -490,14 +501,14 @@ internal class OfferCoordinator(private val service: TunnelForegroundService) {
             service.lifecycleGeneration.incrementAndGet()
             service.cancelStartupJobAndJoinLocked()
             service.reporter.stopStatusPollingAndJoin()
-            val stopResult = withContext(service.ioDispatcher) { service.repository.stop() }
+            val stopResult =
+                withContext(service.ioDispatcher) { service.repository.stop(explicitVerifiedStop = true) }
             service.pausedByPolicy.set(false)
             service.clearTemporaryMeteredAllowance()
             stopResult.fold(
                 onSuccess = {
-                    // P0-005: Stop success path.
-                    service.nativeStopVerified.set(true)
-                    service.nativeRuntimeUncertain.set(false)
+                    // P0-005/FIX8 P0-009-B: repository.stop(explicitVerifiedStop = true) has
+                    // already cleared quarantine, atomically with its own status publication.
                     // P0-002: Invalidate any pending retry on explicit stop success.
                     service.invalidatePendingPolicyRetry()
                     service.notifications.show(
