@@ -1069,32 +1069,62 @@ related tests
 
 ## P0-009-A — Add application-scoped safety owner
 
-- [ ] Add `NativeRuntimeSafetyState` as an application-scoped `AppDependencies` property. (`SHA: ______`)
-- [ ] Store quarantine, stop verification, fixed/redacted reason, and generation. (`SHA: ______`)
-- [ ] Expose read-only `StateFlow` or immutable snapshot. (`SHA: ______`)
-- [ ] All updates are atomic/thread-safe. (`SHA: ______`)
-- [ ] Remove service-owned `nativeRuntimeUncertain` and `nativeStopVerified` as sources of truth. (`SHA: ______`)
+- [x] Add `NativeRuntimeSafetyState` as an application-scoped `AppDependencies` property. (`SHA: 3643841`)
+- [x] Store quarantine, stop verification, fixed/redacted reason, and generation. (`SHA: 3643841`)
+- [x] Expose read-only `StateFlow` or immutable snapshot. (`SHA: 3643841`)
+- [x] All updates are atomic/thread-safe. (`SHA: 3643841`)
+- [x] Remove service-owned `nativeRuntimeUncertain` and `nativeStopVerified` as sources of truth. (`SHA: 3643841`)
 
 Use the target shape in the FIX8 spec or an equivalent model.
 
+Implemented `NativeRuntimeSafetyState` (`data/NativeRuntimeSafetyState.kt`) as an internal type
+(matching `BrokerSecretPermissionEnforcer`/`StoredIdentityMaterial`'s existing internal-type
+pattern), with a `synchronized`-guarded `MutableStateFlow<NativeRuntimeSafetySnapshot>` and four
+named transitions (see P0-009-B). `AppDependencies.nativeRuntimeSafetyState` is a body val (not a
+constructor parameter — the constructor is already at detekt's `LongParameterList` limit), and
+`TunnelRepository`'s primary constructor gained it as its first parameter (`internal constructor`,
+same pattern as `BrokerSecretRepository`) so `stop()`/`refreshStatusResult()` can read/write it.
+
 ## P0-009-B — Apply state transitions consistently
 
-- [ ] New native start attempt marks stop unverified without clearing quarantine. (`SHA: ______`)
-- [ ] Every stop-like failure quarantines before reporting. (`SHA: ______`)
-- [ ] Successful pause records observed stop but does not clear pre-existing quarantine. (`SHA: ______`)
-- [ ] Successful destroy fallback records observed stop but does not clear pre-existing quarantine. (`SHA: ______`)
-- [ ] Only verified explicit STOP clears quarantine. (`SHA: ______`)
-- [ ] Explicit STOP failure preserves/enters quarantine. (`SHA: ______`)
+- [x] New native start attempt marks stop unverified without clearing quarantine. (`SHA: 3643841`)
+- [x] Every stop-like failure quarantines before reporting. (`SHA: 3643841`)
+- [x] Successful pause records observed stop but does not clear pre-existing quarantine. (`SHA: 3643841`)
+- [x] Successful destroy fallback records observed stop but does not clear pre-existing quarantine. (`SHA: 3643841`)
+- [x] Only verified explicit STOP clears quarantine. (`SHA: 3643841`)
+- [x] Explicit STOP failure preserves/enters quarantine. (`SHA: 3643841`)
+
+`OfferCoordinator.startOffer()` calls `markStartAttempted()` (was `nativeStopVerified.set(false)`).
+`TunnelForegroundService.enterNativeRuntimeQuarantine()` calls `nativeRuntimeSafety.quarantine(code,
+message)` as its first statement (before the RESPONSES-item-2 `repository.setLocalError` sequence
+and the `publishErrorSafely` notification), unchanged ordering. The genuinely new behavior is in
+`TunnelRepository.stop(explicitVerifiedStop: Boolean = false, ...)`: verification always reads raw
+native truth via a new `NativeRuntimeStatusDto.reportsVerifiedStop` property (ignoring any
+pre-existing quarantine, since otherwise a quarantined runtime could never be verified stopped and
+explicit-STOP recovery would be impossible); on a verified stop, `explicitVerifiedStop = true`
+(only `stopServiceWork()`'s call) clears quarantine via `markVerifiedExplicitStop()`, while every
+other caller (`pause()`, `pauseForPolicy()`, the destroy fallback, `cleanupUnverifiedStart`'s
+start-verification cleanup — all using the default `false`) calls
+`markObservedStopWithoutRecovery()`, which never touches `quarantined`. This is the actual
+CRITICAL-6/HIGH-10 fix: previously `onDestroy()`'s fallback-success branch unconditionally cleared
+`nativeRuntimeUncertain.set(false)`.
 
 ## P0-009-C — Guard all start/resume/retry paths
 
-- [ ] ACTION start reads application-scoped safety owner. (`SHA: ______`)
-- [ ] Manual resume reads it. (`SHA: ______`)
-- [ ] Policy resume reads it. (`SHA: ______`)
-- [ ] Pending policy retry reads it. (`SHA: ______`)
-- [ ] Automatic reconnect/start path, if present, reads it. (`SHA: ______`)
-- [ ] Every guard failure clears pending retry and publishes durable recovery-required state. (`SHA: ______`)
-- [ ] Replace `handleRetryPolicyResume`'s `getOrNull()` silent return with `getOrElse` plus durable reporting. (`SHA: ______`)
+- [x] ACTION start reads application-scoped safety owner. (`SHA: 3643841`)
+- [x] Manual resume reads it. (`SHA: 3643841`)
+- [x] Policy resume reads it. (`SHA: 3643841`)
+- [x] Pending policy retry reads it. (`SHA: 3643841`)
+- [x] Automatic reconnect/start path, if present, reads it. (`SHA: 3643841`)
+- [x] Every guard failure clears pending retry and publishes durable recovery-required state. (`SHA: 3643841`)
+- [x] Replace `handleRetryPolicyResume`'s `getOrNull()` silent return with `getOrElse` plus durable reporting. (`SHA: 3643841`)
+
+All five start/resume/retry call sites already routed through
+`TunnelForegroundService.requireRuntimeStartAllowed` (now backed by
+`nativeRuntimeSafety.state.value.quarantined`); no automatic-reconnect path exists beyond these.
+`handleRetryPolicyResume` rewritten exactly per the TODO's suggested mapping (`getOrElse` +
+`invalidatePendingPolicyRetry()` + `publishErrorSafely(code = "native_runtime_recovery_required",
+...)`), fixing the one call site that previously discarded the guard failure silently.
 
 Suggested mapping:
 
@@ -1113,39 +1143,74 @@ service.requireRuntimeStartAllowed().getOrElse { error ->
 
 ## P0-009-D — Preserve quarantine through repository refresh
 
-- [ ] Inject/read runtime safety state in `TunnelRepository`. (`SHA: ______`)
-- [ ] `refreshStatusResult` overlays/preserves quarantined Error state regardless of mapped native active state. (`SHA: ______`)
-- [ ] Status decode/unknown errors still clear stale live peer/session/MQTT fields. (`SHA: ______`)
-- [ ] A native Stopped status alone does not clear quarantine. (`SHA: ______`)
-- [ ] Explicit-stop recovery clears safety owner first/atomically with final status publication so no start window exists. (`SHA: ______`)
+- [x] Inject/read runtime safety state in `TunnelRepository`. (`SHA: 3643841`)
+- [x] `refreshStatusResult` overlays/preserves quarantined Error state regardless of mapped native active state. (`SHA: 3643841`)
+- [x] Status decode/unknown errors still clear stale live peer/session/MQTT fields. (`SHA: 3643841`)
+- [x] A native Stopped status alone does not clear quarantine. (`SHA: 3643841`)
+- [x] Explicit-stop recovery clears safety owner first/atomically with final status publication so no start window exists. (`SHA: 3643841`)
+
+A new private `TunnelStatus.withNativeRuntimeSafetyOverlay` property (applied as the last step of
+both `refreshStatusResult`'s commit and `stop`'s own commit) overlays a quarantined Error state
+using the fixed canonical code/message — deliberately never `safety.code`/`safety.message` (the
+per-failure diagnostic) — because a first attempt using the per-failure code let a concurrent
+status poll race `enterNativeRuntimeQuarantine`'s own two `setLocalError` calls and leave the
+narrower code as the final published one (caught by a flaky-until-fixed run of the new
+`nativeStatusRefreshCannotOverwriteQuarantineWithConnected` test). "Explicit-stop recovery clears
+safety owner first/atomically" is `stop()`'s own design: `reportsVerifiedStop` is computed from
+the raw native fields (independent of `current`), so `markVerifiedExplicitStop()` can run once,
+synchronously, *before* the final `updateStatus` commit reads the now-updated safety state for the
+overlay decision — no window where a concurrent reader observes one without the other.
 
 ## P0-009-E — Service recreation
 
-- [ ] New service instance initializes from shared safety owner. (`SHA: ______`)
-- [ ] Recreated service cannot start while owner is quarantined. (`SHA: ______`)
-- [ ] Recreated service can receive explicit STOP and clear quarantine only after verification. (`SHA: ______`)
-- [ ] Old service destruction cannot clear owner state after a newer service generation has changed it; use generation/token checks where needed. (`SHA: ______`)
+- [x] New service instance initializes from shared safety owner. (`SHA: 3643841`)
+- [x] Recreated service cannot start while owner is quarantined. (`SHA: 3643841`)
+- [x] Recreated service can receive explicit STOP and clear quarantine only after verification. (`SHA: 3643841`)
+- [x] Old service destruction cannot clear owner state after a newer service generation has changed it; use generation/token checks where needed. (`SHA: 3643841`)
+
+**Deviation (disclosed):** the generation guard is implemented narrowly, for the one call site the
+review findings specifically named (a stale service instance's destroy-time fallback stop) —
+`NativeRuntimeSafetyState.markObservedStopWithoutRecoveryIfGenerationUnchanged(expectedGeneration)`
+skips the transition if the shared generation has advanced past what the caller observed, and
+`TunnelForegroundService.onDestroy()`'s fallback captures the generation immediately before
+calling `repository.stop(ifGenerationUnchanged = ...)`. The native `bridge.stop()` call itself
+still fires unconditionally in this path (a real, narrower limitation: full protection against two
+service instances concurrently driving the same native bridge would need cross-instance mutual
+exclusion, out of this task's scope) — only the *shared safety-state mutation* is guarded against
+a stale write. The `quarantine()`/`markVerifiedExplicitStop()` transitions were not given an
+equivalent generation-guarded variant (not named by the review findings or P0-009-F's test list).
 
 ## P0-009-F — Tests
 
-- [ ] `serviceRecreationWhileQuarantinedStillBlocksNativeStart` (`SHA: ______`)
-- [ ] `serviceRecreationWhileQuarantinedStillBlocksManualResume` (`SHA: ______`)
-- [ ] `pendingPolicyRetryQuarantineGuardFailureIsDurableAndVisible` (`SHA: ______`)
-- [ ] `destroyFallbackSuccessDoesNotClearPreexistingQuarantine` (`SHA: ______`)
-- [ ] `successfulPauseDoesNotClearPreexistingQuarantine` (`SHA: ______`)
-- [ ] `nativeStatusRefreshCannotOverwriteQuarantineWithConnected` (`SHA: ______`)
-- [ ] `nativeStatusRefreshCannotOverwriteQuarantineWithStopped` (`SHA: ______`)
-- [ ] `verifiedExplicitStopClearsSharedQuarantineForLaterServiceInstance` (`SHA: ______`)
-- [ ] `staleServiceDestroyCannotClearNewerRuntimeSafetyGeneration` (`SHA: ______`)
-- [ ] `reporterFailureCannotPreventSharedQuarantineTransition` (`SHA: ______`)
+- [x] `serviceRecreationWhileQuarantinedStillBlocksNativeStart` (`SHA: 3643841`)
+- [x] `serviceRecreationWhileQuarantinedStillBlocksManualResume` (`SHA: 3643841`)
+- [x] `pendingPolicyRetryQuarantineGuardFailureIsDurableAndVisible` (`SHA: 3643841`)
+- [x] `destroyFallbackSuccessDoesNotClearPreexistingQuarantine` (`SHA: 3643841`)
+- [x] `successfulPauseDoesNotClearPreexistingQuarantine` (`SHA: 3643841`)
+- [x] `nativeStatusRefreshCannotOverwriteQuarantineWithConnected` (`SHA: 3643841`)
+- [x] `nativeStatusRefreshCannotOverwriteQuarantineWithStopped` (`SHA: 3643841`)
+- [x] `verifiedExplicitStopClearsSharedQuarantineForLaterServiceInstance` (`SHA: 3643841`)
+- [x] `staleServiceDestroyCannotClearNewerRuntimeSafetyGeneration` (`SHA: 3643841`)
+- [x] `reporterFailureCannotPreventSharedQuarantineTransition` (`SHA: 3643841`)
 
 Construct two service instances sharing one test application/dependency graph. Do not simulate recreation by mutating a local Boolean.
 
+All 10 tests in `TunnelForegroundServiceRuntimeSafetyRecreationTest.kt` construct two real
+`ServiceController<TunnelForegroundService>` instances sharing one Robolectric
+Application/`AppDependencies` graph (never a locally mutated Boolean), per this instruction.
+`pendingPolicyRetryQuarantineGuardFailureIsDurableAndVisible` and
+`reporterFailureCannotPreventSharedQuarantineTransition` construct `ServiceCoordinatorOperations`
+directly (internal, same technique as the pre-existing `UnverifiedStartContextTest`) and inject a
+custom `NotificationController(notifyAction = ...)` (an existing constructor seam) to observe/fail
+the reporter deterministically — both needed `notificationsAllowedProvider = { true }` since this
+Robolectric environment's default target SDK (35) denies `POST_NOTIFICATIONS` by default,
+otherwise `NotificationController.show()` no-ops before `notifyAction` is ever invoked.
+
 ## Acceptance
 
-- [ ] Quarantine survives service recreation and status polling. (`SHA: ______`)
-- [ ] Every blocked retry is visible. (`SHA: ______`)
-- [ ] Only verified explicit STOP authorizes recovery. (`SHA: ______`)
+- [x] Quarantine survives service recreation and status polling. (`SHA: 3643841`)
+- [x] Every blocked retry is visible. (`SHA: 3643841`)
+- [x] Only verified explicit STOP authorizes recovery. (`SHA: 3643841`)
 
 ---
 
