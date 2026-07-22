@@ -10,6 +10,7 @@ import com.phillipchin.webrtctunnel.data.ConfigurationAdmission
 import com.phillipchin.webrtctunnel.data.ConfigurationOperation
 import com.phillipchin.webrtctunnel.data.IdentityReplacement
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.data.SetupOptionalChanges
 import com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinator
 import com.phillipchin.webrtctunnel.data.SetupPersistenceRequest
 import com.phillipchin.webrtctunnel.data.SetupPersistenceResult
@@ -71,6 +72,7 @@ internal class SetupSaveController(
             configRepository = deps.configRepository,
             identityRepository = deps.identityRepository,
             brokerSecretRepository = deps.brokerSecretRepository,
+            forwardsRepository = deps.forwardsRepository,
             loadPreferences = loadPreferences,
             persistPreferences = persistPreferences,
         )
@@ -258,7 +260,7 @@ internal class SetupSaveController(
                     androidIceMode = prefs.androidIceMode,
                     brokerPasswordPath = resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path),
                 )
-            commitSetup(input, commitCandidate, identity, authorizedLine, prefs)
+            commitSetup(input, commitCandidate, prefs, access.forwards(), SetupIdentityChange(identity, authorizedLine))
             return identity
         } finally {
             // Wipe the plaintext identity buffer; only the public id/peer id are used afterward.
@@ -361,9 +363,9 @@ internal class SetupSaveController(
     private suspend fun commitSetup(
         input: SetupConfigInput,
         candidate: String,
-        identity: ResolvedIdentity,
-        authorizedLine: String?,
         prefs: AndroidAppPreferences,
+        forwards: List<ForwardConfig>,
+        identityChange: SetupIdentityChange,
     ) {
         // FIX8 P0-002-C: reuse the one preference snapshot already read by validateAndCommit for
         // rendering, rather than re-reading here — final config rendering and the persisted
@@ -378,25 +380,36 @@ internal class SetupSaveController(
                         allowMetered = input.allowMetered,
                         resumeOnUnmetered = input.resumeOnUnmetered,
                     ),
-                replacementIdentity =
-                    if (identity.fromImport) {
-                        IdentityReplacement(identity.privateIdentity, identity.publicIdentity)
-                    } else {
-                        null
-                    },
-                authorizedPublicIdentityToAdd = authorizedLine,
-                // FIX7 P0-004-A: an "advanced" externally-managed password file means the
-                // managed secret must not be touched at all (stage omitted); otherwise the
-                // stage is always requested — including Remove — so an intentionally-cleared
-                // password reliably deletes a stale managed secret rather than orphaning it.
-                brokerSecretChange =
-                    if (input.brokerPasswordFile.isNotBlank()) {
-                        null
-                    } else if (input.brokerPassword.isNotBlank()) {
-                        BrokerSecretChange.Set(input.brokerPassword)
-                    } else {
-                        BrokerSecretChange.Remove
-                    },
+                // FIX8 P0-004-F: the full setup-wizard forwards draft (including disabled
+                // entries) — the Forwards stage persists this as ForwardsRepository's new
+                // authoritative state, distinct from the enabledForwards subset rendered above.
+                forwards = forwards,
+                optionalChanges =
+                    SetupOptionalChanges(
+                        replacementIdentity =
+                            if (identityChange.identity.fromImport) {
+                                IdentityReplacement(
+                                    identityChange.identity.privateIdentity,
+                                    identityChange.identity.publicIdentity,
+                                )
+                            } else {
+                                null
+                            },
+                        authorizedPublicIdentityToAdd = identityChange.authorizedLine,
+                        // FIX7 P0-004-A: an "advanced" externally-managed password file means the
+                        // managed secret must not be touched at all (stage omitted); otherwise
+                        // the stage is always requested — including Remove — so an
+                        // intentionally-cleared password reliably deletes a stale managed secret
+                        // rather than orphaning it.
+                        brokerSecretChange =
+                            if (input.brokerPasswordFile.isNotBlank()) {
+                                null
+                            } else if (input.brokerPassword.isNotBlank()) {
+                                BrokerSecretChange.Set(input.brokerPassword)
+                            } else {
+                                BrokerSecretChange.Remove
+                            },
+                    ),
             )
         val result = withContext(ioDispatcher) { persistence.persist(request) }
         if (result is SetupPersistenceResult.Failed) {
@@ -428,6 +441,13 @@ private data class ResolvedIdentity(
     val publicIdentity: String,
     val peerId: String,
     val fromImport: Boolean,
+)
+
+/** Groups [commitSetup]'s two identity-related inputs into one parameter so that function stays
+ * under detekt's LongParameterList threshold. */
+private class SetupIdentityChange(
+    val identity: ResolvedIdentity,
+    val authorizedLine: String?,
 )
 
 private fun saveError(

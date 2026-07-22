@@ -28,17 +28,22 @@ class SetupPersistenceCoordinatorExactBytesTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var identityRepository: IdentityRepository
     private lateinit var brokerSecretRepository: BrokerSecretRepository
+    private lateinit var forwardsRepository: ForwardsRepository
     private val setupInputFile = File(context.filesDir, "setup_input.json")
     private val configFile = File(context.filesDir, "config.toml")
 
     @Before
-    fun setUp() {
-        listOf("config.toml", "setup_input.json", "identity.enc", "identity.pub", "authorized_keys").forEach {
-            File(context.filesDir, it).delete()
+    fun setUp() =
+        runBlocking {
+            listOf("config.toml", "setup_input.json", "identity.enc", "identity.pub", "authorized_keys").forEach {
+                File(context.filesDir, it).delete()
+            }
+            File(context.filesDir, "forwards.json").delete()
+            identityRepository = IdentityRepository(context, PassthroughCrypto())
+            brokerSecretRepository = BrokerSecretRepository(context)
+            forwardsRepository = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+            forwardsRepository.refresh()
         }
-        identityRepository = IdentityRepository(context, PassthroughCrypto())
-        brokerSecretRepository = BrokerSecretRepository(context)
-    }
 
     private class PassthroughCrypto : com.phillipchin.webrtctunnel.security.IdentityCrypto {
         override fun encrypt(plaintext: ByteArray): ByteArray = plaintext.copyOf()
@@ -118,7 +123,14 @@ class SetupPersistenceCoordinatorExactBytesTest {
     private fun coordinator(
         config: ConfigRepository,
         prefs: RecordingPreferences = RecordingPreferences(),
-    ) = SetupPersistenceCoordinator(config, identityRepository, brokerSecretRepository, prefs.load, prefs.persist)
+    ) = SetupPersistenceCoordinator(
+        config,
+        identityRepository,
+        brokerSecretRepository,
+        forwardsRepository,
+        prefs.load,
+        prefs.persist,
+    )
 
     private class RecordingPreferences {
         var stored: AndroidAppPreferences = AndroidAppPreferences()
@@ -134,9 +146,8 @@ class SetupPersistenceCoordinatorExactBytesTest {
             configContents = "format = \"committed\"\n",
             setupInput = setupInput,
             preferences = AndroidAppPreferences(),
-            replacementIdentity = null,
-            authorizedPublicIdentityToAdd = null,
-            brokerSecretChange = null,
+            forwards = emptyList(),
+            optionalChanges = SetupOptionalChanges(null, null, null),
         )
 
     @Test
@@ -216,9 +227,13 @@ class SetupPersistenceCoordinatorExactBytesTest {
                         configContents = "format = \"committed\"\n",
                         setupInput = SetupConfigInput(brokerHost = "broker.new"),
                         preferences = AndroidAppPreferences(),
-                        replacementIdentity = IdentityReplacement("new-priv".toByteArray(), "new-pub"),
-                        authorizedPublicIdentityToAdd = null,
-                        brokerSecretChange = null,
+                        forwards = emptyList(),
+                        optionalChanges =
+                            SetupOptionalChanges(
+                                replacementIdentity = IdentityReplacement("new-priv".toByteArray(), "new-pub"),
+                                authorizedPublicIdentityToAdd = null,
+                                brokerSecretChange = null,
+                            ),
                     ),
                 )
 

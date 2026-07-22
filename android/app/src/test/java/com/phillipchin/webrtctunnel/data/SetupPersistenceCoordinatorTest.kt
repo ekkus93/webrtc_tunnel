@@ -37,18 +37,24 @@ class SetupPersistenceCoordinatorTest {
     private lateinit var configRepository: ConfigRepository
     private lateinit var identityRepository: IdentityRepository
     private lateinit var brokerSecretRepository: BrokerSecretRepository
+    private lateinit var forwardsRepository: ForwardsRepository
     private val passwordFile = File(context.filesDir, "runtime/mqtt_password.txt")
 
     @Before
-    fun setUp() {
-        listOf("config.toml", "setup_input.json", "identity.enc", "identity.pub", "authorized_keys").forEach {
-            File(context.filesDir, it).delete()
+    fun setUp() =
+        runBlocking {
+            listOf("config.toml", "setup_input.json", "identity.enc", "identity.pub", "authorized_keys").forEach {
+                File(context.filesDir, it).delete()
+            }
+            File(context.filesDir, "runtime").deleteRecursively()
+            File(context.filesDir, "forwards.json").delete()
+            configRepository = ConfigRepository(context)
+            identityRepository = IdentityRepository(context, PlaintextCrypto())
+            brokerSecretRepository = BrokerSecretRepository(context)
+            forwardsRepository = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+            // The Forwards stage's captureForTransaction() fails unless the baseline is Ready.
+            forwardsRepository.refresh()
         }
-        File(context.filesDir, "runtime").deleteRecursively()
-        configRepository = ConfigRepository(context)
-        identityRepository = IdentityRepository(context, PlaintextCrypto())
-        brokerSecretRepository = BrokerSecretRepository(context)
-    }
 
     // --- Test seams -------------------------------------------------------------------------
 
@@ -208,8 +214,11 @@ class SetupPersistenceCoordinatorTest {
         config: ConfigRepository = configRepository,
         identity: IdentityRepository = identityRepository,
         brokerSecret: BrokerSecretRepository = brokerSecretRepository,
-    ) = SetupPersistenceCoordinator(config, identity, brokerSecret, prefs.load, prefs.persist)
+        forwards: ForwardsRepository = forwardsRepository,
+    ) = SetupPersistenceCoordinator(config, identity, brokerSecret, forwards, prefs.load, prefs.persist)
 
+    // Forwards-specific requests (non-empty draft) are covered by
+    // SetupPersistenceCoordinatorForwardsTest — every request here uses an empty draft.
     private fun request(
         replacementIdentity: IdentityReplacement? = null,
         authorizedPublicIdentityToAdd: String? = null,
@@ -220,9 +229,8 @@ class SetupPersistenceCoordinatorTest {
         configContents,
         setupInput,
         AndroidAppPreferences(resumeOnUnmetered = false),
-        replacementIdentity,
-        authorizedPublicIdentityToAdd,
-        brokerSecretChange,
+        emptyList(),
+        SetupOptionalChanges(replacementIdentity, authorizedPublicIdentityToAdd, brokerSecretChange),
     )
 
     private fun fullRequest() =
@@ -258,6 +266,7 @@ class SetupPersistenceCoordinatorTest {
                     SetupPersistenceStage.BrokerSecret,
                     SetupPersistenceStage.SetupInput,
                     SetupPersistenceStage.Preferences,
+                    SetupPersistenceStage.Forwards,
                     SetupPersistenceStage.Config,
                 ),
                 (result as SetupPersistenceResult.Success).stages,
@@ -448,6 +457,7 @@ class SetupPersistenceCoordinatorTest {
             assertEquals(
                 listOf(
                     SetupPersistenceStage.Config,
+                    SetupPersistenceStage.Forwards,
                     SetupPersistenceStage.Preferences,
                     SetupPersistenceStage.SetupInput,
                     SetupPersistenceStage.BrokerSecret,

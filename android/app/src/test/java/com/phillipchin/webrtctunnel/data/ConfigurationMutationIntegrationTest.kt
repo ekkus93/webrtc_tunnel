@@ -114,7 +114,7 @@ class ConfigurationMutationIntegrationTest {
      * to reach its Config commit stage: matching stored identity, remote public identity, and
      * an enabled forward — the minimum `SetupStepValidation` requires, without driving the full
      * wizard UI navigation. */
-    private fun buildValidSetupHarness(
+    private suspend fun buildValidSetupHarness(
         deps: AppDependencies,
         // detekt's InjectDispatcher: the real dispatcher only ever appears inside this default —
         // SetupSaveController is constructed directly (not as a ViewModel) and needs its own
@@ -125,6 +125,11 @@ class ConfigurationMutationIntegrationTest {
         deps.forwardsStore.saveForwards(
             listOf(ForwardConfig(id = "svc", name = "svc", localPort = 8080, remoteForwardId = "svc", enabled = true)),
         )
+        // FIX8 P0-004-D: the coordinator's Forwards stage calls forwardsRepository.
+        // captureForTransaction(), which fails unless the baseline has reached Ready — refresh
+        // it here (picking up the seed just written above) or the setup save's Snapshot stage
+        // fails before ever reaching the gated writeConfigAtomically these tests block on.
+        deps.forwardsRepository.refresh()
         val stateRef =
             AtomicReference(
                 SetupWizardState(
