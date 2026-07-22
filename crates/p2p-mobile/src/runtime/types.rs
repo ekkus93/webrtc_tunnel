@@ -92,9 +92,22 @@ pub struct AndroidForwardRuntimeStatus {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AndroidLogEvent {
-    pub unix_ms: u64,
+    /// `None` when no timestamp could be established for this event (FIX8 P0-010-A) — never a
+    /// fabricated `0`, which the Kotlin side could not distinguish from the Unix epoch.
+    pub unix_ms: Option<u64>,
     pub level: String,
     pub message: String,
+}
+
+/// Builds a visible diagnostic log event for a fallback/failure path (FIX8 P0-010-B): both the
+/// JNI invalid-UTF-8 log-JSON fallback and the C-ABI recent-logs-read-failure fallback go
+/// through this one function, so their shape can't drift apart and each is directly unit
+/// testable without needing a JNIEnv or a genuinely poisoned mutex.
+pub(crate) fn diagnostic_failure_event(
+    message: impl Into<String>,
+    unix_ms: Option<u64>,
+) -> AndroidLogEvent {
+    AndroidLogEvent { unix_ms, level: "error".to_owned(), message: message.into() }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -127,5 +140,37 @@ pub(crate) fn android_state_from_daemon(state: DaemonState) -> AndroidRuntimeSta
         | DaemonState::Renegotiating
         | DaemonState::Backoff => AndroidRuntimeState::Starting,
         DaemonState::Closed => AndroidRuntimeState::Stopped,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // FIX8 P0-010-D: normalRecentLogSerializesSomeTimestamp — a normal, timestamped log event
+    // serializes its timestamp as a JSON number, never `null`.
+    #[test]
+    fn normal_recent_log_serializes_some_timestamp() {
+        let event = AndroidLogEvent {
+            unix_ms: Some(1_700_000_000_000),
+            level: "info".to_owned(),
+            message: "ok".to_owned(),
+        };
+        let json = serde_json::to_string(&event).expect("serializable");
+        assert!(json.contains("\"unix_ms\":1700000000000"), "json was: {json}");
+    }
+
+    #[test]
+    fn diagnostic_failure_event_carries_message_and_optional_timestamp() {
+        let with_time = diagnostic_failure_event("clock available", Some(42));
+        assert_eq!(with_time.unix_ms, Some(42));
+        assert_eq!(with_time.level, "error");
+        assert_eq!(with_time.message, "clock available");
+
+        let without_time = diagnostic_failure_event("clock unavailable", None);
+        assert_eq!(without_time.unix_ms, None);
+        let json = serde_json::to_string(&without_time).expect("serializable");
+        assert!(json.contains("\"unix_ms\":null"), "json was: {json}");
+        assert!(!json.contains("\"unix_ms\":0"), "must never fabricate a zero timestamp: {json}");
     }
 }

@@ -113,7 +113,11 @@ pub(crate) fn record_start_error(inner: &mut RuntimeInner, message: String) -> S
     if let Some(unix_ms) = unix_ms() {
         push_log(
             &inner.logs,
-            AndroidLogEvent { unix_ms, level: "error".to_owned(), message: message.clone() },
+            AndroidLogEvent {
+                unix_ms: Some(unix_ms),
+                level: "error".to_owned(),
+                message: message.clone(),
+            },
         );
     }
     message

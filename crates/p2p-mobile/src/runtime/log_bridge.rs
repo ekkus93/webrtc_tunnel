@@ -100,7 +100,7 @@ impl<S: Subscriber> Layer<S> for AndroidLogLayer {
         let mut visitor = MessageVisitor::new(metadata.target());
         event.record(&mut visitor);
         let result = self.buffer.push(AndroidLogEvent {
-            unix_ms,
+            unix_ms: Some(unix_ms),
             level: level_str(*metadata.level()).to_owned(),
             message: visitor.finish(),
         });
@@ -174,7 +174,7 @@ mod tests {
         for i in 0..(MAX_LOG_EVENTS + 5) {
             buffer
                 .push(AndroidLogEvent {
-                    unix_ms: i as u64,
+                    unix_ms: Some(i as u64),
                     level: "info".to_owned(),
                     message: format!("event {i}"),
                 })
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(
             buffer
                 .push(AndroidLogEvent {
-                    unix_ms: 0,
+                    unix_ms: Some(0),
                     level: "info".to_owned(),
                     message: "should not be silently dropped".to_owned(),
                 })

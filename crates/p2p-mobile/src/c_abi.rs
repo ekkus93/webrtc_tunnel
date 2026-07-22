@@ -15,7 +15,7 @@ use super::{
     AndroidTunnelController, IdentityValidationResult, catch_api_recording, catch_api_string,
     with_controller,
 };
-use crate::runtime::AndroidLogEvent;
+use crate::runtime::diagnostic_failure_event;
 #[unsafe(no_mangle)]
 pub extern "C" fn p2ptunnel_create_runtime() -> *mut AndroidTunnelController {
     Box::into_raw(Box::new(AndroidTunnelController::new()))
@@ -144,6 +144,17 @@ pub unsafe extern "C" fn p2ptunnel_status_json(
     })
 }
 
+/// The events to report when reading recent logs itself failed (e.g. a poisoned mutex),
+/// parameterized on the diagnostic clock read so both the clock-available and the extremely
+/// rare clock-also-unavailable case (FIX8 P0-010-B) are directly unit testable without needing
+/// to actually poison a mutex or fail the system clock.
+fn recent_logs_failure_fallback(
+    reason: &str,
+    unix_ms: Option<u64>,
+) -> Vec<crate::runtime::AndroidLogEvent> {
+    vec![diagnostic_failure_event(format!("failed to read recent logs: {reason}"), unix_ms)]
+}
+
 #[unsafe(no_mangle)]
 /// # Safety
 ///
@@ -159,17 +170,9 @@ pub unsafe extern "C" fn p2ptunnel_recent_logs_json(
             // still visible in the app's log feed rather than silently swallowed.
             let events = match controller.recent_logs(max_events) {
                 Ok(events) => events,
-                Err(reason) => match crate::runtime::bridge_unix_ms() {
-                    Some(unix_ms) => vec![AndroidLogEvent {
-                        unix_ms,
-                        level: "error".to_owned(),
-                        message: format!("failed to read recent logs: {reason}"),
-                    }],
-                    // FIX7 P0-010-E: an extremely rare double failure (log buffer AND clock
-                    // both unavailable) falls back to an empty list rather than inventing a
-                    // zero timestamp for the synthetic error entry.
-                    None => Vec::new(),
-                },
+                Err(reason) => {
+                    recent_logs_failure_fallback(&reason, crate::runtime::bridge_unix_ms())
+                }
             };
             serde_json::to_string(&events).map_err(|error| error.to_string())
         })?
@@ -339,4 +342,28 @@ pub unsafe extern "C" fn p2ptunnel_free_string(ptr: *mut c_char) {
     }
     // SAFETY: pointer must have been returned by `into_c_string`.
     let _ = unsafe { CString::from_raw(ptr) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_logs_failure_fallback_uses_clock_when_available() {
+        let events = recent_logs_failure_fallback("mutex poisoned", Some(123));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].unix_ms, Some(123));
+        assert!(events[0].message.contains("mutex poisoned"));
+    }
+
+    // FIX8 P0-010-D: recentLogAndClockDoubleFailureReturnsVisibleUntimedErrorEvent — a log-read
+    // failure with no clock available still returns one visible error event (not an empty
+    // list), with a `None` timestamp rather than a fabricated zero.
+    #[test]
+    fn recent_logs_and_clock_double_failure_returns_visible_untimed_error_event() {
+        let events = recent_logs_failure_fallback("mutex poisoned", None);
+        assert_eq!(events.len(), 1, "a double failure must still surface one visible event");
+        assert_eq!(events[0].unix_ms, None);
+        assert!(events[0].message.contains("mutex poisoned"));
+    }
 }

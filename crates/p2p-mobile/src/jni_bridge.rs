@@ -11,8 +11,20 @@ use jni::objects::{JClass, JString};
 use jni::sys::{jint, jlong, jstring};
 
 use crate::c_abi::*;
+use crate::runtime::diagnostic_failure_event;
 
 use super::{AndroidTunnelController, last_error_for_handle, to_jstring, with_controller};
+
+/// The JSON array returned by `nativeRecentLogsJson` when the native side handed back a
+/// non-UTF-8 log-JSON buffer (FIX8 P0-010-B). Built by serializing the same
+/// `diagnostic_failure_event` helper every other log-fallback path uses, rather than a
+/// hand-written JSON string literal — a literal can silently drift out of sync with
+/// `AndroidLogEvent`'s actual field shape (a fabricated zero timestamp was hand-written here
+/// previously) and is directly unit-testable without a `JNIEnv`.
+fn invalid_utf8_log_fallback_json() -> String {
+    let events = vec![diagnostic_failure_event("native returned invalid UTF-8 for log JSON", None)];
+    serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_owned())
+}
 
 /// Record a JNI-marshalling failure (which happens before the controller can run) on the
 /// handle's `last_error`, so Kotlin's `nativeLastError()` surfaces the real cause instead of
@@ -202,10 +214,9 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_NativeControlLib_native
     // SAFETY: the pointer was allocated by `p2ptunnel_recent_logs_json`.
     // Invalid native UTF-8 must surface as a visible error log entry, not an empty list that
     // looks like "no logs".
-    let value = unsafe { CString::from_raw(ptr) }.into_string().unwrap_or_else(|_| {
-        r#"[{"unix_ms":0,"level":"error","message":"native returned invalid UTF-8 for log JSON"}]"#
-            .to_owned()
-    });
+    let value = unsafe { CString::from_raw(ptr) }
+        .into_string()
+        .unwrap_or_else(|_| invalid_utf8_log_fallback_json());
     to_jstring(&mut env, value)
 }
 
@@ -422,4 +433,20 @@ pub extern "system" fn Java_com_phillipchin_webrtctunnel_NativeControlLib_native
 ) -> jstring {
     let error = last_error_for_handle(handle as *mut AndroidTunnelController);
     to_jstring(&mut env, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // FIX8 P0-010-D: jniInvalidUtf8LogFallbackUsesNullTimestampNotZero — the JSON fallback
+    // returned when the native side hands back non-UTF-8 log JSON must use `null` for its
+    // timestamp, never the old fabricated `0`.
+    #[test]
+    fn jni_invalid_utf8_log_fallback_uses_null_timestamp_not_zero() {
+        let json = invalid_utf8_log_fallback_json();
+        assert!(json.contains("\"unix_ms\":null"), "json was: {json}");
+        assert!(!json.contains("\"unix_ms\":0"), "must never fabricate a zero timestamp: {json}");
+        assert!(json.contains("invalid UTF-8"), "json was: {json}");
+    }
 }

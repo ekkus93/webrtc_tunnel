@@ -29,6 +29,9 @@ pub use types::{
     AndroidForwardRuntimeStatus, AndroidIceInfo, AndroidLogEvent, AndroidRuntimeState,
     AndroidRuntimeStatus, AndroidTunnelMode, AndroidValidationResult,
 };
+// Crate-internal only (not part of this crate's public API): shared by c_abi/jni_bridge's log
+// fallback paths (FIX8 P0-010-B).
+pub(crate) use types::diagnostic_failure_event;
 
 // Used by the unit-test module's `super::*` (it asserts the daemon→UI mapping).
 #[cfg(test)]
@@ -82,7 +85,7 @@ fn apply_daemon_completion_result(
                 push_log(
                     &inner.logs,
                     AndroidLogEvent {
-                        unix_ms,
+                        unix_ms: Some(unix_ms),
                         level: "info".to_owned(),
                         message: "runtime completed".to_owned(),
                     },
@@ -99,7 +102,7 @@ fn apply_daemon_completion_result(
                 push_log(
                     &inner.logs,
                     AndroidLogEvent {
-                        unix_ms,
+                        unix_ms: Some(unix_ms),
                         level: "error".to_owned(),
                         message: error.to_string(),
                     },
@@ -277,7 +280,7 @@ impl AndroidTunnelController {
             push_log(
                 &inner.logs,
                 AndroidLogEvent {
-                    unix_ms,
+                    unix_ms: Some(unix_ms),
                     level: "info".to_owned(),
                     message: "runtime started".to_owned(),
                 },
@@ -378,7 +381,7 @@ impl AndroidTunnelController {
                     push_log(
                         &inner.logs,
                         AndroidLogEvent {
-                            unix_ms,
+                            unix_ms: Some(unix_ms),
                             level: "info".to_owned(),
                             message: "runtime stopped".to_owned(),
                         },
@@ -395,7 +398,11 @@ impl AndroidTunnelController {
                 if let Some(unix_ms) = unix_ms() {
                     push_log(
                         &inner.logs,
-                        AndroidLogEvent { unix_ms, level: "error".to_owned(), message },
+                        AndroidLogEvent {
+                            unix_ms: Some(unix_ms),
+                            level: "error".to_owned(),
+                            message,
+                        },
                     );
                 }
             }
@@ -407,7 +414,11 @@ impl AndroidTunnelController {
                 if let Some(unix_ms) = unix_ms() {
                     push_log(
                         &inner.logs,
-                        AndroidLogEvent { unix_ms, level: "error".to_owned(), message },
+                        AndroidLogEvent {
+                            unix_ms: Some(unix_ms),
+                            level: "error".to_owned(),
+                            message,
+                        },
                     );
                 }
             }
