@@ -1235,21 +1235,41 @@ related tests
 
 ## P0-010-A — Make log timestamp optional end to end
 
-- [ ] Change Rust `AndroidLogEvent.unix_ms` to `Option<u64>`. (`SHA: ______`)
-- [ ] Normal log events use `Some(unix_ms)`. (`SHA: ______`)
-- [ ] Update serde/JNI/C ABI tests. (`SHA: ______`)
-- [ ] Change Kotlin `NativeLogEventDto.unixMs` and `LogEvent.unixMs` to nullable. (`SHA: ______`)
-- [ ] Redaction preserves null. (`SHA: ______`)
-- [ ] UI formats null as fixed “time unavailable” text and uses a stable key not dependent solely on timestamp. (`SHA: ______`)
-- [ ] Export/share logs represent null explicitly and do not print `0`. (`SHA: ______`)
+- [x] Change Rust `AndroidLogEvent.unix_ms` to `Option<u64>`. (`SHA: 59a07b9`)
+- [x] Normal log events use `Some(unix_ms)`. (`SHA: 59a07b9`)
+- [x] Update serde/JNI/C ABI tests. (`SHA: 59a07b9`)
+- [x] Change Kotlin `NativeLogEventDto.unixMs` and `LogEvent.unixMs` to nullable. (`SHA: 3f5d3a0`)
+- [x] Redaction preserves null. (`SHA: 3f5d3a0`)
+- [x] UI formats null as fixed "time unavailable" text and uses a stable key not dependent solely on timestamp. (`SHA: 3f5d3a0`)
+- [x] Export/share logs represent null explicitly and do not print `0`. (`SHA: 3f5d3a0`)
+
+`SensitiveDataRedactor.redactLogEvent` only ever touched `message`, so it already preserved
+`unixMs` (now nullable) unchanged with no code change needed. `LogsScreen`'s LazyColumn key was
+already `"${event.unixMs}-$index"` — the index suffix already made it stable/unique regardless of
+timestamp, so no change needed there either. `DiagnosticsRepository`'s diagnostics-export path
+serializes logs via `kotlinx.serialization` `Json.encodeToString`, which already renders a null
+field as JSON `null` (not `0`) with no code change; the copy-to-clipboard/share text builder
+(`redactedLogsText`, a hand-built plain-text line, not JSON) needed an explicit `?:
+unavailableText` fallback, since Kotlin's default null-to-string would otherwise print the literal
+word `null` (not `0`, but still not the fixed UX text this item requires).
 
 ## P0-010-B — Visible fallback events
 
-- [ ] JNI invalid-UTF8 log fallback returns an error event with `unix_ms: null`. (`SHA: ______`)
-- [ ] C ABI log-buffer failure with available clock returns `Some(time)`. (`SHA: ______`)
-- [ ] C ABI log-buffer plus clock failure returns one error event with `None`, not `Vec::new()`. (`SHA: ______`)
-- [ ] Message is fixed/redacted and does not include raw poison/internal details beyond an approved safe reason. (`SHA: ______`)
-- [ ] Extract pure helper seams so both fallback branches are directly unit-tested. (`SHA: ______`)
+- [x] JNI invalid-UTF8 log fallback returns an error event with `unix_ms: null`. (`SHA: 59a07b9`)
+- [x] C ABI log-buffer failure with available clock returns `Some(time)`. (`SHA: 59a07b9`)
+- [x] C ABI log-buffer plus clock failure returns one error event with `None`, not `Vec::new()`. (`SHA: 59a07b9`)
+- [x] Message is fixed/redacted and does not include raw poison/internal details beyond an approved safe reason. (`SHA: 59a07b9`)
+- [x] Extract pure helper seams so both fallback branches are directly unit-tested. (`SHA: 59a07b9`)
+
+New `types::diagnostic_failure_event(message, unix_ms)` (crate-internal) builds the event for
+both the JNI and C-ABI fallback paths, so they can't drift apart. The JNI fallback (previously a
+hand-written `r#"[{"unix_ms":0,...}]"#` string literal) now serializes it via
+`serde_json::to_string`, extracted into `jni_bridge::invalid_utf8_log_fallback_json()` — directly
+unit tested without a `JNIEnv`. The C-ABI fallback is extracted into
+`c_abi::recent_logs_failure_fallback(reason, unix_ms)`, unit tested with both `Some`/`None`
+inputs. The existing reason string (`"failed to read recent logs: {reason}"`, where `reason` is
+already a fixed/redacted `String` from `controller.recent_logs()`) is unchanged — no raw
+poison/internal detail beyond that existing approved message.
 
 Target:
 
@@ -1265,26 +1285,39 @@ fn diagnostic_failure_event(message: impl Into<String>, unix_ms: Option<u64>) ->
 
 ## P0-010-C — Strengthen static guard
 
-- [ ] Detect production struct literals `unix_ms: 0`. (`SHA: ______`)
-- [ ] Detect production JSON fallback containing `"unix_ms":0`. (`SHA: ______`)
-- [ ] Detect `None => Vec::new()` in the recent-log failure path through a direct behavior test, not regex alone. (`SHA: ______`)
-- [ ] Keep legitimate test data with timestamp zero only where explicitly testing deserialization; do not let it satisfy production fallback checks. (`SHA: ______`)
+- [x] Detect production struct literals `unix_ms: 0`. (`SHA: 59a07b9`)
+- [x] Detect production JSON fallback containing `"unix_ms":0`. (`SHA: 59a07b9`)
+- [x] Detect `None => Vec::new()` in the recent-log failure path through a direct behavior test, not regex alone. (`SHA: 59a07b9`)
+- [x] Keep legitimate test data with timestamp zero only where explicitly testing deserialization; do not let it satisfy production fallback checks. (`SHA: 59a07b9`)
+
+Extended the existing FIX7 `no_pre_epoch_panics.rs` workspace guard (kept as the natural home,
+rather than a new file, since it's already the workspace-wide "no reintroduced clock-fallback
+footgun" tripwire) with a second test,
+`workspace_contains_no_production_zero_timestamp_diagnostic_fallback`. It strips every
+`#[cfg(test)] mod ... { ... }` block (brace-depth-matched) from each file's contents before
+scanning, so a test module's legitimate `unix_ms: Some(0)` deserialization/eviction fixtures never
+false-positive — verified against two deliberately reintroduced violations (a bare `unix_ms: 0`
+struct literal and a `None => Vec::new()` fallback) before confirming clean, then reverted. Note:
+`Option<u64>` already makes a bare `unix_ms: 0` struct literal a *compile* error workspace-wide
+(the type system itself forecloses that specific case now) — the guard's struct-literal check is
+defense-in-depth; its real remaining value is the JSON-string-literal and `Vec::new()` checks,
+which are plain text/logic the compiler can't catch.
 
 ## P0-010-D — Tests
 
-- [ ] `jniInvalidUtf8LogFallbackUsesNullTimestampNotZero` (`SHA: ______`)
-- [ ] `recentLogAndClockDoubleFailureReturnsVisibleUntimedErrorEvent` (`SHA: ______`)
-- [ ] `normalRecentLogSerializesSomeTimestamp` (`SHA: ______`)
-- [ ] `kotlinDecodesNullNativeLogTimestamp` (`SHA: ______`)
-- [ ] `logsScreenDisplaysTimeUnavailableForNullTimestamp` (`SHA: ______`)
-- [ ] `logExportNeverPrintsZeroForUnavailableTimestamp` (`SHA: ______`)
-- [ ] `workspaceContainsNoProductionZeroTimestampDiagnosticFallback` (`SHA: ______`)
+- [x] `jniInvalidUtf8LogFallbackUsesNullTimestampNotZero` (`SHA: 59a07b9`)
+- [x] `recentLogAndClockDoubleFailureReturnsVisibleUntimedErrorEvent` (`SHA: 59a07b9`)
+- [x] `normalRecentLogSerializesSomeTimestamp` (`SHA: 59a07b9`)
+- [x] `kotlinDecodesNullNativeLogTimestamp` (`SHA: 3f5d3a0`)
+- [x] `logsScreenDisplaysTimeUnavailableForNullTimestamp` (`SHA: 3f5d3a0`)
+- [x] `logExportNeverPrintsZeroForUnavailableTimestamp` (`SHA: 3f5d3a0`)
+- [x] `workspaceContainsNoProductionZeroTimestampDiagnosticFallback` (`SHA: 59a07b9`)
 
 ## Acceptance
 
-- [ ] Unavailable time is null/None, never zero. (`SHA: ______`)
-- [ ] Double diagnostic failure remains visible. (`SHA: ______`)
-- [ ] Rust/Kotlin schema and UI agree. (`SHA: ______`)
+- [x] Unavailable time is null/None, never zero. (`SHA: 3f5d3a0`)
+- [x] Double diagnostic failure remains visible. (`SHA: 59a07b9`)
+- [x] Rust/Kotlin schema and UI agree. (`SHA: 3f5d3a0`)
 
 ---
 
