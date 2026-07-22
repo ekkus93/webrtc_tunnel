@@ -420,17 +420,17 @@ related tests
 
 ## P0-003-A — Remove legacy String snapshots
 
-- [ ] Delete `SetupInputSnapshot`, `captureSetupInputSnapshot`, and `restoreSetupInputSnapshot`. (`SHA: ______`)
-- [ ] Remove `contents.orEmpty()` restoration. (`SHA: ______`)
-- [ ] Remove all unchecked setup-input `File.delete()`. (`SHA: ______`)
-- [ ] Do not store config snapshot as `configExisted + String`. (`SHA: ______`)
+- [x] Delete `SetupInputSnapshot`, `captureSetupInputSnapshot`, and `restoreSetupInputSnapshot`. (`SHA: 55d877d`)
+- [x] Remove `contents.orEmpty()` restoration. (`SHA: 55d877d`)
+- [x] Remove all unchecked setup-input `File.delete()`. (`SHA: 55d877d`)
+- [x] Do not store config snapshot as `configExisted + String`. (`SHA: 55d877d`)
 
 ## P0-003-B — One repository file-serialization boundary
 
-- [ ] Replace/rename `writeMutex` with one mutex that serializes both config and setup-input file operations. (`SHA: ______`)
-- [ ] `readConfig`, config existence, exact capture, config writes/deletes/restores all use it. (`SHA: ______`)
-- [ ] setup-input exact capture, atomic save, load read, and restore all use it. (`SHA: ______`)
-- [ ] Avoid nested/reentrant acquisition by providing private `...Locked` helpers. (`SHA: ______`)
+- [x] Replace/rename `writeMutex` with one mutex that serializes both config and setup-input file operations. (`SHA: 55d877d` — renamed to `fileMutex`)
+- [x] `readConfig` (now the `configContents` property), config existence, exact capture, config writes/deletes/restores all use it. (`SHA: 55d877d`)
+- [x] setup-input exact capture, atomic save, load read, and restore all use it. (`SHA: 55d877d`)
+- [x] Avoid nested/reentrant acquisition by providing private `...Locked` helpers. (`SHA: 55d877d` — `ensureDefaultConfig`/`prepareActiveConfigForStart` call `writeConfigAtomicallyWith` directly rather than the mutex-taking `writeConfigAtomically`; `SHA: 24b9aa2` unified that with the generic byte primitive.)
 
 Suggested model:
 
@@ -471,22 +471,22 @@ The actual helper names may change. Do not call a public locking method while al
 
 ## P0-003-C — Generic atomic byte replacement
 
-- [ ] Create/centralize one same-directory temp plus atomic/replacement move primitive. (`SHA: ______`)
-- [ ] Use `Files.createDirectories`, not ignored `mkdirs`. (`SHA: ______`)
-- [ ] Support byte writes so exact snapshots do not round-trip through UTF-8 String. (`SHA: ______`)
-- [ ] Return failure for every ordinary exception, including `SecurityException`. (`SHA: ______`)
-- [ ] Preserve cancellation. (`SHA: ______`)
-- [ ] Compose temp cleanup into the result. (`SHA: ______`)
-- [ ] Allow an injected post-move verifier for broker-secret permissions. (`SHA: ______`)
+- [x] Create/centralize one same-directory temp plus atomic/replacement move primitive. (`SHA: 55d877d`, unified with config's own writer at `SHA: 24b9aa2` — `atomicReplaceBytesWith` in `ConfigAtomicWrite.kt` is now the one implementation both `writeConfigAtomically` and `atomicReplaceBytes`/setup-input use.)
+- [x] Use `Files.createDirectories`, not ignored `mkdirs`. (`SHA: 55d877d` for setup-input; `SHA: 24b9aa2` for config, once unified.)
+- [x] Support byte writes so exact snapshots do not round-trip through UTF-8 String. (`SHA: 55d877d`)
+- [x] Return failure for every ordinary exception, including `SecurityException`. (`SHA: 24b9aa2` — broadened from `IOException` to `Exception`; covered by `AtomicReplaceBytesTest.securityExceptionFromWriteReturnsFailureNotThrow`.)
+- [x] Preserve cancellation. (`SHA: 55d877d`)
+- [x] Compose temp cleanup into the result. (`SHA: 55d877d`)
+- [x] Allow an injected post-move verifier for broker-secret permissions. (`SHA: 55d877d` — hook exists (`postMoveVerify`); not yet adopted by a caller, deferred to P0-008 as noted in the code comment.)
 
 ## P0-003-D — Mark stage attempted before apply
 
-- [ ] Rename `committed` to `attempted` or otherwise reflect the actual semantics. (`SHA: ______`)
-- [ ] Add each stage before `applyStage`. (`SHA: ______`)
-- [ ] Ordinary apply failure rolls back `attempted`, including current stage. (`SHA: ______`)
-- [ ] Cancellation rolls back `attempted`, including current stage. (`SHA: ______`)
-- [ ] Rollback remains reverse-order, `NonCancellable`, exhaustive, and idempotent. (`SHA: ______`)
-- [ ] Success result lists successfully applied stages, not a stage that failed and was rolled back. (`SHA: ______`)
+- [x] Rename `committed` to `attempted` or otherwise reflect the actual semantics. (`SHA: 55d877d`)
+- [x] Add each stage before `applyStage`. (`SHA: 55d877d`)
+- [x] Ordinary apply failure rolls back `attempted`, including current stage. (`SHA: 55d877d`)
+- [x] Cancellation rolls back `attempted`, including current stage. (`SHA: 55d877d`)
+- [x] Rollback remains reverse-order, `NonCancellable`, exhaustive, and idempotent. (`SHA: 55d877d`)
+- [x] Success result lists successfully applied stages, not a stage that failed and was rolled back. (`SHA: 55d877d`)
 
 Target loop:
 
@@ -521,39 +521,39 @@ A stage that failed before mutation is still restored; restore is required to be
 
 ## P0-003-E — Exact setup snapshot and wiping
 
-- [ ] `SetupSnapshot` contains `ConfigFilesSnapshot`, not String-derived fields. (`SHA: ______`)
-- [ ] Capture config/setup with one repository method. (`SHA: ______`)
-- [ ] Snapshot capture failure aborts before any mutation. (`SHA: ______`)
-- [ ] `SetupSnapshot.wipeSecrets()` wipes broker-secret and setup-input bytes. (`SHA: ______`)
-- [ ] Wiping runs after success, ordinary failure, cancellation, and fatal propagation. (`SHA: ______`)
+- [x] `SetupSnapshot` contains `ConfigFilesSnapshot`, not String-derived fields. (`SHA: 55d877d`)
+- [x] Capture config/setup with one repository method. (`SHA: 55d877d` — `captureFilesSnapshot()`)
+- [x] Snapshot capture failure aborts before any mutation. (`SHA: 55d877d`; re-verified by `snapshotFailurePerformsZeroMutationIncludingCurrentStage` at `SHA: 24b9aa2`)
+- [x] `SetupSnapshot.wipeSecrets()` wipes broker-secret and setup-input bytes. (`SHA: 55d877d`)
+- [x] Wiping runs after success, ordinary failure, cancellation, and fatal propagation. (`SHA: 55d877d` implementation via `finally`; `SHA: 24b9aa2` adds `setupInputSnapshotBytesWipedAfterSuccessFailureCancellationAndFatalError` covering all four exit paths including a thrown `Error`.)
 
 ## P0-003-F — Result contracts
 
-- [ ] `savePreferences()` catches all ordinary `Exception`, rethrows cancellation. (`SHA: ______`)
-- [ ] config delete/write/restore helpers catch all ordinary `Exception`, not only `IOException`. (`SHA: ______`)
-- [ ] Every authoritative API is `@CheckResult` and all callers consume it. (`SHA: ______`)
+- [x] `savePreferences()` catches all ordinary `Exception`, rethrows cancellation. (pre-existing; unchanged by FIX8)
+- [x] config delete/write/restore helpers catch all ordinary `Exception`, not only `IOException`. (`SHA: 24b9aa2` — `deleteConfigFileForTransactionalReset` and the unified `atomicReplaceBytesWith`/`finishAtomicWrite` now catch `Exception`.)
+- [x] Every authoritative API is `@CheckResult` and all callers consume it. (`SHA: 55d877d`/`24b9aa2`)
 
 ## P0-003-G — Exact tests
 
-- [ ] `setupInputAtomicWriteFailureBeforeMoveLeavesPriorBytesExact` (`SHA: ______`)
-- [ ] `setupInputFailureAfterMoveRestoresCurrentStageExactBytes` (`SHA: ______`)
-- [ ] `setupInputCancellationAfterMoveRestoresCurrentStageExactBytes` (`SHA: ______`)
-- [ ] `configFailureAfterMoveRestoresCurrentStageExactBytes` (`SHA: ______`)
-- [ ] `configCleanupFailureAfterMoveRestoresCurrentStageExactBytes` (`SHA: ______`)
-- [ ] `setupSnapshotDistinguishesAbsentPresentEmptyAndNonUtf8Bytes` (`SHA: ______`)
-- [ ] `setupSnapshotCaptureIsSerializedAgainstConfigAndSetupWriters` (`SHA: ______`)
-- [ ] `setupInputSnapshotBytesWipedAfterSuccessFailureCancellationAndFatalError` (`SHA: ______`)
-- [ ] `snapshotFailurePerformsZeroMutationIncludingCurrentStage` (`SHA: ______`)
-- [ ] `rollbackIncludesCurrentAttemptedStageForEverySetupStage` (`SHA: ______`)
-- [ ] `securityExceptionFromConfigOperationReturnsFailureAndTriggersRollback` (`SHA: ______`)
+- [x] `setupInputAtomicWriteFailureBeforeMoveLeavesPriorBytesExact` (`SHA: 24b9aa2`, in `AtomicReplaceBytesTest.kt`)
+- [x] `setupInputFailureAfterMoveRestoresCurrentStageExactBytes` (`SHA: 24b9aa2`, in `SetupPersistenceCoordinatorExactBytesTest.kt`)
+- [x] `setupInputCancellationAfterMoveRestoresCurrentStageExactBytes` (`SHA: 24b9aa2`)
+- [x] `configFailureAfterMoveRestoresCurrentStageExactBytes` (`SHA: 24b9aa2`)
+- [x] `configCleanupFailureAfterMoveRestoresCurrentStageExactBytes` (`SHA: 24b9aa2`)
+- [x] `setupSnapshotDistinguishesAbsentPresentEmptyAndNonUtf8Bytes` (`SHA: 24b9aa2`, in `ConfigRepositoryTest.kt`)
+- [x] `setupSnapshotCaptureIsSerializedAgainstConfigAndSetupWriters` (`SHA: 24b9aa2`)
+- [x] `setupInputSnapshotBytesWipedAfterSuccessFailureCancellationAndFatalError` (`SHA: 24b9aa2`)
+- [x] `snapshotFailurePerformsZeroMutationIncludingCurrentStage` (`SHA: 24b9aa2` — renamed/strengthened from the pre-existing `snapshotFailurePerformsNoMutation` in `SetupPersistenceCoordinatorTest.kt`)
+- [x] `rollbackIncludesCurrentAttemptedStageForEverySetupStage` — satisfied by the six existing per-stage tests in `SetupPersistenceCoordinatorTest.kt` (`identityFailureStopsAllLaterStages`, `authorizedKeysFailureRollsBackIdentity`, `brokerSecretFailureRollsBackAuthorizedKeysAndIdentity`, `setupInputFailureRollsBackBrokerSecretAuthorizedKeysAndIdentity`, `preferencesFailureRollsBackSetupInputBrokerSecretAuthorizedKeysAndIdentity`, `configFailureRollsBackEveryEarlierStage`), each updated at `SHA: 55d877d` to assert the failing stage itself heads the rollback list — no separate identically-named test was added to avoid duplicating that coverage.
+- [x] `securityExceptionFromConfigOperationReturnsFailureAndTriggersRollback` (`SHA: 24b9aa2`, in `SetupPersistenceCoordinatorExactBytesTest.kt`; the underlying repository-level contract is also covered directly by `AtomicReplaceBytesTest.securityExceptionFromWriteReturnsFailureNotThrow`)
 
 Use injected file operations that perform the destination move and then fail cleanup/verification. The test must assert exact destination restoration.
 
 ## Acceptance
 
-- [ ] Setup/config snapshots are exact, coherent, and secret-wiped. (`SHA: ______`)
-- [ ] Failure/cancellation cannot skip a partially/post-commit-mutated current stage. (`SHA: ______`)
-- [ ] No authoritative config/setup Result API unexpectedly throws an ordinary exception outside its contract. (`SHA: ______`)
+- [x] Setup/config snapshots are exact, coherent, and secret-wiped. (`SHA: 55d877d`/`24b9aa2`)
+- [x] Failure/cancellation cannot skip a partially/post-commit-mutated current stage. (`SHA: 55d877d`/`24b9aa2`)
+- [x] No authoritative config/setup Result API unexpectedly throws an ordinary exception outside its contract. (`SHA: 24b9aa2`)
 
 ---
 
