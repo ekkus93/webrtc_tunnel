@@ -784,50 +784,50 @@ related tests
 
 ## P0-006-A — Snapshot exact bytes without parsing
 
-- [ ] Reset uses `ConfigRepository.captureFilesSnapshot()`. (`SHA: ______`)
-- [ ] Remove `readConfig().toByteArray()` config snapshot. (`SHA: ______`)
-- [ ] Do not call `loadSetupInputResult().getOrThrow()` before reset. (`SHA: ______`)
-- [ ] Capture forwards with the exact transaction snapshot from P0-004. (`SHA: ______`)
-- [ ] Snapshot failure identifies `Config`, `SetupInput`, or `Forwards` accurately. (`SHA: ______`)
+- [x] Reset uses `ConfigRepository.captureFilesSnapshot()`. (`SHA: 0621d75` — via the new `captureConfigSnapshotForReset` property + `forwardsRepository.captureForTransaction()`, not the combined `captureFilesSnapshot()` itself, so a capture failure can be attributed to the actual component; see P0-006 note below)
+- [x] Remove `readConfig().toByteArray()` config snapshot. (`SHA: 0621d75`)
+- [x] Do not call `loadSetupInputResult().getOrThrow()` before reset. (`SHA: 0621d75`)
+- [x] Capture forwards with the exact transaction snapshot from P0-004. (`SHA: 0621d75`)
+- [x] Snapshot failure identifies `Config`, `SetupInput`, or `Forwards` accurately. (`SHA: 0621d75` — `SnapshotCaptureException.stage`)
 
 ## P0-006-B — Atomic reset mutations
 
-- [ ] Setup-input reset uses `saveSetupInputAtomically(SetupConfigInput())`. (`SHA: ______`)
-- [ ] Config reset uses atomic config replacement. (`SHA: ______`)
-- [ ] Forwards reset is failure-atomic. (`SHA: ______`)
-- [ ] No reset stage can return failure after a destination change without current-stage rollback. (`SHA: ______`)
+- [x] Setup-input reset uses `saveSetupInputAtomically(SetupConfigInput())`. (`SHA: 0621d75`)
+- [x] Config reset uses atomic config replacement. (`SHA: 0621d75` — unchanged `writeConfigAtomically`, already atomic temp+move)
+- [x] Forwards reset is failure-atomic. (`SHA: 0621d75` — unchanged `resetForwards()`, already self-restoring)
+- [x] No reset stage can return failure after a destination change without current-stage rollback. (`SHA: 0621d75` — P0-006-C's attempted-before-apply fix)
 
 ## P0-006-C — Attempted-stage rollback
 
-- [ ] Add each reset stage before apply. (`SHA: ______`)
-- [ ] Ordinary failure restores current and earlier stages. (`SHA: ______`)
-- [ ] Cancellation restores current and earlier stages under `NonCancellable`. (`SHA: ______`)
-- [ ] Restore exact config/setup/forwards state. (`SHA: ______`)
-- [ ] Wipe setup-input snapshot bytes in `finally`. (`SHA: ______`)
+- [x] Add each reset stage before apply. (`SHA: 0621d75`)
+- [x] Ordinary failure restores current and earlier stages. (`SHA: 0621d75`)
+- [x] Cancellation restores current and earlier stages under `NonCancellable`. (`SHA: 0621d75`)
+- [x] Restore exact config/setup/forwards state. (`SHA: 0621d75`, config byte-exactness fixed at `SHA: 0dbefda`)
+- [x] Wipe setup-input snapshot bytes in `finally`. (`SHA: 0621d75` — unchanged, verified still in effect)
 
 ## P0-006-D — Corrupt-state repair
 
-- [ ] Corrupt setup JSON does not block reset. (`SHA: ______`)
-- [ ] Non-UTF-8 config/setup bytes do not block snapshot/reset. (`SHA: ______`)
-- [ ] Reset success produces known defaults and clears prior durable reset failure. (`SHA: ______`)
-- [ ] Reset failure preserves/restores corrupt prior bytes exactly rather than “repairing” during rollback. (`SHA: ______`)
+- [x] Corrupt setup JSON does not block reset. (`SHA: 0621d75`)
+- [x] Non-UTF-8 config/setup bytes do not block snapshot/reset. (`SHA: 0dbefda`)
+- [x] Reset success produces known defaults and clears prior durable reset failure. (`SHA: 0621d75` — defaults unchanged; `SettingsViewModel.handleResetResult`'s existing `clearOperationFailure()` on success, verified still in effect)
+- [x] Reset failure preserves/restores corrupt prior bytes exactly rather than “repairing” during rollback. (`SHA: 0621d75` — raw-byte capture/restore never parses, so a corrupt prior file restores as the same corrupt bytes)
 
 ## P0-006-E — Tests
 
-- [ ] `corruptSetupInputDoesNotPreventReset` (`SHA: ______`)
-- [ ] `nonUtf8ConfigSnapshotRestoresExactBytesAfterResetFailure` (`SHA: ______`)
-- [ ] `resetSetupInputPostMoveFailureRestoresCurrentStageAndConfig` (`SHA: ______`)
-- [ ] `resetForwardsPostMoveFailureRestoresCurrentStageSetupInputAndConfig` (`SHA: ______`)
-- [ ] `resetCancellationDuringEachStageRestoresCurrentAndEarlierStages` (`SHA: ______`)
-- [ ] `resetSnapshotFailureNamesActualComponentAndPerformsNoMutation` (`SHA: ______`)
-- [ ] `resetRollbackRestoresAbsentPresentEmptyAndCorruptFilesExactly` (`SHA: ______`)
-- [ ] `resetSnapshotSecretBytesWipedAfterSuccessFailureCancellationAndFatalError` (`SHA: ______`)
+- [x] `corruptSetupInputDoesNotPreventReset` (`SHA: 0621d75`)
+- [x] `nonUtf8ConfigSnapshotRestoresExactBytesAfterResetFailure` (`SHA: 0dbefda`)
+- [x] `resetSetupInputPostMoveFailureRestoresCurrentStageAndConfig` (`SHA: 0dbefda`)
+- [x] `resetForwardsPostMoveFailureRestoresCurrentStageSetupInputAndConfig` (`SHA: 0dbefda`)
+- [x] `resetCancellationDuringEachStageRestoresCurrentAndEarlierStages` (`SHA: 0dbefda`)
+- [x] `resetSnapshotFailureNamesActualComponentAndPerformsNoMutation` (`SHA: 0621d75` — as three focused tests: `forwardsSnapshotFailureAbortsBeforeMutationAndNamesForwardsStage`, `configSnapshotReadExceptionAbortsBeforeMutation`, `setupSnapshotReadExceptionAbortsBeforeMutationAndNamesSetupInputStage`)
+- [x] `resetRollbackRestoresAbsentPresentEmptyAndCorruptFilesExactly` (`SHA: 0621d75`/`SHA: 0dbefda` — covered across `TransactionalResetExactSnapshotTest`'s absent/present/empty cases and the non-UTF-8 "corrupt" case above)
+- [x] `resetSnapshotSecretBytesWipedAfterSuccessFailureCancellationAndFatalError` (`SHA: 0dbefda`)
 
 ## Acceptance
 
-- [ ] Reset can repair corrupt drafts. (`SHA: ______`)
-- [ ] Reset rollback is byte-exact and includes current stage. (`SHA: ______`)
-- [ ] Failure diagnostics identify the actual component. (`SHA: ______`)
+- [x] Reset can repair corrupt drafts. (`SHA: 0621d75`)
+- [x] Reset rollback is byte-exact and includes current stage. (`SHA: 0621d75`, `SHA: 0dbefda`)
+- [x] Failure diagnostics identify the actual component. (`SHA: 0621d75`)
 
 ---
 
