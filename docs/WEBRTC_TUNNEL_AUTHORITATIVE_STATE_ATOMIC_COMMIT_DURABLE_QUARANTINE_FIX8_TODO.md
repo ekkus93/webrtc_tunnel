@@ -572,10 +572,10 @@ related tests
 
 ## P0-004-A — Exact forwards store snapshot/restore
 
-- [ ] Extend `ForwardsStore` with internal exact snapshot/restore support or add an equivalent repository-owned file collaborator. (`SHA: ______`)
-- [ ] Snapshot distinguishes absent, present-empty, and exact bytes. (`SHA: ______`)
-- [ ] Restore uses atomic replacement or checked deletion. (`SHA: ______`)
-- [ ] No list re-serialization is presented as exact rollback. (`SHA: ______`)
+- [x] Extend `ForwardsStore` with internal exact snapshot/restore support or add an equivalent repository-owned file collaborator. (`SHA: 54ad896` — added directly to `ForwardsStore` rather than a separate `TransactionalForwardsStore`, since `ForwardsRepository` is the interface's only production consumer.)
+- [x] Snapshot distinguishes absent, present-empty, and exact bytes. (`SHA: 54ad896`)
+- [x] Restore uses atomic replacement or checked deletion. (`SHA: 54ad896` — reuses `atomicReplaceBytes`/`restoreExactFileSnapshot` from P0-003.)
+- [x] No list re-serialization is presented as exact rollback. (`SHA: 54ad896`)
 
 Possible interface:
 
@@ -591,31 +591,31 @@ interface TransactionalForwardsStore : ForwardsStore {
 
 ## P0-004-B — Repository transaction snapshot
 
-- [ ] Add `ForwardsTransactionSnapshot` captured under `ForwardsRepository` mutex. (`SHA: ______`)
-- [ ] Include exact file snapshot, current list, load state, and load error needed for truthful restoration. (`SHA: ______`)
-- [ ] `captureForTransaction()` fails if baseline is not Ready; do not snapshot placeholder empty state. (`SHA: ______`)
-- [ ] `replaceForTransaction()` validates, saves, then publishes. (`SHA: ______`)
-- [ ] `restoreForTransaction()` restores disk first, then in-memory state. (`SHA: ______`)
-- [ ] Successful restore advances revision to invalidate pre-transaction receipts. (`SHA: ______`)
-- [ ] Result APIs are `@CheckResult`. (`SHA: ______`)
+- [x] Add `ForwardsTransactionSnapshot` captured under `ForwardsRepository` mutex. (`SHA: 54ad896`)
+- [x] Include exact file snapshot, current list, load state, and load error needed for truthful restoration. (`SHA: 54ad896`)
+- [x] `captureForTransaction()` fails if baseline is not Ready; do not snapshot placeholder empty state. (`SHA: 54ad896`)
+- [x] `replaceForTransaction()` validates, saves, then publishes. (`SHA: 54ad896`)
+- [x] `restoreForTransaction()` restores disk first, then in-memory state. (`SHA: 54ad896`)
+- [x] Successful restore advances revision to invalidate pre-transaction receipts. (`SHA: 54ad896`)
+- [x] Result APIs are `@CheckResult`. (`SHA: 54ad896`)
 
 ## P0-004-C — Make ordinary forwards mutations failure-atomic
 
-- [ ] `upsertWithReceipt`, `deleteWithReceipt`, reset, and transactional replace cannot leave disk changed when returning failure. (`SHA: ______`)
-- [ ] Capture exact store state before save and self-restore if save reports failure after destination mutation. (`SHA: ______`)
-- [ ] A self-restore failure returns a composed/typed rollback-incomplete failure. (`SHA: ______`)
-- [ ] In-memory list is not published until final persistence success. (`SHA: ______`)
+- [x] `upsertWithReceipt`, `deleteWithReceipt`, reset, and transactional replace cannot leave disk changed when returning failure. (`SHA: 54ad896`)
+- [x] Capture exact store state before save and self-restore if save reports failure after destination mutation. (`SHA: 54ad896` — `selfRestoringSave`.)
+- [x] A self-restore failure returns a composed/typed rollback-incomplete failure. (`SHA: 54ad896` — `ForwardsSaveRollbackIncompleteException`.)
+- [x] In-memory list is not published until final persistence success. (`SHA: 54ad896`)
 
 This is required even outside setup; the setup coordinator is not the only caller of `ForwardsRepository`.
 
 ## P0-004-D — Add setup `Forwards` stage
 
-- [ ] Add `SetupPersistenceStage.Forwards` immediately before `Config`. (`SHA: ______`)
-- [ ] Add full draft `forwards: List<ForwardConfig>` to `SetupPersistenceRequest`. (`SHA: ______`)
-- [ ] Capture forwards transaction snapshot before first mutation. (`SHA: ______`)
-- [ ] Apply full draft through `ForwardsRepository.replaceForTransaction`. (`SHA: ______`)
-- [ ] Restore exact forwards state for failure/cancellation. (`SHA: ______`)
-- [ ] Config remains last. (`SHA: ______`)
+- [x] Add `SetupPersistenceStage.Forwards` immediately before `Config`. (`SHA: 6fc9e49`)
+- [x] Add full draft `forwards: List<ForwardConfig>` to `SetupPersistenceRequest`. (`SHA: 6fc9e49`)
+- [x] Capture forwards transaction snapshot before first mutation. (`SHA: 6fc9e49`)
+- [x] Apply full draft through `ForwardsRepository.replaceForTransaction`. (`SHA: 6fc9e49`)
+- [x] Restore exact forwards state for failure/cancellation. (`SHA: 6fc9e49`)
+- [x] Config remains last. (`SHA: 6fc9e49`)
 
 Required order:
 
@@ -631,38 +631,38 @@ Config
 
 ## P0-004-E — Stage-specific identity restore
 
-- [ ] Add `IdentityRepository.restoreIdentityPairSnapshot` for encrypted/public only. (`SHA: ______`)
-- [ ] Add `restoreAuthorizedKeysSnapshot` for authorized keys only. (`SHA: ______`)
-- [ ] `SetupPersistenceStage.Identity` uses pair restore. (`SHA: ______`)
-- [ ] `AuthorizedKeys` uses authorized-key restore. (`SHA: ______`)
-- [ ] Do not restore the full triplet twice during one rollback. (`SHA: ______`)
+- [x] Add `IdentityRepository.restoreIdentityPairSnapshot` for encrypted/public only. (`SHA: 9423860`)
+- [x] Add `restoreAuthorizedKeysSnapshot` for authorized keys only. (`SHA: 9423860`)
+- [x] `SetupPersistenceStage.Identity` uses pair restore. (`SHA: 6fc9e49`)
+- [x] `AuthorizedKeys` uses authorized-key restore. (`SHA: 6fc9e49`)
+- [x] Do not restore the full triplet twice during one rollback. (`SHA: 6fc9e49`)
 
 ## P0-004-F — Setup controller request
 
-- [ ] Pass the full setup draft forwards to `SetupPersistenceRequest`. (`SHA: ______`)
-- [ ] Render validation/final config from enabled members of the same full draft. (`SHA: ______`)
-- [ ] Pass the one preference snapshot from P0-002. (`SHA: ______`)
-- [ ] Call the coordinator exactly once after validation workspace cleanup. (`SHA: ______`)
-- [ ] Clear identity/forward drafts only after `SetupPersistenceResult.Success`. (`SHA: ______`)
+- [x] Pass the full setup draft forwards to `SetupPersistenceRequest`. (`SHA: 6fc9e49`)
+- [x] Render validation/final config from enabled members of the same full draft. (pre-existing `enabledForwards`, unchanged)
+- [x] Pass the one preference snapshot from P0-002. (pre-existing, unchanged)
+- [x] Call the coordinator exactly once after validation workspace cleanup. (pre-existing, unchanged)
+- [x] Clear identity/forward drafts only after `SetupPersistenceResult.Success`. (pre-existing `identityDraft.clear()` timing, unchanged; forwards has no separate save-scoped draft to clear — see P0-004-F note in the implementation report.)
 
 ## P0-004-G — Tests
 
-- [ ] `setupCommitsFullDraftForwardsBeforeConfig` (`SHA: ______`)
-- [ ] `forwardsFailureRollsBackCurrentStageAndEveryEarlierSetupStage` (`SHA: ______`)
-- [ ] `configFailureRestoresExactForwardsBytesListLoadStateAndEarlierStages` (`SHA: ______`)
-- [ ] `cancellationDuringForwardsRestoresCurrentForwardsStageAndEarlierStages` (`SHA: ______`)
-- [ ] `cancellationDuringConfigRestoresForwardsAndEveryEarlierStage` (`SHA: ______`)
-- [ ] `setupForwardsRollbackFailureIsListedAndDurable` (`SHA: ______`)
-- [ ] `setupSuccessPublishesRepositoryForwardsOnlyAfterDiskCommit` (`SHA: ______`)
-- [ ] `forwardsSavePostMoveCleanupFailureReturnsFailureAndRestoresDisk` (`SHA: ______`)
-- [ ] `forwardsOrdinaryMutationRollbackFailureIsNotHidden` (`SHA: ______`)
-- [ ] `setupIdentityAndAuthorizedKeysRollbackUseDistinctRestoreMembers` (`SHA: ______`)
+- [x] `setupCommitsFullDraftForwardsBeforeConfig` (`SHA: 6fc9e49`, in `SetupPersistenceCoordinatorForwardsTest.kt`)
+- [x] `forwardsFailureRollsBackCurrentStageAndEveryEarlierSetupStage` (`SHA: 6fc9e49`)
+- [x] `configFailureRestoresExactForwardsBytesListLoadStateAndEarlierStages` (`SHA: 6fc9e49`)
+- [x] `cancellationDuringForwardsRestoresCurrentForwardsStageAndEarlierStages` (`SHA: 6fc9e49`)
+- [x] `cancellationDuringConfigRestoresForwardsAndEveryEarlierStage` (`SHA: 6fc9e49`)
+- [x] `setupForwardsRollbackFailureIsListedAndDurable` (`SHA: 6fc9e49`)
+- [x] `setupSuccessPublishesRepositoryForwardsOnlyAfterDiskCommit` — satisfied by `setupCommitsFullDraftForwardsBeforeConfig` (`SHA: 6fc9e49`) plus `ForwardsRepositoryTest.replaceForTransactionSavesThenPublishes` (`SHA: 54ad896`).
+- [x] `forwardsSavePostMoveCleanupFailureReturnsFailureAndRestoresDisk` — satisfied by `ForwardsRepositoryTest.mutationSelfRestoresDiskWhenSaveFailsAfterDestinationWasMutated` (`SHA: 54ad896`).
+- [x] `forwardsOrdinaryMutationRollbackFailureIsNotHidden` — satisfied by `ForwardsRepositoryTest.selfRestoreFailureIsComposedIntoTypedException` (`SHA: 54ad896`).
+- [x] `setupIdentityAndAuthorizedKeysRollbackUseDistinctRestoreMembers` (`SHA: 6fc9e49`)
 
 ## Acceptance
 
-- [ ] Final setup is one transaction including authoritative forwards. (`SHA: ______`)
-- [ ] A failed/cancelled forwards stage cannot leave disk, repository, or config inconsistent. (`SHA: ______`)
-- [ ] Setup rollback does not duplicate holistic identity restoration. (`SHA: ______`)
+- [x] Final setup is one transaction including authoritative forwards. (`SHA: 6fc9e49`)
+- [x] A failed/cancelled forwards stage cannot leave disk, repository, or config inconsistent. (`SHA: 54ad896`/`6fc9e49`)
+- [x] Setup rollback does not duplicate holistic identity restoration. (`SHA: 9423860`/`6fc9e49`)
 
 ---
 
