@@ -71,7 +71,7 @@ object TunnelForegroundServiceTestHooks {
 
     // P0-003: Inject an exception thrown during config preparation (instead of
     // returning a failed Result) to exercise the Throwable-catch path in
-    // writeConfigAtomicallyLocked.
+    // writeConfigAtomicallyWith.
     @get:JvmName("configPrepThrows")
     val configPrepThrows: AtomicReference<String?> = AtomicReference(null)
 

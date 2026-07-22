@@ -9,8 +9,9 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 
 /**
- * P1-006: file operations for the atomic config write, injectable so the temp-cleanup-inside-Result
- * paths are testable with a fake instead of flaky filesystem permission tricks.
+ * P1-006/FIX8 P0-003-C: file operations for the one same-directory temp-plus-atomic-move
+ * primitive ([atomicReplaceBytesWith]), injectable so the temp-cleanup-inside-Result paths are
+ * testable with a fake instead of flaky filesystem permission tricks.
  */
 internal interface AtomicConfigFileOps {
     fun createTempFile(
@@ -19,9 +20,9 @@ internal interface AtomicConfigFileOps {
         suffix: String,
     ): Path
 
-    fun writeText(
+    fun writeBytes(
         temp: Path,
-        contents: String,
+        bytes: ByteArray,
     )
 
     /** Atomic move; may throw [AtomicMoveNotSupportedException] on filesystems that lack it. */
@@ -46,11 +47,11 @@ internal object RealAtomicConfigFileOps : AtomicConfigFileOps {
         suffix: String,
     ): Path = Files.createTempFile(dir, prefix, suffix)
 
-    override fun writeText(
+    override fun writeBytes(
         temp: Path,
-        contents: String,
+        bytes: ByteArray,
     ) {
-        temp.toFile().writeText(contents)
+        Files.write(temp, bytes)
     }
 
     override fun atomicMove(
@@ -73,57 +74,79 @@ internal object RealAtomicConfigFileOps : AtomicConfigFileOps {
 }
 
 /**
- * Internal: atomic config write without acquiring the mutex (caller must hold [ConfigRepository]'s
- * fileMutex).
- */
-internal fun writeConfigAtomicallyLocked(
-    configFile: File,
-    contents: String,
-): Result<Unit> = writeConfigAtomicallyWith(configFile, contents, RealAtomicConfigFileOps)
-
-/**
- * P1-006: the atomic write with temp cleanup kept INSIDE the returned [Result]. A cleanup failure
- * never overwrites a primary failure (it is attached as suppressed); a cleanup failure after a
- * successful move surfaces as a failure; cancellation is rethrown with the cleanup error
- * suppressed. The visible atomic-move → plain-move fallback is preserved.
+ * P1-006: config's atomic write, expressed in terms of the shared byte-level
+ * [atomicReplaceBytesWith] primitive (FIX8 P0-003-C) so config.toml and every other
+ * authoritative file (setup_input.json, restores) go through the same temp-plus-atomic-move
+ * logic instead of two parallel implementations.
  */
 internal fun writeConfigAtomicallyWith(
     configFile: File,
     contents: String,
     ops: AtomicConfigFileOps,
+): Result<Unit> = atomicReplaceBytesWith(configFile, contents.toByteArray(), ops)
+
+/**
+ * FIX8 P0-003-C: the one same-directory temp-plus-atomic-move byte-replacement primitive for
+ * this repository's authoritative files (config.toml, setup_input.json, and — via
+ * [postMoveVerify] — broker-secret-style callers that must additionally enforce/verify
+ * owner-only permissions after the move; not yet adopted there — see P0-008).
+ *
+ * Uses [Files.createDirectories] (checked) rather than an ignored `mkdirs()`, writes raw bytes
+ * (not a UTF-8 String) so exact snapshots round-trip without corruption, catches every ordinary
+ * [Exception] (not just [IOException] — a [SecurityException] from a denied file operation must
+ * surface as a failure too) and composes temp cleanup into the returned [Result] rather than
+ * silently dropping it, and preserves cancellation. [ops] is injectable so tests can force a
+ * write/move/cleanup failure with a fake instead of a flaky filesystem permission trick.
+ */
+internal fun atomicReplaceBytesWith(
+    destination: File,
+    bytes: ByteArray,
+    ops: AtomicConfigFileOps,
+    postMoveVerify: (File) -> Unit = {},
 ): Result<Unit> {
-    configFile.parentFile?.mkdirs()
-    val temp =
-        try {
-            val dir = configFile.parentFile?.toPath() ?: throw IOException("Config file has no parent dir")
-            ops.createTempFile(dir, "config.toml.tmp-", ".partial")
-        } catch (error: IOException) {
-            return Result.failure(error)
+    val parentDir = destination.parentFile
+    val tempResult: Result<Path> =
+        if (parentDir == null) {
+            Result.failure(IOException("${destination.name} has no parent directory"))
+        } else {
+            try {
+                Files.createDirectories(parentDir.toPath())
+                Result.success(ops.createTempFile(parentDir.toPath(), ".${destination.name}.tmp-", ".partial"))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
         }
-    return finishAtomicWrite(configFile, contents, ops, temp)
+    return tempResult.fold(
+        onSuccess = { temp -> finishAtomicWrite(destination, bytes, ops, temp, postMoveVerify) },
+        onFailure = { error -> Result.failure(error) },
+    )
 }
 
 /** Performs the write+move then composes the temp-cleanup outcome into the returned [Result]. */
 private fun finishAtomicWrite(
-    configFile: File,
-    contents: String,
+    destination: File,
+    bytes: ByteArray,
     ops: AtomicConfigFileOps,
     temp: Path,
+    postMoveVerify: (File) -> Unit,
 ): Result<Unit> {
     val primaryResult: Result<Unit> =
         try {
-            ops.writeText(temp, contents)
+            ops.writeBytes(temp, bytes)
             try {
-                ops.atomicMove(temp, configFile.toPath())
+                ops.atomicMove(temp, destination.toPath())
             } catch (e: AtomicMoveNotSupportedException) {
                 android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", e)
-                ops.plainMove(temp, configFile.toPath())
+                ops.plainMove(temp, destination.toPath())
             }
+            postMoveVerify(destination)
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
             deleteTempOrNull(ops, temp)?.let(cancelled::addSuppressed)
             throw cancelled
-        } catch (error: IOException) {
+        } catch (error: Exception) {
             Result.failure(error)
         }
 
@@ -136,10 +159,10 @@ private fun finishAtomicWrite(
 private fun deleteTempOrNull(
     ops: AtomicConfigFileOps,
     temp: Path,
-): IOException? =
+): Exception? =
     try {
         ops.deleteIfExists(temp)
         null
-    } catch (error: IOException) {
+    } catch (error: Exception) {
         error
     }

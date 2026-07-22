@@ -268,7 +268,7 @@ class SetupPersistenceCoordinatorTest {
         }
 
     @Test
-    fun snapshotFailurePerformsNoMutation() =
+    fun snapshotFailurePerformsZeroMutationIncludingCurrentStage() =
         runBlocking {
             val prefs = RecordingPreferences()
             val result = coordinator(prefs, config = FailingSnapshotConfig(context)).persist(fullRequest())
@@ -278,7 +278,17 @@ class SetupPersistenceCoordinatorTest {
             assertTrue("nothing committed, so nothing to roll back", result.rollback.isEmpty())
             assertEquals(0, prefs.writes.size)
             assertFalse(File(context.filesDir, "identity.enc").exists())
+            assertFalse(File(context.filesDir, "identity.pub").exists())
+            assertFalse(File(context.filesDir, "authorized_keys").exists())
             assertFalse(passwordFile.exists())
+            assertFalse(
+                "the Snapshot stage itself must not create setup_input.json",
+                File(context.filesDir, "setup_input.json").exists(),
+            )
+            assertFalse(
+                "the Snapshot stage itself must not create config.toml",
+                File(context.filesDir, "config.toml").exists(),
+            )
         }
 
     @Test

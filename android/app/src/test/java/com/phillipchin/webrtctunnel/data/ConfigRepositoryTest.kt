@@ -8,10 +8,12 @@ import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -21,6 +23,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import java.nio.file.Path
 
 @RunWith(RobolectricTestRunner::class)
 class ConfigRepositoryTest {
@@ -93,9 +96,9 @@ class ConfigRepositoryTest {
     @Test
     fun ensureDefaultConfigDoesNotRouteThroughTheMutexTakingWriter() =
         runBlocking {
-            // ensureDefaultConfig holds writeMutex, which is not reentrant: calling the
+            // ensureDefaultConfig holds fileMutex, which is not reentrant: calling the
             // public writeConfigAtomically from inside it would deadlock. This proves it
-            // uses writeConfigAtomicallyLocked instead.
+            // calls writeConfigAtomicallyWith directly instead.
             var publicWriterCalled = false
             val repo =
                 object : ConfigRepository(context) {
@@ -625,5 +628,79 @@ class ConfigRepositoryTest {
                 "setup_input.json must be absent again after restoring an absent snapshot",
                 setupInputFile.exists(),
             )
+        }
+
+    @Test
+    fun setupSnapshotDistinguishesAbsentPresentEmptyAndNonUtf8Bytes() =
+        runBlocking {
+            File(context.filesDir, "config.toml").delete()
+            File(context.filesDir, "setup_input.json").delete()
+            val absentSnapshot = repository.captureFilesSnapshot().getOrThrow()
+            assertFalse(absentSnapshot.config.existed)
+            assertFalse(absentSnapshot.setupInput.existed)
+
+            File(context.filesDir, "config.toml").writeBytes(ByteArray(0))
+            File(context.filesDir, "setup_input.json").writeBytes(ByteArray(0))
+            val emptySnapshot = repository.captureFilesSnapshot().getOrThrow()
+            assertTrue("present-but-empty config must be distinct from absent", emptySnapshot.config.existed)
+            assertEquals(0, emptySnapshot.config.bytes?.size)
+            assertTrue("present-but-empty setup input must be distinct from absent", emptySnapshot.setupInput.existed)
+            assertEquals(0, emptySnapshot.setupInput.bytes?.size)
+
+            // Invalid UTF-8: a lone continuation byte with no leading byte. A String-based
+            // snapshot would corrupt or replace this; the exact byte snapshot must round-trip it
+            // unchanged.
+            val nonUtf8Bytes = byteArrayOf(0x66, 0x6f, 0x80.toByte(), 0x6f)
+            File(context.filesDir, "config.toml").writeBytes(nonUtf8Bytes)
+            File(context.filesDir, "setup_input.json").writeBytes(nonUtf8Bytes)
+            val nonUtf8Snapshot = repository.captureFilesSnapshot().getOrThrow()
+            assertTrue(nonUtf8Snapshot.config.existed)
+            assertArrayEquals(nonUtf8Bytes, nonUtf8Snapshot.config.bytes)
+            assertTrue(nonUtf8Snapshot.setupInput.existed)
+            assertArrayEquals(nonUtf8Bytes, nonUtf8Snapshot.setupInput.bytes)
+        }
+
+    // FIX7 P2-001-A-style deterministic barrier (no Thread.sleep/elapsed-time guess): the write
+    // blocks inside fileMutex until this test releases it, so a concurrent captureFilesSnapshot()
+    // call has an unbounded window to attempt entry while the write still holds the lock.
+    private class BlockingWriteOps(
+        private val entered: CompletableDeferred<Unit>,
+        private val release: CompletableDeferred<Unit>,
+    ) : AtomicConfigFileOps by RealAtomicConfigFileOps {
+        override fun writeBytes(
+            temp: Path,
+            bytes: ByteArray,
+        ) {
+            entered.complete(Unit)
+            runBlocking { release.await() }
+            RealAtomicConfigFileOps.writeBytes(temp, bytes)
+        }
+    }
+
+    @Test
+    fun setupSnapshotCaptureIsSerializedAgainstConfigAndSetupWriters() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val blockingRepo = ConfigRepository(context, BlockingWriteOps(entered, release))
+
+            val writer = launch(ioDispatcher()) { blockingRepo.writeConfigAtomically("blocked").getOrThrow() }
+            entered.await()
+
+            var snapshotTaken = false
+            val snapshotter =
+                launch(ioDispatcher(), start = CoroutineStart.UNDISPATCHED) {
+                    blockingRepo.captureFilesSnapshot().getOrThrow()
+                    snapshotTaken = true
+                }
+            assertFalse(
+                "captureFilesSnapshot must not proceed while a write still holds fileMutex",
+                snapshotTaken,
+            )
+
+            release.complete(Unit)
+            writer.join()
+            snapshotter.join()
+            assertTrue(snapshotTaken)
         }
 }

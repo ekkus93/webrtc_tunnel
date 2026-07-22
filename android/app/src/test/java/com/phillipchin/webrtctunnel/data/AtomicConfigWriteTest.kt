@@ -45,12 +45,12 @@ class AtomicConfigWriteTest {
             suffix: String,
         ): Path = Files.createTempFile(dir, prefix, suffix)
 
-        override fun writeText(
+        override fun writeBytes(
             temp: Path,
-            contents: String,
+            bytes: ByteArray,
         ) {
             writeThrows?.let { throw it }
-            temp.toFile().writeText(contents)
+            Files.write(temp, bytes)
         }
 
         override fun atomicMove(

@@ -39,7 +39,17 @@ internal class ConfigFilesSnapshot(
     fun wipeSecrets() = setupInput.wipe()
 }
 
-open class ConfigRepository(private val context: Context) {
+open class ConfigRepository internal constructor(
+    private val context: Context,
+    // FIX8 P0-003-C/G: injectable so tests can force a deterministic write/move/cleanup failure
+    // (or a blocking barrier proving fileMutex serialization) with a fake instead of a flaky
+    // filesystem permission trick — the same seam IdentityRepository/BrokerSecretRepository
+    // already expose via their own atomicReplace constructor parameters. The constructor itself
+    // must be `internal` (not public) since [AtomicConfigFileOps] is internal; every existing
+    // `ConfigRepository(context)` call site is unaffected since this parameter defaults and
+    // every caller is within this module.
+    private val atomicFileOps: AtomicConfigFileOps = RealAtomicConfigFileOps,
+) {
     private val configFile: File get() = File(context.filesDir, "config.toml")
     private val setupInputFile: File get() = File(context.filesDir, "setup_input.json")
 
@@ -90,7 +100,7 @@ open class ConfigRepository(private val context: Context) {
      * check and the write and have the default overwrite it — the serialization comment
      * claimed a guarantee the code did not provide.
      *
-     * Calls [writeConfigAtomicallyLocked] directly rather than [writeConfigAtomically]:
+     * Calls [writeConfigAtomicallyWith] directly rather than [writeConfigAtomically]:
      * the latter takes [fileMutex], which is not reentrant and would deadlock here.
      */
     @CheckResult
@@ -99,7 +109,7 @@ open class ConfigRepository(private val context: Context) {
             if (configFile.exists()) {
                 Result.success(Unit)
             } else {
-                writeConfigAtomicallyLocked(configFile, contents)
+                writeConfigAtomicallyWith(configFile, contents, atomicFileOps)
             }
         }
 
@@ -145,9 +155,10 @@ open class ConfigRepository(private val context: Context) {
                 return@withLock Result.success(Unit)
             }
             val withIceMode = upsertAndroidIceMode(current, resolveAndroidIceMode(iceMode))
-            writeConfigAtomicallyLocked(
+            writeConfigAtomicallyWith(
                 configFile,
                 upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4),
+                atomicFileOps,
             )
         }
     }
@@ -163,7 +174,7 @@ open class ConfigRepository(private val context: Context) {
     @CheckResult
     open suspend fun writeConfigAtomically(contents: String): Result<Unit> =
         fileMutex.withLock {
-            writeConfigAtomicallyLocked(configFile, contents)
+            writeConfigAtomicallyWith(configFile, contents, atomicFileOps)
         }
 
     /**
@@ -183,7 +194,9 @@ open class ConfigRepository(private val context: Context) {
                 Result.success(Unit)
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (error: IOException) {
+            } catch (error: Exception) {
+                // FIX8 P0-003-F: catches every ordinary exception (not just IOException) — a
+                // SecurityException from a denied delete must surface as a failure too.
                 Result.failure(error)
             }
         }
@@ -208,7 +221,7 @@ open class ConfigRepository(private val context: Context) {
     internal open suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> =
         fileMutex.withLock {
             mutationResult {
-                atomicReplaceBytes(setupInputFile, Json.encodeToString(input).encodeToByteArray())
+                atomicReplaceBytes(setupInputFile, Json.encodeToString(input).encodeToByteArray(), atomicFileOps)
             }
         }
 
@@ -227,7 +240,9 @@ open class ConfigRepository(private val context: Context) {
     @CheckResult
     internal open suspend fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
         fileMutex.withLock {
-            restoreExactFileSnapshot("setup input", setupInputFile, snapshot, ::atomicReplaceBytes)
+            restoreExactFileSnapshot("setup input", setupInputFile, snapshot) { file, bytes ->
+                atomicReplaceBytes(file, bytes, atomicFileOps)
+            }
         }
 
     /**
@@ -238,7 +253,9 @@ open class ConfigRepository(private val context: Context) {
     @CheckResult
     internal open suspend fun restoreConfigSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
         fileMutex.withLock {
-            restoreExactFileSnapshot("config", configFile, snapshot, ::atomicReplaceBytes)
+            restoreExactFileSnapshot("config", configFile, snapshot) { file, bytes ->
+                atomicReplaceBytes(file, bytes, atomicFileOps)
+            }
         }
 
     /**
