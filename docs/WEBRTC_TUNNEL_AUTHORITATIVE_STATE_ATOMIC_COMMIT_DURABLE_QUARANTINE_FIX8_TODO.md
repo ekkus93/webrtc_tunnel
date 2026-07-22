@@ -681,10 +681,10 @@ related tests
 
 ## P0-005-A — Config import ordering
 
-- [ ] Candidate write and native validation occur inside `withCandidateFile`. (`SHA: ______`)
-- [ ] Authoritative config write occurs only after `withCandidateFile` returns successfully, proving cleanup succeeded. (`SHA: ______`)
-- [ ] Cleanup failure means no config write was attempted. (`SHA: ______`)
-- [ ] Private identity bytes remain wiped on success/failure/cancellation. (`SHA: ______`)
+- [x] Candidate write and native validation occur inside `withCandidateFile`. (`SHA: 191193f`)
+- [x] Authoritative config write occurs only after `withCandidateFile` returns successfully, proving cleanup succeeded. (`SHA: 191193f`)
+- [x] Cleanup failure means no config write was attempted. (`SHA: 191193f`)
+- [x] Private identity bytes remain wiped on success/failure/cancellation. (`SHA: 191193f` — unchanged from FIX7, verified still in effect)
 
 Target shape:
 
@@ -703,10 +703,10 @@ Do not call `writeConfigAtomically` inside the candidate block.
 
 ## P0-005-B — Failure-atomic config replace
 
-- [ ] Add a repository method that captures exact config, attempts replacement, and restores exact prior state if the attempt returns failure after destination mutation. (`SHA: ______`)
-- [ ] Run restore under `NonCancellable` when called from suspend mutation. (`SHA: ______`)
-- [ ] Return a typed/composed rollback-incomplete failure when restore fails. (`SHA: ______`)
-- [ ] Keep capture/attempt/restore under config repository serialization. (`SHA: ______`)
+- [x] Add a repository method that captures exact config, attempts replacement, and restores exact prior state if the attempt returns failure after destination mutation. (`SHA: 191193f`)
+- [x] Run restore under `NonCancellable` when called from suspend mutation. (`SHA: 191193f`)
+- [x] Return a typed/composed rollback-incomplete failure when restore fails. (`SHA: 191193f` — `ConfigReplaceRollbackIncompleteException`)
+- [x] Keep capture/attempt/restore under config repository serialization. (`SHA: 191193f` — one `fileMutex.withLock` acquisition)
 
 Possible result:
 
@@ -724,48 +724,48 @@ A `Result<Unit>` with a typed exception is also acceptable if callers map rollba
 
 ## P0-005-C — Proposed-forward validation before mutation
 
-- [ ] Build proposed list in memory from the authoritative baseline. (`SHA: ______`)
-- [ ] Validate list and render candidate without mutating `ForwardsRepository`. (`SHA: ______`)
-- [ ] Clean candidate successfully before authoritative mutation. (`SHA: ______`)
-- [ ] No receipt is created before validation. (`SHA: ______`)
+- [x] Build proposed list in memory from the authoritative baseline. (`SHA: 42ce50c`)
+- [x] Validate list and render candidate without mutating `ForwardsRepository`. (`SHA: 42ce50c`)
+- [x] Clean candidate successfully before authoritative mutation. (`SHA: 42ce50c`)
+- [x] No receipt is created before validation. (`SHA: 42ce50c` — no receipt exists at all in the new flow; the coordinator is the one authoritative mutation, called only after validation)
 
 ## P0-005-D — Forward configuration coordinator
 
-- [ ] Add a data-layer coordinator with stages `Forwards`, `Config`. (`SHA: ______`)
-- [ ] Capture exact forwards and config snapshots before mutation. (`SHA: ______`)
-- [ ] Add stage to attempted set before apply. (`SHA: ______`)
-- [ ] Apply forwards, then config. (`SHA: ______`)
-- [ ] Roll back current and earlier attempted stages under `NonCancellable`. (`SHA: ______`)
-- [ ] Cancellation rethrows with rollback failures suppressed. (`SHA: ______`)
-- [ ] ViewModel maps rollback-complete and rollback-incomplete durably. (`SHA: ______`)
+- [x] Add a data-layer coordinator with stages `Forwards`, `Config`. (`SHA: 42ce50c` — `ForwardConfigurationCoordinator.kt`)
+- [x] Capture exact forwards and config snapshots before mutation. (`SHA: 42ce50c`)
+- [x] Add stage to attempted set before apply. (`SHA: 42ce50c`)
+- [x] Apply forwards, then config. (`SHA: 42ce50c`)
+- [x] Roll back current and earlier attempted stages under `NonCancellable`. (`SHA: 42ce50c`)
+- [x] Cancellation rethrows with rollback failures suppressed. (`SHA: 42ce50c`)
+- [x] ViewModel maps rollback-complete and rollback-incomplete durably. (`SHA: 42ce50c` — `reportForwardConfigurationFailure`; also distinguishes a revision-mismatch rollback skip, closing a P1-002 gap the new snapshot/restore path had introduced)
 
 ## P0-005-E — Preserve primary failure identity
 
-- [ ] Validation failure remains primary when cleanup also fails; cleanup is suppressed. (`SHA: ______`)
-- [ ] Cancellation remains primary when cleanup also fails. (`SHA: ______`)
-- [ ] Config/forwards apply failure remains primary when rollback fails; rollback detail remains inspectable/redacted. (`SHA: ______`)
+- [x] Validation failure remains primary when cleanup also fails; cleanup is suppressed. (`SHA: 42ce50c` — `forwardValidationFailurePreservedWhenCleanupAlsoFails`)
+- [x] Cancellation remains primary when cleanup also fails. (`SHA: 42ce50c` — unchanged `withCandidateFile`/`withCleanupComposition` composition, now covered for the forward path)
+- [x] Config/forwards apply failure remains primary when rollback fails; rollback detail remains inspectable/redacted. (`SHA: 42ce50c` — `forwardsViewModelSaveSurfacesRollbackIncompleteWhenForwardsRestoreFails`; per-stage detail inspectable via `ForwardConfigurationResult.Failed.rollback`)
 
 ## P0-005-F — Exact tests
 
-- [ ] `configImportCleanupFailurePerformsNoAuthoritativeConfigWrite` (`SHA: ______`)
-- [ ] `configImportWritePostMoveFailureRestoresPreviousConfigBytes` (`SHA: ______`)
-- [ ] `configImportRollbackFailureMapsConfigImportRollbackIncomplete` (`SHA: ______`)
-- [ ] `configImportCancellationBeforeCommitLeavesConfigExact` (`SHA: ______`)
-- [ ] `forwardCandidateCleanupFailureLeavesPreviousConfigAndForwardsExact` (`SHA: ______`)
-- [ ] `forwardValidationFailureLeavesPreviousConfigAndForwardsExact` (`SHA: ______`)
-- [ ] `forwardConfigFailureRestoresExactPreviousForwardsAndConfig` (`SHA: ______`)
-- [ ] `forwardConfigCleanupFailureAfterMoveRestoresExactPreviousForwardsAndConfig` (`SHA: ______`)
-- [ ] `forwardCancellationDuringConfigRestoresBothResources` (`SHA: ______`)
-- [ ] `forwardRollbackContinuesAfterOneRestoreFailure` (`SHA: ______`)
-- [ ] `forwardRollbackIncompleteListsEveryFailedRestore` (`SHA: ______`)
+- [x] `configImportCleanupFailurePerformsNoAuthoritativeConfigWrite` (`SHA: 191193f`)
+- [x] `configImportWritePostMoveFailureRestoresPreviousConfigBytes` (`SHA: 299398c`)
+- [x] `configImportRollbackFailureMapsConfigImportRollbackIncomplete` (`SHA: 191193f`)
+- [x] `configImportCancellationBeforeCommitLeavesConfigExact` (`SHA: 191193f`)
+- [x] `forwardCandidateCleanupFailureLeavesPreviousConfigAndForwardsExact` (`SHA: 299398c`)
+- [x] `forwardValidationFailureLeavesPreviousConfigAndForwardsExact` (`SHA: 299398c`)
+- [x] `forwardConfigFailureRestoresExactPreviousForwardsAndConfig` (`SHA: 299398c` — `ForwardConfigurationCoordinatorTest`)
+- [x] `forwardConfigCleanupFailureAfterMoveRestoresExactPreviousForwardsAndConfig` (`SHA: 299398c`)
+- [x] `forwardCancellationDuringConfigRestoresBothResources` (`SHA: 299398c`)
+- [x] `forwardRollbackContinuesAfterOneRestoreFailure` (`SHA: 299398c`)
+- [x] `forwardRollbackIncompleteListsEveryFailedRestore` (`SHA: 299398c`)
 
-Strengthen the existing FIX7 tests: assert exact `config.toml` bytes, exact `forwards.json` bytes/presence, and repository list. Visible failure alone is insufficient.
+Strengthened the existing FIX7 tests: exact `config.toml`/`forwards.json` byte assertions added throughout (`SHA: 42ce50c`, `SHA: 299398c`).
 
 ## Acceptance
 
-- [ ] Candidate cleanup failure cannot coexist with a newly committed config. (`SHA: ______`)
-- [ ] Forward/config activation is one truthful transaction. (`SHA: ______`)
-- [ ] All post-move failures restore exact prior state or report rollback incomplete. (`SHA: ______`)
+- [x] Candidate cleanup failure cannot coexist with a newly committed config. (`SHA: 42ce50c`)
+- [x] Forward/config activation is one truthful transaction. (`SHA: 42ce50c`)
+- [x] All post-move failures restore exact prior state or report rollback incomplete. (`SHA: 42ce50c`, `SHA: 299398c`)
 
 ---
 
