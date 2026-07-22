@@ -3,9 +3,7 @@ package com.phillipchin.webrtctunnel.data
 import androidx.annotation.CheckResult
 import kotlinx.coroutines.CancellationException
 import java.io.File
-import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 /**
  * Exact prior state of one file for transactional rollback (FIX7 P0-002 / INV-004).
@@ -79,47 +77,12 @@ internal fun restoreExactFileSnapshot(
     }
 
 /**
- * Snapshot of the setup-input file for transactional rollback (FIX6 P0-003). Distinguishes
- * an absent file from a blank/present one so restore can recreate the exact prior state.
- */
-data class SetupInputSnapshot(
-    val existed: Boolean,
-    val contents: String?,
-)
-
-/**
- * FIX6 P0-003: capture the exact prior setup-input file state (distinguishing absent from
- * blank/corrupt) so a failed setup transaction can restore it precisely. Top-level (not a
- * [ConfigRepository] member) to keep that class under detekt's TooManyFunctions threshold, and
- * colocated here (not in ConfigRepository.kt) to keep that FILE under the same threshold.
- */
-fun captureSetupInputSnapshot(setupInputFile: File): SetupInputSnapshot =
-    if (setupInputFile.exists()) {
-        SetupInputSnapshot(existed = true, contents = setupInputFile.readText())
-    } else {
-        SetupInputSnapshot(existed = false, contents = null)
-    }
-
-/** Restore setup-input to a captured [snapshot], recreating the absent state exactly. */
-fun restoreSetupInputSnapshot(
-    setupInputFile: File,
-    snapshot: SetupInputSnapshot,
-) {
-    if (snapshot.existed) {
-        setupInputFile.parentFile?.mkdirs()
-        setupInputFile.writeText(snapshot.contents.orEmpty())
-    } else {
-        setupInputFile.delete()
-    }
-}
-
-/**
  * FIX7 P0-005-A: exact byte-level setup-input snapshot for [TransactionalResetCoordinator], using
- * [ExactFileSnapshot] instead of the [SetupInputSnapshot]/[captureSetupInputSnapshot] pair above,
- * so an absent file is distinguishable from a default-valued one (CRITICAL-3). [readBytes] mirrors
- * [BrokerSecretRepository]'s same-purpose seam: it lets a test observe the exact byte array this
- * snapshot captured, to prove [TransactionalResetCoordinator] wipes it once the transaction
- * finishes (FIX7 P0-005-E `resetSnapshotSecretBytesAreWiped`) without a filesystem trick.
+ * [ExactFileSnapshot] so an absent file is distinguishable from a default-valued one
+ * (CRITICAL-3). [readBytes] mirrors [BrokerSecretRepository]'s same-purpose seam: it lets a test
+ * observe the exact byte array this snapshot captured, to prove [TransactionalResetCoordinator]
+ * wipes it once the transaction finishes (FIX7 P0-005-E `resetSnapshotSecretBytesAreWiped`)
+ * without a filesystem trick.
  */
 internal fun captureSetupInputFileSnapshot(
     setupInputFile: File,
@@ -138,51 +101,3 @@ internal fun captureSetupInputFileSnapshot(
     } catch (error: Exception) {
         Result.failure(error)
     }
-
-/** Same unique-temp-file-plus-move pattern as [BrokerSecretRepository]'s atomic replace, without
- * the owner-only permission step — `setup_input.json` isn't restricted differently from its
- * normal [ConfigRepository.saveSetupInput] writes, so restoring it shouldn't change that.
- * internal (not private): called from [ConfigRepository.restoreSetupInputFileSnapshot] in the
- * sibling file. */
-internal fun setupInputAtomicReplace(
-    destination: File,
-    bytes: ByteArray,
-) {
-    destination.parentFile?.mkdirs()
-    val temp = Files.createTempFile(destination.parentFile?.toPath(), "${destination.name}.tmp-", ".partial")
-    // FIX7 P1-005-B: the temp file's cleanup result is checked, not discarded (the previous
-    // `finally { runCatching { ... } }` dropped it entirely, worse than the other two
-    // temp-cleanup sites in this codebase which at least logged). A cleanup failure on top
-    // of a primary failure is attached as suppressed, never silently lost; a cleanup failure
-    // after an otherwise-successful replace still surfaces as a failure.
-    val primaryFailure =
-        try {
-            Files.write(temp, bytes)
-            try {
-                Files.move(
-                    temp,
-                    destination.toPath(),
-                    StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING,
-                )
-            } catch (error: AtomicMoveNotSupportedException) {
-                android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", error)
-                Files.move(temp, destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-            null
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            error
-        }
-    val cleanupFailure =
-        try {
-            Files.deleteIfExists(temp)
-            null
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            error
-        }
-    throwComposedFailureIfAny(primaryFailure, cleanupFailure)
-}

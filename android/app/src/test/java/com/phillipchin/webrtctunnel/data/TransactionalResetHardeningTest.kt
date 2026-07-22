@@ -61,7 +61,7 @@ class TransactionalResetHardeningTest {
         context: android.content.Context,
         private val error: Throwable,
     ) : ConfigRepository(context) {
-        override fun readConfig(): String = throw error
+        override val configContents: String get() = throw error
     }
 
     private class ConfigWriteThrowsOnNthCall(
@@ -94,7 +94,7 @@ class TransactionalResetHardeningTest {
         // FIX7 P0-005-A: rollback-restore of setup-input now goes through this method instead of
         // saveSetupInput (which cannot represent "absent"); this fake's call 2 (the rollback
         // restore in every test using it) must fail here instead.
-        override fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+        override suspend fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
             calls++
             return if (calls == throwOnCall) {
                 Result.failure(error as? Exception ?: Exception(error))

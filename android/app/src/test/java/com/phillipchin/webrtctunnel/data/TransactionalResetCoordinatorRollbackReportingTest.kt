@@ -139,7 +139,7 @@ class TransactionalResetCoordinatorRollbackReportingTest {
             assertEquals("Failed stage should be Config (snapshot capture)", ResetStage.Config, failed.failedStage)
 
             // Config must remain unchanged — snapshot capture failed before any mutation
-            assertEquals("Config must be unmodified after early failure", priorConfig, freshConfigRepo.readConfig())
+            assertEquals("Config must be unmodified after early failure", priorConfig, freshConfigRepo.configContents)
         }
 
     @Test

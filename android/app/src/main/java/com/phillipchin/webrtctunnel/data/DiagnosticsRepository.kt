@@ -23,7 +23,7 @@ class DiagnosticsRepository(
             appendLine("rust_library=p2p_mobile")
             appendLine("status_json=${Json.encodeToString(SensitiveDataRedactor.redactStatus(status))}")
             appendLine("network_json=${Json.encodeToString(networkStatus)}")
-            appendLine("config_redacted=${SensitiveDataRedactor.redactText(configRepository.readConfig())}")
+            appendLine("config_redacted=${SensitiveDataRedactor.redactText(configRepository.configContents)}")
             appendLine("recent_logs_redacted=${Json.encodeToString(logs.map(SensitiveDataRedactor::redactLogEvent))}")
         }
 

@@ -206,13 +206,13 @@ class TransactionalResetCoordinator(
     }
 
     // P1-002-A: contain every snapshot read so a read failure aborts before any mutation
-    // instead of throwing out of the coordinator mid-reset. readConfig()/current() are not
+    // instead of throwing out of the coordinator mid-reset. configContents/current() are not
     // Result-returning, so the whole capture is guarded, not just the setup-input read.
     //
     // FIX7 P0-005-A/B: config and setup-input are captured as exact ExactFileSnapshots (bytes +
     // existed) rather than a parsed value, so an absent file restores as absent instead of as a
     // default-valued one (CRITICAL-3). Config still goes through the existing configFileExists/
-    // readConfig() seam (unchanged from FIX6/P1-002, so existing read-failure/cancellation fault
+    // configContents seam (unchanged from FIX6/P1-002, so existing read-failure/cancellation fault
     // injection via a ConfigRepository subclass still works) rather than a raw file read, and is
     // wrapped into an ExactFileSnapshot here. The corrupt-JSON-detection contract this
     // coordinator has always had is preserved by still requiring loadSetupInputResult() to parse
@@ -222,10 +222,10 @@ class TransactionalResetCoordinator(
     private fun captureSnapshot(): Result<ResetSnapshot> =
         try {
             val configExisted = configRepository.configFileExists
-            // readConfig() is called unconditionally (not gated on configExisted) so a
+            // configContents is read unconditionally (not gated on configExisted) so a
             // subclass-injected read failure/cancellation still fires regardless of whether the
             // file happens to exist — matching the pre-P0-005 capture path exactly.
-            val configContents = configRepository.readConfig()
+            val configContents = configRepository.configContents
             val configSnapshot =
                 ExactFileSnapshot(
                     existed = configExisted,
@@ -314,7 +314,7 @@ class TransactionalResetCoordinator(
 // FIX7 P0-005: top-level (not TransactionalResetCoordinator members) to keep that class under
 // detekt's TooManyFunctions threshold — both are self-contained given their explicit parameters.
 
-private fun restoreSetupInput(
+private suspend fun restoreSetupInput(
     configRepository: ConfigRepository,
     snapshot: ExactFileSnapshot,
 ): RollbackStageResult {

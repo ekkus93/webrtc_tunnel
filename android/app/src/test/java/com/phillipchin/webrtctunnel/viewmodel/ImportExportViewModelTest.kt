@@ -159,21 +159,21 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
         val vm = ImportExportViewModel(deps)
         val tempFile = File(app.cacheDir, "config-import-candidate.toml")
         tempFile.delete()
-        val baseline = configRepository.readConfig()
+        val baseline = configRepository.configContents
         val validFile = File(app.filesDir, "valid-import-config.toml").apply { writeText(baseline) }
 
         vm.updateState { it.copy(configImportPath = validFile.absolutePath) }
         recordingBridge.validationResult = ValidationResult(true, null)
         vm.importConfig()
         assertTrue(!tempFile.exists())
-        assertEquals(baseline, configRepository.readConfig())
+        assertEquals(baseline, configRepository.configContents)
 
         val invalidFile = File(app.filesDir, "invalid-import-config.toml").apply { writeText("not valid toml") }
         vm.updateState { it.copy(configImportPath = invalidFile.absolutePath) }
         recordingBridge.validationResult = ValidationResult(false, "invalid config")
         vm.importConfig()
         assertTrue(!tempFile.exists())
-        assertEquals(baseline, configRepository.readConfig())
+        assertEquals(baseline, configRepository.configContents)
         assertNotNull(vm.state.value.resultMessage)
     }
 
@@ -196,7 +196,7 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
         val vm = ImportExportViewModel(deps)
         val configFile =
             File(app.filesDir, "identity-aware-import-config.toml").apply {
-                writeText(configRepository.readConfig())
+                writeText(configRepository.configContents)
             }
         vm.updateState { it.copy(configImportPath = configFile.absolutePath) }
         recordingBridge.validationResult = ValidationResult(true, null)
@@ -213,7 +213,7 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
         val vm = ImportExportViewModel(deps)
         val configFile =
             File(app.filesDir, "identity-less-import-config.toml").apply {
-                writeText(configRepository.readConfig())
+                writeText(configRepository.configContents)
             }
         vm.updateState { it.copy(configImportPath = configFile.absolutePath) }
         recordingBridge.validationResult = ValidationResult(true, null)
@@ -251,7 +251,7 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
         val vm = ImportExportViewModel(brokenDeps)
         val configFile =
             File(app.filesDir, "unreadable-identity-import-config.toml").apply {
-                writeText(configRepository.readConfig())
+                writeText(configRepository.configContents)
             }
         vm.updateState { it.copy(configImportPath = configFile.absolutePath) }
         recordingBridge.validationResult = ValidationResult(true, null)
@@ -333,7 +333,7 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
             File(
                 app.filesDir,
                 "exception-import-config.toml",
-            ).apply { writeText(configRepository.readConfig()) }
+            ).apply { writeText(configRepository.configContents) }
         vm.updateState { it.copy(configImportPath = configFile.absolutePath) }
         vm.importConfig()
         assertTrue(!tempFile.exists())

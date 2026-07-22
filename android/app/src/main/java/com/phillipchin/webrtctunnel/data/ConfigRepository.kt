@@ -20,19 +20,34 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
-import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
+
+/**
+ * FIX8 P0-003-B/INV-005: a coherent, exact-byte snapshot of both authoritative files
+ * [ConfigRepository] owns, captured under its one [fileMutex]-serialized boundary. Replaces
+ * the setup transaction's previous separate, unlocked, String/Boolean-derived config+setup-input
+ * fields (CRITICAL-3).
+ */
+internal class ConfigFilesSnapshot(
+    val config: ExactFileSnapshot,
+    val setupInput: ExactFileSnapshot,
+) {
+    /** `setup_input.json` can carry the plaintext broker password (spec §3.4); `config.toml`
+     * never carries a raw secret, so only the setup-input bytes need wiping. */
+    fun wipeSecrets() = setupInput.wipe()
+}
 
 open class ConfigRepository(private val context: Context) {
     private val configFile: File get() = File(context.filesDir, "config.toml")
     private val setupInputFile: File get() = File(context.filesDir, "setup_input.json")
 
-    // P1-007: Single write mutex for all config.toml writers to serialize atomic writes.
-    private val writeMutex = Mutex()
+    // P1-007/FIX8 P0-003-B: one serialization boundary for BOTH config.toml and
+    // setup_input.json — every read, exact-snapshot capture, write, and restore of either
+    // file goes through this same mutex, so a snapshot can never observe one file mid-write
+    // by a concurrent operation on the other.
+    private val fileMutex = Mutex()
     val configPath: String get() = configFile.absolutePath
 
     // P1-002: open so tests can inject a preference-read failure (e.g. for
@@ -70,17 +85,17 @@ open class ConfigRepository(private val context: Context) {
     /**
      * Ensures a default config exists, returning the outcome (FIX6 P0-001-A / INV-010).
      *
-     * The existence check and the write happen under the same [writeMutex]. Previously the
+     * The existence check and the write happen under the same [fileMutex]. Previously the
      * check sat outside the lock, so another writer could create the config between the
      * check and the write and have the default overwrite it — the serialization comment
      * claimed a guarantee the code did not provide.
      *
      * Calls [writeConfigAtomicallyLocked] directly rather than [writeConfigAtomically]:
-     * the latter takes [writeMutex], which is not reentrant and would deadlock here.
+     * the latter takes [fileMutex], which is not reentrant and would deadlock here.
      */
     @CheckResult
     open suspend fun ensureDefaultConfig(contents: String): Result<Unit> =
-        writeMutex.withLock {
+        fileMutex.withLock {
             if (configFile.exists()) {
                 Result.success(Unit)
             } else {
@@ -97,7 +112,9 @@ open class ConfigRepository(private val context: Context) {
 
     // P1-002: open so tests can inject a snapshot-read failure/cancellation for the
     // transactional-reset capture path without needing a filesystem-corruption scenario.
-    open fun readConfig(): String = configFile.takeIf { it.exists() }?.readText().orEmpty()
+    // FIX8 P0-003: a property (not a function) so it doesn't count against this class's detekt
+    // TooManyFunctions threshold — semantically unchanged, still a synchronous file read.
+    open val configContents: String get() = configFile.takeIf { it.exists() }?.readText().orEmpty()
 
     /**
      * P1-003: Check if config file exists (distinct from blank contents) for transactional
@@ -122,8 +139,8 @@ open class ConfigRepository(private val context: Context) {
         iceMode: String,
         advertisedIpv4: String?,
     ): Result<Unit> {
-        return writeMutex.withLock {
-            val current = readConfig()
+        return fileMutex.withLock {
+            val current = configContents
             if (current.isBlank()) {
                 return@withLock Result.success(Unit)
             }
@@ -136,7 +153,7 @@ open class ConfigRepository(private val context: Context) {
     }
 
     /**
-     * P1-007: Atomic write with unique temp file under [writeMutex].
+     * P1-007: Atomic write with unique temp file under [fileMutex].
      * All config writers go through this single serialized boundary.
      * Returns Result.success(Unit) on success, Result.failure(...) on failure.
      *
@@ -145,7 +162,7 @@ open class ConfigRepository(private val context: Context) {
      */
     @CheckResult
     open suspend fun writeConfigAtomically(contents: String): Result<Unit> =
-        writeMutex.withLock {
+        fileMutex.withLock {
             writeConfigAtomicallyLocked(configFile, contents)
         }
 
@@ -160,7 +177,7 @@ open class ConfigRepository(private val context: Context) {
      */
     @CheckResult
     internal open suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> =
-        writeMutex.withLock {
+        fileMutex.withLock {
             try {
                 Files.deleteIfExists(configFile.toPath())
                 Result.success(Unit)
@@ -172,11 +189,28 @@ open class ConfigRepository(private val context: Context) {
         }
 
     // P1-001: open so tests can inject a failure/cancellation for transactional-reset
-    // setup-input mutation/rollback path coverage.
+    // setup-input mutation/rollback path coverage. Non-atomic; kept for the many existing
+    // callers that only need best-effort seeding (tests, TransactionalReset's own current
+    // behavior — see P0-006). Production setup-transaction commits use
+    // [saveSetupInputAtomically] instead.
     open fun saveSetupInput(input: SetupConfigInput) {
         setupInputFile.parentFile?.mkdirs()
         setupInputFile.writeText(Json.encodeToString(input))
     }
+
+    /**
+     * FIX8 P0-003-B: atomic, `Result`-returning, mutex-serialized setup-input write for the
+     * setup transaction's `SetupInput` stage — unlike [saveSetupInput] this can actually fail
+     * without throwing, and cannot leave a partially-written file behind. open so tests can
+     * inject a write failure the same way every other stage's apply path can.
+     */
+    @CheckResult
+    internal open suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> =
+        fileMutex.withLock {
+            mutationResult {
+                atomicReplaceBytes(setupInputFile, Json.encodeToString(input).encodeToByteArray())
+            }
+        }
 
     // FIX6 P0-003: exposed so the top-level setup-input snapshot/restore helpers (below)
     // can capture and restore it. internal, and the file is app-private.
@@ -187,48 +221,95 @@ open class ConfigRepository(private val context: Context) {
      * atomic replacement (or checked deletion when it was absent) rather than
      * [saveSetupInput]'s re-derived write, which cannot represent "absent". open so tests can
      * inject a rollback-restore failure the same way every other reset stage's restore path can.
+     * FIX8 P0-003-B: now serialized under [fileMutex] like every other config/setup-input
+     * reader/writer, so a restore can never race a concurrent write to the same file.
      */
     @CheckResult
-    internal open fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
-        restoreExactFileSnapshot("setup input", setupInputFile, snapshot, ::setupInputAtomicReplace)
+    internal open suspend fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
+        fileMutex.withLock {
+            restoreExactFileSnapshot("setup input", setupInputFile, snapshot, ::atomicReplaceBytes)
+        }
 
     /**
-     * Load the saved setup draft, distinguishing a corrupt file (failure) from a
-     * legitimately missing one (success with fresh defaults). A corrupt existing draft must
-     * NOT silently reset to defaults — callers surface the failure so the user can repair or
-     * re-run setup rather than losing their saved values invisibly.
+     * FIX8 P0-003-E: restore `config.toml` to an exact prior [ExactFileSnapshot] — the config-side
+     * counterpart to [restoreSetupInputFileSnapshot], serialized under the same [fileMutex]. open
+     * so tests can inject a rollback-restore failure the same way every other stage can.
      */
-    fun loadSetupInputResult(): Result<SetupConfigInput> {
-        if (!setupInputFile.exists()) {
-            return Result.success(SetupConfigInput())
+    @CheckResult
+    internal open suspend fun restoreConfigSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
+        fileMutex.withLock {
+            restoreExactFileSnapshot("config", configFile, snapshot, ::atomicReplaceBytes)
         }
-        // FIX7 P1-005-B: safe as runCatching — a pure synchronous file read + JSON decode, no
-        // native call, no mutation, no suspend chain.
-        return runCatching { Json.decodeFromString<SetupConfigInput>(setupInputFile.readText()) }
-    }
 
-    // FIX7 P0-003-A: pure — no file creation/write/delete/permission change, repository
-    // mutation, preference read, or network call. The caller decides brokerPasswordPath
-    // (resolveBrokerPasswordPath) and, if it points at the managed BrokerSecretRepository path,
-    // must have already persisted it there; this function only ever turns inputs into a string.
-    fun renderOfferConfig(
-        input: SetupConfigInput,
-        forwards: List<ForwardConfig>,
-        debugLogs: Boolean = false,
-        androidIceMode: String = DEFAULT_ANDROID_ICE_MODE,
-        brokerPasswordPath: String?,
-    ): String =
-        buildOfferConfig(
-            input,
-            forwards,
-            context.filesDir,
-            brokerPasswordPath.orEmpty(),
-            ConfigRenderOptions(
-                debugLogs = debugLogs,
-                androidIceMode = resolveAndroidIceMode(androidIceMode),
-            ),
-        )
+    /**
+     * FIX8 P0-003-B/E: captures config.toml and setup_input.json as one coherent,
+     * [fileMutex]-serialized [ConfigFilesSnapshot] — replacing the separate, unlocked
+     * `configExisted`/`configContents`/legacy-`SetupInputSnapshot` reads a setup/reset transaction
+     * previously took (CRITICAL-3): those were TOCTOU-able against a concurrent writer and could
+     * not represent non-UTF-8 bytes. A capture failure is returned, not thrown, so the caller
+     * aborts before any mutation rather than starting a transaction with unknown rollback state.
+     */
+    @CheckResult
+    internal open suspend fun captureFilesSnapshot(): Result<ConfigFilesSnapshot> =
+        fileMutex.withLock {
+            mutationResult {
+                ConfigFilesSnapshot(
+                    config = captureExactFileSnapshot(configFile).getOrThrow(),
+                    setupInput = captureExactFileSnapshot(setupInputFile).getOrThrow(),
+                )
+            }
+        }
+
+    // FIX8 P0-003: exposed so the top-level renderOfferConfig extension function (below) can
+    // build a config without needing direct access to the private context.
+    internal val filesDir: File get() = context.filesDir
 }
+
+/**
+ * Load the saved setup draft, distinguishing a corrupt file (failure) from a
+ * legitimately missing one (success with fresh defaults). A corrupt existing draft must
+ * NOT silently reset to defaults — callers surface the failure so the user can repair or
+ * re-run setup rather than losing their saved values invisibly.
+ *
+ * An extension function (not a class member) so it doesn't count against
+ * [ConfigRepository]'s detekt TooManyFunctions threshold, matching [writeConfig].
+ */
+fun ConfigRepository.loadSetupInputResult(): Result<SetupConfigInput> {
+    val setupInputFile = setupInputFileForSnapshot
+    if (!setupInputFile.exists()) {
+        return Result.success(SetupConfigInput())
+    }
+    // FIX7 P1-005-B: safe as runCatching — a pure synchronous file read + JSON decode, no
+    // native call, no mutation, no suspend chain.
+    return runCatching { Json.decodeFromString<SetupConfigInput>(setupInputFile.readText()) }
+}
+
+/**
+ * FIX7 P0-003-A: pure — no file creation/write/delete/permission change, repository
+ * mutation, preference read, or network call. The caller decides brokerPasswordPath
+ * (resolveBrokerPasswordPath) and, if it points at the managed BrokerSecretRepository path,
+ * must have already persisted it there; this function only ever turns inputs into a string.
+ *
+ * An extension function (not a class member) so it doesn't count against
+ * [ConfigRepository]'s detekt TooManyFunctions threshold, matching [writeConfig].
+ */
+fun ConfigRepository.renderOfferConfig(
+    input: SetupConfigInput,
+    forwards: List<ForwardConfig>,
+    debugLogs: Boolean = false,
+    androidIceMode: String = DEFAULT_ANDROID_ICE_MODE,
+    brokerPasswordPath: String?,
+): String =
+    buildOfferConfig(
+        input,
+        forwards,
+        filesDir,
+        brokerPasswordPath.orEmpty(),
+        ConfigRenderOptions(
+            debugLogs = debugLogs,
+            androidIceMode = resolveAndroidIceMode(androidIceMode),
+        ),
+    )
 
 /**
  * Write config contents through the atomic writer so all writes are serialized. Routes through
@@ -239,141 +320,6 @@ open class ConfigRepository(private val context: Context) {
  */
 @CheckResult
 suspend fun ConfigRepository.writeConfig(contents: String): Result<Unit> = writeConfigAtomically(contents)
-
-/**
- * P1-006: file operations for the atomic config write, injectable so the temp-cleanup-inside-Result
- * paths are testable with a fake instead of flaky filesystem permission tricks.
- */
-internal interface AtomicConfigFileOps {
-    fun createTempFile(
-        dir: Path,
-        prefix: String,
-        suffix: String,
-    ): Path
-
-    fun writeText(
-        temp: Path,
-        contents: String,
-    )
-
-    /** Atomic move; may throw [AtomicMoveNotSupportedException] on filesystems that lack it. */
-    fun atomicMove(
-        temp: Path,
-        destination: Path,
-    )
-
-    fun plainMove(
-        temp: Path,
-        destination: Path,
-    )
-
-    /** Deletes the temp file; may throw [IOException]. */
-    fun deleteIfExists(temp: Path)
-}
-
-internal object RealAtomicConfigFileOps : AtomicConfigFileOps {
-    override fun createTempFile(
-        dir: Path,
-        prefix: String,
-        suffix: String,
-    ): Path = Files.createTempFile(dir, prefix, suffix)
-
-    override fun writeText(
-        temp: Path,
-        contents: String,
-    ) {
-        temp.toFile().writeText(contents)
-    }
-
-    override fun atomicMove(
-        temp: Path,
-        destination: Path,
-    ) {
-        Files.move(temp, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-    }
-
-    override fun plainMove(
-        temp: Path,
-        destination: Path,
-    ) {
-        Files.move(temp, destination, StandardCopyOption.REPLACE_EXISTING)
-    }
-
-    override fun deleteIfExists(temp: Path) {
-        Files.deleteIfExists(temp)
-    }
-}
-
-/**
- * Internal: atomic config write without acquiring the mutex (caller must hold [writeMutex]).
- */
-private fun writeConfigAtomicallyLocked(
-    configFile: File,
-    contents: String,
-): Result<Unit> = writeConfigAtomicallyWith(configFile, contents, RealAtomicConfigFileOps)
-
-/**
- * P1-006: the atomic write with temp cleanup kept INSIDE the returned [Result]. A cleanup failure
- * never overwrites a primary failure (it is attached as suppressed); a cleanup failure after a
- * successful move surfaces as a failure; cancellation is rethrown with the cleanup error
- * suppressed. The visible atomic-move → plain-move fallback is preserved.
- */
-internal fun writeConfigAtomicallyWith(
-    configFile: File,
-    contents: String,
-    ops: AtomicConfigFileOps,
-): Result<Unit> {
-    configFile.parentFile?.mkdirs()
-    val temp =
-        try {
-            val dir = configFile.parentFile?.toPath() ?: throw IOException("Config file has no parent dir")
-            ops.createTempFile(dir, "config.toml.tmp-", ".partial")
-        } catch (error: IOException) {
-            return Result.failure(error)
-        }
-    return finishAtomicWrite(configFile, contents, ops, temp)
-}
-
-/** Performs the write+move then composes the temp-cleanup outcome into the returned [Result]. */
-private fun finishAtomicWrite(
-    configFile: File,
-    contents: String,
-    ops: AtomicConfigFileOps,
-    temp: Path,
-): Result<Unit> {
-    val primaryResult: Result<Unit> =
-        try {
-            ops.writeText(temp, contents)
-            try {
-                ops.atomicMove(temp, configFile.toPath())
-            } catch (e: AtomicMoveNotSupportedException) {
-                android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", e)
-                ops.plainMove(temp, configFile.toPath())
-            }
-            Result.success(Unit)
-        } catch (cancelled: CancellationException) {
-            deleteTempOrNull(ops, temp)?.let(cancelled::addSuppressed)
-            throw cancelled
-        } catch (error: IOException) {
-            Result.failure(error)
-        }
-
-    val cleanupError = deleteTempOrNull(ops, temp) ?: return primaryResult
-    val primaryError = primaryResult.exceptionOrNull()
-    primaryError?.addSuppressed(cleanupError)
-    return primaryError?.let { primaryResult } ?: Result.failure(cleanupError)
-}
-
-private fun deleteTempOrNull(
-    ops: AtomicConfigFileOps,
-    temp: Path,
-): IOException? =
-    try {
-        ops.deleteIfExists(temp)
-        null
-    } catch (error: IOException) {
-        error
-    }
 
 /**
  * Resolve the effective `android_ice_mode`: the debug `getprop` override wins when present

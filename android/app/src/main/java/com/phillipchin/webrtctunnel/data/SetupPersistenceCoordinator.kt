@@ -115,14 +115,18 @@ class SetupPersistenceCoordinator(
     private class SetupSnapshot(
         val identity: IdentityStorageSnapshot,
         val brokerSecret: ExactFileSnapshot,
-        val setupInput: SetupInputSnapshot,
-        val configExisted: Boolean,
-        val configContents: String,
+        // FIX8 P0-003-E: exact, coherent, mutex-serialized config+setup-input bytes — replaces
+        // the previous separate configExisted/configContents/legacy-SetupInputSnapshot fields.
+        val files: ConfigFilesSnapshot,
         val preferences: AndroidAppPreferences,
     ) {
-        /** Broker secret bytes are the only secret this snapshot holds; identity plaintext never
-         * appears here since [IdentityStorageSnapshot] only stores the encrypted/public files. */
-        fun wipeSecrets() = brokerSecret.wipe()
+        /** Broker secret and setup-input (which can carry the plaintext broker password, spec
+         * §3.4) are the only secrets this snapshot holds; identity plaintext never appears here
+         * since [IdentityStorageSnapshot] only stores the encrypted/public files. */
+        fun wipeSecrets() {
+            brokerSecret.wipe()
+            files.wipeSecrets()
+        }
     }
 
     suspend fun persist(request: SetupPersistenceRequest): SetupPersistenceResult =
@@ -140,9 +144,15 @@ class SetupPersistenceCoordinator(
                     )
                 }
 
-            val committed = mutableListOf<SetupPersistenceStage>()
+            // FIX8 P0-003-D/CRITICAL-2: `attempted` gains a stage BEFORE its apply runs, so a
+            // stage that mutates its destination and only THEN fails (e.g. a post-write
+            // verification/cleanup failure) is still rolled back. `applied` (only stages whose
+            // apply genuinely returned success) is what a real Success result reports.
+            val applied = mutableListOf<SetupPersistenceStage>()
+            val attempted = mutableListOf<SetupPersistenceStage>()
             try {
                 for (stage in requestedStages(request)) {
+                    attempted += stage
                     val result = applyStage(stage, request)
                     if (result.isFailure) {
                         return@withLock SetupPersistenceResult.Failed(
@@ -151,18 +161,19 @@ class SetupPersistenceCoordinator(
                             // FIX7 P0-004-C: wrapped in NonCancellable so an ordinary-failure
                             // rollback still runs to completion even if the caller's scope is
                             // concurrently cancelled (e.g. the user navigates away) while it runs.
-                            rollback = withContext(NonCancellable) { rollback(snapshot, committed) },
+                            rollback = withContext(NonCancellable) { rollback(snapshot, attempted) },
                         )
                     }
-                    committed += stage
+                    applied += stage
                 }
-                SetupPersistenceResult.Success(committed.toList())
+                SetupPersistenceResult.Success(applied.toList())
             } catch (cancelled: CancellationException) {
-                // FIX7 P0-004-D: a cancellation mid-transaction must roll back every stage
-                // already committed before propagating — otherwise a cancelled save silently
-                // leaves live storage in a partially-mutated state. Rollback runs under
-                // NonCancellable so the already-cancelled scope cannot abort it partway through.
-                val rollbackResults = withContext(NonCancellable) { rollback(snapshot, committed) }
+                // FIX7 P0-004-D: a cancellation mid-transaction must roll back every attempted
+                // stage (including one that was mutating its destination at the moment of
+                // cancellation) before propagating — otherwise a cancelled save silently leaves
+                // live storage in a partially-mutated state. Rollback runs under NonCancellable
+                // so the already-cancelled scope cannot abort it partway through.
+                val rollbackResults = withContext(NonCancellable) { rollback(snapshot, attempted) }
                 rollbackResults.filterIsInstance<SetupRollbackStageResult.Failure>().forEach { failure ->
                     cancelled.addSuppressed(SetupRollbackException(failure.stage, failure.reason))
                 }
@@ -186,9 +197,7 @@ class SetupPersistenceCoordinator(
         SetupSnapshot(
             identity = identityRepository.captureStorageSnapshot(),
             brokerSecret = brokerSecretRepository.captureSnapshot().getOrThrow(),
-            setupInput = captureSetupInputSnapshot(configRepository.setupInputFileForSnapshot),
-            configExisted = configRepository.configFileExists,
-            configContents = configRepository.readConfig(),
+            files = configRepository.captureFilesSnapshot().getOrThrow(),
             preferences = loadPreferences(),
         )
 
@@ -215,7 +224,8 @@ class SetupPersistenceCoordinator(
                     val password = if (change is BrokerSecretChange.Set) change.password else null
                     brokerSecretRepository.persist(password).getOrThrow()
                 }
-                SetupPersistenceStage.SetupInput -> configRepository.saveSetupInput(request.setupInput)
+                SetupPersistenceStage.SetupInput ->
+                    configRepository.saveSetupInputAtomically(request.setupInput).getOrThrow()
                 SetupPersistenceStage.Preferences -> persistPreferences(request.preferences).getOrThrow()
                 SetupPersistenceStage.Config ->
                     configRepository.writeConfigAtomically(
@@ -227,9 +237,9 @@ class SetupPersistenceCoordinator(
 
     private suspend fun rollback(
         snapshot: SetupSnapshot,
-        committed: List<SetupPersistenceStage>,
+        attempted: List<SetupPersistenceStage>,
     ): List<SetupRollbackStageResult> =
-        committed.asReversed().map { stage ->
+        attempted.asReversed().map { stage ->
             try {
                 restoreStage(stage, snapshot)
                 SetupRollbackStageResult.Success(stage)
@@ -264,14 +274,10 @@ class SetupPersistenceCoordinator(
             SetupPersistenceStage.BrokerSecret ->
                 brokerSecretRepository.restore(snapshot.brokerSecret).getOrThrow()
             SetupPersistenceStage.SetupInput ->
-                restoreSetupInputSnapshot(configRepository.setupInputFileForSnapshot, snapshot.setupInput)
+                configRepository.restoreSetupInputFileSnapshot(snapshot.files.setupInput).getOrThrow()
             SetupPersistenceStage.Preferences -> persistPreferences(snapshot.preferences).getOrThrow()
             SetupPersistenceStage.Config ->
-                if (snapshot.configExisted) {
-                    configRepository.writeConfigAtomically(snapshot.configContents).getOrThrow()
-                } else {
-                    configRepository.deleteConfigFileForTransactionalReset().getOrThrow()
-                }
+                configRepository.restoreConfigSnapshot(snapshot.files.config).getOrThrow()
             SetupPersistenceStage.Snapshot -> Unit
         }
     }

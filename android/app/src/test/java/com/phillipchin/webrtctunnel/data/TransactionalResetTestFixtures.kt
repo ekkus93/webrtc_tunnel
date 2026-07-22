@@ -84,7 +84,7 @@ internal class ThrowingSetupInputConfigRepository(
     // FIX7 P0-005-A: rollback-restore of setup-input now goes through this method instead of
     // saveSetupInput (which cannot represent "absent"), so a fake targeting the rollback call
     // (call 2 in every test using this class) must override this one instead.
-    override fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+    override suspend fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
         callCount++
         if (callCount == failOnCallNumber) {
             if (error is CancellationException) throw error

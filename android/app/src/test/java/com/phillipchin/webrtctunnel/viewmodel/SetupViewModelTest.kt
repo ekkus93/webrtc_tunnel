@@ -27,7 +27,7 @@ class SetupViewModelTest : AppViewModelTestBase() {
         prepareValidReviewState(viewModel)
         viewModel.save.saveAndApplyConfig()
         awaitSetupState(viewModel) { it.saveResult == "Configuration saved" }
-        assertTrue(configRepository.readConfig().contains("broker.local"))
+        assertTrue(configRepository.configContents.contains("broker.local"))
         assertEquals(null, Shadows.shadowOf(app).nextStartedService)
     }
 

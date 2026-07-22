@@ -75,7 +75,7 @@ class TransactionalResetCoordinatorTest {
             assertEquals(ResetStage.Forwards, failed.failedStage)
 
             // After rollback, config should be absent (it was absent before the reset).
-            assertTrue("Config should be absent after rollback", configRepo.readConfig().isEmpty())
+            assertTrue("Config should be absent after rollback", configRepo.configContents.isEmpty())
         }
 
     @Test
@@ -102,7 +102,7 @@ class TransactionalResetCoordinatorTest {
             assertEquals(ResetStage.Forwards, failed.failedStage)
 
             // After rollback, config should be restored to the exact prior content.
-            assertEquals(priorConfig, configRepo.readConfig())
+            assertEquals(priorConfig, configRepo.configContents)
         }
 
     @Test

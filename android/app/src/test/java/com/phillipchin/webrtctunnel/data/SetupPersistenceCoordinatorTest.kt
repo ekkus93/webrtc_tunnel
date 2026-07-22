@@ -86,22 +86,29 @@ class SetupPersistenceCoordinatorTest {
             throw CancellationException("config write cancelled")
     }
 
-    /** ConfigRepository whose setup-input write always throws (drives SetupInput-stage failure). */
+    /** ConfigRepository whose setup-input write always fails (drives SetupInput-stage failure).
+     * FIX8 P0-003-B: the coordinator's SetupInput stage now calls saveSetupInputAtomically
+     * (atomic, Result-returning), not saveSetupInput — override that one, or this fake goes
+     * silently inert and the real atomic write succeeds instead of failing as the test expects. */
     private class FailingSetupInput(context: Context) : ConfigRepository(context) {
-        override fun saveSetupInput(input: SetupConfigInput): Unit = throw IOException("setup input write failed")
+        override suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> =
+            Result.failure(IOException("setup input write failed"))
     }
 
     /** ConfigRepository whose setup-input write always throws cancellation (drives SetupInput-
      * stage cancellation while Identity/AuthorizedKeys/BrokerSecret have already committed). */
     private class CancellingSetupInput(context: Context) : ConfigRepository(context) {
-        override fun saveSetupInput(input: SetupConfigInput): Unit =
+        override suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> =
             throw CancellationException("setup input write cancelled")
     }
 
-    /** ConfigRepository whose snapshot read (of the *current* config, taken before any mutation)
-     * always throws, driving a Snapshot-stage abort before the first mutation. */
+    /** ConfigRepository whose snapshot capture (of the *current* config+setup-input, taken before
+     * any mutation) always fails, driving a Snapshot-stage abort before the first mutation.
+     * FIX8 P0-003-E: captureFilesSnapshot() reads the files directly rather than going through
+     * configContents, so the fake must override captureFilesSnapshot() itself. */
     private class FailingSnapshotConfig(context: Context) : ConfigRepository(context) {
-        override fun readConfig(): String = throw IOException("snapshot read failed")
+        override suspend fun captureFilesSnapshot(): Result<ConfigFilesSnapshot> =
+            Result.failure(IOException("snapshot read failed"))
     }
 
     /**
@@ -116,15 +123,18 @@ class SetupPersistenceCoordinatorTest {
         val firstEntered = CompletableDeferred<Unit>()
         val releaseFirst = CompletableDeferred<Unit>()
 
-        override fun saveSetupInput(input: SetupConfigInput) {
+        // FIX8 P0-003-B: the coordinator's SetupInput stage now calls saveSetupInputAtomically
+        // (atomic, Result-returning) instead of saveSetupInput — the probe must gate the method
+        // actually invoked, or firstEntered never completes and the test deadlocks forever.
+        override suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> {
             val now = active.incrementAndGet()
             maxConcurrent.updateAndGet { existing -> maxOf(existing, now) }
             if (!firstEntered.isCompleted) {
                 firstEntered.complete(Unit)
-                runBlocking { releaseFirst.await() }
+                releaseFirst.await()
             }
             active.decrementAndGet()
-            super.saveSetupInput(input)
+            return super.saveSetupInputAtomically(input)
         }
     }
 
@@ -252,7 +262,7 @@ class SetupPersistenceCoordinatorTest {
                 ),
                 (result as SetupPersistenceResult.Success).stages,
             )
-            assertEquals("format = \"committed\"\n", configRepository.readConfig())
+            assertEquals("format = \"committed\"\n", configRepository.configContents)
             assertEquals("broker.new", configRepository.loadSetupInputResult().getOrThrow().brokerHost)
             assertEquals("new-broker-secret", passwordFile.readText())
         }
@@ -281,7 +291,10 @@ class SetupPersistenceCoordinatorTest {
             assertTrue(result is SetupPersistenceResult.Failed)
             val failed = result as SetupPersistenceResult.Failed
             assertEquals(SetupPersistenceStage.Identity, failed.failedStage)
-            assertTrue("nothing committed, so nothing to roll back", failed.rollback.isEmpty())
+            // FIX8 P0-003-D: the failing stage itself is now included in rollback (added to
+            // `attempted` before its own apply runs) — its restore is idempotent since nothing
+            // was actually mutated before the failure.
+            assertEquals(listOf(SetupPersistenceStage.Identity), failed.rollback.map { it.stage() })
             assertEquals(0, prefs.writes.size)
             assertFalse(File(context.filesDir, "authorized_keys").exists())
             assertFalse(passwordFile.exists())
@@ -306,7 +319,11 @@ class SetupPersistenceCoordinatorTest {
             assertTrue(result is SetupPersistenceResult.Failed)
             val failed = result as SetupPersistenceResult.Failed
             assertEquals(SetupPersistenceStage.AuthorizedKeys, failed.failedStage)
-            assertEquals(listOf(SetupPersistenceStage.Identity), failed.rollback.map { it.stage() })
+            // FIX8 P0-003-D: the failing stage itself is now included in rollback too.
+            assertEquals(
+                listOf(SetupPersistenceStage.AuthorizedKeys, SetupPersistenceStage.Identity),
+                failed.rollback.map { it.stage() },
+            )
             assertArrayEquals("prior-priv".toByteArray(), identityRepository.readPrivateIdentityPlaintext())
             assertEquals("prior-pub", identityRepository.readPublicIdentity())
         }
@@ -330,8 +347,13 @@ class SetupPersistenceCoordinatorTest {
             assertTrue(result is SetupPersistenceResult.Failed)
             val failed = result as SetupPersistenceResult.Failed
             assertEquals(SetupPersistenceStage.BrokerSecret, failed.failedStage)
+            // FIX8 P0-003-D: the failing stage itself is now included in rollback too.
             assertEquals(
-                listOf(SetupPersistenceStage.AuthorizedKeys, SetupPersistenceStage.Identity),
+                listOf(
+                    SetupPersistenceStage.BrokerSecret,
+                    SetupPersistenceStage.AuthorizedKeys,
+                    SetupPersistenceStage.Identity,
+                ),
                 failed.rollback.map { it.stage() },
             )
             assertArrayEquals("prior-priv".toByteArray(), identityRepository.readPrivateIdentityPlaintext())
@@ -349,8 +371,10 @@ class SetupPersistenceCoordinatorTest {
             assertTrue(result is SetupPersistenceResult.Failed)
             val failed = result as SetupPersistenceResult.Failed
             assertEquals(SetupPersistenceStage.SetupInput, failed.failedStage)
+            // FIX8 P0-003-D: the failing stage itself is now included in rollback too.
             assertEquals(
                 listOf(
+                    SetupPersistenceStage.SetupInput,
                     SetupPersistenceStage.BrokerSecret,
                     SetupPersistenceStage.AuthorizedKeys,
                     SetupPersistenceStage.Identity,
@@ -381,8 +405,10 @@ class SetupPersistenceCoordinatorTest {
             assertTrue(result is SetupPersistenceResult.Failed)
             val failed = result as SetupPersistenceResult.Failed
             assertEquals(SetupPersistenceStage.Preferences, failed.failedStage)
+            // FIX8 P0-003-D: the failing stage itself is now included in rollback too.
             assertEquals(
                 listOf(
+                    SetupPersistenceStage.Preferences,
                     SetupPersistenceStage.SetupInput,
                     SetupPersistenceStage.BrokerSecret,
                     SetupPersistenceStage.AuthorizedKeys,
@@ -408,8 +434,10 @@ class SetupPersistenceCoordinatorTest {
             assertTrue(result is SetupPersistenceResult.Failed)
             val failed = result as SetupPersistenceResult.Failed
             assertEquals(SetupPersistenceStage.Config, failed.failedStage)
+            // FIX8 P0-003-D: the failing stage itself is now included in rollback too.
             assertEquals(
                 listOf(
+                    SetupPersistenceStage.Config,
                     SetupPersistenceStage.Preferences,
                     SetupPersistenceStage.SetupInput,
                     SetupPersistenceStage.BrokerSecret,

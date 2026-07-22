@@ -164,7 +164,7 @@ class TransactionalResetCoordinatorCancellationTest {
             assertEquals(
                 "config committed before the cancelled Forwards stage must be rolled back",
                 "format = \"prior\"\n",
-                configRepo.readConfig(),
+                configRepo.configContents,
             )
             assertEquals(
                 "setup input committed before the cancelled Forwards stage must be rolled back",

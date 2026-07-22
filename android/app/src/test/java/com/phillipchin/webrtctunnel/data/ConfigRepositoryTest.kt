@@ -51,7 +51,7 @@ class ConfigRepositoryTest {
         runBlocking {
             assertTrue(repository.ensureDefaultConfig("abc").isSuccess)
         }
-        assertEquals("abc", repository.readConfig())
+        assertEquals("abc", repository.configContents)
     }
 
     @Test
@@ -60,7 +60,7 @@ class ConfigRepositoryTest {
         runBlocking {
             repository.ensureDefaultConfig("default")
         }
-        assertEquals("existing", repository.readConfig())
+        assertEquals("existing", repository.configContents)
     }
 
     // FIX6 P0-001-A: the write result is returned rather than discarded, and the existence
@@ -111,7 +111,7 @@ class ConfigRepositoryTest {
                 "ensureDefaultConfig must not call the mutex-taking writer while holding the mutex",
                 publicWriterCalled,
             )
-            assertEquals("default", repo.readConfig())
+            assertEquals("default", repo.configContents)
         }
 
     @Test
@@ -122,7 +122,7 @@ class ConfigRepositoryTest {
             val result = repository.ensureDefaultConfig("default")
 
             assertTrue(result.isSuccess)
-            assertEquals("existing", repository.readConfig())
+            assertEquals("existing", repository.configContents)
         }
 
     @Test
@@ -150,7 +150,7 @@ class ConfigRepositoryTest {
             assertEquals(
                 "the default must not overwrite a config another writer already committed",
                 "written-by-another-writer",
-                repository.readConfig(),
+                repository.configContents,
             )
         }
 
@@ -300,14 +300,14 @@ class ConfigRepositoryTest {
             ).getOrThrow()
             repository.prepareActiveConfigForStart("native", "10.1.3.11")
         }
-        val config = repository.readConfig()
+        val config = repository.configContents
         assertTrue(config.contains("android_ice_mode = \"native\""))
         assertTrue(config.contains("advertised_local_ipv4 = \"10.1.3.11\""))
         // A null address clears the advertised line while leaving the chosen mode intact.
         runBlocking {
             repository.prepareActiveConfigForStart("native", null)
         }
-        val cleared = repository.readConfig()
+        val cleared = repository.configContents
         assertTrue(cleared.contains("android_ice_mode = \"native\""))
         assertFalse(cleared.contains("advertised_local_ipv4"))
     }
@@ -317,20 +317,20 @@ class ConfigRepositoryTest {
         runBlocking {
             repository.prepareActiveConfigForStart("native", "10.1.3.11")
         }
-        assertEquals("", repository.readConfig())
+        assertEquals("", repository.configContents)
     }
 
     @Test
     fun writeAndReadConfigRoundTrip() {
         val contents = "format = \"p2ptunnel-config-v3\"\n[node]\npeer_id=\"x\""
         runBlocking { repository.writeConfig(contents) }
-        assertEquals(contents, repository.readConfig())
+        assertEquals(contents, repository.configContents)
         assertTrue(repository.configPath.startsWith(context.filesDir.absolutePath))
     }
 
     @Test
     fun readConfigReturnsEmptyWhenMissing() {
-        assertEquals("", repository.readConfig())
+        assertEquals("", repository.configContents)
     }
 
     @Test
@@ -382,8 +382,8 @@ class ConfigRepositoryTest {
             repository.writeConfig("first").getOrThrow()
             repository.writeConfig("second").getOrThrow()
         }
-        assertEquals("second", repository.readConfig())
-        assertFalse(repository.readConfig().contains("first"))
+        assertEquals("second", repository.configContents)
+        assertFalse(repository.configContents.contains("first"))
     }
 
     @Test
@@ -392,7 +392,7 @@ class ConfigRepositoryTest {
             repository.writeConfig("before").getOrThrow()
             repository.writeConfigAtomically("after")
         }
-        assertEquals("after", repository.readConfig())
+        assertEquals("after", repository.configContents)
     }
 
     @Test
@@ -595,33 +595,35 @@ class ConfigRepositoryTest {
         assertTrue(repository.loadSetupInputResult().isFailure)
     }
 
-    // FIX6 P0-003: setup-input snapshot/restore for the setup transaction.
+    // FIX8 P0-003: exact byte-level setup-input snapshot/restore for the setup transaction.
 
     @Test
-    fun restoreSetupInputSnapshotRevertsToPriorContents() {
-        val setupInputFile = File(context.filesDir, "setup_input.json")
-        repository.saveSetupInput(SetupConfigInput(brokerHost = "prior.example"))
-        val snapshot = captureSetupInputSnapshot(setupInputFile)
+    fun restoreSetupInputSnapshotRevertsToPriorContents() =
+        runBlocking {
+            val setupInputFile = File(context.filesDir, "setup_input.json")
+            repository.saveSetupInput(SetupConfigInput(brokerHost = "prior.example"))
+            val snapshot = captureExactFileSnapshot(setupInputFile).getOrThrow()
 
-        repository.saveSetupInput(SetupConfigInput(brokerHost = "changed.example"))
-        restoreSetupInputSnapshot(setupInputFile, snapshot)
+            repository.saveSetupInput(SetupConfigInput(brokerHost = "changed.example"))
+            repository.restoreSetupInputFileSnapshot(snapshot).getOrThrow()
 
-        assertEquals("prior.example", repository.loadSetupInputResult().getOrThrow().brokerHost)
-    }
+            assertEquals("prior.example", repository.loadSetupInputResult().getOrThrow().brokerHost)
+        }
 
     @Test
-    fun restoreSetupInputSnapshotRecreatesAbsentState() {
-        val setupInputFile = File(context.filesDir, "setup_input.json")
-        setupInputFile.delete()
-        val snapshot = captureSetupInputSnapshot(setupInputFile)
-        assertFalse(snapshot.existed)
+    fun restoreSetupInputSnapshotRecreatesAbsentState() =
+        runBlocking {
+            val setupInputFile = File(context.filesDir, "setup_input.json")
+            setupInputFile.delete()
+            val snapshot = captureExactFileSnapshot(setupInputFile).getOrThrow()
+            assertFalse(snapshot.existed)
 
-        repository.saveSetupInput(SetupConfigInput(brokerHost = "created.example"))
-        restoreSetupInputSnapshot(setupInputFile, snapshot)
+            repository.saveSetupInput(SetupConfigInput(brokerHost = "created.example"))
+            repository.restoreSetupInputFileSnapshot(snapshot).getOrThrow()
 
-        assertFalse(
-            "setup_input.json must be absent again after restoring an absent snapshot",
-            setupInputFile.exists(),
-        )
-    }
+            assertFalse(
+                "setup_input.json must be absent again after restoring an absent snapshot",
+                setupInputFile.exists(),
+            )
+        }
 }

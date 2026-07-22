@@ -37,7 +37,7 @@ class ImportExportService(
 
     fun configForExport(confirmSensitive: Boolean): String {
         require(confirmSensitive) { "Raw config export requires explicit confirmation" }
-        return deps.configRepository.readConfig()
+        return deps.configRepository.configContents
     }
 
     private suspend fun importConfigContent(candidate: String) {
