@@ -86,6 +86,15 @@ class TransactionalResetHardeningTest {
             if (calls == throwOnCall) throw error
             return super.writeConfigAtomically(contents)
         }
+
+        // FIX8 P0-006-A: Config's rollback restore now goes through restoreConfigSnapshot
+        // (byte-exact) instead of writeConfigAtomically — the 2nd call in every test using this
+        // class (the rollback restore) must throw here instead, or it goes silently inert.
+        override suspend fun restoreConfigSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+            calls++
+            if (calls == throwOnCall) throw error
+            return super.restoreConfigSnapshot(snapshot)
+        }
     }
 
     private class ConfigSaveSetupThrowsOnNthCall(
@@ -123,7 +132,7 @@ class TransactionalResetHardeningTest {
         override suspend fun saveSetupInputAtomically(input: SetupConfigInput): Result<Unit> =
             Result.failure(IOException("setup boom password=setupsecret"))
 
-        override suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> =
+        override suspend fun restoreConfigSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
             Result.failure(IOException("delete boom password=deletesecret"))
     }
 

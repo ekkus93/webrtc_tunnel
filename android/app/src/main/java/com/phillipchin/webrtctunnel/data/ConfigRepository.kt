@@ -22,7 +22,6 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
-import java.nio.file.Files
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
 
@@ -245,30 +244,6 @@ open class ConfigRepository internal constructor(
             }
         }
     }
-
-    /**
-     * Internal: delete config file for transactional reset rollback.
-     * Used when the config file was absent before reset and a later stage failed,
-     * so rollback must restore the absent state (not leave a stale config behind).
-     * Returns Result.success(Unit) on success, Result.failure(...) on failure.
-     *
-     * P1-006: open so tests can inject a genuine transactional-reset delete-rollback
-     * failure instead of only ever exercising the success path.
-     */
-    @CheckResult
-    internal open suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> =
-        fileMutex.withLock {
-            try {
-                Files.deleteIfExists(configFile.toPath())
-                Result.success(Unit)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                // FIX8 P0-003-F: catches every ordinary exception (not just IOException) — a
-                // SecurityException from a denied delete must surface as a failure too.
-                Result.failure(error)
-            }
-        }
 
     // P1-001: open so tests can inject a failure/cancellation for transactional-reset
     // setup-input mutation/rollback path coverage. Non-atomic; kept for the many existing

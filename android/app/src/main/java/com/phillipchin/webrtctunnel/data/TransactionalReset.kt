@@ -288,27 +288,17 @@ class TransactionalResetCoordinator(
             ResetStage.Forwards -> restoreForwards(snapshot.forwards, stageWasApplied)
         }
 
-    private suspend fun restoreConfig(snapshot: ExactFileSnapshot): RollbackStageResult {
-        return if (snapshot.existed) {
-            // File existed — restore the exact contents (even if blank/whitespace).
-            val contents =
-                String(requireNotNull(snapshot.bytes) { "config snapshot bytes are missing" }, Charsets.UTF_8)
-            configRepository.writeConfigAtomically(contents).fold(
-                onSuccess = { RollbackStageResult.Success(ResetStage.Config) },
-                onFailure = { error ->
-                    RollbackStageResult.Failure(ResetStage.Config, safeResetReason(error, "Failed to restore config"))
-                },
-            )
-        } else {
-            // File was absent — must delete to restore absent state.
-            configRepository.deleteConfigFileForTransactionalReset().fold(
-                onSuccess = { RollbackStageResult.Success(ResetStage.Config) },
-                onFailure = { error ->
-                    RollbackStageResult.Failure(ResetStage.Config, safeResetReason(error, "Failed to restore config"))
-                },
-            )
-        }
-    }
+    // FIX8 P0-006-A: byte-exact restore via the same primitive SetupPersistenceCoordinator/
+    // ForwardConfigurationCoordinator use for config — unlike a String-converted
+    // writeConfigAtomically call, this never round-trips through UTF-8, so non-UTF-8 config
+    // bytes survive a snapshot/restore cycle intact.
+    private suspend fun restoreConfig(snapshot: ExactFileSnapshot): RollbackStageResult =
+        configRepository.restoreConfigSnapshot(snapshot).fold(
+            onSuccess = { RollbackStageResult.Success(ResetStage.Config) },
+            onFailure = { error ->
+                RollbackStageResult.Failure(ResetStage.Config, safeResetReason(error, "Failed to restore config"))
+            },
+        )
 
     // FIX8 P0-006-A: byte-exact, revision-checked restore (mirroring every other transaction's
     // Forwards stage) instead of re-saving a plain re-serializable list.

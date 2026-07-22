@@ -62,7 +62,11 @@ internal class ConfigDeleteFailureRepository(
     context: android.content.Context,
     private val deleteError: Throwable,
 ) : ConfigRepository(context) {
-    override suspend fun deleteConfigFileForTransactionalReset(): Result<Unit> = Result.failure(deleteError)
+    // FIX8 P0-006-A: Config's rollback restore now goes through restoreConfigSnapshot (the same
+    // byte-exact primitive every other transaction's Config stage uses) instead of a dedicated
+    // delete-only method — a fake targeting the rollback-delete failure must override this one
+    // instead, or it goes silently inert.
+    override suspend fun restoreConfigSnapshot(snapshot: ExactFileSnapshot): Result<Unit> = Result.failure(deleteError)
 }
 
 // P1-001: TransactionalReset setup-input mutation/rollback must use explicit
@@ -138,6 +142,15 @@ internal class ConfigRollbackFailureRepository(
         writeCallCount++
         if (writeCallCount == writeFailOnCallNumber) return Result.failure(writeError)
         return super.writeConfigAtomically(contents)
+    }
+
+    // FIX8 P0-006-A: Config's rollback restore now goes through restoreConfigSnapshot
+    // (byte-exact) instead of writeConfigAtomically — the 2nd call in every test using this
+    // class (the rollback restore) must fail here instead, or it goes silently inert.
+    override suspend fun restoreConfigSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+        writeCallCount++
+        if (writeCallCount == writeFailOnCallNumber) return Result.failure(writeError)
+        return super.restoreConfigSnapshot(snapshot)
     }
 
     // Always fails — SetupInput's own reset must fail unconditionally to trigger

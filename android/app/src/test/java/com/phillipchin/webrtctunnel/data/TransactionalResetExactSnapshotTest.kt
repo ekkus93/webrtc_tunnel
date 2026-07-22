@@ -309,6 +309,15 @@ class TransactionalResetExactSnapshotTest {
             if (callCount == failOnCallNumber) return Result.failure(error)
             return super.writeConfigAtomically(contents)
         }
+
+        // FIX8 P0-006-A: Config's rollback restore now goes through restoreConfigSnapshot
+        // (byte-exact) instead of writeConfigAtomically — the 2nd call in every test using this
+        // class (the rollback restore) must fail here instead, or it goes silently inert.
+        override suspend fun restoreConfigSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+            callCount++
+            if (callCount == failOnCallNumber) return Result.failure(error)
+            return super.restoreConfigSnapshot(snapshot)
+        }
     }
 
     @Test
@@ -427,6 +436,14 @@ class TransactionalResetExactSnapshotTest {
             writeCallCount++
             if (writeCallCount == configWriteFailOnCallNumber) return Result.failure(configWriteError)
             return super.writeConfigAtomically(contents)
+        }
+
+        // FIX8 P0-006-A: Config's rollback restore now goes through restoreConfigSnapshot
+        // (byte-exact) instead of writeConfigAtomically.
+        override suspend fun restoreConfigSnapshot(snapshot: ExactFileSnapshot): Result<Unit> {
+            writeCallCount++
+            if (writeCallCount == configWriteFailOnCallNumber) return Result.failure(configWriteError)
+            return super.restoreConfigSnapshot(snapshot)
         }
 
         override suspend fun restoreSetupInputFileSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
