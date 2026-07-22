@@ -1339,22 +1339,40 @@ related tests
 
 ## P1-001-A — Shared setup-local operation coordinator
 
-- [ ] Add `SetupDraftOperation` values for baseline load, identity action, forward edit, validation/navigation, and final save. (`SHA: ______`)
-- [ ] One shared coordinator serializes all asynchronous setup actions. (`SHA: ______`)
-- [ ] `isBusy` is derived from actual ownership, not independently toggled by several controllers. (`SHA: ______`)
-- [ ] Busy rejection is durable/visible and names active setup operation. (`SHA: ______`)
-- [ ] Final save holds setup-local ownership while acquiring/using global SetupSave admission. (`SHA: ______`)
-- [ ] No stale action completion may overwrite newer draft state; use operation token/generation where cancellation is allowed. (`SHA: ______`)
+- [x] Add `SetupDraftOperation` values for baseline load, identity action, forward edit, validation/navigation, and final save. (`SHA: 2019fe3`)
+- [x] One shared coordinator serializes all asynchronous setup actions. (`SHA: 2019fe3`)
+- [x] `isBusy` is derived from actual ownership, not independently toggled by several controllers. (`SHA: 2019fe3`)
+- [x] Busy rejection is durable/visible and names active setup operation. (`SHA: 2019fe3`)
+- [x] Final save holds setup-local ownership while acquiring/using global SetupSave admission. (`SHA: 2019fe3`)
+- [x] No stale action completion may overwrite newer draft state; use operation token/generation where cancellation is allowed. (`SHA: 2019fe3`)
+
+`SetupOperationCoordinator` mirrors `ConfigurationMutationCoordinator`'s atomic-owner-token
+design (`AtomicReference<ActiveSetupDraftOperation?>`), bundled onto `WizardStateAccess` (rather
+than a separate constructor parameter on each controller) since the coordinator itself takes no
+dependency on `WizardStateAccess`, avoiding a circular construction order. `isBusy` is stamped
+inside `SetupViewModel.applyState` — the one write path every controller already used — from
+`operations.isBusy` at call time; `runGuarded` additionally publishes immediately upon acquiring
+admission (not only at completion) and unconditionally in a `finally` (covering a normal return
+*and* a `CancellationException` propagating straight through), since the block's own last
+`applyState` call runs while admission is still held and would otherwise leave a stale `isBusy`
+after release — both gaps were caught by this task's own new tests before being fixed. Final
+save (`SetupSaveController.saveAndApplyConfigInternal`) acquires `FinalSave` admission and, from
+inside that block, still calls `deps.configurationMutationCoordinator.tryRun(SetupSave)` exactly
+as before (FIX7 P0-001-C) — nested, not replaced. `SetupOperationCoordinator.invalidate()`
+(called from `cancel()`) marks every in-flight operation's token stale via a `staleBefore`
+watermark; each operation's own `id` (passed into its `block`) is checked before it publishes a
+result, so a still-running action whose completion arrives after a cancel can never overwrite the
+freshly-reset draft.
 
 ## P1-001-B — Explicit setup baseline state
 
-- [ ] Add `SetupLoadState.Initializing/Ready/Failed`. (`SHA: ______`)
-- [ ] Move setup-input read/decode to IO dispatcher. (`SHA: ______`)
-- [ ] Move stored identity baseline load to IO. (`SHA: ______`)
-- [ ] Move forwards baseline load to IO. (`SHA: ______`)
-- [ ] Publish Ready only when all required baselines are coherent. (`SHA: ______`)
-- [ ] Block Next/final save while Initializing or Failed. (`SHA: ______`)
-- [ ] Failure is durable `setup_draft_load_failed`; do not silently use defaults when an existing file is corrupt. (`SHA: ______`)
+- [x] Add `SetupLoadState.Initializing/Ready/Failed`. (`SHA: 2019fe3`)
+- [x] Move setup-input read/decode to IO dispatcher. (`SHA: 2019fe3`)
+- [x] Move stored identity baseline load to IO. (`SHA: 2019fe3`)
+- [x] Move forwards baseline load to IO. (`SHA: 2019fe3`)
+- [x] Publish Ready only when all required baselines are coherent. (`SHA: 2019fe3`)
+- [x] Block Next/final save while Initializing or Failed. (`SHA: 2019fe3`)
+- [x] Failure is durable `setup_draft_load_failed`; do not silently use defaults when an existing file is corrupt. (`SHA: 2019fe3`)
 
 Suggested initialization:
 
@@ -1371,30 +1389,63 @@ init {
 
 No synchronous file read/decode may occur in constructor/init before launch.
 
+Implemented as `loadSetupWizardBaseline` (top-level, called from `init`'s `BaselineLoad`-guarded
+coroutine): reads setup-input via `withContext(deps.dispatchers.io)`, then directly awaits new
+suspend variants `SetupIdentityController.loadStoredIdentityBaseline()` and
+`SetupForwardsController.refreshForwardsBaseline()` (both already IO-dispatched internally,
+previously only reachable via a fire-and-forget `launchBusy`/`scope.launch` wrapper — calling
+them directly here, rather than through the coordinator again, avoids a self-deadlock, since the
+coordinator is not reentrant and `BaselineLoad` already holds admission for the whole sequence).
+`deps.forwardsRepository.loadState` (the existing `ForwardsLoadState`, per-forward) is consulted
+directly rather than duplicating its own IO/error-handling. `SetupLoadState.Ready` is published
+only once both the setup-input result and the forwards load state are known-good.
+
 ## P1-001-C — Boundary error handling/redaction
 
-- [ ] Every setup action catches cancellation first and rethrows. (`SHA: ______`)
-- [ ] Every ordinary failure produces fixed/redacted UI failure. (`SHA: ______`)
-- [ ] `launchBusy`/replacement helper does not allow uncaught ordinary exceptions to merely clear busy. (`SHA: ______`)
-- [ ] Remote public identity import removes `runCatching`. (`SHA: ______`)
-- [ ] No raw native validation message is assigned without redaction unless it is a fixed application-authored message. (`SHA: ______`)
-- [ ] Success clears prior error; cancellation emits no ordinary success/failure. (`SHA: ______`)
+- [x] Every setup action catches cancellation first and rethrows. (`SHA: 2019fe3`)
+- [x] Every ordinary failure produces fixed/redacted UI failure. (`SHA: 2019fe3`)
+- [x] `launchBusy`/replacement helper does not allow uncaught ordinary exceptions to merely clear busy. (`SHA: 2019fe3`)
+- [x] Remote public identity import removes `runCatching`. (`SHA: 2019fe3`)
+- [x] No raw native validation message is assigned without redaction unless it is a fixed application-authored message. (`SHA: 2019fe3`)
+- [x] Success clears prior error; cancellation emits no ordinary success/failure. (`SHA: 2019fe3`)
+
+`importPublicIdentityFromUri` already satisfied "remote public identity import removes
+`runCatching`" (an explicit cancellation-first try/catch, pre-existing before this task, per its
+own comment anticipating P1-001-C). The two remaining raw/unredacted native-validation messages —
+`SetupIdentityController.resolveRemotePublicIdentity`'s `validated.message` and
+`generateIdentity`'s `generated.message` — now go through `SensitiveDataRedactor.redactText`
+before reaching UI state. `launchBusy` (duplicated verbatim across the identity and forwards
+controllers) is replaced by `SetupOperationCoordinator.runGuarded`, which every setup action now
+routes through: cancellation is caught first and rethrown; any other exception the action does
+not already handle itself is caught and reported as a fixed/redacted, durable `errorMessage` —
+never silently clearing busy with no visible message.
 
 ## P1-001-D — Tests
 
-- [ ] `setupViewModelConstructionPerformsNoFileIoOnMainThread` (`SHA: ______`)
-- [ ] `setupLoadInitializingBlocksNextAndSave` (`SHA: ______`)
-- [ ] `setupLoadReadyUsesLoadedDraftBaseline` (`SHA: ______`)
-- [ ] `setupLoadFailureIsDurableAndDoesNotUseBlankFallback` (`SHA: ______`)
-- [ ] `overlappingIdentityAndForwardActionsCannotPublishStaleBusyOrState` (`SHA: ______`)
-- [ ] `setupActionExceptionIsRedactedAndDurable` (`SHA: ______`)
-- [ ] `setupActionCancellationEmitsNoOrdinaryResultAndReleasesOwnership` (`SHA: ______`)
+- [x] `setupViewModelConstructionPerformsNoFileIoOnMainThread` (`SHA: 2019fe3`)
+- [x] `setupLoadInitializingBlocksNextAndSave` (`SHA: 2019fe3`)
+- [x] `setupLoadReadyUsesLoadedDraftBaseline` (`SHA: 2019fe3`)
+- [x] `setupLoadFailureIsDurableAndDoesNotUseBlankFallback` (`SHA: 2019fe3`)
+- [x] `overlappingIdentityAndForwardActionsCannotPublishStaleBusyOrState` (`SHA: 2019fe3`)
+- [x] `setupActionExceptionIsRedactedAndDurable` (`SHA: 2019fe3`)
+- [x] `setupActionCancellationEmitsNoOrdinaryResultAndReleasesOwnership` (`SHA: 2019fe3`)
+
+All 7 in new `SetupDraftOperationCoordinationTest.kt`. The first two use `realIoTestDispatchers()`
+(a genuine `Dispatchers.IO` thread hop) to observe `loadState` still `Initializing` at the instant
+`SetupViewModel`'s constructor returns — the direct proof of "no synchronous main-thread file
+I/O". `overlappingIdentityAndForwardActionsCannotPublishStaleBusyOrState` drives both the
+occupying and the overlapping action directly through `SetupOperationCoordinator.runGuarded`
+(rather than through `SetupForwardsController.upsertForward`'s own `viewModelScope`-hopping
+launch, whose scheduling did not reliably interleave with an already-parked `viewModelScope`
+coroutine under this test harness) — the coordinator logic exercised is identical either way,
+since every real controller method routes through the exact same `WizardStateAccess.operations
+.runGuarded` call.
 
 ## Acceptance
 
-- [ ] Setup screen has no main-thread file I/O. (`SHA: ______`)
-- [ ] Setup busy/load state is truthful across all controllers. (`SHA: ______`)
-- [ ] No setup failure escapes silently or leaks raw details. (`SHA: ______`)
+- [x] Setup screen has no main-thread file I/O. (`SHA: 2019fe3`)
+- [x] Setup busy/load state is truthful across all controllers. (`SHA: 2019fe3`)
+- [x] No setup failure escapes silently or leaks raw details. (`SHA: 2019fe3`)
 
 ---
 
