@@ -294,14 +294,12 @@ private suspend fun prepareCandidateConfig(
 // unreadable present identity is a visible failure (P1-001), with a fixed safe message — the
 // raw underlying error is attached only as [cause], never surfaced as diagnostic text.
 private fun readIdentityBytesOrThrow(deps: AppDependencies): ByteArray? =
-    if (deps.identityRepository.hasEncryptedIdentity) {
-        try {
-            deps.identityRepository.readPrivateIdentityPlaintext()
-        } catch (error: Exception) {
-            throw IdentityUnreadableException("Identity exists but could not be loaded", error)
-        }
-    } else {
-        null
+    try {
+        // FIX8 P0-007-C: checks for and reads the encrypted identity as one coherent operation,
+        // closing the TOCTOU window a separate hasEncryptedIdentity check + read would leave.
+        deps.identityRepository.readPrivateIdentityPlaintextOrNull
+    } catch (error: Exception) {
+        throw IdentityUnreadableException("Identity exists but could not be loaded", error)
     }
 
 /**

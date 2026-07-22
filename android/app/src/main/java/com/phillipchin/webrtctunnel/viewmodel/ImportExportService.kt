@@ -61,16 +61,15 @@ class ImportExportService(
                 // is non-suspending, so this cannot encounter coroutine cancellation, and
                 // catching Exception keeps the specific, useful diagnostic.
                 val identityBytes =
-                    if (deps.identityRepository.hasEncryptedIdentity) {
-                        try {
-                            deps.identityRepository.readPrivateIdentityPlaintext()
-                        } catch (error: Exception) {
-                            // FIX7 P1-004-C: a fixed safe message, not the raw underlying
-                            // error — identity-read failures must never echo unredacted text.
-                            error("Identity exists but could not be loaded")
-                        }
-                    } else {
-                        null
+                    try {
+                        // FIX8 P0-007-C: checks for and reads the encrypted identity as one
+                        // coherent operation, closing the TOCTOU window a separate
+                        // hasEncryptedIdentity check + read would leave.
+                        deps.identityRepository.readPrivateIdentityPlaintextOrNull
+                    } catch (error: Exception) {
+                        // FIX7 P1-004-C: a fixed safe message, not the raw underlying
+                        // error — identity-read failures must never echo unredacted text.
+                        error("Identity exists but could not be loaded")
                     }
                 identity = identityBytes
                 temp.writeText(candidate)

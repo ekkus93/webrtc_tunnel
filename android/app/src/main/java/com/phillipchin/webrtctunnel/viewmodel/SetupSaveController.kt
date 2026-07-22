@@ -24,6 +24,7 @@ import com.phillipchin.webrtctunnel.data.withSetupValidationWorkspace
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
+import com.phillipchin.webrtctunnel.security.StoredIdentityMaterial
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -275,14 +276,18 @@ internal class SetupSaveController(
         identityDraft.copyForSave()?.let { draft ->
             return ResolvedIdentity(draft.privateIdentity, draft.publicIdentity, draft.peerId, fromImport = true)
         }
+        // FIX8 P0-007-C: read the encrypted/public identity pair as one coherent snapshot
+        // (not a separate hasEncryptedIdentity check followed by separate reads) so a
+        // concurrent identity replacement can never be observed half-applied.
+        val material = deps.identityRepository.readStoredIdentityMaterial
         val resolved =
-            if (!deps.identityRepository.hasEncryptedIdentity) {
+            if (material == null) {
                 // Absence and present-but-unreadable are different states (P1-001/P1-007): only
                 // absence may report "missing" — a present identity that fails to load/validate
                 // must say so, not tell the user their identity vanished.
                 saveError("Missing encrypted identity", redact = true)
             } else {
-                resolveStoredIdentity(deps, ioDispatcher)
+                resolveStoredIdentity(deps, ioDispatcher, material)
                     ?: saveError("Stored private key exists but could not be loaded or is invalid", redact = true)
             }
         if (resolved.privateIdentity.isEmpty()) {
@@ -478,17 +483,17 @@ private fun mergedAuthorizedKeys(
 private suspend fun resolveStoredIdentity(
     deps: AppDependencies,
     dispatcher: CoroutineDispatcher,
+    material: StoredIdentityMaterial,
 ): ResolvedIdentity? =
     withContext(dispatcher) {
         var bytes: ByteArray? = null
         var transferred = false
         try {
-            bytes = deps.identityRepository.readPrivateIdentityPlaintext()
+            bytes = deps.identityRepository.decryptPrivateIdentity(material)
             val validated = deps.identityValidation.validatePrivateIdentity(bytes.decodeToString())
             require(validated.valid) { validated.message ?: "Stored private identity is invalid" }
             val peerId = validated.peerId ?: throw IllegalArgumentException("Missing identity peer id")
-            val publicIdentity =
-                validated.canonicalPublicIdentity ?: deps.identityRepository.readPublicIdentity()
+            val publicIdentity = validated.canonicalPublicIdentity ?: material.publicIdentity
             transferred = true
             ResolvedIdentity(bytes, publicIdentity, peerId, fromImport = false)
         } catch (cancelled: CancellationException) {
@@ -499,6 +504,7 @@ private suspend fun resolveStoredIdentity(
             if (!transferred) {
                 bytes?.fill(0)
             }
+            material.wipe()
         }
     }
 

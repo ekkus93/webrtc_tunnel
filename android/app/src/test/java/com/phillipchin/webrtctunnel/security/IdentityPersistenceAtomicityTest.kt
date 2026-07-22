@@ -199,6 +199,105 @@ class IdentityPersistenceAtomicityTest {
         )
     }
 
+    // FIX8 P0-007-E: the encrypted file was absent before this transaction (an unusual but legal
+    // prior state) — its rollback restore is a delete, not a write, and that delete's failure
+    // must still be attached as suppressed on the propagating cancellation, not lost.
+    @Test
+    fun identityPairCancellationAbsentEncryptedDeleteFailureIsSuppressed() {
+        pubFile.writeText("old-pub")
+        val pubCalls = AtomicInteger(0)
+        val repo =
+            IdentityRepository(
+                context,
+                PlaintextCrypto(),
+                deleteIfExists = { throw IOException("encrypted delete boom") },
+            ) { dest, bytes ->
+                // Only the forward write (1st call) is cancelled; the rollback restore (2nd
+                // call) must succeed normally so the cancellation itself is the one propagating.
+                if (dest.name == "identity.pub" && pubCalls.getAndIncrement() == 0) {
+                    throw CancellationException("cancelled during public write")
+                } else {
+                    plainReplace(dest, bytes)
+                }
+            }
+
+        var caught: CancellationException? = null
+        try {
+            repo.storeEncryptedIdentity("new-priv".toByteArray(), "new-pub")
+        } catch (cancelled: CancellationException) {
+            caught = cancelled
+        }
+
+        assertTrue("cancellation must propagate even though the encrypted-file rollback delete failed", caught != null)
+        assertTrue(
+            "the failed encrypted-file delete must be attached as suppressed, not silently lost",
+            caught!!.suppressedExceptions.isNotEmpty(),
+        )
+        assertEquals("old-pub", repo.readPublicIdentity())
+    }
+
+    // FIX8 P0-007-E: the public file was absent before this transaction — its rollback restore
+    // is a delete, not a write, and that delete's failure must still be attached as suppressed.
+    @Test
+    fun identityPairCancellationAbsentPublicDeleteFailureIsSuppressed() {
+        encFile.writeBytes("old-priv".toByteArray())
+        val pubCalls = AtomicInteger(0)
+        val repo =
+            IdentityRepository(
+                context,
+                PlaintextCrypto(),
+                deleteIfExists = { throw IOException("public delete boom") },
+            ) { dest, bytes ->
+                // Only the forward write (1st call) is cancelled; the encrypted file's rollback
+                // restore (a write, since it existed) must succeed normally.
+                if (dest.name == "identity.pub" && pubCalls.getAndIncrement() == 0) {
+                    throw CancellationException("cancelled during public write")
+                } else {
+                    plainReplace(dest, bytes)
+                }
+            }
+
+        var caught: CancellationException? = null
+        try {
+            repo.storeEncryptedIdentity("new-priv".toByteArray(), "new-pub")
+        } catch (cancelled: CancellationException) {
+            caught = cancelled
+        }
+
+        assertTrue("cancellation must propagate even though the public-file rollback delete failed", caught != null)
+        assertTrue(
+            "the failed public-file delete must be attached as suppressed, not silently lost",
+            caught!!.suppressedExceptions.isNotEmpty(),
+        )
+        assertArrayEquals("old-priv".toByteArray(), repo.readPrivateIdentityPlaintext())
+    }
+
+    // FIX8 P0-007-E: an ordinary (non-cancellation) failure variant of the two tests above —
+    // the encrypted file's restore-to-absent delete fails, but the public file's restore must
+    // still be attempted (and succeed) rather than being skipped.
+    @Test
+    fun pairRestoreAttemptsPublicAfterEncryptedDeleteFailure() {
+        pubFile.writeText("old-pub")
+        val repo =
+            IdentityRepository(
+                context,
+                PlaintextCrypto(),
+                deleteIfExists = { throw IOException("encrypted delete boom") },
+            ) { dest, bytes ->
+                if (dest.name == "identity.pub") throw IOException("pub boom") else plainReplace(dest, bytes)
+            }
+
+        val error = runCatching { repo.storeEncryptedIdentity("new-priv".toByteArray(), "new-pub") }.exceptionOrNull()
+
+        assertTrue(error is IdentityRollbackIncompleteException)
+        assertEquals(
+            "public restore must still be attempted (and succeed) even though the encrypted " +
+                "file's delete-to-absent failed",
+            "old-pub",
+            repo.readPublicIdentity(),
+        )
+    }
+
     @Test
     fun encryptedRestoreFailureDoesNotSkipPublicRestore() {
         encFile.writeBytes("old-priv".toByteArray())

@@ -74,6 +74,25 @@ class IdentityRepositoryTest {
         assertEquals("private-data", outFile.readText())
     }
 
+    // FIX8 P0-007-D: a checked Files.createDirectories, not an ignored mkdirs() Boolean — a
+    // failure to create the export parent directory must surface as a visible failure, not be
+    // silently swallowed on the way to (or instead of) a confusing downstream write error.
+    @Test
+    fun identityExportParentCreationFailureIsVisibleAndRedacted() {
+        repository.storeEncryptedIdentity("private-data".toByteArray(), "pub")
+        // A file where the export path's parent directory needs to be forces
+        // Files.createDirectories to fail (FileAlreadyExistsException: not a directory).
+        val blockingFile = File(context.filesDir, "blocked-export-parent")
+        blockingFile.delete()
+        blockingFile.writeText("not a directory")
+        val outFile = File(blockingFile, "private-export.toml")
+
+        val result = repository.exportPrivateIdentity(outFile.absolutePath, confirmRisk = true)
+
+        assertTrue("a parent-directory creation failure must be a visible failure", result.isFailure)
+        assertFalse("the export must never partially succeed when its parent could not be created", outFile.exists())
+    }
+
     @Test
     fun usePrivateIdentityPlaintextWipesBufferAfterUse() {
         repository.storeEncryptedIdentity("secret-bytes".toByteArray(), "pub")
@@ -190,6 +209,66 @@ class IdentityRepositoryTest {
             repository.readPrivateIdentityPlaintext(),
         )
         assertEquals("new-public", repository.readPublicIdentity())
+    }
+
+    // FIX8 P0-007-A: a present snapshot with missing bytes must fail visibly, not silently
+    // fabricate empty content via `?: ByteArray(0)`.
+    @Test
+    fun presentSnapshotWithMissingBytesFailsWithoutCreatingEmptyIdentity() {
+        val badSnapshot =
+            IdentityStorageSnapshot(
+                encryptedIdentity = StoredFileSnapshot(existed = true, bytes = null),
+                publicIdentity = StoredFileSnapshot(existed = false, bytes = null),
+                authorizedKeys = StoredFileSnapshot(existed = false, bytes = null),
+            )
+
+        val results = repository.restoreStorageSnapshot(badSnapshot)
+
+        val encryptedResult =
+            results.single {
+                (it as? IdentityRestoreResult.Failure)?.file == IdentityStorageFile.EncryptedIdentity ||
+                    (it as? IdentityRestoreResult.Success)?.file == IdentityStorageFile.EncryptedIdentity
+            }
+        assertTrue(
+            "a present snapshot with missing bytes must fail, not silently fabricate empty content",
+            encryptedResult is IdentityRestoreResult.Failure,
+        )
+        assertFalse(
+            "an empty identity.enc must never be created from missing snapshot bytes",
+            File(context.filesDir, "identity.enc").exists(),
+        )
+    }
+
+    // FIX8 P0-007-E: restoreAuthorizedKeysSnapshot's own restore failure must never fall back to
+    // (re-)touching the identity pair — the two stages are fully independent even on failure.
+    @Test
+    fun authorizedKeysRestoreFailureDoesNotReRestoreIdentityPair() {
+        repository.storeEncryptedIdentity("live-private".toByteArray(), "live-public")
+        val failingRepo =
+            IdentityRepository(context, TestAesGcmCrypto()) { dest, bytes ->
+                if (dest.name == "authorized_keys") {
+                    throw java.io.IOException("authorized_keys restore boom")
+                } else {
+                    dest.parentFile?.mkdirs()
+                    dest.writeBytes(bytes)
+                }
+            }
+        val snapshot =
+            IdentityStorageSnapshot(
+                encryptedIdentity = StoredFileSnapshot(existed = true, bytes = "prior-priv".toByteArray()),
+                publicIdentity = StoredFileSnapshot(existed = true, bytes = "prior-pub".toByteArray()),
+                authorizedKeys = StoredFileSnapshot(existed = true, bytes = "prior-key".toByteArray()),
+            )
+
+        val results = failingRepo.restoreAuthorizedKeysSnapshot(snapshot)
+
+        assertTrue(results.single() is IdentityRestoreResult.Failure)
+        assertArrayEquals(
+            "restoreAuthorizedKeysSnapshot must never touch the identity pair, even when its own restore fails",
+            "live-private".toByteArray(),
+            repository.readPrivateIdentityPlaintext(),
+        )
+        assertEquals("live-public", repository.readPublicIdentity())
     }
 
     @Test

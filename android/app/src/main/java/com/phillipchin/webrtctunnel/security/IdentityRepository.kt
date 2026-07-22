@@ -47,6 +47,20 @@ class IdentityStorageSnapshot internal constructor(
     val authorizedKeys: StoredFileSnapshot,
 )
 
+/**
+ * FIX8 P0-007-C: the encrypted-identity and public-identity files read as one coherent pair —
+ * both taken from the same point in time under [IdentityRepository]'s storage lock, so a caller
+ * can never observe one file from before a concurrent [IdentityRepository.storeEncryptedIdentity]
+ * replacement and the other from after. [encryptedPayload] is still ciphertext; the caller
+ * decrypts it (outside the lock) via [IdentityRepository.decryptPrivateIdentity].
+ */
+internal class StoredIdentityMaterial(
+    val encryptedPayload: ByteArray,
+    val publicIdentity: String,
+) {
+    fun wipe() = encryptedPayload.fill(0)
+}
+
 /** The three files [IdentityRepository] owns, named for exhaustive per-file restore reporting
  * (FIX7 P0-006-A). */
 enum class IdentityStorageFile {
@@ -65,6 +79,12 @@ sealed interface IdentityRestoreResult {
 class IdentityRepository(
     private val context: Context,
     private val crypto: IdentityCrypto = AndroidKeystoreIdentityCrypto(),
+    // FIX8 P0-007-E: injectable checked delete (the "restore to absent" counterpart to
+    // atomicReplace below) so an absent-file restore's delete failure is testable without a
+    // flaky filesystem permission trick. Defaults to the real checked delete. Ordered before
+    // atomicReplace so every existing trailing-lambda call site targeting atomicReplace (the
+    // last parameter) is unaffected.
+    private val deleteIfExists: (File) -> Unit = { Files.deleteIfExists(it.toPath()) },
     // P1-004-B: injectable atomic file replace so pair-commit rollback failure paths are
     // testable without mocking the filesystem. Defaults to the real temp-file+move replace.
     private val atomicReplace: (File, ByteArray) -> Unit = ::identityAtomicReplace,
@@ -76,6 +96,7 @@ class IdentityRepository(
     // FIX6 INV-011: serialize identity-pair and authorized-key reads-modify-writes so a
     // concurrent mutation cannot interleave with a snapshot/restore or with each other.
     private val storageLock = Any()
+    private val identityFileOps = IdentityFileOps(atomicReplace, deleteIfExists)
 
     // FIX8 P0-004: a property (not a function) so it doesn't count against this class's detekt
     // TooManyFunctions threshold — semantically unchanged, still a synchronous file check.
@@ -107,13 +128,14 @@ class IdentityRepository(
             // Step 4: replace the public file.
             atomicReplace(publicFile, publicIdentity.encodeToByteArray())
         } catch (cancelled: CancellationException) {
-            restoreIdentityPair(identityFile, publicFile, priorEncrypted, priorPublic, atomicReplace)
+            restoreIdentityPair(identityFile, publicFile, priorEncrypted, priorPublic, identityFileOps)
                 .forEach(cancelled::addSuppressed)
             throw cancelled
         } catch (error: Exception) {
             // Step 5: restore both files to the prior pair (through the same atomic replace),
             // each attempted independently so one restore failure never skips the other.
-            val failures = restoreIdentityPair(identityFile, publicFile, priorEncrypted, priorPublic, atomicReplace)
+            val failures =
+                restoreIdentityPair(identityFile, publicFile, priorEncrypted, priorPublic, identityFileOps)
             if (failures.isNotEmpty()) {
                 throw IdentityRollbackIncompleteException(
                     "Failed to store identity pair and rollback was incomplete",
@@ -155,19 +177,19 @@ class IdentityRepository(
                     IdentityStorageFile.EncryptedIdentity,
                     identityFile,
                     snapshot.encryptedIdentity,
-                    atomicReplace,
+                    identityFileOps,
                 ),
                 restoreIdentityFile(
                     IdentityStorageFile.PublicIdentity,
                     publicFile,
                     snapshot.publicIdentity,
-                    atomicReplace,
+                    identityFileOps,
                 ),
                 restoreIdentityFile(
                     IdentityStorageFile.AuthorizedKeys,
                     authorizedKeysFile,
                     snapshot.authorizedKeys,
-                    atomicReplace,
+                    identityFileOps,
                 ),
             )
         }
@@ -189,13 +211,13 @@ class IdentityRepository(
                     IdentityStorageFile.EncryptedIdentity,
                     identityFile,
                     snapshot.encryptedIdentity,
-                    atomicReplace,
+                    identityFileOps,
                 ),
                 restoreIdentityFile(
                     IdentityStorageFile.PublicIdentity,
                     publicFile,
                     snapshot.publicIdentity,
-                    atomicReplace,
+                    identityFileOps,
                 ),
             )
         }
@@ -213,7 +235,7 @@ class IdentityRepository(
                     IdentityStorageFile.AuthorizedKeys,
                     authorizedKeysFile,
                     snapshot.authorizedKeys,
-                    atomicReplace,
+                    identityFileOps,
                 ),
             )
         }
@@ -225,6 +247,50 @@ class IdentityRepository(
      */
     fun readPrivateIdentityPlaintext(): ByteArray {
         return crypto.decrypt(identityFile.readBytes())
+    }
+
+    /**
+     * FIX8 P0-007-C: checks for and reads the encrypted identity as one coherent operation
+     * (under the storage lock) instead of a separate [hasEncryptedIdentity] check followed by a
+     * separate unsynchronized [readPrivateIdentityPlaintext] call — closes the TOCTOU window a
+     * concurrent [storeEncryptedIdentity] replacement could otherwise race. `null` only when no
+     * identity is stored; a present-but-unreadable identity still throws, same as
+     * [readPrivateIdentityPlaintext]. Decryption happens outside the lock.
+     *
+     * A property (not a `fun`) so it doesn't count against this class's detekt
+     * TooManyFunctions threshold — called identically to a member function.
+     */
+    val readPrivateIdentityPlaintextOrNull: ByteArray?
+        get() {
+            val ciphertext = synchronized(storageLock) { if (identityFile.exists()) identityFile.readBytes() else null }
+            return ciphertext?.let { crypto.decrypt(it) }
+        }
+
+    /**
+     * FIX8 P0-007-C: reads the encrypted-identity and public-identity files as one coherent pair
+     * — see [StoredIdentityMaterial]. `null` when no identity is stored. A property for the same
+     * TooManyFunctions reason as [readPrivateIdentityPlaintextOrNull].
+     */
+    internal val readStoredIdentityMaterial: StoredIdentityMaterial?
+        get() =
+            synchronized(storageLock) {
+                if (identityFile.exists()) {
+                    StoredIdentityMaterial(
+                        encryptedPayload = identityFile.readBytes(),
+                        publicIdentity = if (publicFile.exists()) publicFile.readText() else "",
+                    )
+                } else {
+                    null
+                }
+            }
+
+    /** Decrypts a [StoredIdentityMaterial]'s ciphertext — the counterpart to
+     * [readStoredIdentityMaterial], kept as a separate call so decryption (a Keystore operation,
+     * not a file read) always happens outside the storage lock. A property holding a function
+     * value (not a `fun`) for the same TooManyFunctions reason as above — called identically via
+     * `decryptPrivateIdentity(material)`. */
+    internal val decryptPrivateIdentity: (StoredIdentityMaterial) -> ByteArray = { material ->
+        crypto.decrypt(material.encryptedPayload)
     }
 
     /**
@@ -284,7 +350,11 @@ class IdentityRepository(
             require(confirmRisk) { "Private export requires explicit confirmation" }
             require(hasEncryptedIdentity) { "No private identity available" }
             val output = File(outputPath)
-            output.parentFile?.mkdirs()
+            // FIX8 P0-007-D: a checked Files.createDirectories, not an ignored mkdirs() Boolean —
+            // a failure to create the export directory must surface, not silently proceed to a
+            // write that then fails with a less clear error (or, worse, succeeds against an
+            // unexpected pre-existing directory).
+            output.parentFile?.let { Files.createDirectories(it.toPath()) }
             usePrivateIdentityPlaintext { output.writeBytes(it) }
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
@@ -300,7 +370,8 @@ class IdentityRepository(
             val value = readPublicIdentity()
             require(value.isNotBlank()) { "No public identity available" }
             val output = File(outputPath)
-            output.parentFile?.mkdirs()
+            // FIX8 P0-007-D: checked, see exportPrivateIdentity above.
+            output.parentFile?.let { Files.createDirectories(it.toPath()) }
             output.writeText(value)
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
@@ -336,31 +407,46 @@ private fun snapshotOfFile(file: File): StoredFileSnapshot =
         StoredFileSnapshot(existed = false, bytes = null)
     }
 
-// P1-004-C: restore one file of the identity pair during rollback — atomically replace it with
-// its prior bytes, or delete it if it was absent. Uses the same [atomicReplace] as the forward
-// write so an injected failure exercises the rollback-incomplete path.
-private fun restorePairFile(
+/** Bundles the two injectable file operations every identity restore path needs, so passing
+ * them around stays under detekt's LongParameterList threshold. */
+private class IdentityFileOps(
+    val atomicReplace: (File, ByteArray) -> Unit,
+    val deleteIfExists: (File) -> Unit,
+)
+
+/**
+ * FIX8 P0-007-A: restores [file] to exactly [snapshot]'s prior state — atomic replace when it
+ * existed, checked [Files.deleteIfExists] (not an unchecked [File.delete]) when it was absent. A
+ * present snapshot with missing bytes throws naming [logicalName] rather than silently
+ * fabricating empty content via `?: ByteArray(0)` — a prior capture bug would otherwise write
+ * empty/wrong bytes with no visible failure. The one shared restore primitive both the
+ * pair-commit rollback ([restorePairFileResult]) and the setup-transaction snapshot restore
+ * ([restoreIdentityFile]) delegate to.
+ */
+private fun restoreFileFromSnapshotOrThrow(
+    logicalName: String,
     file: File,
     snapshot: StoredFileSnapshot,
-    atomicReplace: (File, ByteArray) -> Unit,
+    ops: IdentityFileOps,
 ) {
     if (snapshot.existed) {
-        atomicReplace(file, snapshot.bytes ?: ByteArray(0))
+        ops.atomicReplace(file, requireNotNull(snapshot.bytes) { "$logicalName snapshot bytes are missing" })
     } else {
-        file.delete()
+        ops.deleteIfExists(file)
     }
 }
 
-/** [restorePairFile], wrapped as a [Result] so a caller can attempt the identity pair's other
- * file even after this one fails (FIX7 P0-006-C) instead of letting the first failure abort the
- * whole rollback. */
+/** [restoreFileFromSnapshotOrThrow], wrapped as a [Result] so a caller can attempt the identity
+ * pair's other file even after this one fails (FIX7 P0-006-C) instead of letting the first
+ * failure abort the whole rollback. */
 private fun restorePairFileResult(
+    logicalName: String,
     file: File,
     snapshot: StoredFileSnapshot,
-    atomicReplace: (File, ByteArray) -> Unit,
+    ops: IdentityFileOps,
 ): Result<Unit> =
     try {
-        restorePairFile(file, snapshot, atomicReplace)
+        restoreFileFromSnapshotOrThrow(logicalName, file, snapshot, ops)
         Result.success(Unit)
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -379,15 +465,15 @@ private fun restoreIdentityPair(
     publicFile: File,
     priorEncrypted: StoredFileSnapshot,
     priorPublic: StoredFileSnapshot,
-    atomicReplace: (File, ByteArray) -> Unit,
+    ops: IdentityFileOps,
 ): List<Exception> {
     val failures = mutableListOf<Exception>()
 
-    restorePairFileResult(identityFile, priorEncrypted, atomicReplace)
+    restorePairFileResult("encrypted identity", identityFile, priorEncrypted, ops)
         .exceptionOrNull()
         ?.let { failures.add(it as? Exception ?: Exception(it)) }
 
-    restorePairFileResult(publicFile, priorPublic, atomicReplace)
+    restorePairFileResult("public identity", publicFile, priorPublic, ops)
         .exceptionOrNull()
         ?.let { failures.add(it as? Exception ?: Exception(it)) }
 
@@ -404,14 +490,10 @@ private fun restoreIdentityFile(
     logical: IdentityStorageFile,
     file: File,
     snapshot: StoredFileSnapshot,
-    atomicReplace: (File, ByteArray) -> Unit,
+    ops: IdentityFileOps,
 ): IdentityRestoreResult =
     try {
-        if (snapshot.existed) {
-            atomicReplace(file, snapshot.bytes ?: ByteArray(0))
-        } else {
-            Files.deleteIfExists(file.toPath())
-        }
+        restoreFileFromSnapshotOrThrow(logical.name, file, snapshot, ops)
         IdentityRestoreResult.Success(logical)
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -447,7 +529,14 @@ private fun identityAtomicReplace(
                     StandardCopyOption.REPLACE_EXISTING,
                 )
             } catch (error: AtomicMoveNotSupportedException) {
-                Log.w(IDENTITY_TAG, "Atomic identity move unavailable; using replacement", error)
+                // FIX8 P0-007-D: never log the raw Throwable — Log.w's stack-trace formatting
+                // could otherwise surface a path or other detail beyond this fixed, redacted
+                // summary line.
+                Log.w(
+                    IDENTITY_TAG,
+                    "Atomic identity move unavailable; using fallback replacement (" +
+                        "${SensitiveDataRedactor.redactText(error.message ?: "no detail")})",
+                )
                 Files.move(temp, destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
             null
