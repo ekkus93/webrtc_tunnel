@@ -1,6 +1,7 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ConfigReplaceRollbackIncompleteException
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
 import com.phillipchin.webrtctunnel.data.withCandidateFile
@@ -42,9 +43,14 @@ class ImportExportService(
 
     private suspend fun importConfigContent(candidate: String) {
         // FIX7 P1-001-C: withCandidateFile composes the unique candidate file's cleanup with
-        // the block's own outcome, so a cleanup-only failure (write succeeded, temp file
+        // the block's own outcome, so a cleanup-only failure (validation succeeded, temp file
         // couldn't be deleted) can never be silently discarded — it surfaces as a
         // CandidateCleanupException instead (FIX6 INV-012/FIX7 P0-002-C).
+        //
+        // FIX8 P0-005-A/CRITICAL-4: the authoritative write happens AFTER withCandidateFile
+        // returns — i.e. only once candidate cleanup has already succeeded — instead of inside
+        // the block. Previously the write ran before cleanup, so a cleanup-only failure could
+        // report "import failed" while config.toml had already been overwritten.
         var identity: ByteArray? = null
         try {
             withCandidateFile(deps.context.cacheDir, "import-config-", deleteCandidateFile) { temp ->
@@ -75,19 +81,31 @@ class ImportExportService(
                         deps.identityValidation.validateConfig(temp.absolutePath)
                     }
                 require(validation.valid) { validation.message ?: "Config validation failed" }
-                // FIX6 P0-001-C: consume the write result. Discarding it reported "Config
-                // imported" even when the atomic write failed. The message is redacted at the
-                // throw site because a raw file-I/O message can carry secret-bearing paths.
-                deps.configRepository
-                    .writeConfigAtomically(candidate)
-                    .getOrElse { error ->
-                        throw IOException(
-                            SensitiveDataRedactor.redactText(
-                                error.message ?: "Failed to persist imported config",
-                            ),
-                        )
-                    }
             }
+            // Candidate cleanup has already completed successfully at this point (any cleanup
+            // failure above throws CandidateCleanupException before reaching here). The message
+            // is redacted at the throw site because a raw file-I/O message can carry
+            // secret-bearing paths.
+            //
+            // FIX8 P0-005-E: a rollback-incomplete failure (the write failed AND the self-restore
+            // back to the prior config also failed) is distinguished from an ordinary write
+            // failure — the caller needs to know config.toml may now differ from both the prior
+            // and intended state, not just that "import failed".
+            deps.configRepository
+                .replaceConfigTransactionally(candidate)
+                .getOrElse { error ->
+                    val prefix =
+                        if (error is ConfigReplaceRollbackIncompleteException) {
+                            "config_import_rollback_incomplete"
+                        } else {
+                            "config_import_failed"
+                        }
+                    throw IOException(
+                        "$prefix: ${SensitiveDataRedactor.redactText(
+                            error.message ?: "Failed to persist imported config",
+                        )}",
+                    )
+                }
         } finally {
             // FIX7 P1-001-D: wipe the plaintext identity buffer regardless of outcome
             // (success, validation failure, write failure, cleanup failure, or cancellation).

@@ -23,6 +23,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import java.io.IOException
 import java.nio.file.Path
 
 @RunWith(RobolectricTestRunner::class)
@@ -703,4 +704,67 @@ class ConfigRepositoryTest {
             snapshotter.join()
             assertTrue(snapshotTaken)
         }
+
+    // FIX8 P0-005-B: replaceConfigTransactionally's capture-attempt-restore.
+
+    /** Performs the real atomic move, then throws on its [failOn]-th call (1-indexed) — the
+     * first call is the transactional write under test; the second is the self-restore's own
+     * move, which must succeed normally so a "restore succeeded" scenario is distinguishable
+     * from a "restore also failed" one. */
+    private class FailNthMoveOps(private val failOn: Int) : AtomicConfigFileOps by RealAtomicConfigFileOps {
+        private var moveCount = 0
+
+        override fun atomicMove(
+            temp: Path,
+            destination: Path,
+        ) {
+            RealAtomicConfigFileOps.atomicMove(temp, destination)
+            moveCount++
+            if (moveCount == failOn) throw IOException("simulated post-move failure #$failOn")
+        }
+    }
+
+    @Test
+    fun replaceConfigTransactionallyRestoresExactBytesWhenWriteFailsAfterMove() =
+        runBlocking {
+            val configFile = File(context.filesDir, "config.toml")
+            repository.writeConfig("format = \"prior\"\n").getOrThrow()
+            val priorBytes = configFile.readBytes()
+            val failingRepo = ConfigRepository(context, FailNthMoveOps(failOn = 1))
+
+            val result = failingRepo.replaceConfigTransactionally("format = \"new\"\n")
+
+            assertTrue(result.isFailure)
+            assertArrayEquals(
+                "the real move changed config.toml; the self-restore must revert it to the exact prior bytes",
+                priorBytes,
+                configFile.readBytes(),
+            )
+        }
+
+    @Test
+    fun replaceConfigTransactionallyComposesRollbackIncompleteWhenRestoreAlsoFails() =
+        runBlocking {
+            repository.writeConfig("format = \"prior\"\n").getOrThrow()
+            // Both the original write's move and the restore's own move fail.
+            val failingRepo = ConfigRepository(context, FailingEveryMoveOps())
+
+            val result = failingRepo.replaceConfigTransactionally("format = \"new\"\n")
+
+            assertTrue(result.isFailure)
+            assertTrue(
+                "a self-restore failure must be composed into a typed exception, not silently discarded",
+                result.exceptionOrNull() is ConfigReplaceRollbackIncompleteException,
+            )
+        }
+
+    private class FailingEveryMoveOps : AtomicConfigFileOps by RealAtomicConfigFileOps {
+        override fun atomicMove(
+            temp: Path,
+            destination: Path,
+        ) {
+            RealAtomicConfigFileOps.atomicMove(temp, destination)
+            throw IOException("simulated post-move failure")
+        }
+    }
 }

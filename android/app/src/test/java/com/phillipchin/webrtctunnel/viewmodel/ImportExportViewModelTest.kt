@@ -32,8 +32,9 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
         // not fall through to a failure snackbar/resultMessage as though it were an error.
         val cancellingConfigRepo =
             object : ConfigRepository(app) {
-                override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+                override val replaceConfigTransactionally: suspend (String) -> Result<Unit> = {
                     throw CancellationException("cancelled during import write")
+                }
             }
         val cancellingDeps =
             AppDependencies(
@@ -64,8 +65,9 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
     fun cancelledImportClearsBusyAndEmitsNoOrdinaryResult() {
         val cancellingConfigRepo =
             object : ConfigRepository(app) {
-                override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+                override val replaceConfigTransactionally: suspend (String) -> Result<Unit> = {
                     throw CancellationException("cancelled during import write")
+                }
             }
         val cancellingDeps =
             AppDependencies(
@@ -104,9 +106,9 @@ class ImportExportViewModelTest : AppViewModelTestBase() {
             val gate = CompletableDeferred<Unit>()
             val blockingConfigRepo =
                 object : ConfigRepository(app) {
-                    override suspend fun writeConfigAtomically(contents: String): Result<Unit> {
+                    override val replaceConfigTransactionally: suspend (String) -> Result<Unit> = {
                         gate.await()
-                        return Result.success(Unit)
+                        Result.success(Unit)
                     }
                 }
             val blockingDeps =

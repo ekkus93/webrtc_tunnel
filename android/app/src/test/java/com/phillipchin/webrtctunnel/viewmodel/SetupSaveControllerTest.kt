@@ -49,6 +49,7 @@ class SetupSaveControllerTest {
         // Clean up any previous test state
         File(app.filesDir, "identity.enc").delete()
         File(app.filesDir, "identity.pub").delete()
+        File(app.filesDir, "forwards.json").delete()
     }
 
     @Test
@@ -654,6 +655,12 @@ class SetupSaveControllerTest {
                 ),
             ),
         )
+        // FIX8 P0-004-D: the coordinator's Forwards stage calls forwardsRepository.
+        // captureForTransaction(), which fails unless the baseline has reached Ready — refresh
+        // it here (picking up the seed just written above) or the setup save's Snapshot stage
+        // fails before ever reaching Identity/Config, silently short-circuiting every test that
+        // expects the save to actually reach those stages.
+        runBlocking { deps.forwardsRepository.refresh() }
 
         // Set up necessary input fields for navigation
         viewModel.setImportPublicIdentity("kid peer")

@@ -12,10 +12,12 @@ import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -38,6 +40,17 @@ internal class ConfigFilesSnapshot(
      * never carries a raw secret, so only the setup-input bytes need wiping. */
     fun wipeSecrets() = setupInput.wipe()
 }
+
+/**
+ * FIX8 P0-005-B: thrown when [ConfigRepository]'s transactional config replace fails AND the
+ * attempted self-restore (back to the exact prior bytes) also failed — the caller must know
+ * `config.toml` may now disagree with both the prior and intended state, rather than seeing only
+ * the original write failure.
+ */
+class ConfigReplaceRollbackIncompleteException(
+    val writeFailure: Throwable,
+    val restoreFailure: Throwable,
+) : Exception("Config replace failed and the on-disk self-restore also failed", writeFailure)
 
 open class ConfigRepository internal constructor(
     private val context: Context,
@@ -176,6 +189,52 @@ open class ConfigRepository internal constructor(
         fileMutex.withLock {
             writeConfigAtomicallyWith(configFile, contents, atomicFileOps)
         }
+
+    /**
+     * FIX8 P0-005-B: capture-attempt-restore for config.toml, the config-side counterpart to
+     * import/forward-activation's cleanup-before-commit ordering (P0-005-A) — callers write the
+     * authoritative config only through this so a write that fails (including a cleanup-only
+     * failure raised after the destination was already atomically moved) cannot leave
+     * `config.toml` changed while the caller reports failure. Capture, attempt, and restore all
+     * happen under one [fileMutex] acquisition. A cancellation raised during the write still
+     * attempts the restore — under [NonCancellable], since the scope is already cancelled — before
+     * rethrowing. A restore failure composes into [ConfigReplaceRollbackIncompleteException]
+     * rather than being discarded.
+     *
+     * A property holding a function value (not a `fun` declaration) so it doesn't count against
+     * this class's detekt TooManyFunctions threshold — called identically to a member function
+     * (`replaceConfigTransactionally(contents)`) via Kotlin's `invoke` syntax.
+     */
+    internal open val replaceConfigTransactionally: suspend (String) -> Result<Unit> = { contents ->
+        fileMutex.withLock {
+            val priorSnapshot = captureExactFileSnapshot(configFile).getOrThrow()
+            try {
+                writeConfigAtomicallyWith(configFile, contents, atomicFileOps).getOrThrow()
+                Result.success(Unit)
+            } catch (cancelled: CancellationException) {
+                val restoreFailure =
+                    withContext(NonCancellable) {
+                        restoreExactFileSnapshot("config", configFile, priorSnapshot) { file, bytes ->
+                            atomicReplaceBytes(file, bytes, atomicFileOps)
+                        }.exceptionOrNull()
+                    }
+                if (restoreFailure != null) {
+                    cancelled.addSuppressed(ConfigReplaceRollbackIncompleteException(cancelled, restoreFailure))
+                }
+                throw cancelled
+            } catch (writeFailure: Exception) {
+                val restoreFailure =
+                    restoreExactFileSnapshot("config", configFile, priorSnapshot) { file, bytes ->
+                        atomicReplaceBytes(file, bytes, atomicFileOps)
+                    }.exceptionOrNull()
+                if (restoreFailure != null) {
+                    Result.failure(ConfigReplaceRollbackIncompleteException(writeFailure, restoreFailure))
+                } else {
+                    Result.failure(writeFailure)
+                }
+            }
+        }
+    }
 
     /**
      * Internal: delete config file for transactional reset rollback.

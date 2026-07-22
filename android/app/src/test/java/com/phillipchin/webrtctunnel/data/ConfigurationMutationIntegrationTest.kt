@@ -61,6 +61,11 @@ import java.util.concurrent.atomic.AtomicReference
 class ConfigurationMutationIntegrationTest {
     private val app = ApplicationProvider.getApplicationContext<Context>()
 
+    // FIX8 P0-005-A: config import now commits through replaceConfigTransactionally, not
+    // writeConfigAtomically directly — both are gated on the same entered/release pair so
+    // whichever path a given flow uses (setup save/forward activation/reset still use
+    // writeConfigAtomically; config import uses replaceConfigTransactionally), the same
+    // block-then-release test technique still proves that flow is genuinely still running.
     private class GatedConfigRepository(
         context: Context,
         private val entered: CompletableDeferred<Unit>,
@@ -70,6 +75,12 @@ class ConfigurationMutationIntegrationTest {
             entered.complete(Unit)
             release.await()
             return super.writeConfigAtomically(contents)
+        }
+
+        override val replaceConfigTransactionally: suspend (String) -> Result<Unit> = { contents ->
+            entered.complete(Unit)
+            release.await()
+            super.replaceConfigTransactionally(contents)
         }
     }
 

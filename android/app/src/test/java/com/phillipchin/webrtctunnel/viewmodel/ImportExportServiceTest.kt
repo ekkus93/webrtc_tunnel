@@ -39,11 +39,15 @@ class ImportExportServiceTest {
         File(app.filesDir, "config.toml").deleteRecursively()
     }
 
+    // FIX8 P0-005-A/B: config import now commits through replaceConfigTransactionally (a
+    // capture-attempt-restore wrapper), not writeConfigAtomically directly — override that one,
+    // or this fake goes silently inert and the real write succeeds instead of injecting the
+    // result the test expects.
     private class WriteResultConfigRepository(
         context: android.content.Context,
-        private val onWrite: () -> Result<Unit>,
+        private val onWrite: suspend (String) -> Result<Unit>,
     ) : ConfigRepository(context) {
-        override suspend fun writeConfigAtomically(contents: String): Result<Unit> = onWrite()
+        override val replaceConfigTransactionally: suspend (String) -> Result<Unit> = { contents -> onWrite(contents) }
     }
 
     /** Passes bytes through unchanged but records the exact array instance [decrypt] returns,
@@ -184,13 +188,19 @@ class ImportExportServiceTest {
         )
     }
 
-    // FIX7 P1-001-E: when the write itself fails AND cleanup also fails, the original write
-    // failure must remain the primary, reported error — never replaced by the cleanup failure.
+    // FIX8 P0-005-A/CRITICAL-4: the write happens only after candidate cleanup has already
+    // succeeded, so a cleanup failure now means the write is never even attempted — config.toml
+    // must remain at its exact prior bytes, not just "not report imported".
     @Test
-    fun configImportPrimaryFailurePreservedWhenCleanupAlsoFails() {
+    fun configImportCleanupFailurePerformsNoAuthoritativeConfigWrite() {
+        File(app.filesDir, "config.toml").writeText("format = \"old\"\n")
+        var writeAttempted = false
         val service =
             serviceWith(
-                WriteResultConfigRepository(app) { Result.failure(IOException("disk full password=sentinel")) },
+                WriteResultConfigRepository(app) {
+                    writeAttempted = true
+                    Result.success(Unit)
+                },
                 deleteCandidateFile = { Result.failure(IOException("cleanup boom")) },
             )
 
@@ -202,23 +212,61 @@ class ImportExportServiceTest {
         }
 
         assertTrue(
-            "the primary write failure must be the reported error, got $thrown",
-            thrown is IOException && thrown.message.orEmpty().contains("REDACTED"),
+            "a cleanup-only failure must surface as a visible CandidateCleanupException",
+            thrown is CandidateCleanupException,
         )
-        assertTrue(
-            "the cleanup failure must still be attached (not silently dropped)",
-            thrown?.suppressed?.any { it.message?.contains("cleanup boom") == true } == true,
+        assertFalse("the write must never be attempted when cleanup already failed", writeAttempted)
+        assertEquals(
+            "config.toml must remain at its exact prior bytes",
+            "format = \"old\"\n",
+            File(app.filesDir, "config.toml").readText(),
         )
     }
 
-    // FIX7 P1-001-E: a genuine cancellation must propagate even when cleanup also fails —
-    // never converted into an ordinary CandidateCleanupException/failure.
+    // FIX8 P0-005-E: a rollback-incomplete failure (write failed AND the self-restore also
+    // failed) must be distinguished from an ordinary write failure, not collapsed into the same
+    // generic message.
     @Test
-    fun configImportCancellationPreservedWhenCleanupAlsoFails() {
+    fun configImportRollbackFailureMapsConfigImportRollbackIncomplete() {
         val service =
             serviceWith(
-                WriteResultConfigRepository(app) { throw CancellationException("cancelled during write") },
-                deleteCandidateFile = { Result.failure(IOException("cleanup boom")) },
+                WriteResultConfigRepository(app) {
+                    Result.failure(
+                        com.phillipchin.webrtctunnel.data.ConfigReplaceRollbackIncompleteException(
+                            IOException("write failed"),
+                            IOException("restore also failed"),
+                        ),
+                    )
+                },
+            )
+
+        var message: String? = null
+        try {
+            runBlocking { service.importContent(ImportKind.Config, "format = \"imported\"\n") }
+        } catch (error: IOException) {
+            message = error.message
+        }
+
+        assertTrue(
+            "a rollback-incomplete failure must be distinguishable, got $message",
+            message.orEmpty().contains("config_import_rollback_incomplete"),
+        )
+    }
+
+    // FIX8 P0-005-F: cancellation raised before the write is even attempted (e.g. during
+    // candidate cleanup) must propagate and must leave config.toml at its exact prior bytes —
+    // there is nothing to roll back since the write path was never reached.
+    @Test
+    fun configImportCancellationBeforeCommitLeavesConfigExact() {
+        File(app.filesDir, "config.toml").writeText("format = \"old\"\n")
+        var writeAttempted = false
+        val service =
+            serviceWith(
+                WriteResultConfigRepository(app) {
+                    writeAttempted = true
+                    Result.success(Unit)
+                },
+                deleteCandidateFile = { throw CancellationException("cancelled during cleanup") },
             )
 
         var caught: CancellationException? = null
@@ -228,13 +276,12 @@ class ImportExportServiceTest {
             caught = cancelled
         }
 
-        assertTrue(
-            "cancellation must propagate even when cleanup also fails",
-            caught != null,
-        )
-        assertTrue(
-            "the cleanup failure must still be attached to the propagated cancellation",
-            caught?.suppressed?.any { it.message?.contains("cleanup boom") == true } == true,
+        assertTrue("cancellation before commit must propagate", caught != null)
+        assertFalse("the write must never be attempted after a pre-commit cancellation", writeAttempted)
+        assertEquals(
+            "config.toml must remain at its exact prior bytes",
+            "format = \"old\"\n",
+            File(app.filesDir, "config.toml").readText(),
         )
     }
 

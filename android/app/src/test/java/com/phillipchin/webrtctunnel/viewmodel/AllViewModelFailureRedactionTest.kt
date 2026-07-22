@@ -72,8 +72,9 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
     private suspend fun assertImportExportFailureRedactsSecret() {
         val failingRepository =
             object : ConfigRepository(app) {
-                override suspend fun writeConfigAtomically(contents: String): Result<Unit> =
+                override val replaceConfigTransactionally: suspend (String) -> Result<Unit> = {
                     Result.failure(RuntimeException(SECRET_MESSAGE))
+                }
             }
         val testDeps =
             AppDependencies(
