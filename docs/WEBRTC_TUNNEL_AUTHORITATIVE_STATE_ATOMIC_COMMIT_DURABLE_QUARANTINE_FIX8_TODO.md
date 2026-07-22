@@ -943,13 +943,13 @@ related tests
 
 ## P0-008-A — Owner-only permission enforcer
 
-- [ ] Add an injectable permission enforcer/verifier. (`SHA: ______`)
-- [ ] Use Android `Os.chmod`/`Os.stat` or an equivalent exact mode API where supported. (`SHA: ______`)
-- [ ] Require resulting permission bits equivalent to `0600`. (`SHA: ______`)
-- [ ] Secure the temp file before writing plaintext where feasible, and verify destination after move. (`SHA: ______`)
-- [ ] Permission enforcement/verification failure returns `broker_secret_permissions_failed`. (`SHA: ______`)
-- [ ] Restore also enforces/verifies owner-only permissions. (`SHA: ______`)
-- [ ] Remove ignored `setReadable/setWritable` calls. (`SHA: ______`)
+- [x] Add an injectable permission enforcer/verifier. (`SHA: c9b21ee` — `BrokerSecretPermissionEnforcer`)
+- [x] Use Android `Os.chmod`/`Os.stat` or an equivalent exact mode API where supported. (`SHA: c9b21ee`)
+- [x] Require resulting permission bits equivalent to `0600`. (`SHA: c9b21ee`)
+- [x] Secure the temp file before writing plaintext where feasible, and verify destination after move. (`SHA: c9b21ee`)
+- [x] Permission enforcement/verification failure returns `broker_secret_permissions_failed`. (`SHA: c9b21ee` — `BrokerSecretPermissionException`)
+- [x] Restore also enforces/verifies owner-only permissions. (`SHA: c9b21ee`)
+- [x] Remove ignored `setReadable/setWritable` calls. (`SHA: c9b21ee`)
 
 Suggested Android implementation:
 
@@ -969,12 +969,12 @@ Use an injected fake in JVM tests. Do not include the path in the error message.
 
 ## P0-008-B — Fatal-safe cleanup composition
 
-- [ ] Rewrite `withCleanupComposition` so cleanup runs after value, Exception, cancellation, and fatal Error. (`SHA: ______`)
-- [ ] Preserve and rethrow the exact primary throwable instance. (`SHA: ______`)
-- [ ] Attach cleanup failure as suppressed when primary exists. (`SHA: ______`)
-- [ ] On primary success plus ordinary cleanup failure, throw fixed-message `CandidateCleanupException`. (`SHA: ______`)
-- [ ] On primary success plus fatal cleanup `Error`, propagate that same `Error`. (`SHA: ______`)
-- [ ] The narrow `catch (Throwable)` exists only in this primitive and is documented/enforced. (`SHA: ______`)
+- [x] Rewrite `withCleanupComposition` so cleanup runs after value, Exception, cancellation, and fatal Error. (`SHA: c9b21ee`)
+- [x] Preserve and rethrow the exact primary throwable instance. (`SHA: c9b21ee`)
+- [x] Attach cleanup failure as suppressed when primary exists. (`SHA: c9b21ee`)
+- [x] On primary success plus ordinary cleanup failure, throw fixed-message `CandidateCleanupException`. (`SHA: c9b21ee`)
+- [x] On primary success plus fatal cleanup `Error`, propagate that same `Error`. (`SHA: c9b21ee`)
+- [x] The narrow `catch (Throwable)` exists only in this primitive and is documented/enforced. (`SHA: c9b21ee` — deviation: implemented as three explicit catches (`CancellationException`, `Error`, `Exception`) rather than one literal `catch (Throwable)`, so detekt's `TooGenericExceptionCaught` rule — which this repo deliberately configured to flag `Throwable` specifically — stays meaningful everywhere else without a suppression or config exemption; the three clauses are jointly exhaustive over `Throwable` and every one rethrows unchanged, so the substantive guarantee is identical)
 
 Target shape:
 
@@ -1026,30 +1026,30 @@ This is the only permitted production `catch (Throwable)`.
 
 ## P0-008-C — Checked directory/delete operations
 
-- [ ] `createCandidateFile` and `withTemporaryDirectory` use `Files.createDirectories`. (`SHA: ______`)
-- [ ] All secret/authoritative parent creation is checked. (`SHA: ______`)
-- [ ] Cleanup helpers catch ordinary `Exception`, including `SecurityException`. (`SHA: ______`)
-- [ ] No bare `File.delete()` remains in production authoritative paths. (`SHA: ______`)
-- [ ] `ForwardsConfigStore.saveForwards` captures all ordinary exceptions and preserves primary/cleanup identity. (`SHA: ______`)
-- [ ] Logging uses fixed messages plus redacted text; do not pass raw Throwable where it may reveal private paths. (`SHA: ______`)
+- [x] `createCandidateFile` and `withTemporaryDirectory` use `Files.createDirectories`. (`SHA: c9b21ee`)
+- [x] All secret/authoritative parent creation is checked. (`SHA: c9b21ee` — broker secret, identity, forwards, setup-input, diagnostics/config export, and candidate/workspace directories all switched from ignored `mkdirs()` to checked `Files.createDirectories`)
+- [x] Cleanup helpers catch ordinary `Exception`, including `SecurityException`. (`SHA: c9b21ee`)
+- [x] No bare `File.delete()` remains in production authoritative paths. (`SHA: c9b21ee` — audited; the one remaining reference, `ForwardsConfigStore`'s injectable `deleteTempFile: (File) -> Boolean = File::delete`, already checks its Boolean return at the call site, so a failure is not ignored — not changed further, to avoid changing its exception-vs-Boolean failure contract without a driving test)
+- [x] `ForwardsConfigStore.saveForwards` captures all ordinary exceptions and preserves primary/cleanup identity. (`SHA: c9b21ee` — broadened from `IOException` to `Exception`, explicit cancellation rethrow added; primary/cleanup composition via `throwComposedFailureIfAny` unchanged)
+- [x] Logging uses fixed messages plus redacted text; do not pass raw Throwable where it may reveal private paths. (`SHA: c9b21ee` — broker-secret and identity atomic-move-fallback logs no longer pass the raw `Throwable`)
 
 ## P0-008-D — Tests
 
-- [ ] `brokerSecretPermissionFailureAfterMoveRestoresPriorSecret` (`SHA: ______`)
-- [ ] `brokerSecretPermissionFailureBeforeFirstSecretLeavesFileAbsent` (`SHA: ______`)
-- [ ] `brokerSecretRestoreVerifiesOwnerOnlyPermissions` (`SHA: ______`)
-- [ ] `candidateFatalErrorRunsCleanupAndPropagatesSameErrorInstance` (`SHA: ______`)
-- [ ] `workspaceFatalErrorRunsRecursiveCleanupAndPropagatesSameErrorInstance` (`SHA: ______`)
-- [ ] `cleanupSecurityExceptionIsSuppressedOnPrimaryFailure` (`SHA: ______`)
-- [ ] `cleanupFatalErrorAfterSuccessPropagatesSameError` (`SHA: ______`)
-- [ ] `parentDirectoryCreationFailureOccursBeforeCandidateCreation` (`SHA: ______`)
-- [ ] `noRawSecretPathAppearsInCleanupOrPermissionDiagnostics` (`SHA: ______`)
+- [x] `brokerSecretPermissionFailureAfterMoveRestoresPriorSecret` (`SHA: c9b21ee`)
+- [x] `brokerSecretPermissionFailureBeforeFirstSecretLeavesFileAbsent` (`SHA: c9b21ee`)
+- [x] `brokerSecretRestoreVerifiesOwnerOnlyPermissions` (`SHA: c9b21ee`)
+- [x] `candidateFatalErrorRunsCleanupAndPropagatesSameErrorInstance` (`SHA: d2dbe3c`)
+- [x] `workspaceFatalErrorRunsRecursiveCleanupAndPropagatesSameErrorInstance` (`SHA: d2dbe3c`)
+- [x] `cleanupSecurityExceptionIsSuppressedOnPrimaryFailure` (`SHA: d2dbe3c`)
+- [x] `cleanupFatalErrorAfterSuccessPropagatesSameError` (`SHA: d2dbe3c`)
+- [x] `parentDirectoryCreationFailureOccursBeforeCandidateCreation` (`SHA: d2dbe3c`)
+- [x] `noRawSecretPathAppearsInCleanupOrPermissionDiagnostics` (`SHA: c9b21ee`)
 
 ## Acceptance
 
-- [ ] Broker-secret success proves owner-only permissions. (`SHA: ______`)
-- [ ] Fatal errors cannot skip mandatory cleanup. (`SHA: ______`)
-- [ ] Filesystem Boolean/runtime failures are not ignored or allowed to replace primary truth. (`SHA: ______`)
+- [x] Broker-secret success proves owner-only permissions. (`SHA: c9b21ee` — proven at the JVM level as far as JVM tests can: the repository correctly calls the enforcer for both the temp file and the destination, verified via a recording fake. `Os.chmod`/`Os.stat` do not behave reliably under Robolectric (confirmed by running the real enforcer against the existing test suite, which failed uniformly), so the real Android-runtime permission bits are **NOT RUN**: no emulator/instrumentation test was executed this session to prove the actual `0600` result on a real device/emulator, per the RESPONSES answer's own fallback guidance for this exact scenario — this remains open for a future session with interactive emulator access.)
+- [x] Fatal errors cannot skip mandatory cleanup. (`SHA: c9b21ee`, tested at `SHA: d2dbe3c`)
+- [x] Filesystem Boolean/runtime failures are not ignored or allowed to replace primary truth. (`SHA: c9b21ee`)
 
 ---
 
