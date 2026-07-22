@@ -80,6 +80,27 @@ class MutationHelpersTest {
         assertTrue(candidate.exists())
     }
 
+    // FIX8 P0-008-C: a checked Files.createDirectories, not an ignored mkdirs() Boolean — a
+    // failure to create the cache directory must abort before any candidate file is created,
+    // not proceed to a confusing downstream write error.
+    @Test
+    fun parentDirectoryCreationFailureOccursBeforeCandidateCreation() {
+        // A file where the candidate directory needs to be forces Files.createDirectories to
+        // fail (FileAlreadyExistsException: not a directory).
+        val blockingFile = File(cacheDir.parentFile, cacheDir.name)
+        blockingFile.parentFile?.mkdirs()
+        blockingFile.writeText("not a directory")
+
+        val error = runCatching { createCandidateFile(cacheDir, "setup-config-") }.exceptionOrNull()
+
+        assertTrue("cache directory creation must fail visibly", error != null)
+        assertEquals(
+            "no candidate file must exist alongside the blocking file",
+            0,
+            blockingFile.parentFile?.listFiles { file -> file.name.startsWith("setup-config-") }?.size ?: 0,
+        )
+    }
+
     @Test
     fun deleteCandidateFileSafelyRemovesTheFileAndReportsSuccess() {
         val candidate = createCandidateFile(cacheDir, "forwards-config-")
@@ -183,6 +204,75 @@ class MutationHelpersTest {
             )
         }
 
+    // FIX8 P0-008-B: a fatal Error from the primary block must still run cleanup before
+    // propagating — the exact same Error instance, never converted or swallowed.
+    @Test
+    fun candidateFatalErrorRunsCleanupAndPropagatesSameErrorInstance() {
+        val fatal = OutOfMemoryError("simulated fatal error")
+        var candidateSeen: File? = null
+        var caught: OutOfMemoryError? = null
+
+        try {
+            runBlocking {
+                withCandidateFile(cacheDir, "setup-config-") { candidate ->
+                    candidateSeen = candidate
+                    throw fatal
+                }
+            }
+        } catch (error: OutOfMemoryError) {
+            caught = error
+        }
+
+        assertTrue("the exact same Error instance must propagate", caught === fatal)
+        assertFalse("cleanup must still have run despite the fatal error", requireNotNull(candidateSeen).exists())
+    }
+
+    // FIX8 P0-008-B: a cleanup failure on top of an OTHERWISE-successful primary block is
+    // normally wrapped into CandidateCleanupException — but a fatal Error from cleanup itself
+    // must propagate unchanged instead.
+    @Test
+    fun cleanupFatalErrorAfterSuccessPropagatesSameError() {
+        val fatal = OutOfMemoryError("simulated fatal cleanup error")
+        val failingDelete: (File) -> Result<Unit> = { throw fatal }
+        var caught: OutOfMemoryError? = null
+
+        try {
+            runBlocking {
+                withCandidateFile(cacheDir, "setup-config-", deleteCandidate = failingDelete) { "success value" }
+            }
+        } catch (error: OutOfMemoryError) {
+            caught = error
+        }
+
+        assertTrue("the exact same Error instance from cleanup must propagate unchanged", caught === fatal)
+    }
+
+    // FIX8 P0-008-C: cleanup helpers catch every ordinary exception (including
+    // SecurityException, not just IOException) — a primary failure must remain the reported
+    // one, with the SecurityException attached as suppressed rather than lost or uncaught.
+    @Test
+    fun cleanupSecurityExceptionIsSuppressedOnPrimaryFailure() {
+        val securityFailure = SecurityException("simulated permission denial")
+        val failingDelete: (File) -> Result<Unit> = { throw securityFailure }
+
+        var error: IllegalStateException? = null
+        try {
+            runBlocking {
+                withCandidateFile(cacheDir, "setup-config-", deleteCandidate = failingDelete) {
+                    error("primary validation failure")
+                }
+            }
+        } catch (thrown: IllegalStateException) {
+            error = thrown
+        }
+
+        assertEquals("primary validation failure", error?.message)
+        assertTrue(
+            "the SecurityException from cleanup must be attached as suppressed, not lost",
+            error?.suppressed?.contains(securityFailure) == true,
+        )
+    }
+
     @Test
     fun candidateSuccessfulBlockReturnsValueWhenCleanupSucceeds() =
         runBlocking {
@@ -238,6 +328,34 @@ class MutationHelpersTest {
                 error != null,
             )
         }
+
+    // FIX8 P0-008-B: same fatal-Error-still-runs-cleanup guarantee as
+    // candidateFatalErrorRunsCleanupAndPropagatesSameErrorInstance, for the workspace/recursive
+    // cleanup path.
+    @Test
+    fun workspaceFatalErrorRunsRecursiveCleanupAndPropagatesSameErrorInstance() {
+        val fatal = OutOfMemoryError("simulated fatal workspace error")
+        var workspaceSeen: File? = null
+        var caught: OutOfMemoryError? = null
+
+        try {
+            runBlocking {
+                withTemporaryDirectory(cacheDir, "setup-validation-") { workspace ->
+                    workspaceSeen = workspace
+                    File(workspace, "leftover.txt").writeText("should still be cleaned up")
+                    throw fatal
+                }
+            }
+        } catch (error: OutOfMemoryError) {
+            caught = error
+        }
+
+        assertTrue("the exact same Error instance must propagate", caught === fatal)
+        assertFalse(
+            "recursive cleanup must still have run despite the fatal error",
+            requireNotNull(workspaceSeen).exists(),
+        )
+    }
 
     @Test
     fun temporaryDirectoryReturnsValueWhenCleanupSucceeds() =
