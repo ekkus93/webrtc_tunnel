@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel.data
 
 import android.content.Context
 import android.util.Log
+import androidx.annotation.CheckResult
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerializationException
@@ -56,6 +57,19 @@ interface ForwardsStore {
     fun saveForwards(forwards: List<ForwardConfig>)
 
     fun validateForwards(forwards: List<ForwardConfig>): String?
+
+    /**
+     * FIX8 P0-004-A: exact byte-level snapshot of the underlying storage — distinguishes
+     * absent, present-and-empty, and present-and-non-empty, so [ForwardsRepository] can restore
+     * exactly this state rather than a re-serialized (and therefore only equivalent, not
+     * necessarily byte-identical) list.
+     */
+    @CheckResult
+    fun captureExactSnapshot(): Result<ExactFileSnapshot>
+
+    /** Restores the underlying storage to exactly [snapshot]'s prior state. */
+    @CheckResult
+    fun restoreExactSnapshot(snapshot: ExactFileSnapshot): Result<Unit>
 }
 
 /**
@@ -186,6 +200,24 @@ class ForwardsConfigStore(
             }
         throwComposedFailureIfAny(primaryFailure, cleanupFailure)
     }
+
+    /**
+     * FIX8 P0-004-A: reuses the same exact-byte-snapshot primitive [ConfigRepository] and
+     * setup-input use (P0-003), so `forwards.json` gets the identical absent/empty/exact-bytes
+     * distinction rather than a bespoke re-implementation.
+     */
+    @CheckResult
+    override fun captureExactSnapshot(): Result<ExactFileSnapshot> = captureExactFileSnapshot(forwardsFile)
+
+    /**
+     * Restores `forwards.json` via the same atomic replace-or-delete primitive
+     * [ConfigRepository] uses for config.toml/setup_input.json restores.
+     */
+    @CheckResult
+    override fun restoreExactSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
+        restoreExactFileSnapshot("forwards", forwardsFile, snapshot) { file, bytes ->
+            atomicReplaceBytes(file, bytes)
+        }
 
     override fun validateForwards(forwards: List<ForwardConfig>): String? {
         val duplicateId = forwards.groupBy { it.id }.entries.firstOrNull { it.value.size > 1 }?.key

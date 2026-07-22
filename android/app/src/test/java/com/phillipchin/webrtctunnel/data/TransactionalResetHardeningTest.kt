@@ -55,6 +55,11 @@ class TransactionalResetHardeningTest {
         }
 
         override fun validateForwards(forwards: List<ForwardConfig>): String? = null
+
+        override fun captureExactSnapshot(): Result<ExactFileSnapshot> =
+            Result.success(ExactFileSnapshot(existed = true, bytes = ByteArray(0)))
+
+        override fun restoreExactSnapshot(snapshot: ExactFileSnapshot): Result<Unit> = Result.success(Unit)
     }
 
     private class ConfigReadThrows(

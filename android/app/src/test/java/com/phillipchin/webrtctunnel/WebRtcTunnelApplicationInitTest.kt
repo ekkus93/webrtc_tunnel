@@ -5,6 +5,7 @@ import com.phillipchin.webrtctunnel.data.AppDispatchers
 import com.phillipchin.webrtctunnel.data.AppInitializationCoordinator
 import com.phillipchin.webrtctunnel.data.AppInitializationState
 import com.phillipchin.webrtctunnel.data.ConfigRepository
+import com.phillipchin.webrtctunnel.data.ExactFileSnapshot
 import com.phillipchin.webrtctunnel.data.ForwardsRepository
 import com.phillipchin.webrtctunnel.data.ForwardsStore
 import com.phillipchin.webrtctunnel.model.ForwardConfig
@@ -102,6 +103,11 @@ class WebRtcTunnelApplicationInitTest {
                 override fun saveForwards(forwards: List<ForwardConfig>) = Unit
 
                 override fun validateForwards(forwards: List<ForwardConfig>): String? = null
+
+                override fun captureExactSnapshot(): Result<ExactFileSnapshot> =
+                    Result.success(ExactFileSnapshot(existed = true, bytes = ByteArray(0)))
+
+                override fun restoreExactSnapshot(snapshot: ExactFileSnapshot): Result<Unit> = Result.success(Unit)
             }
 
         ForwardsRepository(store, AppDispatchers())

@@ -261,6 +261,11 @@ class ForwardsRepositoryTest {
             throw CancellationException("cancelled during save")
 
         override fun validateForwards(forwards: List<ForwardConfig>): String? = null
+
+        override fun captureExactSnapshot(): Result<ExactFileSnapshot> =
+            Result.success(ExactFileSnapshot(existed = true, bytes = ByteArray(0)))
+
+        override fun restoreExactSnapshot(snapshot: ExactFileSnapshot): Result<Unit> = Result.success(Unit)
     }
 
     private fun cancellingRepo(initial: List<ForwardConfig> = emptyList()): ForwardsRepository =
@@ -333,4 +338,139 @@ class ForwardsRepositoryTest {
         }
         assertFalse("a cancelled restore must not publish", cancelling.current().any { it.id == "api" })
     }
+
+    // FIX8 P0-004-B/C: setup-transaction snapshot/replace/restore, and self-restoring mutations.
+
+    @Test
+    fun captureForTransactionFailsWhenBaselineNotReady() =
+        runBlocking {
+            val notReadyRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
+            // Deliberately no refresh() — baseline is still Initializing.
+
+            val result = notReadyRepo.captureForTransaction()
+
+            assertTrue(result.isFailure)
+            assertTrue(result.exceptionOrNull() is ForwardsMutationBlocked)
+        }
+
+    @Test
+    fun replaceForTransactionValidatesBeforeSaving() =
+        runBlocking {
+            repo.upsertWithReceipt(forward("x", 1234)).getOrThrow()
+            val beforeBytes = file.readBytes()
+
+            val duplicatePortForwards = listOf(forward("a", 1111), forward("b", 1111))
+            val result = repo.replaceForTransaction(duplicatePortForwards)
+
+            assertTrue(result.isFailure)
+            assertTrue(result.exceptionOrNull() is ForwardsMutationBlocked)
+            org.junit.Assert.assertArrayEquals(
+                "a validation failure must not touch disk",
+                beforeBytes,
+                file.readBytes(),
+            )
+            assertTrue("a validation failure must not publish", repo.current().any { it.id == "x" })
+        }
+
+    @Test
+    fun replaceForTransactionSavesThenPublishes() =
+        runBlocking {
+            val forwards = listOf(forward("a", 1111), forward("b", 2222))
+
+            val result = repo.replaceForTransaction(forwards)
+
+            assertTrue(result.isSuccess)
+            assertEquals(forwards, repo.current())
+            assertEquals(forwards, ForwardsConfigStore(context).loadForwardsResult().getOrThrow())
+        }
+
+    @Test
+    fun restoreForTransactionRevertsExactBytesListAndAdvancesRevision() =
+        runBlocking {
+            repo.upsertWithReceipt(forward("prior", 1111)).getOrThrow()
+            val snapshot = repo.captureForTransaction().getOrThrow()
+            val priorBytes = file.readBytes()
+            val receiptBeforeTransaction = repo.upsertWithReceipt(forward("during-transaction", 2222)).getOrThrow()
+
+            val result = repo.restoreForTransaction(snapshot)
+
+            assertTrue(result.isSuccess)
+            org.junit.Assert.assertArrayEquals(priorBytes, file.readBytes())
+            assertEquals(listOf(forward("prior", 1111)), repo.current())
+            // Successful restore must advance the revision so a receipt issued mid-transaction
+            // is invalidated afterward.
+            assertTrue(
+                "a pre-restore receipt must be stale after the restore advances the revision",
+                repo.rollbackReceipt(receiptBeforeTransaction).exceptionOrNull()
+                    is ForwardsRevisionMismatchException,
+            )
+        }
+
+    /** Delegates every [ForwardsStore] call to [real] except [saveForwards] (performs the real
+     * write, so disk genuinely changes, then optionally throws afterward — simulating a
+     * cleanup-only failure raised *after* the destination was already atomically moved) and
+     * [restoreExactSnapshot] (optionally forced to fail, to test the composed-failure path). */
+    private class RealMoveThenFailStore(
+        private val real: ForwardsStore,
+        private val failAfterSave: Boolean = false,
+        private val restoreFails: Boolean = false,
+    ) : ForwardsStore by real {
+        override fun saveForwards(forwards: List<ForwardConfig>) {
+            real.saveForwards(forwards)
+            if (failAfterSave) throw java.io.IOException("post-move cleanup failed")
+        }
+
+        override fun restoreExactSnapshot(snapshot: ExactFileSnapshot): Result<Unit> =
+            if (restoreFails) {
+                Result.failure(java.io.IOException("self-restore failed"))
+            } else {
+                real.restoreExactSnapshot(snapshot)
+            }
+    }
+
+    @Test
+    fun mutationSelfRestoresDiskWhenSaveFailsAfterDestinationWasMutated() =
+        runBlocking {
+            val realStore = ForwardsConfigStore(context)
+            realStore.saveForwards(listOf(forward("prior", 1111)))
+            val failingStore = RealMoveThenFailStore(realStore, failAfterSave = true)
+            val failingRepo = ForwardsRepository(failingStore, AppDispatchers())
+            failingRepo.refresh()
+            val priorBytes = file.readBytes()
+
+            val result = failingRepo.upsertWithReceipt(forward("new", 2222))
+
+            assertTrue(result.isFailure)
+            org.junit.Assert.assertArrayEquals(
+                "the real move changed disk; the self-restore must revert it to the exact prior bytes",
+                priorBytes,
+                file.readBytes(),
+            )
+            assertFalse(
+                "in-memory state must not publish the failed mutation",
+                failingRepo.current().any { it.id == "new" },
+            )
+        }
+
+    @Test
+    fun selfRestoreFailureIsComposedIntoTypedException() =
+        runBlocking {
+            val realStore = ForwardsConfigStore(context)
+            realStore.saveForwards(listOf(forward("prior", 1111)))
+            val failingRepo =
+                ForwardsRepository(
+                    RealMoveThenFailStore(realStore, failAfterSave = true, restoreFails = true),
+                    AppDispatchers(),
+                )
+            failingRepo.refresh()
+
+            val result = failingRepo.upsertWithReceipt(forward("new", 2222))
+
+            assertTrue(result.isFailure)
+            val error = result.exceptionOrNull()
+            assertTrue(
+                "a self-restore failure must be composed into a typed exception, not silently discarded",
+                error is ForwardsSaveRollbackIncompleteException,
+            )
+        }
 }

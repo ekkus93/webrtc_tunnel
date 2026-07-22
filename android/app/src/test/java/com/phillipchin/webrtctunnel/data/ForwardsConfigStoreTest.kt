@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -187,5 +188,48 @@ class ForwardsConfigStoreTest {
         val loaded = store.loadForwardsResult().getOrThrow()
         assertEquals(1, loaded.size)
         assertEquals("b", loaded.first().id)
+    }
+
+    // FIX8 P0-004-A: exact byte-level snapshot/restore, distinct from absent/present-empty.
+
+    @Test
+    fun captureExactSnapshotDistinguishesAbsentPresentEmptyAndExactBytes() {
+        file.delete()
+        val absent = store.captureExactSnapshot().getOrThrow()
+        assertFalse(absent.existed)
+
+        file.writeBytes(ByteArray(0))
+        val empty = store.captureExactSnapshot().getOrThrow()
+        assertTrue("present-but-empty must be distinct from absent", empty.existed)
+        assertEquals(0, empty.bytes?.size)
+
+        store.saveForwards(listOf(forward("a", 1111)))
+        val exactBytesOnDisk = file.readBytes()
+        val present = store.captureExactSnapshot().getOrThrow()
+        assertTrue(present.existed)
+        org.junit.Assert.assertArrayEquals(exactBytesOnDisk, present.bytes)
+    }
+
+    @Test
+    fun restoreExactSnapshotRevertsToPriorBytes() {
+        store.saveForwards(listOf(forward("a", 1111)))
+        val snapshot = store.captureExactSnapshot().getOrThrow()
+
+        store.saveForwards(listOf(forward("b", 2222)))
+        store.restoreExactSnapshot(snapshot).getOrThrow()
+
+        assertEquals("a", store.loadForwardsResult().getOrThrow().single().id)
+    }
+
+    @Test
+    fun restoreExactSnapshotRecreatesAbsentState() {
+        file.delete()
+        val snapshot = store.captureExactSnapshot().getOrThrow()
+        assertFalse(snapshot.existed)
+
+        store.saveForwards(listOf(forward("a", 1111)))
+        store.restoreExactSnapshot(snapshot).getOrThrow()
+
+        assertFalse("forwards.json must be absent again after restoring an absent snapshot", file.exists())
     }
 }

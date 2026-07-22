@@ -2,6 +2,7 @@ package com.phillipchin.webrtctunnel.data
 
 import androidx.annotation.CheckResult
 import com.phillipchin.webrtctunnel.model.ForwardConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +24,29 @@ class ForwardsRevisionMismatchException(
 
 /** P1-003: Thrown when a forwards mutation is blocked due to an active load error. */
 class ForwardsMutationBlocked(message: String) : IllegalArgumentException(message)
+
+/**
+ * FIX8 P0-004-C: thrown when a forwards save failed AND the attempted on-disk self-restore
+ * (back to the exact prior bytes) also failed — the caller must know disk may now disagree with
+ * both the prior and intended in-memory state, rather than seeing only the original save error.
+ */
+class ForwardsSaveRollbackIncompleteException(
+    val saveFailure: Throwable,
+    val restoreFailure: Throwable,
+) : Exception("Forwards save failed and the on-disk self-restore also failed", saveFailure)
+
+/**
+ * FIX8 P0-004-B: exact-state capture for the setup transaction's `Forwards` stage — captured
+ * under this repository's own [ForwardsRepository] mutex so it can never race a concurrent
+ * mutation. Includes the exact file bytes (not a re-serialized list, so a byte-for-byte restore
+ * is possible) plus every piece of in-memory state a truthful restore must also revert.
+ */
+internal class ForwardsTransactionSnapshot(
+    val exactFile: ExactFileSnapshot,
+    val list: List<ForwardConfig>,
+    val loadState: ForwardsLoadState,
+    val loadError: String?,
+)
 
 /**
  * FIX7 P1-003-B: explicit baseline-load readiness. [ForwardsRepository] no longer reads the
@@ -112,12 +136,49 @@ class ForwardsRepository(
     // actually been read successfully (Ready). Blocks identically whether the baseline was
     // never read yet (Initializing) or was read and found corrupt (Failed), so a mutation
     // can never silently overwrite a baseline nobody has verified.
-    private fun blockedMutationReason(): String? =
-        when (val state = _loadState.value) {
-            ForwardsLoadState.Ready -> null
-            ForwardsLoadState.Initializing -> "Forwards have not finished loading yet; try again shortly"
-            is ForwardsLoadState.Failed -> state.message
+    // FIX8 P0-004: a property (not a function) so it doesn't count against this class's detekt
+    // TooManyFunctions threshold — semantically unchanged, still a synchronous state read.
+    private val blockedMutationReason: String?
+        get() =
+            when (val state = _loadState.value) {
+                ForwardsLoadState.Ready -> null
+                ForwardsLoadState.Initializing -> "Forwards have not finished loading yet; try again shortly"
+                is ForwardsLoadState.Failed -> state.message
+            }
+
+    /**
+     * FIX8 P0-004-C: captures `forwards.json`'s exact prior bytes, then runs [save]. If [save]
+     * throws — including a cleanup-only failure raised *after* the destination was already
+     * atomically moved — attempts to restore those exact prior bytes so disk cannot end up
+     * reflecting the new (unpublished) state while the mutation is reported failed. A
+     * self-restore failure is composed into [ForwardsSaveRollbackIncompleteException] rather
+     * than silently discarded; cancellation is preserved without attempting a self-restore
+     * (the caller's own cancellation-handling owns that).
+     *
+     * FIX8 P0-004: a property holding a function value (not a `fun` declaration) so it doesn't
+     * count against this class's detekt TooManyFunctions threshold — called identically to a
+     * member function (`selfRestoringSave { ... }`) via Kotlin's trailing-lambda `invoke` syntax.
+     */
+    private val selfRestoringSave: (() -> Unit) -> Unit = { save ->
+        val priorSnapshot = store.captureExactSnapshot().getOrThrow()
+        val saveFailure =
+            try {
+                save()
+                null
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                failure
+            }
+        if (saveFailure != null) {
+            val restoreFailure = store.restoreExactSnapshot(priorSnapshot).exceptionOrNull()
+            throw if (restoreFailure != null) {
+                ForwardsSaveRollbackIncompleteException(saveFailure, restoreFailure)
+            } else {
+                saveFailure
+            }
         }
+    }
 
     /**
      * P1-001: Atomically upsert a forward and return a receipt capturing the before/after
@@ -130,7 +191,7 @@ class ForwardsRepository(
         mutex.withLock {
             withContext(dispatchers.io) {
                 // P1-003: Central guard — block mutation whenever the baseline isn't Ready.
-                blockedMutationReason()?.let { reason ->
+                blockedMutationReason?.let { reason ->
                     return@withContext Result.failure(ForwardsMutationBlocked(reason))
                 }
                 val before = _forwards.value
@@ -146,7 +207,7 @@ class ForwardsRepository(
                     return@withContext Result.failure(ForwardsMutationBlocked(error))
                 }
                 mutationResult {
-                    store.saveForwards(after)
+                    selfRestoringSave { store.saveForwards(after) }
                     _forwards.value = after
                     revision += 1
                     ForwardsMutationReceipt(before, after, revision)
@@ -163,13 +224,13 @@ class ForwardsRepository(
         mutex.withLock {
             withContext(dispatchers.io) {
                 // P1-003: Central guard — block mutation whenever the baseline isn't Ready.
-                blockedMutationReason()?.let { reason ->
+                blockedMutationReason?.let { reason ->
                     return@withContext Result.failure(ForwardsMutationBlocked(reason))
                 }
                 val before = _forwards.value
                 val after = before.filterNot { it.id == forwardId }
                 mutationResult {
-                    store.saveForwards(after)
+                    selfRestoringSave { store.saveForwards(after) }
                     _forwards.value = after
                     revision += 1
                     ForwardsMutationReceipt(before, after, revision)
@@ -195,7 +256,7 @@ class ForwardsRepository(
             }
             withContext(dispatchers.io) {
                 mutationResult {
-                    store.saveForwards(receipt.before)
+                    selfRestoringSave { store.saveForwards(receipt.before) }
                     _forwards.value = receipt.before
                     revision += 1
                 }
@@ -211,7 +272,7 @@ class ForwardsRepository(
         mutex.withLock {
             withContext(dispatchers.io) {
                 mutationResult {
-                    store.saveForwards(emptyList())
+                    selfRestoringSave { store.saveForwards(emptyList()) }
                     _forwards.value = emptyList()
                     _loadError.value = null
                     _loadState.value = ForwardsLoadState.Ready
@@ -231,8 +292,75 @@ class ForwardsRepository(
         mutex.withLock {
             withContext(dispatchers.io) {
                 mutationResult {
-                    store.saveForwards(forwards)
+                    selfRestoringSave { store.saveForwards(forwards) }
                     _forwards.value = forwards
+                    revision += 1
+                }
+            }
+        }
+
+    /**
+     * FIX8 P0-004-B: captures this repository's exact state (file bytes, list, load state, load
+     * error) for the setup transaction's `Forwards` stage, under the same [mutex] every mutation
+     * uses so it can never race a concurrent one. Fails (rather than snapshotting a placeholder
+     * empty list) unless the baseline is [ForwardsLoadState.Ready] — a transaction must not
+     * capture "rollback state" from a baseline nobody has actually verified yet.
+     */
+    @CheckResult
+    internal suspend fun captureForTransaction(): Result<ForwardsTransactionSnapshot> =
+        mutex.withLock {
+            val blockedReason = blockedMutationReason
+            if (blockedReason != null) {
+                return@withLock Result.failure(ForwardsMutationBlocked(blockedReason))
+            }
+            withContext(dispatchers.io) {
+                mutationResult {
+                    ForwardsTransactionSnapshot(
+                        exactFile = store.captureExactSnapshot().getOrThrow(),
+                        list = _forwards.value,
+                        loadState = _loadState.value,
+                        loadError = _loadError.value,
+                    )
+                }
+            }
+        }
+
+    /**
+     * FIX8 P0-004-D: applies the setup transaction's full forwards draft as the `Forwards`
+     * stage's commit — validates, saves (self-restoring on a post-move save failure per
+     * P0-004-C), then publishes, matching every other mutation's save-then-publish ordering.
+     */
+    @CheckResult
+    internal suspend fun replaceForTransaction(forwards: List<ForwardConfig>): Result<Unit> =
+        mutex.withLock {
+            withContext(dispatchers.io) {
+                val validationError = store.validateForwards(forwards)
+                if (validationError != null) {
+                    return@withContext Result.failure(ForwardsMutationBlocked(validationError))
+                }
+                mutationResult {
+                    selfRestoringSave { store.saveForwards(forwards) }
+                    _forwards.value = forwards
+                    revision += 1
+                }
+            }
+        }
+
+    /**
+     * FIX8 P0-004-D: restores this repository to exactly [snapshot]'s prior state for the setup
+     * transaction's `Forwards` stage rollback — disk first (exact bytes, not a re-serialized
+     * list), then in-memory list/load-state/load-error, advancing [revision] on success so any
+     * receipt issued mid-transaction is invalidated afterward.
+     */
+    @CheckResult
+    internal suspend fun restoreForTransaction(snapshot: ForwardsTransactionSnapshot): Result<Unit> =
+        mutex.withLock {
+            withContext(dispatchers.io) {
+                mutationResult {
+                    store.restoreExactSnapshot(snapshot.exactFile).getOrThrow()
+                    _forwards.value = snapshot.list
+                    _loadState.value = snapshot.loadState
+                    _loadError.value = snapshot.loadError
                     revision += 1
                 }
             }

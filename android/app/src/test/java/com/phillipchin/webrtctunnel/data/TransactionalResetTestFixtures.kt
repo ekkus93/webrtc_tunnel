@@ -45,6 +45,11 @@ internal class FakeForwardsStore(
     }
 
     override fun validateForwards(forwards: List<ForwardConfig>): String? = null
+
+    override fun captureExactSnapshot(): Result<ExactFileSnapshot> =
+        Result.success(ExactFileSnapshot(existed = true, bytes = ByteArray(0)))
+
+    override fun restoreExactSnapshot(snapshot: ExactFileSnapshot): Result<Unit> = Result.success(Unit)
 }
 
 // P1-006: deleteConfigFileForTransactionalReset() rollback-failure coverage. The two
