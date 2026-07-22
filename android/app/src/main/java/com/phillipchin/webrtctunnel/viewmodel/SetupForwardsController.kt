@@ -13,7 +13,7 @@ import kotlinx.coroutines.launch
  * ForwardsRepository (off the main thread, corrupt-safe) and mirror the result into the
  * wizard's forwards state so Home/Forwards and the wizard stay in sync.
  */
-class SetupForwardsController(
+internal class SetupForwardsController(
     private val deps: AppDependencies,
     private val access: WizardStateAccess,
     private val scope: CoroutineScope,
@@ -29,16 +29,21 @@ class SetupForwardsController(
         return deps.forwardsStore.validateForwards(updated)
     }
 
+    /** FIX8 P1-001-B: awaited directly (not launched) as part of [SetupViewModel]'s
+     * BaselineLoad-guarded init sequence — never routed through [access]'s coordinator itself,
+     * since that admission is already held by the caller for the whole baseline load. */
+    suspend fun refreshForwardsBaseline() {
+        deps.forwardsRepository.refresh()
+        access.setForwards(deps.forwardsRepository.current())
+        access.applyState(access.state())
+    }
+
     fun refreshForwards() {
-        scope.launch {
-            deps.forwardsRepository.refresh()
-            access.setForwards(deps.forwardsRepository.current())
-            access.applyState(access.state())
-        }
+        scope.launch { refreshForwardsBaseline() }
     }
 
     fun upsertForward(forward: ForwardConfig) {
-        launchBusy {
+        launchForwardEdit {
             // P1-001: Use receipt-based atomic upsert.
             deps.forwardsRepository.upsertWithReceipt(forward).fold(
                 onSuccess = {
@@ -58,7 +63,7 @@ class SetupForwardsController(
     }
 
     fun deleteForward(forwardId: String) {
-        launchBusy {
+        launchForwardEdit {
             // P1-001: Use receipt-based atomic delete.
             deps.forwardsRepository.deleteWithReceipt(forwardId).fold(
                 onSuccess = {
@@ -86,14 +91,13 @@ class SetupForwardsController(
         }
     }
 
-    private fun launchBusy(block: suspend () -> Unit) {
+    /** FIX8 P1-001-A/C: replaces the old per-controller `launchBusy` — routes through the shared
+     * setup-local coordinator (so isBusy is derived from real admission ownership, not toggled
+     * independently) with a cancellation-first/redacted-catch safety net for any exception
+     * [block] does not already handle itself. */
+    private fun launchForwardEdit(block: suspend () -> Unit) {
         scope.launch {
-            access.applyState(access.state().copy(isBusy = true))
-            try {
-                block()
-            } finally {
-                access.applyState(access.state().copy(isBusy = false))
-            }
+            access.operations.runGuarded(access, SetupDraftOperation.ForwardEdit) { block() }
         }
     }
 }

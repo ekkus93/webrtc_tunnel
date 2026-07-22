@@ -27,21 +27,23 @@ internal class SetupIdentityController(
     private val scope: CoroutineScope,
     private val identityDraft: SetupIdentityDraft,
 ) {
-    fun loadStoredIdentity() =
-        launchBusy {
-            val publicIdentity = withContext(deps.dispatchers.io) { deps.identityRepository.readPublicIdentity() }
-            if (publicIdentity.isNotBlank()) {
-                access.applyState(access.state().copy(localPublicIdentity = publicIdentity))
-            }
+    /** FIX8 P1-001-B: awaited directly (not launched) as part of [SetupViewModel]'s
+     * BaselineLoad-guarded init sequence — never routed through [access]'s coordinator itself,
+     * since that admission is already held by the caller for the whole baseline load. */
+    suspend fun loadStoredIdentityBaseline() {
+        val publicIdentity = withContext(deps.dispatchers.io) { deps.identityRepository.readPublicIdentity() }
+        if (publicIdentity.isNotBlank()) {
+            access.applyState(access.state().copy(localPublicIdentity = publicIdentity))
         }
+    }
 
     fun importIdentityFromPath() =
-        launchBusy {
+        launchIdentityAction {
             val current = access.state()
             val trimmed = current.importIdentityPath.trim()
             if (trimmed.isBlank()) {
                 access.applyState(current.copy(errorMessage = "Choose an identity file path to import"))
-                return@launchBusy
+                return@launchIdentityAction
             }
             // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
             // calls the native validation bridge. FIX8 P0-001-B: populate the draft, do not
@@ -87,7 +89,7 @@ internal class SetupIdentityController(
         }
 
     fun importIdentityFromUri(uri: Uri) =
-        launchBusy {
+        launchIdentityAction {
             val current = access.state()
             // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
             // calls the native validation bridge. FIX8 P0-001-B: draft-only, no persistence.
@@ -132,13 +134,13 @@ internal class SetupIdentityController(
         }
 
     fun validateRemotePublicIdentity() =
-        launchBusy {
+        launchIdentityAction {
             val current = access.state()
             access.applyState(resolveRemotePublicIdentity(current, current.importPublicIdentity.trim()))
         }
 
     fun importPublicIdentityFromUri(uri: Uri) =
-        launchBusy {
+        launchIdentityAction {
             val current = access.state()
             // FIX8 P1-001-C: a pure content-URI text read — explicit cancellation-first
             // try/catch(Exception), never runCatching (which would also swallow fatal Error).
@@ -172,7 +174,7 @@ internal class SetupIdentityController(
         }
 
     fun generateIdentity() =
-        launchBusy {
+        launchIdentityAction {
             val current = access.state()
             val generated =
                 withContext(deps.dispatchers.io) { deps.identityValidation.generateIdentity(current.input.localPeerId) }
@@ -180,8 +182,15 @@ internal class SetupIdentityController(
             val publicIdentity = generated.canonicalPublicIdentity
             val peerId = generated.peerId
             when {
+                // FIX8 P1-001-C: generated.message comes from the native bridge — redact it
+                // like every other native-validation message before it reaches UI state.
                 !generated.valid ->
-                    access.applyState(current.copy(errorMessage = generated.message ?: "Identity generation failed"))
+                    access.applyState(
+                        current.copy(
+                            errorMessage =
+                                SensitiveDataRedactor.redactText(generated.message ?: "Identity generation failed"),
+                        ),
+                    )
                 // FIX8 P0-001-B: fail closed on any missing canonical field (including peer ID) —
                 // no `generated.peerId ?: current.input.localPeerId` fallback.
                 privateIdentity.isNullOrBlank() || publicIdentity.isNullOrBlank() || peerId.isNullOrBlank() ->
@@ -234,10 +243,13 @@ internal class SetupIdentityController(
         }
         val validated = withContext(deps.dispatchers.io) { deps.identityValidation.validatePublicIdentity(value) }
         return when {
+            // FIX8 P1-001-C: validated.message comes from the native bridge — redact it like
+            // every other native-validation message before it reaches UI state.
             !validated.valid ->
                 current.copy(
                     remoteIdentityPeerId = null,
-                    errorMessage = validated.message ?: "Invalid remote public identity",
+                    errorMessage =
+                        SensitiveDataRedactor.redactText(validated.message ?: "Invalid remote public identity"),
                 )
             validated.peerId == current.input.localPeerId ->
                 current.copy(
@@ -254,14 +266,13 @@ internal class SetupIdentityController(
         }
     }
 
-    private fun launchBusy(block: suspend () -> Unit) {
+    /** FIX8 P1-001-A/C: replaces the old per-controller `launchBusy` — routes through the shared
+     * setup-local coordinator (so isBusy is derived from real admission ownership, not toggled
+     * independently) with a cancellation-first/redacted-catch safety net for any exception
+     * [block] does not already handle itself. */
+    private fun launchIdentityAction(block: suspend () -> Unit) {
         scope.launch {
-            access.applyState(access.state().copy(isBusy = true))
-            try {
-                block()
-            } finally {
-                access.applyState(access.state().copy(isBusy = false))
-            }
+            access.operations.runGuarded(access, SetupDraftOperation.IdentityAction) { block() }
         }
     }
 }

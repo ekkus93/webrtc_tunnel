@@ -16,6 +16,8 @@ import com.phillipchin.webrtctunnel.viewmodel.NetworkPolicyViewModel
 import com.phillipchin.webrtctunnel.viewmodel.RecordingBridge
 import com.phillipchin.webrtctunnel.viewmodel.SettingsViewModel
 import com.phillipchin.webrtctunnel.viewmodel.SetupIdentityDraft
+import com.phillipchin.webrtctunnel.viewmodel.SetupLoadState
+import com.phillipchin.webrtctunnel.viewmodel.SetupOperationCoordinator
 import com.phillipchin.webrtctunnel.viewmodel.SetupSaveController
 import com.phillipchin.webrtctunnel.viewmodel.SetupStep
 import com.phillipchin.webrtctunnel.viewmodel.SetupWizardState
@@ -166,6 +168,8 @@ class ConfigurationMutationIntegrationTest {
                 forwards = { forwardsRef.get() },
                 applyState = { stateRef.set(it) },
                 setForwards = { forwardsRef.set(it) },
+                operations = SetupOperationCoordinator(),
+                loadState = { SetupLoadState.Ready },
             )
         val controller =
             SetupSaveController(

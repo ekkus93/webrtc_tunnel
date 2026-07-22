@@ -3,6 +3,8 @@ package com.phillipchin.webrtctunnel.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ForwardsLoadState
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.loadSetupInputResult
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
@@ -25,6 +27,20 @@ enum class SetupStep {
     Forwards,
     NetworkPolicy,
     Review,
+}
+
+/**
+ * Whether the setup wizard's baseline draft (saved setup input, stored identity, forwards) has
+ * finished loading (FIX8 P1-001-B) — mirrors [ForwardsLoadState]'s shape. `Next`/final save must
+ * block while `Initializing` or `Failed`: a corrupt saved draft must never be silently treated as
+ * "no saved draft" and let through with defaults.
+ */
+sealed interface SetupLoadState {
+    data object Initializing : SetupLoadState
+
+    data object Ready : SetupLoadState
+
+    data class Failed(val message: String) : SetupLoadState
 }
 
 data class SetupWizardState(
@@ -63,12 +79,27 @@ class SetupViewModel(
         }
     val preferences = deps.configRepository.preferences
 
-    private val stateAccess =
+    // FIX8 P1-001-A: the one shared setup-local admission gate every controller's asynchronous
+    // action routes through — `internal` (not private) so tests can assert admission/rejection
+    // directly via `activeOperationForTest()`.
+    internal val operations = SetupOperationCoordinator()
+
+    // FIX8 P1-001-B: Initializing until the setup-input/identity/forwards baselines have all been
+    // read; Next/final save block while this is not Ready (see canAdvance/SetupSaveController).
+    private val _loadState = MutableStateFlow<SetupLoadState>(SetupLoadState.Initializing)
+    val loadState: StateFlow<SetupLoadState> = _loadState.asStateFlow()
+
+    // internal (not private): same-module tests exercise SetupOperationCoordinator directly
+    // through this (e.g. to occupy admission deterministically) rather than racing real
+    // dispatcher timing.
+    internal val stateAccess =
         WizardStateAccess(
             state = { _state.value },
             forwards = { _forwards.value },
             applyState = ::applyState,
             setForwards = { _forwards.value = it },
+            operations = operations,
+            loadState = { _loadState.value },
         )
 
     // FIX8 P0-001-A/B: the wizard's generated/imported private identity lives here, never in
@@ -88,18 +119,29 @@ class SetupViewModel(
 
     internal val identity = SetupIdentityController(deps, stateAccess, viewModelScope, identityDraft)
 
-    val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope)
+    internal val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope)
 
     init {
-        loadStoredSetupInput(deps, stateAccess)
-        identity.loadStoredIdentity()
-        forwardsEditor.refreshForwards()
+        // FIX8 P1-001-B: no synchronous file I/O here — the setup-input read/decode (previously a
+        // direct blocking call in this constructor) now happens inside a coroutine, IO-dispatched,
+        // alongside the already-async identity/forwards baselines, under BaselineLoad admission so
+        // nothing else can run concurrently with it. loadState publishes Ready only once all three
+        // baselines are coherent; a corrupt/unreadable setup-input file is a durable Failed state
+        // (setup_draft_load_failed), never silently treated as "no saved draft".
+        viewModelScope.launch {
+            operations.runGuarded(stateAccess, SetupDraftOperation.BaselineLoad) {
+                loadSetupWizardBaseline(deps, stateAccess, identity, forwardsEditor, _loadState)
+            }
+        }
     }
 
     // Stamps `canAdvance` from the incoming state; the four setters below feed their `.copy(...)`
     // straight in (no separate `updateState` helper, which would count against TooManyFunctions).
+    // FIX8 P1-001-A: `isBusy` is always stamped from the coordinator's actual admission ownership
+    // here — the single write path every controller uses — never independently toggled.
     private fun applyState(newState: SetupWizardState) {
-        _state.value = newState.copy(canAdvance = canAdvance(deps, newState, _forwards.value))
+        _state.value =
+            newState.copy(isBusy = operations.isBusy, canAdvance = canAdvance(deps, newState, _forwards.value))
     }
 
     fun setInput(update: SetupConfigInput) {
@@ -145,8 +187,13 @@ class SetupViewModel(
     fun cancel() {
         // FIX8 P0-001-A: abandoning setup wipes the draft private bytes and discards the
         // draft forwards, then asynchronously reloads the untouched authoritative baseline.
+        // FIX8 P1-001-A: invalidate() marks any still-in-flight setup operation stale before the
+        // reset, so its eventual completion cannot overwrite this freshly-reset state — cancel
+        // must always be able to interrupt an in-flight operation, so it does not itself go
+        // through admission (it would otherwise be rejected as busy).
+        operations.invalidate()
         identityDraft.clear()
-        _state.value = SetupWizardState()
+        applyState(SetupWizardState())
         forwardsEditor.refreshForwards()
     }
 
@@ -157,28 +204,31 @@ class SetupViewModel(
     }
 
     fun goNext() {
-        if (_state.value.isBusy) return
+        // FIX8 P1-001-B: block navigation while the setup baseline has not finished loading —
+        // a corrupt/unreadable saved draft must not let the user advance past defaults it never
+        // actually confirmed.
+        if (_loadState.value !is SetupLoadState.Ready) {
+            applyState(_state.value.copy(errorMessage = setupLoadNotReadyMessage(_loadState.value)))
+            return
+        }
+        if (operations.isBusy) return
         viewModelScope.launch {
-            val current = _state.value
-            _state.value = current.copy(isBusy = true)
-            try {
+            operations.runGuarded(stateAccess, SetupDraftOperation.ValidationNavigation) { id ->
+                val current = _state.value
                 // Step validation can call native code; keep it off the main thread.
                 val validationError =
                     withContext(deps.dispatchers.io) { validateStep(deps, current.currentStep, current) }
+                // FIX8 P1-001-A: a cancel() during this suspend call must not resurrect stale
+                // step/error state over whatever the reset already published.
+                if (operations.isStale(id)) return@runGuarded
                 if (validationError != null) {
-                    _state.value =
-                        current.copy(errorMessage = validationError).withCanAdvance(deps, _forwards.value)
-                    return@launch
+                    applyState(current.copy(errorMessage = validationError))
+                    return@runGuarded
                 }
                 val index = steps.indexOf(current.currentStep)
                 if (index < steps.lastIndex) {
-                    _state.value =
-                        current
-                            .copy(currentStep = steps[index + 1], errorMessage = null)
-                            .withCanAdvance(deps, _forwards.value)
+                    applyState(current.copy(currentStep = steps[index + 1], errorMessage = null))
                 }
-            } finally {
-                _state.value = _state.value.copy(isBusy = false)
             }
         }
     }
@@ -225,26 +275,54 @@ private fun forwardsReady(
         forwards.any { it.enabled } &&
         deps.forwardsStore.validateForwards(forwards) == null
 
-private fun loadStoredSetupInput(
+internal fun setupLoadNotReadyMessage(state: SetupLoadState): String =
+    when (state) {
+        SetupLoadState.Initializing -> "Setup baseline is still loading (setup_draft_operation_busy)"
+        is SetupLoadState.Failed -> state.message
+        SetupLoadState.Ready -> "Setup baseline is ready"
+    }
+
+/**
+ * FIX8 P1-001-B: reads the setup-input file (IO-dispatched, off the main thread — never
+ * synchronously in the ViewModel constructor) and awaits the already-async identity/forwards
+ * baselines, publishing [SetupLoadState.Ready] only once all three are coherent, or a durable
+ * [SetupLoadState.Failed] (`setup_draft_load_failed`) if any could not be read. A corrupt/
+ * unreadable setup-input file is never silently treated as "no saved draft" — the file itself is
+ * left untouched, and no content from it is included in the error.
+ */
+private suspend fun loadSetupWizardBaseline(
     deps: AppDependencies,
     access: WizardStateAccess,
+    identity: SetupIdentityController,
+    forwardsEditor: SetupForwardsController,
+    loadState: MutableStateFlow<SetupLoadState>,
 ) {
-    deps.configRepository.loadSetupInputResult().fold(
-        onSuccess = { saved ->
-            if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
-                access.applyState(access.state().copy(input = saved))
+    val setupInputResult = withContext(deps.dispatchers.io) { deps.configRepository.loadSetupInputResult() }
+    identity.loadStoredIdentityBaseline()
+    forwardsEditor.refreshForwardsBaseline()
+    val forwardsLoadState = deps.forwardsRepository.loadState.value
+    when {
+        setupInputResult.isFailure -> {
+            val message =
+                "Saved setup could not be loaded (setup_draft_load_failed). " +
+                    "The existing saved draft was left untouched."
+            loadState.value = SetupLoadState.Failed(message)
+            access.applyState(access.state().copy(errorMessage = message))
+        }
+        forwardsLoadState is ForwardsLoadState.Failed -> {
+            val message =
+                "Saved forwards could not be loaded (setup_draft_load_failed): " +
+                    SensitiveDataRedactor.redactText(forwardsLoadState.message)
+            loadState.value = SetupLoadState.Failed(message)
+            access.applyState(access.state().copy(errorMessage = message))
+        }
+        else -> {
+            setupInputResult.onSuccess { saved ->
+                if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
+                    access.applyState(access.state().copy(input = saved))
+                }
             }
-        },
-        onFailure = {
-            // A corrupt draft must be visible, not silently treated as "no saved draft" —
-            // that would let the user unknowingly overwrite it with a blank one (P1-004).
-            // The file itself is left untouched; no content from it is included here.
-            access.applyState(
-                access.state().copy(
-                    errorMessage =
-                        "Saved setup could not be loaded. The existing saved draft was left untouched.",
-                ),
-            )
-        },
-    )
+            loadState.value = SetupLoadState.Ready
+        }
+    }
 }

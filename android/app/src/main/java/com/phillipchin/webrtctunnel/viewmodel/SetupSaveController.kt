@@ -46,12 +46,20 @@ private class SaveError(
 /**
  * Read/write access to the shared wizard state, so controllers split out of
  * SetupViewModel can mutate it without each holding the MutableStateFlows.
+ *
+ * FIX8 P1-001-A: [operations] is the one shared setup-local admission gate every controller
+ * routes its asynchronous actions through — bundled in here (rather than a separate constructor
+ * parameter on each controller) since [SetupOperationCoordinator] itself takes no dependency on
+ * this class, avoiding a circular construction order. [loadState] lets a controller (final save,
+ * navigation) block while the setup baseline has not finished loading (P1-001-B).
  */
-class WizardStateAccess(
+internal class WizardStateAccess(
     val state: () -> SetupWizardState,
     val forwards: () -> List<ForwardConfig>,
     val applyState: (SetupWizardState) -> Unit,
     val setForwards: (List<ForwardConfig>) -> Unit,
+    val operations: SetupOperationCoordinator,
+    val loadState: () -> SetupLoadState,
 )
 
 internal class SetupSaveController(
@@ -125,27 +133,41 @@ internal class SetupSaveController(
     }
 
     private suspend fun saveAndApplyConfigInternal(): Boolean {
-        // FIX7 P0-001-C: admission is the single cross-feature coordinator, not a local mutex —
-        // an overlapping config import/forward mutation/reset must also be rejected, not just
-        // another setup save. A rejected save is visibly and durably reported.
-        return when (
-            val admission =
-                deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.SetupSave) {
-                    runSaveAndApply()
-                }
-        ) {
-            is ConfigurationAdmission.Completed -> admission.value
-            is ConfigurationAdmission.Busy -> {
-                access.applyState(
-                    access.state().copy(
-                        errorMessage =
-                            "Another configuration operation is already in progress: ${admission.active}",
-                        saveResult = null,
-                    ),
-                )
-                false
-            }
+        // FIX8 P1-001-B: block while the setup baseline has not finished loading — a save built
+        // from an incoherent baseline (e.g. a corrupt setup-input file never actually recovered
+        // from) must never proceed.
+        val loadState = access.loadState()
+        if (loadState !is SetupLoadState.Ready) {
+            access.applyState(
+                access.state().copy(errorMessage = setupLoadNotReadyMessage(loadState), saveResult = null),
+            )
+            return false
         }
+        // FIX8 P1-001-A: final save holds setup-local admission (so no identity/forward-edit
+        // action can mutate the shared draft mid-save) and, from inside it, still acquires the
+        // application-scoped ConfigurationMutationCoordinator's SetupSave admission (FIX7
+        // P0-001-C) — an overlapping config import/forward mutation/reset must also be rejected,
+        // not just another setup save. Either rejection is visibly and durably reported.
+        return access.operations.runGuarded(access, SetupDraftOperation.FinalSave) {
+            when (
+                val admission =
+                    deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.SetupSave) {
+                        runSaveAndApply()
+                    }
+            ) {
+                is ConfigurationAdmission.Completed -> admission.value
+                is ConfigurationAdmission.Busy -> {
+                    access.applyState(
+                        access.state().copy(
+                            errorMessage =
+                                "Another configuration operation is already in progress: ${admission.active}",
+                            saveResult = null,
+                        ),
+                    )
+                    false
+                }
+            }
+        } ?: false
     }
 
     private suspend fun runSaveAndApply(): Boolean {
