@@ -843,10 +843,10 @@ related identity/setup tests
 
 ## P0-007-A — Remove fabricated bytes and unchecked deletion
 
-- [ ] Replace every `snapshot.bytes ?: ByteArray(0)` with `requireNotNull`. (`SHA: ______`)
-- [ ] Replace every identity rollback `File.delete()` with `Files.deleteIfExists`. (`SHA: ______`)
-- [ ] Consume/check all deletion results/exceptions. (`SHA: ______`)
-- [ ] Missing bytes for a present snapshot return a restore failure naming the logical file. (`SHA: ______`)
+- [x] Replace every `snapshot.bytes ?: ByteArray(0)` with `requireNotNull`. (`SHA: ac21369`)
+- [x] Replace every identity rollback `File.delete()` with `Files.deleteIfExists`. (`SHA: ac21369`)
+- [x] Consume/check all deletion results/exceptions. (`SHA: ac21369`)
+- [x] Missing bytes for a present snapshot return a restore failure naming the logical file. (`SHA: ac21369`)
 
 Target helper:
 
@@ -876,18 +876,18 @@ private fun restoreStoredFile(
 
 ## P0-007-B — Stage-specific restore APIs
 
-- [ ] Add pair-only detailed restore. (`SHA: ______`)
-- [ ] Add authorized-keys-only detailed restore. (`SHA: ______`)
-- [ ] Keep holistic restore for callers that truly need all three. (`SHA: ______`)
-- [ ] Every member is attempted independently. (`SHA: ______`)
-- [ ] Returned reasons are fixed/redacted. (`SHA: ______`)
+- [x] Add pair-only detailed restore. (`SHA: 9423860` — `restoreIdentityPairSnapshot`, FIX8 P0-004-E)
+- [x] Add authorized-keys-only detailed restore. (`SHA: 9423860` — `restoreAuthorizedKeysSnapshot`)
+- [x] Keep holistic restore for callers that truly need all three. (`SHA: 9423860` — `restoreStorageSnapshot`, unchanged)
+- [x] Every member is attempted independently. (`SHA: 9423860`, further exercised by `SHA: ac21369`'s `authorizedKeysRestoreFailureDoesNotReRestoreIdentityPair`)
+- [x] Returned reasons are fixed/redacted. (`SHA: 9423860` — `SensitiveDataRedactor.redactText`, unchanged)
 
 ## P0-007-C — Coherent identity reads
 
-- [ ] Add one locked method that reads encrypted identity and public identity as one coherent pair. (`SHA: ______`)
-- [ ] Setup/stored identity resolution uses it. (`SHA: ______`)
-- [ ] `readPublicIdentity`, `hasEncryptedIdentity`, and snapshot-related file reads cannot observe a pair replacement halfway through. (`SHA: ______`)
-- [ ] Do not hold the storage lock while invoking native validation. Copy required file data, release, then validate. (`SHA: ______`)
+- [x] Add one locked method that reads encrypted identity and public identity as one coherent pair. (`SHA: ac21369` — `readStoredIdentityMaterial`)
+- [x] Setup/stored identity resolution uses it. (`SHA: ac21369` — `SetupSaveController.resolveSaveIdentity`/`resolveStoredIdentity`)
+- [x] `readPublicIdentity`, `hasEncryptedIdentity`, and snapshot-related file reads cannot observe a pair replacement halfway through. (`SHA: ac21369` — the two coherence-sensitive read paths (`ForwardsViewModel`, `ImportExportService`) switched to `readPrivateIdentityPlaintextOrNull`; snapshot-related reads (`captureStorageSnapshot`, `restoreStorageSnapshot` family) already took `storageLock`, unchanged)
+- [x] Do not hold the storage lock while invoking native validation. Copy required file data, release, then validate. (`SHA: ac21369` — no call site was found holding `IdentityRepository`'s own lock across a native call to begin with; the fix is the new coherent-read methods releasing the lock before returning, verified by `identityReaderDoesNotHoldLockDuringNativeValidation`)
 
 Possible model:
 
@@ -904,26 +904,26 @@ If decryption produces plaintext, its owner must wipe it separately.
 
 ## P0-007-D — Directory and export checks
 
-- [ ] Replace ignored identity/export parent `mkdirs()` with checked `Files.createDirectories`. (`SHA: ______`)
-- [ ] Export failures are fixed/redacted at the ViewModel boundary. (`SHA: ______`)
-- [ ] Atomic replacement cleanup does not log raw secret paths/Throwable. (`SHA: ______`)
+- [x] Replace ignored identity/export parent `mkdirs()` with checked `Files.createDirectories`. (`SHA: ac21369`)
+- [x] Export failures are fixed/redacted at the ViewModel boundary. (`SHA: ac21369` — no production caller currently wires the path-based `exportPrivateIdentity`/`exportPublicIdentity` to a ViewModel (the actually-wired export flows are URI-based, in `ImportExportViewModel`, already redacted via its existing `io.run`/`SensitiveDataRedactor` boundary, unchanged); the path-based methods' own failures are now checked/visible per P0-007-A/D above)
+- [x] Atomic replacement cleanup does not log raw secret paths/Throwable. (`SHA: ac21369` — the `AtomicMoveNotSupportedException` fallback log no longer passes the raw `Throwable` to `Log.w`)
 
 ## P0-007-E — Tests
 
-- [ ] `identityPairCancellationAbsentEncryptedDeleteFailureIsSuppressed` (`SHA: ______`)
-- [ ] `identityPairCancellationAbsentPublicDeleteFailureIsSuppressed` (`SHA: ______`)
-- [ ] `presentSnapshotWithMissingBytesFailsWithoutCreatingEmptyIdentity` (`SHA: ______`)
-- [ ] `pairRestoreAttemptsPublicAfterEncryptedDeleteFailure` (`SHA: ______`)
-- [ ] `authorizedKeysRestoreFailureDoesNotReRestoreIdentityPair` (`SHA: ______`)
-- [ ] `coherentIdentityReadNeverObservesMismatchedPairDuringReplacement` (`SHA: ______`)
-- [ ] `identityReaderDoesNotHoldLockDuringNativeValidation` (`SHA: ______`)
-- [ ] `identityExportParentCreationFailureIsVisibleAndRedacted` (`SHA: ______`)
+- [x] `identityPairCancellationAbsentEncryptedDeleteFailureIsSuppressed` (`SHA: ac21369`)
+- [x] `identityPairCancellationAbsentPublicDeleteFailureIsSuppressed` (`SHA: ac21369`)
+- [x] `presentSnapshotWithMissingBytesFailsWithoutCreatingEmptyIdentity` (`SHA: ac21369`)
+- [x] `pairRestoreAttemptsPublicAfterEncryptedDeleteFailure` (`SHA: ac21369`)
+- [x] `authorizedKeysRestoreFailureDoesNotReRestoreIdentityPair` (`SHA: ac21369`)
+- [x] `coherentIdentityReadNeverObservesMismatchedPairDuringReplacement` (`SHA: ac21369`)
+- [x] `identityReaderDoesNotHoldLockDuringNativeValidation` (`SHA: ac21369`)
+- [x] `identityExportParentCreationFailureIsVisibleAndRedacted` (`SHA: ac21369`)
 
 ## Acceptance
 
-- [ ] Identity rollback never fabricates bytes or ignores deletion. (`SHA: ______`)
-- [ ] Pair/read coherence is repository-enforced. (`SHA: ______`)
-- [ ] Setup stage restores are distinct and exhaustive. (`SHA: ______`)
+- [x] Identity rollback never fabricates bytes or ignores deletion. (`SHA: ac21369`)
+- [x] Pair/read coherence is repository-enforced. (`SHA: ac21369`)
+- [x] Setup stage restores are distinct and exhaustive. (`SHA: 9423860`, `SHA: ac21369`)
 
 ---
 
