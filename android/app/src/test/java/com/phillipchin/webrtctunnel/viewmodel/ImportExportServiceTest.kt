@@ -2,8 +2,10 @@ package com.phillipchin.webrtctunnel.viewmodel
 
 import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.AtomicConfigFileOps
 import com.phillipchin.webrtctunnel.data.CandidateCleanupException
 import com.phillipchin.webrtctunnel.data.ConfigRepository
+import com.phillipchin.webrtctunnel.data.RealAtomicConfigFileOps
 import com.phillipchin.webrtctunnel.data.deleteCandidateFileSafely
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
@@ -218,6 +220,42 @@ class ImportExportServiceTest {
         assertFalse("the write must never be attempted when cleanup already failed", writeAttempted)
         assertEquals(
             "config.toml must remain at its exact prior bytes",
+            "format = \"old\"\n",
+            File(app.filesDir, "config.toml").readText(),
+        )
+    }
+
+    /** Performs the real atomic move, then throws — the destination has already been updated
+     * to the new bytes by the time this fires, so a caller relying only on the returned
+     * [Result] cannot tell "never wrote" from "wrote, then failed after". */
+    private class FailAfterMoveOps : AtomicConfigFileOps by RealAtomicConfigFileOps {
+        override fun atomicMove(
+            temp: java.nio.file.Path,
+            destination: java.nio.file.Path,
+        ) {
+            RealAtomicConfigFileOps.atomicMove(temp, destination)
+            throw IOException("simulated post-move failure")
+        }
+    }
+
+    // FIX8 P0-005-F: the real move must be reverted to the exact prior bytes when
+    // replaceConfigTransactionally's own write fails after the destination was already updated —
+    // not just reported as a failure while leaving the newly-moved bytes in place.
+    @Test
+    fun configImportWritePostMoveFailureRestoresPreviousConfigBytes() {
+        File(app.filesDir, "config.toml").writeText("format = \"old\"\n")
+        val service = serviceWith(ConfigRepository(app, FailAfterMoveOps()))
+
+        var thrown: Throwable? = null
+        try {
+            runBlocking { service.importContent(ImportKind.Config, "format = \"imported\"\n") }
+        } catch (error: Exception) {
+            thrown = error
+        }
+
+        assertTrue("a post-move write failure must propagate", thrown != null)
+        assertEquals(
+            "the real move changed config.toml; the self-restore must revert it to the exact prior bytes",
             "format = \"old\"\n",
             File(app.filesDir, "config.toml").readText(),
         )

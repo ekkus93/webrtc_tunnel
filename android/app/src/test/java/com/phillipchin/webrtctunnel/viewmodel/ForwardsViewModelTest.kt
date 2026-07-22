@@ -15,6 +15,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -442,6 +443,68 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
             "the cleanup-only failure message must not mask the real validation failure",
             vm.message.value?.contains("candidate_cleanup_failed") == true,
         )
+    }
+
+    // FIX8 P0-005-F: a candidate-cleanup failure happens entirely before the coordinator is ever
+    // called (P0-005-A/C ordering), so both authoritative resources must remain at their exact
+    // prior bytes — not just "the forward isn't in the in-memory list".
+    @Test
+    fun forwardCandidateCleanupFailureLeavesPreviousConfigAndForwardsExact() {
+        val forwardsFile = File(app.filesDir, "forwards.json")
+        val configFile = File(app.filesDir, "config.toml")
+        forwardsFile.delete()
+        configFile.delete()
+        val vm =
+            forwardsViewModelWith(
+                WriteFailingConfigRepository(app) { Result.success(Unit) },
+                deleteCandidateFile = { Result.failure(java.io.IOException("cleanup boom")) },
+            )
+        // The ViewModel's own init-triggered reload() seeds forwards.json with defaults on
+        // first read if it didn't already exist — capture that as "prior" rather than assuming
+        // absence, and confirm config.toml (which nothing seeds) genuinely stays absent.
+        val priorForwardsBytes = forwardsFile.readBytes()
+        recordingBridge.validationResult = ValidationResult(true, null)
+
+        vm.saveForward(
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true),
+        )
+
+        awaitMessage(vm) { it != null }
+        assertArrayEquals(
+            "forwards.json must remain at its exact prior bytes; the coordinator was never called",
+            priorForwardsBytes,
+            forwardsFile.readBytes(),
+        )
+        assertFalse(
+            "config.toml must never have been created; the coordinator was never called",
+            configFile.exists(),
+        )
+    }
+
+    // FIX8 P0-005-F: a validation failure alone (no cleanup complication) must also leave both
+    // authoritative resources untouched — the coordinator is only ever called with an
+    // already-validated candidate.
+    @Test
+    fun forwardValidationFailureLeavesPreviousConfigAndForwardsExact() {
+        val forwardsFile = File(app.filesDir, "forwards.json")
+        val configFile = File(app.filesDir, "config.toml")
+        forwardsFile.delete()
+        configFile.delete()
+        val vm = forwardsViewModelWith(ConfigRepository(app))
+        val priorForwardsBytes = forwardsFile.readBytes()
+        recordingBridge.validationResult = ValidationResult(false, "bad config")
+
+        vm.saveForward(
+            ForwardConfig(id = "web", name = "web", localPort = 9090, remoteForwardId = "web", enabled = true),
+        )
+
+        awaitMessage(vm) { it != null }
+        assertArrayEquals(
+            "forwards.json must remain at its exact prior bytes",
+            priorForwardsBytes,
+            forwardsFile.readBytes(),
+        )
+        assertFalse("config.toml must never have been created", configFile.exists())
     }
 
     @Test
