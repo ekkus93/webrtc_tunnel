@@ -1,18 +1,14 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
-import android.os.Looper
+import com.phillipchin.webrtctunnel.awaitCondition
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.ValidationResult
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows
 import java.io.File
 
 /**
@@ -91,19 +87,5 @@ class SetupSaveAuthorizedKeysTest : AppViewModelTestBase() {
         viewModel: SetupViewModel,
         predicate: (SetupWizardState) -> Boolean,
     ): SetupWizardState =
-        runBlocking {
-            withTimeout(5_000) {
-                var matched: SetupWizardState? = null
-                while (matched == null) {
-                    val current = viewModel.state.value
-                    if (predicate(current)) {
-                        matched = current
-                    } else {
-                        Shadows.shadowOf(Looper.getMainLooper()).idle()
-                        delay(10)
-                    }
-                }
-                matched
-            }
-        }
+        awaitCondition(currentValue = { viewModel.state.value }, predicate = predicate, description = "setup state")
 }

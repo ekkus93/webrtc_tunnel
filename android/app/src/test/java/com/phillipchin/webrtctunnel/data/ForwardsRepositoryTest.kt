@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -191,16 +192,34 @@ class ForwardsRepositoryTest {
             assertTrue(repo.forwards.value.any { it.id == "keep" })
         }
 
+    // FIX8 P1-004-A: previously named/asserted as if it proved exact restoration, but only
+    // checked that the newly-added entry was gone afterward — a weaker proxy that would not
+    // catch e.g. a reordered list or a subtly different on-disk encoding of an unrelated entry.
+    // Now captures the exact prior in-memory list and on-disk bytes before the mutation and
+    // asserts both are restored exactly, not just "the new entry is absent."
     @Test
-    fun rollbackRestoresExactState() =
+    fun rollbackRestoresExactPriorListAndFileBytes() =
         runBlocking {
+            repo.upsertWithReceipt(forward("keep", 9999)).getOrThrow()
+            val priorList = repo.current()
+            val priorBytes = file.readBytes()
+
             val forward = forward("x", 1234)
             val receipt = repo.upsertWithReceipt(forward).getOrThrow()
+            assertTrue(
+                "sanity: the new entry must actually be present before rollback",
+                repo.current().any { it.id == "x" },
+            )
 
             val rollbackResult = repo.rollbackReceipt(receipt)
 
             assertTrue(rollbackResult.isSuccess)
-            assertTrue(repo.current().none { it.id == "x" })
+            assertEquals(
+                "rollback must restore the exact prior in-memory list, not just remove the new entry",
+                priorList,
+                repo.current(),
+            )
+            assertArrayEquals("rollback must restore the exact prior on-disk bytes", priorBytes, file.readBytes())
         }
 
     @Test

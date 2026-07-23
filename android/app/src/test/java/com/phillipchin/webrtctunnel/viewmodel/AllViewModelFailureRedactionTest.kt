@@ -1,6 +1,5 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
-import android.os.Looper
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
@@ -9,13 +8,10 @@ import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 import org.junit.Assert.assertFalse
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows
 import java.io.File
 
 private const val SECRET = "hunter2-sentinel-98765"
@@ -63,12 +59,7 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
             vm.setInput(vm.state.value.input.copy(localPeerId = "android-phone"))
 
             vm.identity.importIdentityFromPath()
-            withTimeout(5_000) {
-                while (vm.state.value.errorMessage == null) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    yield()
-                }
-            }
+            awaitCondition { vm.state.value.errorMessage != null }
 
             assertFalse(
                 "SetupViewModel import errorMessage must not contain the raw private file path",
@@ -76,7 +67,7 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
             )
         }
 
-    private suspend fun assertNetworkPolicyPreferenceFailureRedactsSecret() {
+    private fun assertNetworkPolicyPreferenceFailureRedactsSecret() {
         val failingRepository =
             object : ConfigRepository(app) {
                 override suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
@@ -94,12 +85,7 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
         val vm = NetworkPolicyViewModel(testDeps)
 
         vm.savePreferences(AndroidAppPreferences())
-        withTimeout(5_000) {
-            while (vm.uiState.value.lastOperationFailure == null) {
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                yield()
-            }
-        }
+        awaitCondition { vm.uiState.value.lastOperationFailure != null }
 
         assertFalse(
             "NetworkPolicyViewModel durable failure must not contain the raw secret",
@@ -107,7 +93,7 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
         )
     }
 
-    private suspend fun assertImportExportFailureRedactsSecret() {
+    private fun assertImportExportFailureRedactsSecret() {
         val failingRepository =
             object : ConfigRepository(app) {
                 override val replaceConfigTransactionally: suspend (String) -> Result<Unit> = {
@@ -130,12 +116,7 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
         recordingBridge.validationResult = ValidationResult(true, null)
 
         vm.importConfig()
-        withTimeout(5_000) {
-            while (vm.state.value.lastOperationFailure == null) {
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                yield()
-            }
-        }
+        awaitCondition { vm.state.value.lastOperationFailure != null }
 
         assertFalse(
             "ImportExportViewModel durable failure must not contain the raw secret",
@@ -147,7 +128,7 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
         )
     }
 
-    private suspend fun assertSetupSavePrivateIdentityImportFailureRedactsSecret() {
+    private fun assertSetupSavePrivateIdentityImportFailureRedactsSecret() {
         val testDeps =
             AppDependencies(
                 context = app,
@@ -175,16 +156,18 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
         vm.setInput(vm.state.value.input.copy(localPeerId = "android-phone"))
 
         vm.identity.importIdentityFromPath()
-        withTimeout(5_000) {
-            while (vm.state.value.errorMessage == null) {
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                yield()
-            }
-        }
+        awaitCondition { vm.state.value.errorMessage != null }
 
         assertFalse(
             "SetupViewModel import errorMessage must not contain the raw secret",
             vm.state.value.errorMessage.orEmpty().contains(SECRET),
         )
+    }
+
+    // FIX8 P1-004-C: delegates to the one shared bounded-polling helper; fully qualified
+    // because this file's own wrapper is (deliberately, per the shared helper's naming
+    // convention) also named `awaitCondition`.
+    private fun awaitCondition(predicate: () -> Boolean) {
+        com.phillipchin.webrtctunnel.awaitCondition(predicate = predicate)
     }
 }

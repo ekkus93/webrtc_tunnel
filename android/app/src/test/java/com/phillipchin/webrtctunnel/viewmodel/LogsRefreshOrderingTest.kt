@@ -1,15 +1,11 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
-import android.os.Looper
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows
 
 @RunWith(RobolectricTestRunner::class)
 class LogsRefreshOrderingTest : AppViewModelTestBase() {
@@ -94,14 +90,10 @@ class LogsRefreshOrderingTest : AppViewModelTestBase() {
         assertFalse(result.exceptionOrNull()?.message?.contains("not json") == true)
     }
 
+    // FIX8 P1-004-C: delegates to the one shared bounded-polling helper; fully qualified
+    // because this file's own wrapper is (deliberately, per the shared helper's naming
+    // convention) also named `awaitCondition`.
     private fun awaitCondition(predicate: () -> Boolean) {
-        runBlocking {
-            withTimeout(5_000) {
-                while (!predicate()) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    kotlinx.coroutines.delay(10)
-                }
-            }
-        }
+        com.phillipchin.webrtctunnel.awaitCondition(predicate = predicate)
     }
 }

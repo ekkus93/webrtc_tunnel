@@ -679,7 +679,11 @@ class TunnelForegroundService
             reporter.publishErrorSafely(code = code, message = redacted)
         }
 
-        private val coordinatorOps: CoordinatorOperations = ServiceCoordinatorOperations(this)
+        // internal (not private): FIX8 P1-004-D's lateStartupCompletionAfterDestroyIsRejectedByRealGenerationPath
+        // calls handleStartupCompleted directly with a stale generation, so it can assert on
+        // lastError immediately after the suspend call returns without an intervening barrier
+        // command (which would itself overwrite lastError, masking the very effect being tested).
+        internal val coordinatorOps: CoordinatorOperations = ServiceCoordinatorOperations(this)
 
         // Clears the temporary metered allowance so a future run starts fresh. internal (not
         // private): OfferCoordinator, split into its own file, calls this too.

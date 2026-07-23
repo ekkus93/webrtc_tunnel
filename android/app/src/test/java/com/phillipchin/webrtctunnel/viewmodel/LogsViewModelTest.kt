@@ -1,21 +1,16 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import android.net.Uri
-import android.os.Looper
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows
 import java.io.File
 
 private val NO_NETWORK =
@@ -135,14 +130,10 @@ class LogsViewModelTest : AppViewModelTestBase() {
         assertTrue(viewModel.filteredLogs.value.all { it.level.equals("error", ignoreCase = true) })
     }
 
+    // FIX8 P1-004-C: delegates to the one shared bounded-polling helper; fully qualified
+    // because this file's own wrapper is (deliberately, per the shared helper's naming
+    // convention) also named `awaitCondition`.
     private fun awaitCondition(predicate: () -> Boolean) {
-        runBlocking {
-            withTimeout(5_000) {
-                while (!predicate()) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    delay(10)
-                }
-            }
-        }
+        com.phillipchin.webrtctunnel.awaitCondition(predicate = predicate)
     }
 }

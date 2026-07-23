@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel.data
 import android.content.Context
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
+import com.phillipchin.webrtctunnel.awaitCondition
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.NetworkType
@@ -183,17 +184,19 @@ class ConfigurationMutationIntegrationTest {
         return SetupHarness(controller, stateRef)
     }
 
-    // Also pumps the Robolectric main Looper each iteration (SetupSaveControllerTest.awaitState
-    // does the same) as a defensive no-op belt-and-suspenders — harmless if nothing is queued.
-    private suspend fun <T : Any> awaitNonNull(poll: () -> T?): T {
-        var value = poll()
-        while (value == null) {
-            Shadows.shadowOf(Looper.getMainLooper()).idle()
-            delay(5)
-            value = poll()
-        }
-        return value
-    }
+    // FIX8 P1-004-C: delegates to the one shared bounded-polling helper (also pumps the
+    // Robolectric main Looper each iteration, same as SetupSaveControllerTest.awaitState, as a
+    // defensive no-op belt-and-suspenders — harmless if nothing is queued). Kept at its
+    // original 5ms poll interval (half the shared 10ms default) rather than the usual
+    // default — unchanged from before this refactor; each call site still wraps this in its
+    // own `withTimeout(5_000)`, so the shared helper's own default timeout is never reached.
+    private fun <T : Any> awaitNonNull(poll: () -> T?): T =
+        awaitCondition(
+            pollIntervalMs = 5,
+            description = "non-null value",
+            currentValue = poll,
+            predicate = { it != null },
+        )!!
 
     @Test
     fun setupSaveBlocksConcurrentConfigImportAndImportReportsBusyDurably() {

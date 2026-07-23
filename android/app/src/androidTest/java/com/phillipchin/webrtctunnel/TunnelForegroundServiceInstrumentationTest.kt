@@ -294,6 +294,42 @@ class TunnelForegroundServiceInstrumentationTest {
         )
     }
 
+    // FIX8 P1-004-B/D: stopWhileListeningWithoutPeerReportsStoppedNotErrorInstrumentation.
+    // RecordingBridge's getStatusJson() never sets active_session_count, so a successful offer
+    // start is genuinely reported by the real TunnelRepository status mapping
+    // (mapNativeServiceState) as Listening (offer running, zero connected peers), not
+    // Connected — this is what makes it possible to reach Listening deterministically here
+    // without a real remote peer. A stop from that state must be reported truthfully as
+    // Stopped, never Error.
+    @Test
+    fun stopWhileListeningWithoutPeerReportsStoppedNotErrorInstrumentation() {
+        context.startForegroundService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_START_OFFER),
+        )
+        assertTrue(
+            "the tunnel must reach Listening (offer running, no connected peer)",
+            waitForCondition(timeoutMs = 10_000) {
+                (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState ==
+                    com.phillipchin.webrtctunnel.model.ServiceState.Listening
+            },
+        )
+        context.startService(
+            Intent(context, TunnelForegroundService::class.java).setAction(TunnelForegroundService.ACTION_STOP),
+        )
+        assertTrue(waitForCondition(timeoutMs = 8_000) { TestTunnelHooks.bridge.stopCalls >= 1 })
+        assertTrue(
+            "stopping while Listening with no peer must report Stopped, never Error",
+            waitForCondition(timeoutMs = 5_000) {
+                (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState ==
+                    com.phillipchin.webrtctunnel.model.ServiceState.Stopped
+            },
+        )
+        assertEquals(
+            com.phillipchin.webrtctunnel.model.ServiceState.Stopped,
+            (context.applicationContext as HasAppDependencies).deps.tunnelRepository.status.value.serviceState,
+        )
+    }
+
     @Test
     fun rustBridgeDisposeIsIdempotentAndRejectsCallsAfterDispose() {
         val bridge = RustTunnelBridge()

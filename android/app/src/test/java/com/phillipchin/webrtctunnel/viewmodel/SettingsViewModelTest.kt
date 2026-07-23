@@ -1,6 +1,7 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import android.os.Looper
+import com.phillipchin.webrtctunnel.awaitCondition
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.data.ResetResult
 import com.phillipchin.webrtctunnel.data.ResetStage
@@ -328,19 +329,9 @@ class SettingsViewModelTest : AppViewModelTestBase() {
         viewModel: SettingsViewModel,
         predicate: (SettingsUiState) -> Boolean,
     ): SettingsUiState =
-        runBlocking {
-            withTimeout(5_000) {
-                var matched: SettingsUiState? = null
-                while (true) {
-                    val current = viewModel.uiState.value
-                    if (predicate(current)) {
-                        matched = current
-                        break
-                    }
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    delay(10)
-                }
-                matched ?: error("Timed out waiting for settings state")
-            }
-        }
+        awaitCondition(
+            currentValue = { viewModel.uiState.value },
+            predicate = predicate,
+            description = "settings state",
+        )
 }

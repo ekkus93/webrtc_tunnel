@@ -13,6 +13,7 @@ import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -195,7 +196,8 @@ class ImportExportServiceTest {
     // must remain at its exact prior bytes, not just "not report imported".
     @Test
     fun configImportCleanupFailurePerformsNoAuthoritativeConfigWrite() {
-        File(app.filesDir, "config.toml").writeText("format = \"old\"\n")
+        val priorBytes = "format = \"old\"\n".toByteArray()
+        File(app.filesDir, "config.toml").writeBytes(priorBytes)
         var writeAttempted = false
         val service =
             serviceWith(
@@ -218,10 +220,10 @@ class ImportExportServiceTest {
             thrown is CandidateCleanupException,
         )
         assertFalse("the write must never be attempted when cleanup already failed", writeAttempted)
-        assertEquals(
+        assertArrayEquals(
             "config.toml must remain at its exact prior bytes",
-            "format = \"old\"\n",
-            File(app.filesDir, "config.toml").readText(),
+            priorBytes,
+            File(app.filesDir, "config.toml").readBytes(),
         )
     }
 
@@ -243,7 +245,8 @@ class ImportExportServiceTest {
     // not just reported as a failure while leaving the newly-moved bytes in place.
     @Test
     fun configImportWritePostMoveFailureRestoresPreviousConfigBytes() {
-        File(app.filesDir, "config.toml").writeText("format = \"old\"\n")
+        val priorBytes = "format = \"old\"\n".toByteArray()
+        File(app.filesDir, "config.toml").writeBytes(priorBytes)
         val service = serviceWith(ConfigRepository(app, FailAfterMoveOps()))
 
         var thrown: Throwable? = null
@@ -254,10 +257,10 @@ class ImportExportServiceTest {
         }
 
         assertTrue("a post-move write failure must propagate", thrown != null)
-        assertEquals(
+        assertArrayEquals(
             "the real move changed config.toml; the self-restore must revert it to the exact prior bytes",
-            "format = \"old\"\n",
-            File(app.filesDir, "config.toml").readText(),
+            priorBytes,
+            File(app.filesDir, "config.toml").readBytes(),
         )
     }
 

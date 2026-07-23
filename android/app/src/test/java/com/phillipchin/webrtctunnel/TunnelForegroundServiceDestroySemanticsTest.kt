@@ -3,6 +3,7 @@ package com.phillipchin.webrtctunnel
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.phillipchin.webrtctunnel.data.StartOutcome
 import com.phillipchin.webrtctunnel.model.ServiceState
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -21,16 +22,22 @@ import java.util.concurrent.TimeUnit
  * native stop), and an observed destroy-fallback failure is published and never recorded as a
  * clean stop. Waits are on observable published state, not elapsed time.
  *
- * FIX7 P2-001-B (deviation, see TODO signoff): a genuine "startup completes and submits
- * StartupCompleted just as destroy has already closed the command queue but before
- * cancelAndJoin reaches the startup job" race could not be forced deterministically with the
- * existing blockNextStartOffer/awaitStartOfferEntered/releaseBlockedStartOffer hooks — releasing
- * the block after destroy has requested cancellation reliably makes the startup coroutine
- * observe that cancellation instead (see TunnelForegroundServiceStopFailureTest's
- * pendingRetryThenDestroyDoesNotRestart), so this class does not cover that specific race.
- * onDestroy()'s ordering (coordinator.stop() before cancelStartupJobAndJoinLocked()) and
- * handleStartupCompleted's generation guard are the two mechanisms that would prevent it, per
- * code inspection.
+ * FIX7 P2-001-B (deviation, see TODO signoff) / FIX8 P1-004-B: a genuine "startup completes and
+ * submits StartupCompleted just as destroy has already closed the command queue but before
+ * cancelAndJoin reaches the startup job" race could not be forced via literal thread
+ * interleaving with the existing blockNextStartOffer/awaitStartOfferEntered/
+ * releaseBlockedStartOffer hooks — releasing the block after destroy has requested cancellation
+ * reliably makes the startup coroutine observe that cancellation instead (see
+ * TunnelForegroundServiceStopFailureTest's pendingRetryThenDestroyDoesNotRestart). Forcing the
+ * literal interleaving would require a new production-only pause point between the native call
+ * returning and the `StartupCompleted` submit, which this repo's established convention (real DI
+ * seams, not static test-hook checks in production) argues against adding just for this one
+ * window. Instead, [lateStartupCompletionAfterDestroyIsRejectedByRealGenerationPath] drives the
+ * real lifecycle collaborator directly: it advances the real `lifecycleGeneration` (exactly as
+ * `onDestroy()` does before `cancelStartupJobAndJoinLocked()`) and then calls the real
+ * `OfferCoordinator.handleStartupCompleted` with the stale generation — the exact production
+ * guard (`if (service.lifecycleGeneration.get() != generation) return`) that the race would
+ * exercise, proven directly rather than merely inspected.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = TunnelForegroundServiceTestApplication::class)
@@ -151,6 +158,52 @@ class TunnelForegroundServiceDestroySemanticsTest {
             "a failed destroy cleanup must not be published as a clean stopped state",
             ServiceState.Stopped,
             deps.tunnelRepository.status.value.serviceState,
+        )
+    }
+
+    // FIX8 P1-004-B/D: see the class doc for why this drives the real generation-guard
+    // collaborator directly rather than forcing literal thread interleaving. Calls the real
+    // ServiceCoordinatorOperations.handleStartupCompleted directly (a suspend call, awaited
+    // synchronously — no barrier command needed or wanted here) rather than through
+    // submitLifecycleCommand: every OTHER lifecycle command's successful handler also resets
+    // `lastError` as part of publishing its own clean state (setPolicyBlocked, an explicit
+    // Stop's repository.stop() success, etc.), so using any of them as a FIFO-drain barrier
+    // would silently overwrite whatever a wrongly-processed stale completion had set,
+    // making the assertion below pass regardless of whether the guard actually worked. A
+    // direct suspend call has no such intervening step.
+    @Test
+    fun lateStartupCompletionAfterDestroyIsRejectedByRealGenerationPath() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        startConnected()
+
+        val staleGeneration = service.lifecycleGeneration.get()
+        val startCallsBefore = bridge.startOfferCalls
+
+        // Simulates onDestroy()'s real ordering: lifecycleGeneration is bumped (by the
+        // concurrent destroy path) before this startup's StartupCompleted is processed.
+        service.lifecycleGeneration.incrementAndGet()
+
+        // A NativeFailure is the outcome with the most visible side effects if the guard were
+        // ever bypassed (publishError sets a durable lastError, or a matching pending retry
+        // would trigger an extra native start) — the strongest proof that the whole branch,
+        // not just a state field, is skipped for a stale generation.
+        kotlinx.coroutines.runBlocking {
+            service.coordinatorOps.handleStartupCompleted(
+                staleGeneration,
+                StartOutcome.NativeFailure(RuntimeException("late completion")),
+            )
+        }
+
+        assertEquals(
+            "a stale-generation completion must trigger no extra native start",
+            startCallsBefore,
+            bridge.startOfferCalls,
+        )
+        assertEquals(
+            "a stale-generation completion must never publish a durable error",
+            null,
+            deps.tunnelRepository.status.value.lastError,
         )
     }
 }

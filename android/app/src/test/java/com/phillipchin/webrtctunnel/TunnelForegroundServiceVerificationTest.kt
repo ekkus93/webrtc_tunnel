@@ -144,12 +144,17 @@ class TunnelForegroundServiceVerificationTest {
         // Start the tunnel. This triggers startOffer() + verification.
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
 
-        // Wait for the cleanup failure to be published.
+        // Wait for the cleanup failure to be published. FIX8 P1-004-C: poll for the exact
+        // canonical code asserted below, not just "some error is present" — enterNativeRuntimeQuarantine
+        // makes two separate, non-atomic setLocalError calls (the narrower diagnostic code, then
+        // the canonical quarantine code), so a weaker predicate could observe the intermediate
+        // state between them and report success before the final code lands, racing the
+        // assertion below against production code running on another thread.
         assertTrue(
-            "cleanup failure must be published",
+            "cleanup failure must be published with the canonical quarantine code",
             waitForCondition {
                 deps.tunnelRepository.status.value.serviceState == ServiceState.Error &&
-                    deps.tunnelRepository.status.value.lastError != null
+                    deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined"
             },
         )
 
@@ -175,6 +180,56 @@ class TunnelForegroundServiceVerificationTest {
             errorMessage?.contains("stop") == true ||
                 errorMessage?.contains("cleanup") == true ||
                 errorMessage?.contains("Failed") == true,
+        )
+    }
+
+    // FIX8 P1-004-B/D: productionReporterThrowCannotPreventQuarantineOrProcessorFailureTruth.
+    // A REAL production com.phillipchin.webrtctunnel.notification.NotificationController (only
+    // its notifyAction lambda swapped, the same seam P0-009's
+    // TunnelForegroundServiceRuntimeSafetyRecreationTest uses) is made to throw on every
+    // notify call. This exercises a DIFFERENT call site than that P0-009 test (which covers
+    // service-recreation/explicit-stop-failure): here the reporter throws during the
+    // VerificationFailure/cleanup path's own enterNativeRuntimeQuarantine ->
+    // reporter.publishErrorSafely call. publishErrorSafely's own catch must absorb the throw
+    // without preventing the canonical quarantine code (set BEFORE the notification call) from
+    // landing durably.
+    @Test
+    fun productionReporterThrowCannotPreventQuarantineOrProcessorFailureTruth() {
+        val deps = (service.applicationContext as HasAppDependencies).deps
+        val bridge = TunnelForegroundServiceTestHooks.bridge
+        service.notifications =
+            com.phillipchin.webrtctunnel.notification.NotificationController(
+                service,
+                notificationsAllowedProvider = { true },
+                notifyAction = { _, _ -> error("injected notification failure") },
+            )
+
+        bridge.forceNextStatusJsonToReportError()
+        bridge.failNextStop()
+
+        controller.withIntent(actionIntent(TunnelForegroundService.ACTION_START_OFFER)).startCommand(0, 1)
+
+        assertTrue(
+            "the canonical quarantine code must land even though every notify call throws",
+            waitForCondition {
+                deps.tunnelRepository.status.value.serviceState == ServiceState.Error &&
+                    deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined"
+            },
+        )
+        assertEquals(
+            "the specific cleanup-failure diagnostic must still reach sticky history despite the reporter throw",
+            "start_verification_cleanup_failed",
+            deps.tunnelRepository.status.value.lastCleanupError?.code,
+        )
+        // Proves the command processor itself survived the reporter throw (not just that one
+        // field landed) — a later, independent command is still accepted and processed.
+        assertTrue(
+            "the lifecycle command processor must still be alive after the reporter throw",
+            service.submitLifecycleCommand(com.phillipchin.webrtctunnel.data.LifecycleCommand.Stop),
+        )
+        assertTrue(
+            "the STOP submitted after the reporter throw must still be processed",
+            waitForCondition { bridge.stopCalls >= 2 },
         )
     }
 

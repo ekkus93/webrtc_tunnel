@@ -1,6 +1,6 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
-import android.os.Looper
+import com.phillipchin.webrtctunnel.awaitCondition
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.model.ForwardConfig
@@ -11,10 +11,8 @@ import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -22,7 +20,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows
 import java.io.File
 import java.io.IOException
 
@@ -365,12 +362,7 @@ class SetupSaveControllerTest {
         setupValidState(viewModel, deps)
 
         viewModel.save.saveAndApplyConfig()
-        runBlocking {
-            repeat(SETTLE_CYCLES) {
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                delay(SETTLE_DELAY_MS)
-            }
-        }
+        awaitCancelledSaveToSettle(viewModel)
 
         assertEquals(null, viewModel.state.value.saveResult)
         assertTrue(
@@ -546,12 +538,7 @@ class SetupSaveControllerTest {
 
         viewModel.save.saveAndApplyConfig()
         // Let the cancelled save settle; it must report neither success nor failure.
-        runBlocking {
-            repeat(SETTLE_CYCLES) {
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                delay(SETTLE_DELAY_MS)
-            }
-        }
+        awaitCancelledSaveToSettle(viewModel)
 
         val state = viewModel.state.value
         assertEquals(null, state.errorMessage)
@@ -570,12 +557,7 @@ class SetupSaveControllerTest {
         val authorizedKeysExistedBefore = File(app.filesDir, "authorized_keys").exists()
 
         viewModel.save.saveAndApplyConfig()
-        runBlocking {
-            repeat(SETTLE_CYCLES) {
-                Shadows.shadowOf(Looper.getMainLooper()).idle()
-                delay(SETTLE_DELAY_MS)
-            }
-        }
+        awaitCancelledSaveToSettle(viewModel)
 
         val state = viewModel.state.value
         assertTrue(
@@ -593,11 +575,6 @@ class SetupSaveControllerTest {
             authorizedKeysExistedBefore,
             File(app.filesDir, "authorized_keys").exists(),
         )
-    }
-
-    private companion object {
-        const val SETTLE_CYCLES = 20
-        const val SETTLE_DELAY_MS = 5L
     }
 
     // -- Helpers --
@@ -698,19 +675,17 @@ class SetupSaveControllerTest {
         viewModel: SetupViewModel,
         predicate: (SetupWizardState) -> Boolean,
     ): SetupWizardState =
-        runBlocking {
-            withTimeout(5_000) {
-                var matched: SetupWizardState? = null
-                while (true) {
-                    val current = viewModel.state.value
-                    if (predicate(current)) {
-                        matched = current
-                        break
-                    }
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    kotlinx.coroutines.delay(10)
-                }
-                matched ?: error("Timed out waiting for setup state")
-            }
-        }
+        awaitCondition(currentValue = { viewModel.state.value }, predicate = predicate, description = "setup state")
+
+    // FIX8 P1-004-C: replaces a fixed-cycle "settle for N * delay" wait (an arbitrary timeout
+    // widened by hope, not an identified event seam) with a genuine completion signal.
+    // saveAndApplyConfig() launches asynchronously via scope.launch, so isBusy can still be
+    // false from before the launch ever ran — wait for it to become true first, then false,
+    // so "false" unambiguously means "the operation ran to completion" (including any
+    // cancellation-path rollback/wipe, which happens inside runGuarded's block before its own
+    // finally re-stamps isBusy = false) rather than "never started."
+    private fun awaitCancelledSaveToSettle(viewModel: SetupViewModel) {
+        awaitState(viewModel) { it.isBusy }
+        awaitState(viewModel) { !it.isBusy }
+    }
 }

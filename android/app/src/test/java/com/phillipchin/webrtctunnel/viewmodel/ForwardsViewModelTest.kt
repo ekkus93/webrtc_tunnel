@@ -11,7 +11,6 @@ import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -330,25 +329,19 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
         vm: ForwardsViewModel,
         predicate: (String?) -> Boolean,
     ) {
-        runBlocking {
-            withTimeout(5_000) {
-                while (!predicate(vm.message.value)) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    delay(10)
-                }
-            }
-        }
+        com.phillipchin.webrtctunnel.awaitCondition(
+            currentValue = { vm.message.value },
+            predicate = predicate,
+            description = "vm.message",
+        )
     }
 
+    // FIX8 P1-004-C: delegates to the one shared bounded-polling helper; fully qualified
+    // because this file's own wrapper is (deliberately, per the shared helper's naming
+    // convention) also named `awaitCondition`. Kept at a 10s bound (double the shared
+    // default) rather than the usual 5s — unchanged from before this refactor.
     private fun awaitCondition(predicate: () -> Boolean) {
-        runBlocking {
-            withTimeout(10_000) {
-                while (!predicate()) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    delay(10)
-                }
-            }
-        }
+        com.phillipchin.webrtctunnel.awaitCondition(timeoutMs = 10_000, predicate = predicate)
     }
 
     // FIX6 P0-001-D: config validation succeeds but the atomic config write fails. Before

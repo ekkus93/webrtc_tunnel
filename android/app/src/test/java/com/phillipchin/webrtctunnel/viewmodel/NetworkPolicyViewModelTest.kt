@@ -1,6 +1,5 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
-import android.os.Looper
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.ConfigRepository
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
@@ -9,7 +8,6 @@ import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -18,7 +16,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows
 
 @RunWith(RobolectricTestRunner::class)
 open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
@@ -41,12 +38,7 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
 
             viewModel.savePreferences(AndroidAppPreferences())
 
-            withTimeout(5_000) {
-                while (messages.isEmpty()) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    kotlinx.coroutines.delay(10)
-                }
-            }
+            awaitCondition { messages.isNotEmpty() }
 
             assertEquals("Network policy updated", messages.first())
             job.cancel()
@@ -82,12 +74,7 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
 
             testViewModel.savePreferences(AndroidAppPreferences())
 
-            withTimeout(5_000) {
-                while (messages.isEmpty()) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    yield()
-                }
-            }
+            awaitCondition { messages.isNotEmpty() }
 
             assertTrue(
                 "error must be shown when savePreferences fails",
@@ -129,12 +116,7 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
 
             testViewModel.savePreferences(AndroidAppPreferences())
 
-            withTimeout(5_000) {
-                while (messages.isEmpty()) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    yield()
-                }
-            }
+            awaitCondition { messages.isNotEmpty() }
 
             assertFalse(
                 "success must not be shown when savePreferences fails",
@@ -181,12 +163,7 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
 
             // No snackbar collector subscribed at all.
             testViewModel.savePreferences(AndroidAppPreferences())
-            withTimeout(5_000) {
-                while (testViewModel.uiState.value.lastOperationFailure == null) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    yield()
-                }
-            }
+            awaitCondition { testViewModel.uiState.value.lastOperationFailure != null }
 
             val failure = testViewModel.uiState.value.lastOperationFailure
             assertEquals("network_preference_save_failed", failure?.code)
@@ -217,20 +194,10 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
             val testViewModel = NetworkPolicyViewModel(testDeps)
 
             testViewModel.savePreferences(AndroidAppPreferences())
-            withTimeout(5_000) {
-                while (testViewModel.uiState.value.lastOperationFailure == null) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    yield()
-                }
-            }
+            awaitCondition { testViewModel.uiState.value.lastOperationFailure != null }
 
             testViewModel.savePreferences(AndroidAppPreferences())
-            withTimeout(5_000) {
-                while (testViewModel.uiState.value.lastOperationFailure != null) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    yield()
-                }
-            }
+            awaitCondition { testViewModel.uiState.value.lastOperationFailure == null }
 
             assertEquals(null, testViewModel.uiState.value.lastOperationFailure)
         }
@@ -259,12 +226,7 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
             val testViewModel = NetworkPolicyViewModel(testDeps)
 
             testViewModel.savePreferences(AndroidAppPreferences())
-            withTimeout(5_000) {
-                while (testViewModel.uiState.value.lastOperationFailure == null) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    yield()
-                }
-            }
+            awaitCondition { testViewModel.uiState.value.lastOperationFailure != null }
 
             val message = testViewModel.uiState.value.lastOperationFailure?.message.orEmpty()
             assertFalse(message.contains("hunter2"))
@@ -308,12 +270,7 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
             val testViewModel = NetworkPolicyViewModel(testDeps)
 
             testViewModel.savePreferences(AndroidAppPreferences())
-            withTimeout(5_000) {
-                while (testViewModel.uiState.value.lastOperationFailure == null) {
-                    Shadows.shadowOf(Looper.getMainLooper()).idle()
-                    yield()
-                }
-            }
+            awaitCondition { testViewModel.uiState.value.lastOperationFailure != null }
             val recordedFailure = testViewModel.uiState.value.lastOperationFailure
 
             // A burst of unrelated snackbar messages, with no collector attached — some are
@@ -343,4 +300,11 @@ open class NetworkPolicyViewModelTest : AppViewModelTestBase() {
                 collected.isSuccess,
             )
         }
+
+    // FIX8 P1-004-C: delegates to the one shared bounded-polling helper; fully qualified
+    // because this file's own wrapper is (deliberately, per the shared helper's naming
+    // convention) also named `awaitCondition`.
+    private fun awaitCondition(predicate: () -> Boolean) {
+        com.phillipchin.webrtctunnel.awaitCondition(predicate = predicate)
+    }
 }
