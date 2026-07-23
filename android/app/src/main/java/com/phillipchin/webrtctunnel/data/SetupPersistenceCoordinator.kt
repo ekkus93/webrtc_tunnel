@@ -150,6 +150,9 @@ class SetupPersistenceCoordinator(
         }
     }
 
+    // FIX8 P1-003-B: a discarded result could silently leave a caller believing setup was saved
+    // (or rolled back) when it was not.
+    @CheckResult
     suspend fun persist(request: SetupPersistenceRequest): SetupPersistenceResult =
         mutex.withLock {
             val snapshot =

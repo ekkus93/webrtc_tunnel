@@ -138,7 +138,14 @@ private fun finishAtomicWrite(
             try {
                 ops.atomicMove(temp, destination.toPath())
             } catch (e: AtomicMoveNotSupportedException) {
-                android.util.Log.d("ConfigRepository", "Atomic move unavailable, falling back", e)
+                // FIX8 P1-003-C: never log the raw Throwable — an AtomicMoveNotSupportedException's
+                // own message includes the raw source/destination paths, and Log.d's stack-trace
+                // formatting would print them; only a fixed, redacted summary is safe to log.
+                android.util.Log.d(
+                    "ConfigRepository",
+                    "Atomic move unavailable, falling back: " +
+                        SensitiveDataRedactor.redactText(e.message ?: "no detail"),
+                )
                 ops.plainMove(temp, destination.toPath())
             }
             postMoveVerify(destination)

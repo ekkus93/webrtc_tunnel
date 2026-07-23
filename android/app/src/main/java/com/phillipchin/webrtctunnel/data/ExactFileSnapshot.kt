@@ -29,6 +29,7 @@ class ExactFileSnapshot internal constructor(
  * can abort the parent transaction before any mutation rather than starting a commit whose
  * rollback state is unknown.
  */
+@CheckResult
 internal fun captureExactFileSnapshot(file: File): Result<ExactFileSnapshot> =
     try {
         Result.success(
@@ -84,6 +85,7 @@ internal fun restoreExactFileSnapshot(
  * wipes it once the transaction finishes (FIX7 P0-005-E `resetSnapshotSecretBytesAreWiped`)
  * without a filesystem trick.
  */
+@CheckResult
 internal fun captureSetupInputFileSnapshot(
     setupInputFile: File,
     readBytes: (File) -> ByteArray = File::readBytes,

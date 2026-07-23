@@ -14,6 +14,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.phillipchin.webrtctunnel.MainActivity
 import com.phillipchin.webrtctunnel.R
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.ServiceState
 import kotlinx.coroutines.CancellationException
 
@@ -155,7 +156,10 @@ class NotificationController(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            Log.w(TAG, "Unable to show notification", error)
+            // FIX8 P1-003-C: never log the raw Throwable — Log.w's stack-trace formatting could
+            // otherwise surface a detail beyond a safe, redacted message.
+            val redacted = SensitiveDataRedactor.redactText(error.message ?: "unknown error")
+            Log.w(TAG, "Unable to show notification: $redacted")
         }
     }
 }

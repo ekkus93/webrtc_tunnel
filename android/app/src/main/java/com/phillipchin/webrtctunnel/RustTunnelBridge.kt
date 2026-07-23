@@ -43,12 +43,19 @@ private object NativeLibLoader {
     val loadError: Throwable?
 
     init {
-        // FIX7 P1-005-B: safe as runCatching — this runs in a static object's init block,
-        // outside any coroutine, before any coroutine could exist; it cannot observe or
-        // swallow a CancellationException.
-        val load = runCatching { System.loadLibrary("p2p_mobile") }
-        available = load.isSuccess
-        loadError = load.exceptionOrNull()
+        // FIX8 P1-003-A: explicit catch of UnsatisfiedLinkError only, not runCatching (which
+        // would also swallow a fatal Error and any other unrelated Throwable). This runs in a
+        // static object's init block, outside any coroutine, before any coroutine could exist,
+        // so no CancellationException handling applies here either.
+        val failure: UnsatisfiedLinkError? =
+            try {
+                System.loadLibrary("p2p_mobile")
+                null
+            } catch (error: UnsatisfiedLinkError) {
+                error
+            }
+        available = failure == null
+        loadError = failure
     }
 }
 

@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.viewmodel.ImportExportState
 import com.phillipchin.webrtctunnel.viewmodel.ImportExportViewModel
 import com.phillipchin.webrtctunnel.viewmodel.ImportKind
@@ -230,13 +231,8 @@ private fun PublicIdentityShareRow(vm: ImportExportViewModel) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AppOutlinedButton(
             onClick = {
-                // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching —
-                // publicIdentityForShare() is a suspend call; runCatching's Throwable-catching
-                // (and the discarded Result before this fix) would have silently swallowed a
-                // real coroutine cancellation.
                 scope.launch {
-                    try {
-                        val payload = vm.publicIdentityForShare()
+                    performPublicIdentitySharingAction(vm, "share") { payload ->
                         val intent =
                             Intent.createChooser(
                                 Intent(Intent.ACTION_SEND).apply {
@@ -247,10 +243,6 @@ private fun PublicIdentityShareRow(vm: ImportExportViewModel) {
                                 "Share public identity",
                             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         context.startActivity(intent)
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (error: Exception) {
-                        android.util.Log.w(IMPORT_EXPORT_SCREEN_TAG, "Unable to share public identity", error)
                     }
                 }
             },
@@ -263,12 +255,8 @@ private fun PublicIdentityShareRow(vm: ImportExportViewModel) {
         AppOutlinedButton(
             onClick = {
                 scope.launch {
-                    try {
-                        clipboard.setText(AnnotatedString(vm.publicIdentityForShare()))
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (error: Exception) {
-                        android.util.Log.w(IMPORT_EXPORT_SCREEN_TAG, "Unable to copy public identity", error)
+                    performPublicIdentitySharingAction(vm, "copy") { payload ->
+                        clipboard.setText(AnnotatedString(payload))
                     }
                 }
             },
@@ -280,6 +268,28 @@ private fun PublicIdentityShareRow(vm: ImportExportViewModel) {
         }
     }
 }
+
+// FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — publicIdentityForShare()
+// is a suspend call; runCatching's Throwable-catching would silently swallow a real cancellation.
+// Shared by both the share and copy actions; declared as a property of function type (not a
+// `fun`) so it doesn't count toward detekt's per-file TooManyFunctions threshold.
+private val performPublicIdentitySharingAction:
+    suspend (ImportExportViewModel, String, (String) -> Unit) -> Unit =
+    { vm, failureVerb, perform ->
+        try {
+            perform(vm.publicIdentityForShare())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // FIX8 P1-003-C: never log the raw Throwable — Log.w's stack-trace formatting could
+            // otherwise surface a detail beyond a safe message.
+            android.util.Log.w(
+                IMPORT_EXPORT_SCREEN_TAG,
+                "Unable to $failureVerb public identity: " +
+                    SensitiveDataRedactor.redactText(error.message ?: "unknown error"),
+            )
+        }
+    }
 
 @Composable
 private fun ImportExportAdvancedSection(

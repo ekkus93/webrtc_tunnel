@@ -223,7 +223,9 @@ class SetupPersistenceCoordinatorForwardsTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(cancellingForwards).persist(request(listOf(forward("new", 2222))))
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result = coordinator(cancellingForwards).persist(request(listOf(forward("new", 2222))))
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -248,7 +250,10 @@ class SetupPersistenceCoordinatorForwardsTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(forwardsRepo, config = cancellingConfig).persist(request(listOf(forward("new", 2222))))
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result =
+                    coordinator(forwardsRepo, config = cancellingConfig).persist(request(listOf(forward("new", 2222))))
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }

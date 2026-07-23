@@ -174,7 +174,9 @@ class SetupPersistenceCoordinatorExactBytesTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(SetupInputCancelsAfterRealMove(context)).persist(request())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result = coordinator(SetupInputCancelsAfterRealMove(context)).persist(request())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -278,7 +280,9 @@ class SetupPersistenceCoordinatorExactBytesTest {
             val trackingCancel = TrackedSnapshotConfig(context, trackedCancel, cancelConfigStage = true)
             var caught: CancellationException? = null
             try {
-                coordinator(trackingCancel).persist(request())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result = coordinator(trackingCancel).persist(request())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -293,7 +297,9 @@ class SetupPersistenceCoordinatorExactBytesTest {
             val trackingFatal = TrackedSnapshotConfig(context, trackedFatal, throwFatalError = true)
             var caughtFatal: FatalTestError? = null
             try {
-                coordinator(trackingFatal).persist(request())
+                // Captured to satisfy detekt's IgnoredReturnValue — the fatal Error always
+                // throws before persist() can actually return here.
+                val result = coordinator(trackingFatal).persist(request())
             } catch (fatal: FatalTestError) {
                 caughtFatal = fatal
             }

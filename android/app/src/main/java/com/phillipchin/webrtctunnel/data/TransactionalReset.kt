@@ -105,6 +105,9 @@ class TransactionalResetCoordinator(
 ) {
     private val resetMutex = Mutex()
 
+    // FIX8 P1-003-B: a discarded result could silently leave a caller believing a reset
+    // succeeded (or rolled back cleanly) when it did not.
+    @CheckResult
     suspend fun resetConfiguration(): ResetResult =
         resetMutex.withLock {
             // Step 1: capture exact prior state (P0-001 snapshot)

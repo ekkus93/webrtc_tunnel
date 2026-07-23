@@ -132,17 +132,32 @@ class ForwardsConfigStore(
                 Result.failure(error)
             }
         } else {
-            // FIX7 P1-005-B: safe as runCatching — readAndDecodeForwards() is a pure
-            // synchronous read + JSON decode (already distinguishes its own read/parse
-            // exception types internally), no native call, no mutation.
-            runCatching { readAndDecodeForwards() }
+            // FIX8 P1-003-A: explicit catch, not runCatching — readAndDecodeForwards() is a pure
+            // synchronous read + JSON decode (already distinguishes its own read/parse exception
+            // types internally; no native call, no mutation) and cannot observe a
+            // CancellationException, but runCatching would also swallow a fatal Error.
+            try {
+                Result.success(readAndDecodeForwards())
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
         }.onFailure { error ->
+            // FIX8 P1-003-C: never log the raw Throwable — Log.w's stack-trace formatting would
+            // print its full cause chain, which for these types wraps a raw IOException/
+            // SerializationException whose message may include a file path or content. Each
+            // ForwardsConfigException subtype already carries a fixed message; only its safe
+            // cause message (redacted) is appended.
+            val redactedCause =
+                SensitiveDataRedactor.redactText((error as? ForwardsConfigException)?.cause?.message ?: "unknown")
             when (error) {
-                is ForwardsReadException -> Log.w(TAG, "Failed to read forwards.json", error)
+                is ForwardsReadException -> Log.w(TAG, "Failed to read forwards.json: $redactedCause")
                 is ForwardsParseException ->
-                    Log.w(TAG, "forwards.json is corrupt; keeping existing forwards instead of erasing", error)
-                is ForwardsWriteException -> Log.w(TAG, "Failed to seed default forwards.json", error)
-                else -> Log.w(TAG, "Unexpected forwards.json failure", error)
+                    Log.w(
+                        TAG,
+                        "forwards.json is corrupt; keeping existing forwards instead of erasing: $redactedCause",
+                    )
+                is ForwardsWriteException -> Log.w(TAG, "Failed to seed default forwards.json: $redactedCause")
+                else -> Log.w(TAG, "Unexpected forwards.json failure: $redactedCause")
             }
         }
 

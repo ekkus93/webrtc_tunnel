@@ -156,7 +156,9 @@ class TransactionalResetCoordinatorCancellationTest {
 
             var caught: CancellationException? = null
             try {
-                cancellingCoordinator.resetConfiguration()
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before resetConfiguration() can actually return here.
+                val result = cancellingCoordinator.resetConfiguration()
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }

@@ -152,6 +152,7 @@ open class ConfigRepository internal constructor(
      * threshold) — open so tests can inject a capture failure the same way every other reset
      * stage's apply/restore path can.
      */
+    @get:CheckResult
     internal open val captureConfigSnapshotForReset: Result<ExactFileSnapshot>
         get() = captureExactFileSnapshot(configFile)
 
@@ -337,14 +338,20 @@ open class ConfigRepository internal constructor(
  * An extension function (not a class member) so it doesn't count against
  * [ConfigRepository]'s detekt TooManyFunctions threshold, matching [writeConfig].
  */
+@CheckResult
 fun ConfigRepository.loadSetupInputResult(): Result<SetupConfigInput> {
     val setupInputFile = setupInputFileForSnapshot
     if (!setupInputFile.exists()) {
         return Result.success(SetupConfigInput())
     }
-    // FIX7 P1-005-B: safe as runCatching — a pure synchronous file read + JSON decode, no
-    // native call, no mutation, no suspend chain.
-    return runCatching { Json.decodeFromString<SetupConfigInput>(setupInputFile.readText()) }
+    // FIX8 P1-003-A: explicit catch, not runCatching — a pure synchronous file read + JSON
+    // decode (no native call, no mutation, no suspend chain) cannot observe a
+    // CancellationException, but runCatching would also swallow a fatal Error.
+    return try {
+        Result.success(Json.decodeFromString<SetupConfigInput>(setupInputFile.readText()))
+    } catch (error: Exception) {
+        Result.failure(error)
+    }
 }
 
 /**
@@ -403,17 +410,20 @@ private fun debugAndroidIceModeOverrideOrNull(): String? {
     if (!BuildConfig.DEBUG) {
         return null
     }
-    // FIX7 P1-005-B: safe as runCatching — a synchronous debug-only OS property read (plain
-    // ProcessBuilder, not the Rust/JNI bridge), no mutation, no suspend chain.
+    // FIX8 P1-003-A: explicit catch, not runCatching — a synchronous debug-only OS property
+    // read (plain ProcessBuilder, not the Rust/JNI bridge; no mutation, no suspend chain)
+    // cannot observe a CancellationException, but runCatching would also swallow a fatal Error.
     val raw =
-        runCatching {
+        try {
             ProcessBuilder("getprop", "debug.p2p.android_ice_mode")
                 .redirectErrorStream(true)
                 .start()
                 .inputStream
                 .bufferedReader()
                 .use { reader -> reader.readLine() }
-        }.getOrNull()
+        } catch (expected: Exception) {
+            null
+        }
     val trimmed = raw?.trim()?.lowercase().orEmpty()
     return if (trimmed in VALID_ANDROID_ICE_MODES) trimmed else null
 }

@@ -179,13 +179,15 @@ class SettingsViewModel(
      * never a bare `"{}"`, which would be indistinguishable from a legitimately idle/empty
      * status. Used for both the "copy status JSON" clipboard action and diagnostics share.
      *
-     * FIX7 P1-005-B: safe as runCatching — a pure in-memory encode of an already-held
-     * StateFlow value (no native call, no file/suspend involvement), so it cannot swallow
-     * a fatal Error or a laundered CancellationException that matters here. */
+     * FIX8 P1-003-A: explicit catch, not runCatching — a pure in-memory encode of an
+     * already-held StateFlow value (no native call, no file/suspend involvement) cannot observe
+     * a CancellationException, but runCatching would also swallow a fatal Error. */
     fun statusJson(): String =
-        runCatching {
+        try {
             Json.encodeToString(SensitiveDataRedactor.redactStatus(deps.tunnelRepository.status.value))
-        }.getOrElse { error -> statusDiagnosticsErrorJson(error.message) }
+        } catch (error: Exception) {
+            statusDiagnosticsErrorJson(error.message)
+        }
 
     /** Redacted config file contents, or an explicit marker distinguishing "no config file
      * yet" (expected before setup completes) from "config file present but unreadable/failed
@@ -195,15 +197,17 @@ class SettingsViewModel(
         withContext(deps.dispatchers.io) {
             val file = File(deps.configRepository.configPath)
             if (!file.exists()) return@withContext "(no config file present)"
-            // FIX7 P1-005-B: safe as runCatching — a synchronous file read + redact with no
-            // suspend calls inside the lambda itself (the outer withContext already handled
-            // dispatching), no native call, and read-only.
-            runCatching { SensitiveDataRedactor.redactText(file.readText()) }
-                .getOrElse { error ->
-                    "(config read/redaction failed: " +
-                        SensitiveDataRedactor.redactText(error.message ?: "unknown error") +
-                        ")"
-                }
+            // FIX8 P1-003-A: explicit catch, not runCatching — a synchronous file read + redact
+            // with no suspend calls inside this block itself (the outer withContext already
+            // handled dispatching) cannot observe a CancellationException, but runCatching would
+            // also swallow a fatal Error.
+            try {
+                SensitiveDataRedactor.redactText(file.readText())
+            } catch (error: Exception) {
+                "(config read/redaction failed: " +
+                    SensitiveDataRedactor.redactText(error.message ?: "unknown error") +
+                    ")"
+            }
         }
 
     // P2-003: Uses TransactionalResetCoordinator for atomic multi-file reset.

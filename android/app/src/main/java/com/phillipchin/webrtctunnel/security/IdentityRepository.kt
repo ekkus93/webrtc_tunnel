@@ -386,16 +386,31 @@ class IdentityRepository(
  * state), so it lives at top level, which also keeps [IdentityRepository] under detekt's
  * TooManyFunctions threshold.
  *
- * FIX7 P1-005-B: safe as runCatching — a pure synchronous file read plus simple validation
- * (no native call, no persistence), so it cannot observe or swallow a CancellationException.
+ * FIX8 P1-003-A: explicit catch, not runCatching — a pure synchronous file read plus simple
+ * validation (no native call, no persistence, no suspend chain) cannot observe a
+ * CancellationException, but runCatching would also swallow a fatal Error.
+ *
+ * [readText] is injectable (defaulting to the real read) so a test can prove a fatal `Error` or
+ * a `SecurityException` from the read step propagates/becomes `Result.failure` respectively,
+ * without depending on a real file large/permission-restricted enough to trigger either
+ * deterministically (FIX8 P1-003-D).
  */
-fun readPrivateIdentityFile(path: String): Result<String> =
-    runCatching {
+@CheckResult
+fun readPrivateIdentityFile(
+    path: String,
+    readText: (File) -> String = File::readText,
+): Result<String> =
+    try {
         val source = File(path)
-        require(source.exists()) { "Identity file not found: $path" }
-        val value = source.readText()
+        // FIX8 P1-003-C/D: never embed the raw path in the exception message — this Result's
+        // failure message reaches UI state (SetupIdentityController) through
+        // SensitiveDataRedactor.redactSecretValues, which does not scrub arbitrary paths.
+        require(source.exists()) { "Identity file not found" }
+        val value = readText(source)
         require(value.isNotBlank()) { "Identity file is empty" }
-        value
+        Result.success(value)
+    } catch (error: Exception) {
+        Result.failure(error)
     }
 
 // Top-level File helpers (not IdentityRepository members) to keep that class under detekt's

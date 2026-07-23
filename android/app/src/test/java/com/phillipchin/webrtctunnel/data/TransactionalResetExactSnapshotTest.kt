@@ -115,7 +115,11 @@ class TransactionalResetExactSnapshotTest {
                         runBlocking { it.refresh() }
                     },
                 )
-            absentCoordinator.resetConfiguration()
+            val absentResetResult = absentCoordinator.resetConfiguration()
+            assertTrue(
+                "forwards throwOnSave forces this reset to fail and roll back",
+                absentResetResult is ResetResult.Failed,
+            )
             assertFalse(
                 "setup input absent before reset must be restored as absent, not written as default JSON",
                 File(context.filesDir, "setup_input.json").exists(),
@@ -133,7 +137,11 @@ class TransactionalResetExactSnapshotTest {
                         runBlocking { it.refresh() }
                     },
                 )
-            presentCoordinator.resetConfiguration()
+            val presentResetResult = presentCoordinator.resetConfiguration()
+            assertTrue(
+                "forwards throwOnSave forces this reset to fail and roll back",
+                presentResetResult is ResetResult.Failed,
+            )
             assertTrue(
                 "setup input present (even if default-valued) before reset must be restored as present",
                 File(context.filesDir, "setup_input.json").exists(),
@@ -249,7 +257,10 @@ class TransactionalResetExactSnapshotTest {
 
             var caught: CancellationException? = null
             try {
-                cancellingCoordinator.resetConfiguration()
+                // Captured (rather than a bare statement) to satisfy detekt's
+                // IgnoredReturnValue on @CheckResult — cancellation always throws before
+                // resetConfiguration() can actually return here, so `result` is never read.
+                val result = cancellingCoordinator.resetConfiguration()
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -281,7 +292,9 @@ class TransactionalResetExactSnapshotTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator.resetConfiguration()
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before resetConfiguration() can actually return here.
+                val result = coordinator.resetConfiguration()
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -345,7 +358,9 @@ class TransactionalResetExactSnapshotTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator.resetConfiguration()
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before resetConfiguration() can actually return here.
+                val result = coordinator.resetConfiguration()
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -380,7 +395,9 @@ class TransactionalResetExactSnapshotTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator.resetConfiguration()
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before resetConfiguration() can actually return here.
+                val result = coordinator.resetConfiguration()
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }

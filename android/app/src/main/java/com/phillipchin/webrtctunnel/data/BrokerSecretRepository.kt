@@ -79,6 +79,7 @@ class BrokerSecretRepository internal constructor(
      * before rendering a config that references it. */
     val path: String = passwordFile.absolutePath
 
+    @CheckResult
     fun captureSnapshot(): Result<ExactFileSnapshot> =
         synchronized(lock) {
             try {

@@ -490,7 +490,13 @@ class TunnelForegroundService
                     Log.e(tag, redacted)
                     notifications.show(notifications.buildStatusNotification(state, redacted))
                 } catch (error: Exception) {
-                    Log.e(tag, "Failed to publish quarantine diagnostic (code=$code)", error)
+                    // FIX8 P1-003-C: never log the raw Throwable — Log.e's stack-trace
+                    // formatting could otherwise surface a detail beyond a safe message.
+                    Log.e(
+                        tag,
+                        "Failed to publish quarantine diagnostic (code=$code): " +
+                            SensitiveDataRedactor.redactText(error.message ?: "unknown error"),
+                    )
                 }
             }
 

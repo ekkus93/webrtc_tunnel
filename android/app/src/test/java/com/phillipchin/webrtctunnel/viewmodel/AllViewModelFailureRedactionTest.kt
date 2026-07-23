@@ -20,6 +20,7 @@ import java.io.File
 
 private const val SECRET = "hunter2-sentinel-98765"
 private const val SECRET_MESSAGE = "operation failed password=$SECRET"
+private const val PATH_SENTINEL = "sentinel-a1b2c3-private-segment"
 
 /**
  * FIX7 P1-004-D: `allMutatingViewModelFailureStatesRejectSecretSentinel` — a single secret
@@ -36,6 +37,43 @@ class AllViewModelFailureRedactionTest : AppViewModelTestBase() {
             assertNetworkPolicyPreferenceFailureRedactsSecret()
             assertImportExportFailureRedactsSecret()
             assertSetupSavePrivateIdentityImportFailureRedactsSecret()
+        }
+
+    @Test
+    fun rawPrivatePathSentinelNeverAppearsInProductionDiagnosticStateOrLogs() =
+        runBlocking {
+            // FIX8 P1-003-D: importIdentityFromPath's failure path
+            // (SetupIdentityController -> readPrivateIdentityFile -> redactSecretValues) must
+            // never let a raw private file path reach UI state — redactSecretValues (unlike
+            // redactText) has no generic path-scrubbing rule, so the production fix (FIX8
+            // P1-003-C/D) is to never embed the path in readPrivateIdentityFile's own exception
+            // message in the first place.
+            val testDeps =
+                AppDependencies(
+                    context = app,
+                    nativeBridgeFactory = { recordingBridge },
+                    configRepository = configRepository,
+                    networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                    identityRepository = deps.identityRepository,
+                    dispatchers = inlineTestDispatchers(),
+                )
+            val vm = SetupViewModel(testDeps)
+            val missingPath = File(app.filesDir, "$PATH_SENTINEL/identity.toml").absolutePath
+            vm.setImportIdentityPath(missingPath)
+            vm.setInput(vm.state.value.input.copy(localPeerId = "android-phone"))
+
+            vm.identity.importIdentityFromPath()
+            withTimeout(5_000) {
+                while (vm.state.value.errorMessage == null) {
+                    Shadows.shadowOf(Looper.getMainLooper()).idle()
+                    yield()
+                }
+            }
+
+            assertFalse(
+                "SetupViewModel import errorMessage must not contain the raw private file path",
+                vm.state.value.errorMessage.orEmpty().contains(PATH_SENTINEL),
+            )
         }
 
     private suspend fun assertNetworkPolicyPreferenceFailureRedactsSecret() {

@@ -528,7 +528,9 @@ class SetupPersistenceCoordinatorTest {
             val identity = IdentityRepository(context, CancellingCrypto())
             var caught: CancellationException? = null
             try {
-                coordinator(RecordingPreferences(), identity = identity).persist(fullRequest())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result = coordinator(RecordingPreferences(), identity = identity).persist(fullRequest())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -552,7 +554,9 @@ class SetupPersistenceCoordinatorTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(RecordingPreferences(), identity = identity).persist(fullRequest())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result = coordinator(RecordingPreferences(), identity = identity).persist(fullRequest())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -570,7 +574,10 @@ class SetupPersistenceCoordinatorTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(RecordingPreferences(), brokerSecret = cancellingBrokerSecret).persist(fullRequest())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result =
+                    coordinator(RecordingPreferences(), brokerSecret = cancellingBrokerSecret).persist(fullRequest())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -590,7 +597,10 @@ class SetupPersistenceCoordinatorTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(RecordingPreferences(), config = CancellingSetupInput(context)).persist(fullRequest())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result =
+                    coordinator(RecordingPreferences(), config = CancellingSetupInput(context)).persist(fullRequest())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -613,7 +623,9 @@ class SetupPersistenceCoordinatorTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(prefs).persist(fullRequest())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result = coordinator(prefs).persist(fullRequest())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -639,7 +651,9 @@ class SetupPersistenceCoordinatorTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(prefs, config = CancellingConfig(context)).persist(fullRequest())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result = coordinator(prefs, config = CancellingConfig(context)).persist(fullRequest())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -670,7 +684,9 @@ class SetupPersistenceCoordinatorTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(prefs, config = CancellingConfig(context)).persist(fullRequest())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result = coordinator(prefs, config = CancellingConfig(context)).persist(fullRequest())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -699,7 +715,9 @@ class SetupPersistenceCoordinatorTest {
 
             var caught: CancellationException? = null
             try {
-                coordinator(prefs, config = CancellingConfig(context)).persist(fullRequest())
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result = coordinator(prefs, config = CancellingConfig(context)).persist(fullRequest())
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -760,8 +778,14 @@ class SetupPersistenceCoordinatorTest {
                 )
             var caught: CancellationException? = null
             try {
-                coordinator(RecordingPreferences(), config = CancellingConfig(context), brokerSecret = trackingCancel)
-                    .persist(request(brokerSecretChange = BrokerSecretChange.Set("new-secret-cancel")))
+                // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                // throws before persist() can actually return here.
+                val result =
+                    coordinator(
+                        RecordingPreferences(),
+                        config = CancellingConfig(context),
+                        brokerSecret = trackingCancel,
+                    ).persist(request(brokerSecretChange = BrokerSecretChange.Set("new-secret-cancel")))
             } catch (cancelled: CancellationException) {
                 caught = cancelled
             }
@@ -788,12 +812,17 @@ class SetupPersistenceCoordinatorTest {
             val probe = ConcurrencyProbe(context)
             val coordinator = coordinator(RecordingPreferences(), config = probe)
 
-            val firstJob = launch(parallelDispatcher()) { coordinator.persist(request()) }
+            val firstJob =
+                launch(parallelDispatcher()) {
+                    val result = coordinator.persist(request())
+                    assertTrue("the first concurrent save must succeed", result is SetupPersistenceResult.Success)
+                }
             probe.firstEntered.await()
 
             val secondJob =
                 launch(parallelDispatcher(), start = CoroutineStart.UNDISPATCHED) {
-                    coordinator.persist(request())
+                    val result = coordinator.persist(request())
+                    assertTrue("the second concurrent save must succeed", result is SetupPersistenceResult.Success)
                 }
 
             probe.releaseFirst.complete(Unit)

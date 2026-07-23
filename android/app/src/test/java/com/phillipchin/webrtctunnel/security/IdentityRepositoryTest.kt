@@ -282,6 +282,32 @@ class IdentityRepositoryTest {
         )
     }
 
+    // FIX8 P1-003-D: readPrivateIdentityFile's injectable `readText` seam lets these prove real
+    // Exception/Error normalization without depending on a flaky filesystem permission trick.
+    @Test(expected = OutOfMemoryError::class)
+    fun fatalErrorFromParserOrPropertyReadPropagates() {
+        val existing = File(context.filesDir, "fatal_error_identity.toml").apply { writeText("placeholder") }
+
+        // Captured to satisfy detekt's IgnoredReturnValue — the OutOfMemoryError always
+        // throws before readPrivateIdentityFile() can actually return here.
+        val result =
+            readPrivateIdentityFile(
+                existing.absolutePath,
+                readText = { throw OutOfMemoryError("simulated fatal error") },
+            )
+    }
+
+    @Test
+    fun securityExceptionFromEachResultApiBecomesFailureOrDocumentedThrow() {
+        val existing = File(context.filesDir, "security_exception_identity.toml").apply { writeText("placeholder") }
+
+        val result =
+            readPrivateIdentityFile(existing.absolutePath, readText = { throw SecurityException("permission denied") })
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is SecurityException)
+    }
+
     private class TestAesGcmCrypto : IdentityCrypto {
         private val key: SecretKey = KeyGenerator.getInstance("AES").apply { init(128) }.generateKey()
 

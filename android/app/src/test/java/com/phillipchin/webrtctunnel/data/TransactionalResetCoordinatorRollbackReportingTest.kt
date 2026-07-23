@@ -79,8 +79,12 @@ class TransactionalResetCoordinatorRollbackReportingTest {
             val fakeForwardsRepo = ForwardsRepository(fakeStore, AppDispatchers()).also { runBlocking { it.refresh() } }
             val failingCoordinator = TransactionalResetCoordinator(failingConfigRepo, fakeForwardsRepo)
 
-            failingCoordinator.resetConfiguration()
+            val result = failingCoordinator.resetConfiguration()
 
+            assertTrue(
+                "forwards throwOnSave and the delete failure both force this reset to fail",
+                result is ResetResult.Failed,
+            )
             // The reset stage created config.toml; since the rollback delete genuinely
             // failed (not merely reported failure), the file must still physically exist.
             assertTrue(

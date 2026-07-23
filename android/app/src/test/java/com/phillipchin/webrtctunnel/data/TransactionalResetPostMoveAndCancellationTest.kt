@@ -175,7 +175,10 @@ class TransactionalResetPostMoveAndCancellationTest {
                     }
                 var caught: CancellationException? = null
                 try {
-                    TransactionalResetCoordinator(cancellingConfig, readyForwardsRepo()).resetConfiguration()
+                    // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                    // throws before resetConfiguration() can actually return here.
+                    val result =
+                        TransactionalResetCoordinator(cancellingConfig, readyForwardsRepo()).resetConfiguration()
                 } catch (cancelled: CancellationException) {
                     caught = cancelled
                 }
@@ -193,7 +196,10 @@ class TransactionalResetPostMoveAndCancellationTest {
                     }
                 var caught: CancellationException? = null
                 try {
-                    TransactionalResetCoordinator(cancellingSetup, readyForwardsRepo()).resetConfiguration()
+                    // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                    // throws before resetConfiguration() can actually return here.
+                    val result =
+                        TransactionalResetCoordinator(cancellingSetup, readyForwardsRepo()).resetConfiguration()
                 } catch (cancelled: CancellationException) {
                     caught = cancelled
                 }
@@ -217,8 +223,11 @@ class TransactionalResetPostMoveAndCancellationTest {
                     }
                 var caught: CancellationException? = null
                 try {
-                    TransactionalResetCoordinator(repo, readyForwardsRepo(cancellingForwardsStore))
-                        .resetConfiguration()
+                    // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                    // throws before resetConfiguration() can actually return here.
+                    val result =
+                        TransactionalResetCoordinator(repo, readyForwardsRepo(cancellingForwardsStore))
+                            .resetConfiguration()
                 } catch (cancelled: CancellationException) {
                     caught = cancelled
                 }
@@ -269,7 +278,9 @@ class TransactionalResetPostMoveAndCancellationTest {
                             throw CancellationException("cancelled")
                     }
                 try {
-                    trackedBytesCoordinator(cancellingConfig, tracked).resetConfiguration()
+                    // Captured to satisfy detekt's IgnoredReturnValue — cancellation always
+                    // throws before resetConfiguration() can actually return here.
+                    val result = trackedBytesCoordinator(cancellingConfig, tracked).resetConfiguration()
                 } catch (ignored: CancellationException) {
                     // expected
                 }
@@ -285,7 +296,9 @@ class TransactionalResetPostMoveAndCancellationTest {
                         override suspend fun writeConfigAtomically(contents: String): Result<Unit> = error("fatal boom")
                     }
                 try {
-                    trackedBytesCoordinator(fatalConfig, tracked).resetConfiguration()
+                    // Captured to satisfy detekt's IgnoredReturnValue — the fatal error
+                    // always throws before resetConfiguration() can actually return here.
+                    val result = trackedBytesCoordinator(fatalConfig, tracked).resetConfiguration()
                 } catch (ignored: IllegalStateException) {
                     // expected — an uncaught RuntimeException from a stage propagates
                 }
