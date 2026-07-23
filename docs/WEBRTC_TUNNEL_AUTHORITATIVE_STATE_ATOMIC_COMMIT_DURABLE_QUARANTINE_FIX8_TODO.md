@@ -154,13 +154,13 @@ related tests
 
 ## P0-001-A — Add a private identity draft owner
 
-- [ ] Add a non-data `SetupIdentityDraft` owned by `SetupViewModel`. (`SHA: ______`)
-- [ ] Store replacement private bytes, canonical public identity, and canonical peer ID only in that draft. (`SHA: ______`)
-- [ ] Do not expose private bytes through `SetupWizardState`, `StateFlow`, Compose state, `SavedStateHandle`, logs, or exceptions. (`SHA: ______`)
-- [ ] Wipe the previous byte array before replacing the draft. (`SHA: ______`)
-- [ ] Wipe on setup cancel, ViewModel `onCleared`, and successful final commit. (`SHA: ______`)
-- [ ] A save obtains an owned copy/transfer and wipes the save-owned bytes in `finally`. (`SHA: ______`)
-- [ ] A failed save may retain the original draft for retry; the failed attempt's copy must still be wiped. (`SHA: ______`)
+- [x] Add a non-data `SetupIdentityDraft` owned by `SetupViewModel`. (`SHA: fae7aa9`)
+- [x] Store replacement private bytes, canonical public identity, and canonical peer ID only in that draft. (`SHA: fae7aa9`)
+- [x] Do not expose private bytes through `SetupWizardState`, `StateFlow`, Compose state, `SavedStateHandle`, logs, or exceptions. (`SHA: fae7aa9`)
+- [x] Wipe the previous byte array before replacing the draft. (`SHA: fae7aa9`)
+- [x] Wipe on setup cancel, ViewModel `onCleared`, and successful final commit. (`SHA: 6a390ef`)
+- [x] A save obtains an owned copy/transfer and wipes the save-owned bytes in `finally`. (`SHA: 6a390ef`)
+- [x] A failed save may retain the original draft for retry; the failed attempt's copy must still be wiped. (`SHA: 6a390ef`)
 
 Target shape:
 
@@ -210,14 +210,14 @@ Do not make either class a data class.
 
 ## P0-001-B — Refactor every setup identity action
 
-- [ ] `importIdentityFromPath()` reads, validates, requires canonical private/public/peer ID, and replaces the draft. (`SHA: ______`)
-- [ ] `importIdentityFromUri()` does the same and no longer calls `IdentityRepository.storeEncryptedIdentity`. (`SHA: ______`)
-- [ ] `generateIdentity()` does the same and no longer calls `IdentityRepository.storeEncryptedIdentity`. (`SHA: ______`)
-- [ ] Remove `canonicalPublicIdentity.orEmpty()`. Missing canonical public identity is `setup_identity_invalid`. (`SHA: ______`)
-- [ ] Remove `generated.peerId ?: current.input.localPeerId`. Missing generated peer ID fails closed. (`SHA: ______`)
-- [ ] Do not re-read an import path at final save; save uses the validated draft to avoid TOCTOU replacement. (`SHA: ______`)
-- [ ] Wipe every temporary encoded private `ByteArray` after ownership is transferred or validation fails. (`SHA: ______`)
-- [ ] Redact native/file error messages before assigning UI state. (`SHA: ______`)
+- [x] `importIdentityFromPath()` reads, validates, requires canonical private/public/peer ID, and replaces the draft. (`SHA: 6a390ef`)
+- [x] `importIdentityFromUri()` does the same and no longer calls `IdentityRepository.storeEncryptedIdentity`. (`SHA: 6a390ef`)
+- [x] `generateIdentity()` does the same and no longer calls `IdentityRepository.storeEncryptedIdentity`. (`SHA: 6a390ef`)
+- [x] Remove `canonicalPublicIdentity.orEmpty()`. Missing canonical public identity is `setup_identity_invalid`. (`SHA: 6a390ef`)
+- [x] Remove `generated.peerId ?: current.input.localPeerId`. Missing generated peer ID fails closed. (`SHA: 6a390ef`)
+- [x] Do not re-read an import path at final save; save uses the validated draft to avoid TOCTOU replacement. (`SHA: c3f3a07`)
+- [x] Wipe every temporary encoded private `ByteArray` after ownership is transferred or validation fails. (`SHA: 6a390ef`)
+- [x] Redact native/file error messages before assigning UI state. (`SHA: c3f3a07` — `SensitiveDataRedactor.redactSecretValues`; further hardened in FIX8 P1-003 for `readPrivateIdentityFile`'s raw-path case, `SHA: a3d8a6a`)
 
 Suggested canonicalization helper:
 
@@ -249,12 +249,12 @@ Do not silently use `sourcePrivateIdentity` as the canonical value. If the nativ
 
 ## P0-001-C — Make setup forwards a pure draft
 
-- [ ] `refreshForwards()` loads a baseline copy into the wizard draft. (`SHA: ______`)
-- [ ] `upsertForward()` validates and changes only `SetupViewModel._forwards`. (`SHA: ______`)
-- [ ] `deleteForward()` changes only `SetupViewModel._forwards`. (`SHA: ______`)
-- [ ] Remove setup-controller calls to `ForwardsRepository.upsertWithReceipt/deleteWithReceipt`. (`SHA: ______`)
-- [ ] The authoritative repository/list/file remains unchanged until final setup transaction success. (`SHA: ______`)
-- [ ] Setup cancel discards the draft and asynchronously reloads the authoritative baseline. (`SHA: ______`)
+- [x] `refreshForwards()` loads a baseline copy into the wizard draft. (`SHA: 6a390ef` — `refreshForwardsBaseline()` already did this; unaffected by the P0-001-C gap)
+- [x] `upsertForward()` validates and changes only `SetupViewModel._forwards`. (`SHA: 4bbd63e`)
+- [x] `deleteForward()` changes only `SetupViewModel._forwards`. (`SHA: 4bbd63e`)
+- [x] Remove setup-controller calls to `ForwardsRepository.upsertWithReceipt/deleteWithReceipt`. (`SHA: 4bbd63e`)
+- [x] The authoritative repository/list/file remains unchanged until final setup transaction success. (`SHA: 4bbd63e`)
+- [x] Setup cancel discards the draft and asynchronously reloads the authoritative baseline. (`SHA: 6a390ef` — `cancel()`'s `applyState(SetupWizardState())` + `forwardsEditor.refreshForwards()` already did this; only meaningfully proven once the edit path itself stopped writing through, `SHA: 4bbd63e`)
 
 Target mutation:
 
@@ -280,39 +280,39 @@ The user-facing text must not claim the forward is authoritatively saved before 
 
 ## P0-001-D — Final-save identity resolution
 
-- [ ] `SetupSaveController` checks the draft first. (`SHA: ______`)
-- [ ] If a draft exists, request an `IdentityReplacement` using the save-owned bytes. (`SHA: ______`)
-- [ ] If no draft exists, read the already-stored identity coherently through `IdentityRepository`. (`SHA: ______`)
-- [ ] Remove final-save branching based on `importIdentityPath`. (`SHA: ______`)
-- [ ] Final save compares canonical draft/stored peer ID to `input.localPeerId` and fails closed. (`SHA: ______`)
-- [ ] On successful persistence, clear the draft; on failure leave the original draft available for retry. (`SHA: ______`)
+- [x] `SetupSaveController` checks the draft first. (`SHA: 6a390ef`)
+- [x] If a draft exists, request an `IdentityReplacement` using the save-owned bytes. (`SHA: 6a390ef`)
+- [x] If no draft exists, read the already-stored identity coherently through `IdentityRepository`. (`SHA: 6a390ef`)
+- [x] Remove final-save branching based on `importIdentityPath`. (`SHA: c3f3a07`)
+- [x] Final save compares canonical draft/stored peer ID to `input.localPeerId` and fails closed. (`SHA: 6a390ef`)
+- [x] On successful persistence, clear the draft; on failure leave the original draft available for retry. (`SHA: 6a390ef`)
 
 ## P0-001-E — Exact tests
 
 Add/strengthen:
 
-- [ ] `setupWizardPathImportDoesNotMutateLiveIdentityBeforeFinalSave` (`SHA: ______`)
-- [ ] `setupWizardUriImportDoesNotMutateLiveIdentityBeforeFinalSave` (`SHA: ______`)
-- [ ] `setupWizardGenerateDoesNotMutateLiveIdentityBeforeFinalSave` (`SHA: ______`)
-- [ ] `setupWizardForwardUpsertDoesNotMutateLiveForwardsOrConfigBeforeFinalSave` (`SHA: ______`)
-- [ ] `setupWizardForwardDeleteDoesNotMutateLiveForwardsOrConfigBeforeFinalSave` (`SHA: ______`)
-- [ ] `abandoningSetupWizardLeavesEveryAuthoritativeFileByteExact` (`SHA: ______`)
-- [ ] `setupViewModelClearWipesDraftPrivateBytes` (`SHA: ______`)
-- [ ] `replacingDraftIdentityWipesPreviousPrivateBytes` (`SHA: ______`)
-- [ ] `failedFinalSaveWipesAttemptCopyButRetainsRetryableDraft` (`SHA: ______`)
-- [ ] `successfulFinalSaveWipesAndClearsDraft` (`SHA: ______`)
-- [ ] `missingCanonicalPublicIdentityFailsWithoutFallback` (`SHA: ______`)
-- [ ] `missingGeneratedPeerIdFailsWithoutPriorPeerFallback` (`SHA: ______`)
-- [ ] `pathFileReplacementAfterValidationCannotChangeCommittedIdentity` (`SHA: ______`)
+- [x] `setupWizardPathImportDoesNotMutateLiveIdentityBeforeFinalSave` (`SHA: 6a390ef`)
+- [x] `setupWizardUriImportDoesNotMutateLiveIdentityBeforeFinalSave` (`SHA: 6a390ef`)
+- [x] `setupWizardGenerateDoesNotMutateLiveIdentityBeforeFinalSave` (`SHA: 6a390ef`)
+- [x] `setupWizardForwardUpsertDoesNotMutateLiveForwardsOrConfigBeforeFinalSave` (`SHA: 4bbd63e`)
+- [x] `setupWizardForwardDeleteDoesNotMutateLiveForwardsOrConfigBeforeFinalSave` (`SHA: 4bbd63e`)
+- [x] `abandoningSetupWizardLeavesEveryAuthoritativeFileByteExact` (`SHA: 4bbd63e`)
+- [x] `setupViewModelClearWipesDraftPrivateBytes` (`SHA: 6a390ef` — named `setupViewModelClearWipesDraftPrivateBytesOnCancel` in `SetupWizardNoIdentityMutationTest.kt`)
+- [x] `replacingDraftIdentityWipesPreviousPrivateBytes` (`SHA: 6a390ef`)
+- [x] `failedFinalSaveWipesAttemptCopyButRetainsRetryableDraft` (`SHA: 4bbd63e` — strengthened from the pre-existing `failedFinalSaveRetainsRetryableDraft` to also prove the retained draft's usability via a successful retry)
+- [x] `successfulFinalSaveWipesAndClearsDraft` (`SHA: 6a390ef`)
+- [x] `missingCanonicalPublicIdentityFailsWithoutFallback` (`SHA: 6a390ef`)
+- [x] `missingGeneratedPeerIdFailsWithoutPriorPeerFallback` (`SHA: 6a390ef`)
+- [x] `pathFileReplacementAfterValidationCannotChangeCommittedIdentity` (`SHA: c3f3a07`)
 
 For all “does not mutate” tests, snapshot exact bytes/presence of identity files, `authorized_keys`, secret, setup input, preferences, forwards, and config before the action and compare afterward.
 
 ## Acceptance
 
-- [ ] No setup action writes authoritative identity or forwards before final commit. (`SHA: ______`)
-- [ ] Setup abandonment is side-effect-free. (`SHA: ______`)
-- [ ] Draft private bytes have explicit, tested ownership and wiping. (`SHA: ______`)
-- [ ] No required identity field uses an empty/prior/source fallback. (`SHA: ______`)
+- [x] No setup action writes authoritative identity or forwards before final commit. (`SHA: 4bbd63e`)
+- [x] Setup abandonment is side-effect-free. (`SHA: 4bbd63e`)
+- [x] Draft private bytes have explicit, tested ownership and wiping. (`SHA: 6a390ef`)
+- [x] No required identity field uses an empty/prior/source fallback. (`SHA: 6a390ef`)
 
 ---
 
