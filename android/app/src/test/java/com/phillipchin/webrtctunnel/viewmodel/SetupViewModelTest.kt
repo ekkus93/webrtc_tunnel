@@ -7,6 +7,7 @@ import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -306,26 +307,91 @@ class SetupViewModelTest : AppViewModelTestBase() {
         assertTrue(viewModel.canAdvanceFromCurrentStep())
     }
 
+    // FIX8 P0-001-C/E: deleteForward/upsertForward now change only the in-memory wizard draft —
+    // there is no longer a real persistence write during a live setup edit for one to fail, so
+    // this test (previously named deleteForwardFailurePreservesErrorAndDoesNotClaimSuccess,
+    // which forced ForwardsConfigStore.saveForwards' temp-file creation to fail via a read-only
+    // files dir) no longer has a production path to exercise. Replaced with the named P0-001-E
+    // test proving the actual P0-001-C invariant: the real forwards.json AND config.toml must be
+    // byte-exact/presence untouched by a setup-wizard delete, even though the in-memory draft
+    // does reflect it — proving the edit truly never reaches ForwardsRepository/ConfigRepository/
+    // disk before final save.
     @Test
-    fun deleteForwardFailurePreservesErrorAndDoesNotClaimSuccess() {
+    fun setupWizardForwardDeleteDoesNotMutateLiveForwardsOrConfigBeforeFinalSave() {
         val viewModel = SetupViewModel(deps)
         viewModel.forwardsEditor.refreshForwards()
         awaitSetupState(viewModel) { viewModel.forwards.value.isNotEmpty() }
         val existing = viewModel.forwards.value.first()
+        val forwardsFile = File(app.filesDir, "forwards.json")
+        val configFile = File(app.filesDir, "config.toml")
+        val priorForwardsBytes = forwardsFile.readBytes()
+        val configExistedBefore = configFile.exists()
 
-        // Force the real persistence write to fail (a read-only files dir means
-        // ForwardsConfigStore.saveForwards' temp-file creation fails), rather than
-        // asserting against a fake/mocked failure.
-        app.filesDir.setWritable(false)
-        try {
-            viewModel.forwardsEditor.deleteForward(existing.id)
-            val state = awaitSetupState(viewModel) { !it.isBusy }
-            assertTrue(state.errorMessage != null)
-            assertEquals(null, state.saveResult)
-            assertTrue(viewModel.forwards.value.any { it.id == existing.id })
-        } finally {
-            app.filesDir.setWritable(true)
-        }
+        viewModel.forwardsEditor.deleteForward(existing.id)
+
+        val state = awaitSetupState(viewModel) { it.saveResult == "Forward deleted" }
+        assertEquals(null, state.errorMessage)
+        assertTrue(
+            "the wizard draft must reflect the delete",
+            viewModel.forwards.value.none { it.id == existing.id },
+        )
+        assertArrayEquals(
+            "a setup-wizard delete must never write the authoritative forwards.json before final save",
+            priorForwardsBytes,
+            forwardsFile.readBytes(),
+        )
+        assertEquals(
+            "a setup-wizard forward edit must never create/remove config.toml before final save",
+            configExistedBefore,
+            configFile.exists(),
+        )
+        assertTrue(
+            "the authoritative repository's own in-memory state must also be untouched",
+            deps.forwardsRepository.current().any { it.id == existing.id },
+        )
+    }
+
+    // FIX8 P0-001-C/E: symmetric to the delete-side test above, for upsertForward.
+    @Test
+    fun setupWizardForwardUpsertDoesNotMutateLiveForwardsOrConfigBeforeFinalSave() {
+        val viewModel = SetupViewModel(deps)
+        viewModel.forwardsEditor.refreshForwards()
+        awaitSetupState(viewModel) { viewModel.forwards.value.isNotEmpty() }
+        val forwardsFile = File(app.filesDir, "forwards.json")
+        val configFile = File(app.filesDir, "config.toml")
+        val priorForwardsBytes = forwardsFile.readBytes()
+        val configExistedBefore = configFile.exists()
+        val newForward =
+            ForwardConfig(
+                id = "new-svc",
+                name = "new-svc",
+                localPort = 9999,
+                remoteForwardId = "new-svc",
+                enabled = true,
+            )
+
+        viewModel.forwardsEditor.upsertForward(newForward)
+
+        val state = awaitSetupState(viewModel) { it.saveResult == "Forward saved" }
+        assertEquals(null, state.errorMessage)
+        assertTrue(
+            "the wizard draft must reflect the upsert",
+            viewModel.forwards.value.any { it.id == "new-svc" },
+        )
+        assertArrayEquals(
+            "a setup-wizard upsert must never write the authoritative forwards.json before final save",
+            priorForwardsBytes,
+            forwardsFile.readBytes(),
+        )
+        assertEquals(
+            "a setup-wizard forward edit must never create/remove config.toml before final save",
+            configExistedBefore,
+            configFile.exists(),
+        )
+        assertTrue(
+            "the authoritative repository's own in-memory state must also be untouched",
+            deps.forwardsRepository.current().none { it.id == "new-svc" },
+        )
     }
 
     @Test

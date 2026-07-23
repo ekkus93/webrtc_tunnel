@@ -1,17 +1,18 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import com.phillipchin.webrtctunnel.data.AppDependencies
-import com.phillipchin.webrtctunnel.data.ForwardsMutationBlocked
-import com.phillipchin.webrtctunnel.data.ForwardsRevisionMismatchException
-import com.phillipchin.webrtctunnel.data.describeForwardsFailure
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * Forward CRUD/validation slice of the setup wizard. Mutations go through the shared
- * ForwardsRepository (off the main thread, corrupt-safe) and mirror the result into the
- * wizard's forwards state so Home/Forwards and the wizard stay in sync.
+ * FIX8 P0-001-C: forward CRUD/validation slice of the setup wizard. Every edit changes only the
+ * in-memory wizard draft ([access]'s `forwards`/`setForwards`) — the authoritative
+ * `ForwardsRepository`/forwards.json is untouched until the final setup transaction commits
+ * (`SetupPersistenceCoordinator.persist`, which already takes `access.forwards()` as the
+ * forwards stage to write). Abandoning setup after editing a forward must leave the real
+ * forwards file byte-exact unchanged — a direct `upsertWithReceipt`/`deleteWithReceipt` call
+ * here (the pre-P0-001-C shape) would commit immediately and violate that.
  */
 internal class SetupForwardsController(
     private val deps: AppDependencies,
@@ -21,13 +22,7 @@ internal class SetupForwardsController(
     fun validateForwardDraft(
         draft: ForwardConfig,
         currentForwards: List<ForwardConfig>,
-    ): String? {
-        val updated =
-            currentForwards.map { if (it.id == draft.id) draft else it }.let { candidates ->
-                if (candidates.none { it.id == draft.id }) candidates + draft else candidates
-            }
-        return deps.forwardsStore.validateForwards(updated)
-    }
+    ): String? = deps.forwardsStore.validateForwards(withUpsert(currentForwards, draft))
 
     /** FIX8 P1-001-B: awaited directly (not launched) as part of [SetupViewModel]'s
      * BaselineLoad-guarded init sequence — never routed through [access]'s coordinator itself,
@@ -44,60 +39,54 @@ internal class SetupForwardsController(
 
     fun upsertForward(forward: ForwardConfig) {
         launchForwardEdit {
-            // P1-001: Use receipt-based atomic upsert.
-            deps.forwardsRepository.upsertWithReceipt(forward).fold(
-                onSuccess = {
-                    access.setForwards(deps.forwardsRepository.current())
-                    access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward saved"))
-                },
-                onFailure = { error ->
-                    access.applyState(
-                        access.state().copy(
-                            errorMessage = mapForwardsError(error),
-                            saveResult = null,
-                        ),
-                    )
-                },
-            )
+            val after = withUpsert(access.forwards(), forward)
+            val error = deps.forwardsStore.validateForwards(after)
+            if (error != null) {
+                access.applyState(access.state().copy(errorMessage = error, saveResult = null))
+                return@launchForwardEdit
+            }
+            access.setForwards(after)
+            access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward saved"))
         }
     }
 
     fun deleteForward(forwardId: String) {
         launchForwardEdit {
-            // P1-001: Use receipt-based atomic delete.
-            deps.forwardsRepository.deleteWithReceipt(forwardId).fold(
-                onSuccess = {
-                    access.setForwards(deps.forwardsRepository.current())
-                    access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward deleted"))
-                },
-                onFailure = { error ->
-                    access.applyState(
-                        access.state().copy(
-                            errorMessage = mapForwardsError(error),
-                            saveResult = null,
-                        ),
-                    )
-                },
-            )
+            access.setForwards(access.forwards().filterNot { it.id == forwardId })
+            access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward deleted"))
         }
     }
 
-    /** Maps a forwards mutation error to a user-visible message. */
-    private fun mapForwardsError(error: Throwable): String {
-        return when (error) {
-            is ForwardsMutationBlocked -> error.message ?: "Forwards mutation blocked"
-            is ForwardsRevisionMismatchException -> "Forwards changed concurrently; change discarded"
-            else -> describeForwardsFailure(error)
+    private fun withUpsert(
+        current: List<ForwardConfig>,
+        forward: ForwardConfig,
+    ): List<ForwardConfig> =
+        current.map { if (it.id == forward.id) forward else it }.let { candidates ->
+            if (candidates.none { it.id == forward.id }) candidates + forward else candidates
         }
-    }
 
     /** FIX8 P1-001-A/C: replaces the old per-controller `launchBusy` — routes through the shared
      * setup-local coordinator (so isBusy is derived from real admission ownership, not toggled
      * independently) with a cancellation-first/redacted-catch safety net for any exception
-     * [block] does not already handle itself. */
+     * [block] does not already handle itself. Also gates on [WizardStateAccess.loadState]: an
+     * edit against an incoherent baseline (P1-001-B) must be rejected the same way a final save
+     * already is, now that edits no longer route through ForwardsRepository's own
+     * blockedMutationReason check for this.
+     */
     private fun launchForwardEdit(block: suspend () -> Unit) {
         scope.launch {
-            access.operations.runGuarded(access, SetupDraftOperation.ForwardEdit) { block() }
+            access.operations.runGuarded(access, SetupDraftOperation.ForwardEdit) {
+                if (access.loadState() !is SetupLoadState.Ready) {
+                    access.applyState(
+                        access.state().copy(
+                            errorMessage = setupLoadNotReadyMessage(access.loadState()),
+                            saveResult = null,
+                        ),
+                    )
+                    return@runGuarded
+                }
+                block()
+            }
         }
     }
 }

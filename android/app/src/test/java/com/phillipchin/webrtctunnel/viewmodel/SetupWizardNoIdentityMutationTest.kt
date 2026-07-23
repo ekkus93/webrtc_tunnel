@@ -187,6 +187,46 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
         assertNull("cancel must drop the draft", viewModel.identityDraft.copyForSave())
     }
 
+    // FIX8 P0-001-E: abandoning setup after touching every draft-only surface (identity
+    // generation, a forward edit) must leave every authoritative file byte-exact/presence
+    // unchanged — cancel() discards the draft; it never commits anything.
+    @Test
+    fun abandoningSetupWizardLeavesEveryAuthoritativeFileByteExact() {
+        val authorizedKeysFile = File(app.filesDir, "authorized_keys")
+        val forwardsFile = File(app.filesDir, "forwards.json")
+        val configFile = File(app.filesDir, "config.toml")
+        val setupInputFile = File(app.filesDir, "setup_input.json")
+
+        // Construct first and let the ViewModel's own baseline load settle (it seeds a
+        // missing forwards.json with defaults on first read, same as any other caller) —
+        // the "before" snapshot must be taken after that legitimate one-time seeding, not
+        // before it, so this test isolates the effect of the setup actions themselves.
+        val viewModel = SetupViewModel(deps)
+        awaitCondition(currentValue = { viewModel.loadState.value }, predicate = { it is SetupLoadState.Ready })
+        val before =
+            listOf(identityFile, publicFile, authorizedKeysFile, forwardsFile, configFile, setupInputFile)
+                .associateWith { snapshot(it) }
+
+        viewModel.setInput(viewModel.state.value.input.copy(localPeerId = "abandon-peer"))
+        viewModel.identity.generateIdentity()
+        awaitState(viewModel) { it.saveResult == "Identity generated" }
+        viewModel.forwardsEditor.upsertForward(
+            ForwardConfig(
+                id = "abandoned",
+                name = "abandoned",
+                localPort = 7777,
+                remoteForwardId = "abandoned",
+                enabled = true,
+            ),
+        )
+        awaitState(viewModel) { it.saveResult == "Forward saved" }
+
+        viewModel.cancel()
+
+        before.forEach { (file, snap) -> assertUnchanged(snap, file, file.name) }
+        assertNull("cancel must drop the identity draft", viewModel.identityDraft.copyForSave())
+    }
+
     @Test
     fun successfulFinalSaveWipesAndClearsDraft() {
         val viewModel = SetupViewModel(deps)
@@ -199,8 +239,14 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
         assertTrue("save must persist the identity", deps.identityRepository.hasEncryptedIdentity)
     }
 
+    // FIX8 P0-001-E: named failedFinalSaveWipesAttemptCopyButRetainsRetryableDraft. The failed
+    // attempt's own resolved-identity bytes (validateAndCommit's `finally` wipes
+    // `identity.privateIdentity` — a copy from `identityDraft.copyForSave()`, not the live draft
+    // itself) are gone, but the LIVE draft survives — proven not just by its presence but by
+    // actually retrying: a second save, with validation now passing, must succeed using the
+    // SAME retained draft.
     @Test
-    fun failedFinalSaveRetainsRetryableDraft() {
+    fun failedFinalSaveWipesAttemptCopyButRetainsRetryableDraft() {
         val viewModel = SetupViewModel(deps)
         prepareReviewFromGeneratedDraft(viewModel)
         // Force the native config validation to fail so the transaction never commits.
@@ -209,8 +255,22 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
         viewModel.save.saveAndApplyConfig()
         awaitState(viewModel) { it.errorMessage != null }
 
-        assertNotNull("a failed save must retain the draft for retry", viewModel.identityDraft.copyForSave())
+        val retained = viewModel.identityDraft.copyForSave()
+        assertNotNull("a failed save must retain the draft for retry", retained)
+        assertFalse(
+            "the failed attempt's own resolved-identity copy must be wiped, not just abandoned",
+            retained!!.privateIdentity.all { it == 0.toByte() },
+        )
         assertFalse("a failed save must not persist the identity", deps.identityRepository.hasEncryptedIdentity)
+
+        // Retry: validation now passes, using the SAME retained draft.
+        recordingBridge.validationResult = ValidationResult(true, null)
+        viewModel.save.saveAndApplyConfig()
+        val state = awaitState(viewModel) { it.saveResult == "Configuration saved" }
+
+        assertEquals(null, state.errorMessage)
+        assertTrue("the retry must actually persist the identity", deps.identityRepository.hasEncryptedIdentity)
+        assertNull("a successful retry must clear the draft", viewModel.identityDraft.copyForSave())
     }
 
     @Test
