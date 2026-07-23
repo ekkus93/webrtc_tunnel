@@ -1522,11 +1522,11 @@ leaves the eager-vs-lazy race window open regardless of which implementation is 
 
 ## P1-003-A — Remove production `runCatching`
 
-- [ ] Replace pure parse/read uses with explicit `try/catch (Exception)`. (`SHA: ______`)
-- [ ] Replace `System.loadLibrary` use with explicit `catch (UnsatisfiedLinkError)` only. (`SHA: ______`)
-- [ ] Let unrelated fatal errors propagate. (`SHA: ______`)
-- [ ] Delete “safe as runCatching” marker comments and the marker-based enforcement test. (`SHA: ______`)
-- [ ] No production `runCatching {` remains. (`SHA: ______`)
+- [x] Replace pure parse/read uses with explicit `try/catch (Exception)`. (`SHA: a3d8a6a`)
+- [x] Replace `System.loadLibrary` use with explicit `catch (UnsatisfiedLinkError)` only. (`SHA: a3d8a6a`)
+- [x] Let unrelated fatal errors propagate. (`SHA: a3d8a6a`)
+- [x] Delete “safe as runCatching” marker comments and the marker-based enforcement test. (`SHA: a3d8a6a`)
+- [x] No production `runCatching {` remains. (`SHA: a3d8a6a`)
 
 Example:
 
@@ -1544,34 +1544,34 @@ Do not catch `LinkageError` broadly unless every subtype is deliberately normali
 
 ## P1-003-B — Result APIs catch every ordinary exception
 
-- [ ] Audit every public/internal `Result`-returning mutation/snapshot/restore. (`SHA: ______`)
-- [ ] Rethrow cancellation where suspend/coroutine-relevant. (`SHA: ______`)
-- [ ] Catch `Exception`, not selected subclasses only, unless the signature explicitly documents throwing other ordinary exceptions. (`SHA: ______`)
-- [ ] Add `@CheckResult` and consume all authoritative results. (`SHA: ______`)
-- [ ] Do not use `.also { }` as fake consumption when the result should be interpreted; add an explicit `ignoreResultBecause...` helper only for genuinely side-effect-authoritative calls, or redesign. (`SHA: ______`)
+- [x] Audit every public/internal `Result`-returning mutation/snapshot/restore. (`SHA: a3d8a6a`)
+- [x] Rethrow cancellation where suspend/coroutine-relevant. (`SHA: a3d8a6a`)
+- [x] Catch `Exception`, not selected subclasses only, unless the signature explicitly documents throwing other ordinary exceptions. (`SHA: a3d8a6a`)
+- [x] Add `@CheckResult` and consume all authoritative results. (`SHA: a3d8a6a`)
+- [x] Do not use `.also { }` as fake consumption when the result should be interpreted; add an explicit `ignoreResultBecause...` helper only for genuinely side-effect-authoritative calls, or redesign. (`SHA: a3d8a6a`)
 
 ## P1-003-C — Filesystem and raw logging inventory
 
-- [ ] Replace every ignored `mkdirs`, `delete`, permission setter in authoritative paths. (`SHA: ______`)
-- [ ] Audit remaining `File.delete()` uses and document non-authoritative exceptions. (`SHA: ______`)
-- [ ] Remove raw `Throwable` logging from identity, forwards, broker-secret, config, notification, and ViewModel failure paths. (`SHA: ______`)
-- [ ] Log fixed code plus redacted message; never private app paths or content. (`SHA: ______`)
-- [ ] A logging failure cannot replace the primary operation outcome. (`SHA: ______`)
+- [x] Replace every ignored `mkdirs`, `delete`, permission setter in authoritative paths. (`SHA: a3d8a6a` — audit found zero remaining occurrences in production; already fully converted in earlier FIX7/FIX8 passes)
+- [x] Audit remaining `File.delete()` uses and document non-authoritative exceptions. (`SHA: a3d8a6a` — zero `File.delete()` calls remain in production Kotlin)
+- [x] Remove raw `Throwable` logging from identity, forwards, broker-secret, config, notification, and ViewModel failure paths. (`SHA: a3d8a6a`)
+- [x] Log fixed code plus redacted message; never private app paths or content. (`SHA: a3d8a6a` — also fixed `readPrivateIdentityFile`'s message embedding the raw import path, see report)
+- [x] A logging failure cannot replace the primary operation outcome. (`SHA: a3d8a6a` — every fixed logging call sits in the `onFailure`/catch path alongside the original Result/rethrow, never in place of it)
 
 ## P1-003-D — Tests/static fixtures
 
-- [ ] `productionContainsNoRunCatchingCall` (`SHA: ______`)
-- [ ] `nativeLibraryLoadNormalizesOnlyUnsatisfiedLinkError` (`SHA: ______`)
-- [ ] `fatalErrorFromParserOrPropertyReadPropagates` (`SHA: ______`)
-- [ ] `securityExceptionFromEachResultApiBecomesFailureOrDocumentedThrow` (`SHA: ______`)
-- [ ] `rawPrivatePathSentinelNeverAppearsInProductionDiagnosticStateOrLogs` (`SHA: ______`)
-- [ ] `authoritativeFilesystemOperationsContainNoUncheckedBooleanResult` (`SHA: ______`)
+- [x] `productionContainsNoRunCatchingCall` (`SHA: a3d8a6a`)
+- [x] `nativeLibraryLoadNormalizesOnlyUnsatisfiedLinkError` (`SHA: a3d8a6a`)
+- [x] `fatalErrorFromParserOrPropertyReadPropagates` (`SHA: a3d8a6a`)
+- [x] `securityExceptionFromEachResultApiBecomesFailureOrDocumentedThrow` (`SHA: a3d8a6a`)
+- [x] `rawPrivatePathSentinelNeverAppearsInProductionDiagnosticStateOrLogs` (`SHA: a3d8a6a`)
+- [x] `authoritativeFilesystemOperationsContainNoUncheckedBooleanResult` (`SHA: a3d8a6a`)
 
 ## Acceptance
 
-- [ ] Production has no `runCatching`. (`SHA: ______`)
-- [ ] Result contracts match caller assumptions. (`SHA: ______`)
-- [ ] No authoritative filesystem failure is ignored or leaked raw. (`SHA: ______`)
+- [x] Production has no `runCatching`. (`SHA: a3d8a6a`)
+- [x] Result contracts match caller assumptions. (`SHA: a3d8a6a`)
+- [x] No authoritative filesystem failure is ignored or leaked raw. (`SHA: a3d8a6a`)
 
 ---
 
