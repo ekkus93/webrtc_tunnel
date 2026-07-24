@@ -27,8 +27,12 @@ android {
 
     lint {
         // FIX6 P2-003 (Q7): Android lint's CheckResult detector flags an ignored Kotlin/suspend
-        // Result (verified by a temporary deliberate bare call). Promote it from warning to a
-        // build-failing error so a discarded authoritative @CheckResult mutation result fails CI.
+        // Result. Promote it from warning to a build-failing error so a discarded authoritative
+        // @CheckResult mutation result fails CI. The detector's own behavior on an ignored call
+        // is proven permanently by CheckResultEnforcementFixtureTest (FIX8 P2-001-A), which runs
+        // the real detector against a standalone fixture (a TestLintTask run is independent of
+        // this module's build config, so it observes the detector's own default Warning severity
+        // rather than this override).
         error += "CheckResult"
     }
 
@@ -84,6 +88,8 @@ dependencies {
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.ext.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.lint.tests)
+    testImplementation(libs.lint.checks)
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)

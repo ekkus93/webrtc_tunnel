@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -116,7 +117,8 @@ class AtomicConfigWriteTest {
 
         var caught: CancellationException? = null
         try {
-            writeConfigAtomicallyWith(configFile, "data", ops)
+            val result = writeConfigAtomicallyWith(configFile, "data", ops)
+            fail("expected cancellation to propagate, got: $result")
         } catch (cancelled: CancellationException) {
             caught = cancelled
         }

@@ -83,6 +83,7 @@ class TunnelRepository internal constructor(
      * native runtime is absent (it may be running in an unverified state), so the caller
      * must own the resulting cleanup via the ordered lifecycle coordinator (P0-001).
      */
+    @CheckResult
     fun start(
         mode: TunnelMode,
         configPath: String,

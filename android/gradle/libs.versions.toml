@@ -19,6 +19,10 @@ androidxTestRules = "1.6.1"
 coroutinesTest = "1.9.0"
 ktlint = "12.1.2"
 detekt = "1.23.8"
+# Android Lint's test harness (com.android.tools.lint:lint-tests). Lint API versioning
+# tracks AGP with a +23 major-version offset (AGP 8.5.2 -> lint 31.5.2), used to run the
+# real, built-in CheckResultDetector against an in-memory fixture (FIX8 P2-001-A).
+lintTests = "31.5.2"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -44,6 +48,12 @@ androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "a
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
 androidx-test-rules = { module = "androidx.test:rules", version.ref = "androidxTestRules" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutinesTest" }
+lint-tests = { module = "com.android.tools.lint:lint-tests", version.ref = "lintTests" }
+# lint-tests only exposes com.android.tools.lint.checks.infrastructure.* (TestLintTask etc.) on
+# the compile classpath; the actual built-in detector classes (CheckResultDetector) live in
+# lint-checks, a transitive runtime dependency of lint-tests that isn't otherwise visible at
+# compile time — declared explicitly so the fixture test can reference the real detector class.
+lint-checks = { module = "com.android.tools.lint:lint-checks", version.ref = "lintTests" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

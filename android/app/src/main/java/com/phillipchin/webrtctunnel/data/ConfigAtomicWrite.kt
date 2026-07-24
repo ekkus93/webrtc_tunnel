@@ -1,5 +1,6 @@
 package com.phillipchin.webrtctunnel.data
 
+import androidx.annotation.CheckResult
 import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.io.IOException
@@ -79,6 +80,7 @@ internal object RealAtomicConfigFileOps : AtomicConfigFileOps {
  * authoritative file (setup_input.json, restores) go through the same temp-plus-atomic-move
  * logic instead of two parallel implementations.
  */
+@CheckResult
 internal fun writeConfigAtomicallyWith(
     configFile: File,
     contents: String,
@@ -98,6 +100,7 @@ internal fun writeConfigAtomicallyWith(
  * silently dropping it, and preserves cancellation. [ops] is injectable so tests can force a
  * write/move/cleanup failure with a fake instead of a flaky filesystem permission trick.
  */
+@CheckResult
 internal fun atomicReplaceBytesWith(
     destination: File,
     bytes: ByteArray,

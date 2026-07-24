@@ -52,6 +52,7 @@ internal fun describeForwardsFailure(error: Throwable): String =
  * Extracted so the coordinator can be tested with a fake that throws on specific operations.
  */
 interface ForwardsStore {
+    @CheckResult
     fun loadForwardsResult(): Result<List<ForwardConfig>>
 
     fun saveForwards(forwards: List<ForwardConfig>)

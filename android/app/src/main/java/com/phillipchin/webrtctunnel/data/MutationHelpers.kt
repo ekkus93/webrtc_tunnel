@@ -16,6 +16,7 @@ import java.nio.file.Files
  * Do not use this where the caller must distinguish specific exception types, or where
  * rollback has to run in a non-cancellable section — write an explicit try/catch there.
  */
+@CheckResult
 internal suspend inline fun <T> mutationResult(crossinline block: suspend () -> T): Result<T> =
     try {
         Result.success(block())
