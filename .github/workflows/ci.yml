@@ -176,6 +176,19 @@ jobs:
           cd android
           ./gradlew --no-daemon assembleDebug testDebugUnitTest
 
+      # FIX8 P2-001-D: preserve first-failure diagnostics — ktlint/detekt/lint HTML reports and
+      # JUnit XML results — as a downloadable artifact rather than relying solely on the raw
+      # (truncated, hard-to-search) step log. Runs regardless of which prior step failed.
+      - name: Upload Android lint/test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-failure-reports
+          path: |
+            android/app/build/reports/
+            android/app/build/test-results/
+          retention-days: 14
+
   release-artifacts:
     name: Release artifacts (${{ matrix.os }})
     if: startsWith(github.ref, 'refs/tags/')
