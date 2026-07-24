@@ -331,11 +331,11 @@ related tests
 
 ## P0-002-A — Replace late active metadata
 
-- [ ] Add `ConfigurationOperation.PreferenceMutation`. (`SHA: ______`)
-- [ ] Replace mutex-plus-late-`active.set` with an atomic owner token or equivalent no-window implementation. (`SHA: ______`)
-- [ ] A busy result always uses the current token's operation. (`SHA: ______`)
-- [ ] Release uses token identity, not only enum equality. (`SHA: ______`)
-- [ ] Cancellation, ordinary exception, and fatal `Error` release admission and propagate unchanged. (`SHA: ______`)
+- [x] Add `ConfigurationOperation.PreferenceMutation`. (`SHA: b9ac1be`)
+- [x] Replace mutex-plus-late-`active.set` with an atomic owner token or equivalent no-window implementation. (`SHA: b9ac1be`)
+- [x] A busy result always uses the current token's operation. (`SHA: b9ac1be` — hardened beyond this section's own illustrative snippet: a losing CAS whose retry-read also finds `active == null` retries the whole attempt rather than ever returning a null-derived/invented `Busy` owner.)
+- [x] Release uses token identity, not only enum equality. (`SHA: b9ac1be`)
+- [x] Cancellation, ordinary exception, and fatal `Error` release admission and propagate unchanged. (`SHA: b9ac1be`)
 
 Target implementation:
 
@@ -372,36 +372,36 @@ class ConfigurationMutationCoordinator {
 
 ## P0-002-B — Serialize preference writes
 
-- [ ] `SettingsViewModel.savePreferences` owns `PreferenceMutation` admission around the complete read/modify/write operation. (`SHA: ______`)
-- [ ] `NetworkPolicyViewModel` preference writes do the same. (`SHA: ______`)
-- [ ] Busy rejection is durable `configuration_operation_busy` and names the active operation. (`SHA: ______`)
-- [ ] Success clears prior durable preference failure. (`SHA: ______`)
-- [ ] Lifecycle/network reevaluation triggered by a preference change occurs after successful persistence; reporter failure cannot change persistence truth. (`SHA: ______`)
+- [x] `SettingsViewModel.savePreferences` owns `PreferenceMutation` admission around the complete read/modify/write operation. (`SHA: b9ac1be`)
+- [x] `NetworkPolicyViewModel` preference writes do the same. (`SHA: b9ac1be`)
+- [x] Busy rejection is durable `configuration_operation_busy` and names the active operation. (`SHA: b9ac1be`)
+- [x] Success clears prior durable preference failure. (`SHA: b9ac1be`)
+- [x] Lifecycle/network reevaluation triggered by a preference change occurs after successful persistence; reporter failure cannot change persistence truth. (`SHA: b9ac1be`)
 
 ## P0-002-C — Use one preference snapshot during setup
 
-- [ ] After global SetupSave admission, read preferences once. (`SHA: ______`)
-- [ ] Use that same object for isolated validation rendering, final config rendering, and `SetupPersistenceRequest.preferences`. (`SHA: ______`)
-- [ ] Remove the second `loadPreferences()` from `commitSetup`. (`SHA: ______`)
-- [ ] Setup rollback restores the snapshot captured by the coordinator; no concurrent preference write can occur because global admission is held. (`SHA: ______`)
+- [x] After global SetupSave admission, read preferences once. (`SHA: b9ac1be`)
+- [x] Use that same object for isolated validation rendering, final config rendering, and `SetupPersistenceRequest.preferences`. (`SHA: b9ac1be`)
+- [x] Remove the second `loadPreferences()` from `commitSetup`. (`SHA: b9ac1be`)
+- [x] Setup rollback restores the snapshot captured by the coordinator; no concurrent preference write can occur because global admission is held. (`SHA: b9ac1be`)
 
 ## P0-002-D — Tests
 
-- [ ] `busyAdmissionDuringOwnerPublicationAlwaysReportsActualOwner` (`SHA: ______`)
-- [ ] `sameOperationTypeCannotClearAnotherOwnerToken` (`SHA: ______`)
-- [ ] `fatalErrorReleasesTokenAndPropagatesSameInstance` (`SHA: ______`)
-- [ ] `settingsPreferenceMutationBlocksConcurrentSetupSaveDurably` (`SHA: ______`)
-- [ ] `setupSaveBlocksConcurrentNetworkPreferenceMutationDurably` (`SHA: ______`)
-- [ ] `concurrentPreferenceWriteCannotBeLostBySetupRollback` (`SHA: ______`)
-- [ ] `setupValidationAndCommitUseSamePreferenceSnapshot` (`SHA: ______`)
+- [x] `busyAdmissionDuringOwnerPublicationAlwaysReportsActualOwner` (`SHA: b9ac1be`, `ConfigurationMutationCoordinatorTest.kt`)
+- [x] `sameOperationTypeCannotClearAnotherOwnerToken` (`SHA: b9ac1be`, `ConfigurationMutationCoordinatorTest.kt`)
+- [x] `fatalErrorReleasesTokenAndPropagatesSameInstance` (`SHA: b9ac1be`, `ConfigurationMutationCoordinatorTest.kt`)
+- [x] `settingsPreferenceMutationBlocksConcurrentSetupSaveDurably` (`SHA: b9ac1be`, `ConfigurationMutationIntegrationTest.kt`)
+- [x] `setupSaveBlocksConcurrentNetworkPreferenceMutationDurably` (`SHA: b9ac1be`, `ConfigurationMutationIntegrationTest.kt`)
+- [x] `concurrentPreferenceWriteCannotBeLostBySetupRollback` (`SHA: b9ac1be`, `ConfigurationMutationIntegrationTest.kt`)
+- [x] `setupValidationAndCommitUseSamePreferenceSnapshot` (`SHA: b9ac1be`, `SetupViewModelTest.kt`; carried through the later `b48eb7d` test-file split intact)
 
 Use barriers placed before the first persistence write; no timing assertions.
 
 ## Acceptance
 
-- [ ] Busy always names the real owner. (`SHA: ______`)
-- [ ] Every authoritative preference write is globally serialized. (`SHA: ______`)
-- [ ] Setup render and persisted preferences are derived from one snapshot. (`SHA: ______`)
+- [x] Busy always names the real owner. (`SHA: b9ac1be`)
+- [x] Every authoritative preference write is globally serialized. (`SHA: b9ac1be`)
+- [x] Setup render and persisted preferences are derived from one snapshot. (`SHA: b9ac1be`)
 
 ---
 
@@ -1671,7 +1671,7 @@ Do not begin signoff while any checkbox above is open.
 - [x] Record `git rev-parse HEAD`: `e3b792634b9b5945e1ab1a9c102700e0285ea9ac`.  
 - [x] Record branch: `master`.  
 - [x] `git status --short` is empty.  
-- [ ] Confirm these exact input files exist:
+- [x] Confirm these exact input files exist:
 
 ```text
 docs/WEBRTC_TUNNEL_AUTHORITATIVE_STATE_ATOMIC_COMMIT_DURABLE_QUARANTINE_FIX8_SPEC.md
@@ -1680,8 +1680,8 @@ docs/review-source/WEBRTC_TUNNEL_FIX7_CODE_REVIEW_2026-07-21.md
 docs/review-source/WEBRTC_TUNNEL_FIX8_HANDOFF_MANIFEST.md
 ```
 
-- [ ] Create `docs/review-source/WEBRTC_TUNNEL_FIX8_IMPLEMENTATION_REPORT.md` during implementation with commit/task/command/evidence details. This is a required Claude Code output, not an input assumed to exist.  
-- [ ] Confirm no handoff document references another unavailable assistant-created file.  
+- [x] Create `docs/review-source/WEBRTC_TUNNEL_FIX8_IMPLEMENTATION_REPORT.md` during implementation with commit/task/command/evidence details. This is a required Claude Code output, not an input assumed to exist.  
+- [x] Confirm no handoff document references another unavailable assistant-created file.  
 
 ## P2-002-B — Focused Android validation
 
