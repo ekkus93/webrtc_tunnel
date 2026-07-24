@@ -1796,26 +1796,26 @@ cd ..
 rg -n 'unix_ms\s*:\s*0|"unix_ms"\s*:\s*0' crates bins
 ```
 
-- [ ] Every output is empty or each remaining hit is documented with exact safe scope in the implementation report.  
-- [ ] Exactly one production `catch (Throwable)` remains, in the named cleanup-composition primitive, if that implementation shape was used.  
-- [ ] No setup authoritative mutation hit remains.  
-- [ ] No production zero diagnostic timestamp hit remains.  
+- [x] Every output is empty or each remaining hit is documented with exact safe scope in the implementation report. Results: `runCatching` — empty. `mkdirs()/delete()/setReadable()/setWritable()` — every hit is a doc-comment referencing the pattern name (e.g. "FIX8 P0-008-C: checked, not an ignored mkdirs() Boolean"), zero real unchecked calls. `snapshot.bytes ?: ByteArray(0)` / `contents.orEmpty()` — empty. Setup authoritative mutation — empty (confirms the FIX8 P0-001-C fix). `catch (Throwable)` — one hit, itself a doc comment explaining why it's *not* used (`MutationHelpers.kt:122`), zero real catch clauses (matches `CleanupCompositionThrowableCatchAuditTest`'s enforced zero). `Thread.sleep`/`assertFalse(waitForCondition` — every `Thread.sleep(10)` hit is inside the established, reviewed `waitForCondition` bounded-poll helper (used only for positive external-state convergence per its own doc comment, never to prove absence/ordering/exactly-once/overlap on its own); zero `assertFalse(waitForCondition(...))` hits (the specific banned pattern). Rust `unix_ms: 0` — every hit is inside `no_pre_epoch_panics.rs`'s own guard-test source (the scanner's pattern strings and messages), zero production hits.
+- [x] Exactly one production `catch (Throwable)` remains, in the named cleanup-composition primitive, if that implementation shape was used. Not applicable — the actual count is zero (see above); `withCleanupComposition` uses three explicit clauses instead, per `CleanupCompositionThrowableCatchAuditTest`.
+- [x] No setup authoritative mutation hit remains.
+- [x] No production zero diagnostic timestamp hit remains.
 
 ## P2-002-H — Final acceptance
 
-- [ ] Setup abandonment is byte-exact side-effect-free.  
-- [ ] Setup is one transaction including forwards and current attempted stage.  
-- [ ] Reset/import/forward failures restore exact prior state.  
-- [ ] Identity rollback cannot silently fail or create empty replacement data.  
-- [ ] Broker secret success proves owner-only permissions.  
-- [ ] Fatal errors run cleanup and propagate unchanged.  
-- [ ] Runtime quarantine survives service recreation and status refresh.  
-- [ ] Only verified explicit STOP clears quarantine.  
-- [ ] Diagnostic failure uses null timestamp and remains visible.  
-- [ ] Preference writes are globally serialized.  
-- [ ] Initialization is exactly once.  
-- [ ] Tests are deterministic and prove exact production paths.  
-- [ ] All local, CI, Docker, and emulator evidence belongs to one immutable SHA.  
+- [x] Setup abandonment is byte-exact side-effect-free (P0-001-A/B/C/D/E; `abandoningSetupWizardLeavesEveryAuthoritativeFileByteExact`).
+- [x] Setup is one transaction including forwards and current attempted stage (P0-004/P0-005/P0-001-C; `SetupPersistenceCoordinator`).
+- [x] Reset/import/forward failures restore exact prior state (P0-005/P0-006; `TransactionalReset*Test`, `ImportExportServiceTest`, `ForwardConfigurationCoordinatorTest`).
+- [x] Identity rollback cannot silently fail or create empty replacement data (P0-007; `IdentityPersistenceAtomicityTest`).
+- [x] Broker secret success proves owner-only permissions (P0-008).
+- [x] Fatal errors run cleanup and propagate unchanged (P0-008-B; `withCleanupComposition`, three-clause `CancellationException`/`Error`/`Exception`).
+- [x] Runtime quarantine survives service recreation and status refresh (P0-009; `TunnelForegroundServiceRuntimeSafetyRecreationTest`).
+- [x] Only verified explicit STOP clears quarantine (P0-009 mechanism + the P2-002 stop-verification fix, `SHA: 64ec808`, which made this actually reachable in production for a real native runtime for the first time — see the P2-002-E entry above).
+- [x] Diagnostic failure uses null timestamp and remains visible (P0-010).
+- [x] Preference writes are globally serialized (P0-002).
+- [x] Initialization is exactly once (P1-002).
+- [x] Tests are deterministic and prove exact production paths (P1-004; shared `awaitCondition` helper, two root-caused flaky-test fixes, three consecutive clean full-suite reruns).
+- [ ] All local, CI, Docker, and emulator evidence belongs to one immutable SHA. (Pending: recorded once P2-002-F (CI) and the final signoff commit are complete.)
 
 ---
 
