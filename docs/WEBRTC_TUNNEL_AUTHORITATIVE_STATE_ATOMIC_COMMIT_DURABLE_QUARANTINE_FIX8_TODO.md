@@ -1627,38 +1627,38 @@ If a branch is genuinely unreachable after refactoring, remove the misleading re
 
 ## P2-001-A — Android enforcement
 
-- [ ] Production `runCatching` is forbidden by a permanent rule/test. (`SHA: ______`)
-- [ ] Bare authoritative `File.delete()` is forbidden. (`SHA: ______`)
-- [ ] Ignored `mkdirs`, `setReadable`, and `setWritable` are forbidden or absent. (`SHA: ______`)
-- [ ] Setup controllers are forbidden from calling `storeEncryptedIdentity`, `upsertWithReceipt`, or `deleteWithReceipt`. (`SHA: ______`)
-- [ ] `@CheckResult` enforcement covers new exact snapshot/restore/transaction APIs. (`SHA: ______`)
-- [ ] Add a committed negative fixture/rule test for at least one ignored authoritative result; do not rely only on a historical temporary edit. (`SHA: ______`)
-- [ ] The one cleanup-composition `catch (Throwable)` is allowlisted by exact function/file; any second production hit fails. (`SHA: ______`)
+- [x] Production `runCatching` is forbidden by a permanent rule/test. (`SHA: a3d8a6a` — `ProductionRunCatchingAuditTest`)
+- [x] Bare authoritative `File.delete()` is forbidden. (`SHA: a3d8a6a` — `AuthoritativeFilesystemBooleanAuditTest`)
+- [x] Ignored `mkdirs`, `setReadable`, and `setWritable` are forbidden or absent. (`SHA: a3d8a6a` — same test)
+- [x] Setup controllers are forbidden from calling `storeEncryptedIdentity`, `upsertWithReceipt`, or `deleteWithReceipt`. (`SHA: 4443101` — `SetupControllerNoAuthoritativeMutationTest`; only genuinely enforceable after P0-001-C, `SHA: 4bbd63e`, closed the last live violation)
+- [x] `@CheckResult` enforcement covers new exact snapshot/restore/transaction APIs. (`SHA: 4443101` — added to `TunnelRepository.start`, `ForwardsStore.loadForwardsResult`, `MutationHelpers.mutationResult`, `ConfigAtomicWrite`'s two functions; everything else already had it per FIX7/FIX8)
+- [x] Add a committed negative fixture/rule test for at least one ignored authoritative result; do not rely only on a historical temporary edit. (`SHA: 4443101` — `CheckResultEnforcementFixtureTest` runs the real Android Lint `CheckResultDetector` against an in-memory fixture, replacing the `build.gradle.kts` comment's "verified by a temporary deliberate bare call")
+- [x] The one cleanup-composition `catch (Throwable)` is allowlisted by exact function/file; any second production hit fails. (`SHA: 4443101` — `CleanupCompositionThrowableCatchAuditTest`; audit found zero `catch (Throwable)` clauses exist today — `withCleanupComposition` deliberately uses three explicit clauses instead — so the test enforces the current true count of zero rather than allowlisting a specific site)
 
 ## P2-001-B — Snapshot/fallback enforcement
 
-- [ ] No production `snapshot.bytes ?: ByteArray(0)` or equivalent exists. (`SHA: ______`)
-- [ ] No setup/config rollback uses `orEmpty` or String-derived exact snapshots. (`SHA: ______`)
-- [ ] No config write exists inside a `withCandidateFile/withTemporaryDirectory` block in import/forward paths. (`SHA: ______`)
-- [ ] Add source/architecture tests for these boundaries. (`SHA: ______`)
+- [x] No production `snapshot.bytes ?: ByteArray(0)` or equivalent exists. (`SHA: 4443101` — `SnapshotAndCandidateBlockEnforcementTest`; zero hits confirmed by audit before the test was written)
+- [x] No setup/config rollback uses `orEmpty` or String-derived exact snapshots. (`SHA: 4443101` — same test, scoped to the snapshot/rollback files)
+- [x] No config write exists inside a `withCandidateFile/withTemporaryDirectory` block in import/forward paths. (`SHA: 4443101` — same test; brace-depth-matched, not a line-regex scan; verified it catches a deliberately-injected violation and clears once reverted)
+- [x] Add source/architecture tests for these boundaries. (`SHA: 4443101`)
 
 ## P2-001-C — Rust enforcement
 
-- [ ] Production zero timestamp diagnostic fallback fails a permanent test. (`SHA: ______`)
-- [ ] Recent-log double failure returning empty list fails a direct unit test. (`SHA: ______`)
-- [ ] Existing pre-epoch panic inventory remains green. (`SHA: ______`)
+- [x] Production zero timestamp diagnostic fallback fails a permanent test. (`SHA: 59a07b9` — `no_pre_epoch_panics.rs`, confirmed still green)
+- [x] Recent-log double failure returning empty list fails a direct unit test. (`SHA: 59a07b9` — `c_abi.rs`'s `recent_logs_and_clock_double_failure_returns_visible_untimed_error_event`, confirmed still passing)
+- [x] Existing pre-epoch panic inventory remains green. (confirmed via `cargo test -p p2p-core --test no_pre_epoch_panics` — 2 passed, 0 failed)
 
 ## P2-001-D — CI wiring
 
-- [ ] `./gradlew --no-daemon check` runs type-resolved detekt/lint/tests and new fixtures. (`SHA: ______`)
-- [ ] Rust fmt/clippy/test commands include all features/targets. (`SHA: ______`)
-- [ ] CI does not auto-rerun failed tests and report only the successful attempt as signoff. (`SHA: ______`)
-- [ ] Preserve first-failure artifacts/logs. (`SHA: ______`)
+- [x] `./gradlew --no-daemon check` runs type-resolved detekt/lint/tests and new fixtures. (already true — `.github/workflows/ci.yml`'s `android` job)
+- [x] Rust fmt/clippy/test commands include all features/targets. (already true — `.github/workflows/ci.yml`'s `lint`/`test` jobs)
+- [x] CI does not auto-rerun failed tests and report only the successful attempt as signoff. (confirmed by audit — no retry/continue-on-error pattern exists anywhere in the workflow)
+- [x] Preserve first-failure artifacts/logs. (`SHA: 7826953` — uploads `android/app/build/reports`/`build/test-results` as an artifact whenever a prior step in the `android` job fails; the Rust jobs' console output was already fully retained by GitHub Actions by default, so no equivalent gap existed there)
 
 ## Acceptance
 
-- [ ] Reintroducing any FIX8 unsafe fallback or ignored authoritative result fails CI. (`SHA: ______`)
-- [ ] Static checks are precise enough not to be satisfied by comments. (`SHA: ______`)
+- [x] Reintroducing any FIX8 unsafe fallback or ignored authoritative result fails CI. (`SHA: 4443101` — every static guard above is a `testDebugUnitTest` test, which `./gradlew check` (already wired into CI) runs)
+- [x] Static checks are precise enough not to be satisfied by comments. (`SHA: 4443101` — every guard scans production source text/AST-adjacent structure directly; none can be satisfied by a comment alone, and each was verified via a deliberately-injected violation where practical)
 
 ---
 
