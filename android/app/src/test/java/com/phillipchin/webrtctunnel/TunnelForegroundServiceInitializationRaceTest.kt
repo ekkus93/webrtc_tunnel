@@ -126,8 +126,14 @@ class TunnelForegroundServiceInitializationRaceTest {
     // with no injected completion event to await instead). The race itself is already proven
     // deterministically via CountDownLatch entered/release hooks; this poll only ever waits for
     // eventual settling afterward, never for absence, exactly-once, ordering, or overlap.
+    // FIX8 P2-002 (CI flakiness root-cause): this polls a StateFlow/bridge counter updated by a
+    // coroutine on a real Dispatchers.Default worker (no TestDispatcher is injected), so the
+    // wait is bounded by actual scheduler latency, not just the work itself. 8s was tight enough
+    // that a contended CI runner (shared JVM-wide dispatcher pool across Robolectric test
+    // classes) hit it at least once in CI while never reproducing locally; 20s keeps the same
+    // eventual-only semantics with real margin for that contention.
     private fun waitForCondition(
-        timeoutMs: Long = 8_000,
+        timeoutMs: Long = 20_000,
         condition: () -> Boolean,
     ): Boolean {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)

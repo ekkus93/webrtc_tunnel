@@ -62,8 +62,14 @@ class TunnelForegroundServiceStartupPrepTest {
     // StateFlow/bridge counter settling after real async work dispatched on a real thread pool,
     // with no injected completion event to await instead). Never used here to prove absence,
     // exactly-once, ordering, or overlap — those proofs use an explicit barrier/latch instead.
+    // FIX8 P2-002 (CI flakiness root-cause): this polls a StateFlow updated by a coroutine on a
+    // real Dispatchers.Default/IO worker (no TestDispatcher is injected), so the wait is bounded
+    // by actual scheduler latency, not just the work itself. 8s was tight enough that a
+    // contended CI runner (shared JVM-wide dispatcher pool across Robolectric test classes) hit
+    // it at least once in CI while never reproducing locally; 20s keeps the same eventual-only
+    // semantics with real margin for that contention.
     private fun waitForCondition(
-        timeoutMs: Long = 8_000,
+        timeoutMs: Long = 20_000,
         condition: () -> Boolean,
     ): Boolean {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
