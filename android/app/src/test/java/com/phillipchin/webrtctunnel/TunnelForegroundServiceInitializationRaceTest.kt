@@ -11,6 +11,8 @@ import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import com.phillipchin.webrtctunnel.security.IdentityCrypto
 import com.phillipchin.webrtctunnel.security.IdentityRepository
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -43,6 +45,18 @@ class BlockingInitTestApplication : Application(), HasAppDependencies {
     private lateinit var appDependencies: AppDependencies
     override val deps: AppDependencies
         get() = appDependencies
+
+    // FIX8 P2-002 (CI flakiness root-cause): AppDependencies.appScope is a real,
+    // process/JVM-lifetime Dispatchers.IO-backed scope (by design — see its own doc comment,
+    // "cancelled only at process teardown"). In production there's exactly one Application, so
+    // that's harmless; under Robolectric, every test method builds a fresh Application without
+    // ever joining the previous one's initialization coroutine, so this test's own
+    // ensureDefaultConfig work can still be running (or queued behind other tests' leaked work
+    // in the shared IO thread pool) when the NEXT test's onCreate() tries to run — starving it
+    // of a worker thread entirely under CI contention (confirmed: raising the entered-latch
+    // timeout to 20s did not fix a real CI failure on this exact wait, ruling out "just slow").
+    // Exposed here so tearDown() can join it and guarantee full quiescence before the next test.
+    var initializationJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -83,7 +97,7 @@ class BlockingInitTestApplication : Application(), HasAppDependencies {
                 networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
                 identityRepository = identityRepository,
             )
-        appDependencies.appInitializationCoordinator.start()
+        initializationJob = appDependencies.appInitializationCoordinator.start()
     }
 }
 
@@ -115,6 +129,16 @@ class TunnelForegroundServiceInitializationRaceTest {
     fun tearDown() {
         // Release any still-blocked ensureDefaultConfig so teardown cannot hang.
         InitializationRaceTestHooks.release.get().countDown()
+        // FIX8 P2-002 (CI flakiness root-cause): join this test's own initialization coroutine
+        // before returning, not just unblock it — otherwise it can still be running (or land in
+        // the shared Dispatchers.IO queue behind it) when the NEXT test's fresh Application
+        // starts its own coroutine, starving that one of a worker thread under a
+        // resource-constrained CI runner. 10s bounds a genuine hang (matching
+        // ensureDefaultConfig's own 10s release-await) rather than letting teardown hang forever.
+        val job = (service.applicationContext as BlockingInitTestApplication).initializationJob
+        if (job != null) {
+            runBlocking { job.join() }
+        }
         controller.destroy()
     }
 
