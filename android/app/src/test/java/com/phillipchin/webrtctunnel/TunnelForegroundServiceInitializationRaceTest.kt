@@ -150,7 +150,9 @@ class TunnelForegroundServiceInitializationRaceTest {
         val bridge = TunnelForegroundServiceTestHooks.bridge
         assertTrue(
             "ensureDefaultConfig must have been entered by now",
-            InitializationRaceTestHooks.entered.get().await(5, TimeUnit.SECONDS),
+            // FIX8 P2-002 (CI flakiness root-cause): same real-dispatcher scheduling
+            // dependency as waitForCondition above — 20s to match.
+            InitializationRaceTestHooks.entered.get().await(20, TimeUnit.SECONDS),
         )
         assertEquals(AppInitializationState.Initializing, deps.appInitializationCoordinator.state.value)
 
@@ -173,7 +175,10 @@ class TunnelForegroundServiceInitializationRaceTest {
     fun startAfterReadyCallsNative() {
         val deps = (service.applicationContext as HasAppDependencies).deps
         val bridge = TunnelForegroundServiceTestHooks.bridge
-        assertTrue(InitializationRaceTestHooks.entered.get().await(5, TimeUnit.SECONDS))
+        // FIX8 P2-002 (CI flakiness root-cause): same real-dispatcher scheduling dependency as
+        // waitForCondition below — 20s to match. This exact wait failed under CI contention
+        // (5s was too tight) while every local run stayed clean.
+        assertTrue(InitializationRaceTestHooks.entered.get().await(20, TimeUnit.SECONDS))
 
         InitializationRaceTestHooks.release.get().countDown()
         assertTrue(

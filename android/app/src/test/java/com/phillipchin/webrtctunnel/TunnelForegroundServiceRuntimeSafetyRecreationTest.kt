@@ -364,10 +364,20 @@ class TunnelForegroundServiceRuntimeSafetyRecreationTest {
         controller.withIntent(actionIntent(TunnelForegroundService.ACTION_STOP)).startCommand(0, 2)
 
         assertTrue(waitForCondition { bridge.stopCalls >= 1 })
+        // FIX8 P2-002 (CI flakiness root-cause, same shape as
+        // TunnelForegroundServiceVerificationTest.startVerificationCleanupFailureEntersRuntimeQuarantine):
+        // enterNativeRuntimeQuarantine makes two separate, non-atomic setLocalError calls (the
+        // narrower diagnostic code, then the canonical quarantine code). Polling only the weaker
+        // `quarantined` flag before a bare assertEquals on the canonical code races production
+        // code running on another thread — the poll can observe the intermediate window and
+        // return before the final code lands. Poll for both together instead.
         assertTrue(
             "the shared quarantine transition must land even if the notification/reporter " +
-                "layer throws",
-            waitForCondition { deps.nativeRuntimeSafetyState.state.value.quarantined },
+                "layer throws, with the canonical durable error code set",
+            waitForCondition {
+                deps.nativeRuntimeSafetyState.state.value.quarantined &&
+                    deps.tunnelRepository.status.value.lastError?.code == "native_runtime_quarantined"
+            },
         )
         assertEquals(
             "the canonical durable error code must still be set despite the reporter failure",

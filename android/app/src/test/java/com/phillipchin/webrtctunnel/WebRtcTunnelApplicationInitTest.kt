@@ -158,7 +158,11 @@ class WebRtcTunnelApplicationInitTest {
 
         assertTrue(
             "ensureDefaultConfig must actually run (off whatever thread called start())",
-            entered.await(5, TimeUnit.SECONDS),
+            // FIX8 P2-002 (CI flakiness root-cause): this waits for a real IO-dispatcher
+            // scheduling hop (coordinator.start() -> realIoDispatcher()), the same mechanism
+            // that caused intermittent CI-only failures (never locally) in the analogous
+            // TunnelForegroundServiceInitializationRaceTest waits — 20s to match.
+            entered.await(20, TimeUnit.SECONDS),
         )
         assertEquals(
             "start() returning must not depend on ensureDefaultConfig completing",
