@@ -54,7 +54,11 @@ class TunnelRepositoryTest {
 
     @Test
     fun stopCallsBridgeAndRefreshesStatus() {
-        bridge.statusPayload = statusJson("stopped", "answer")
+        // FIX8 P2-002: the real native runtime always reports mode=null alongside a genuine
+        // stopped state (it nulls out mode in the same breath it sets state=Stopped, so the UI
+        // never shows a stale offer/answer label after stopping) — a non-null mode here would
+        // not reflect the real contract and would hide a real bug (see the next test).
+        bridge.statusPayload = statusJson("stopped", mode = null)
         val result = repository.stop()
         assertTrue(result.isSuccess)
         assertTrue(bridge.stopped)
@@ -66,7 +70,14 @@ class TunnelRepositoryTest {
 
     @Test
     fun nativeStopSuccessAndStoppedStatusReturnsSuccess() {
-        bridge.statusPayload = statusJson("stopped", "offer")
+        // FIX8 P2-002: mode=null, matching the real native contract (see the comment above) —
+        // this exact fixture shape is what reproduced a real, on-device bug during signoff
+        // testing: reportsVerifiedStop previously required resolveNativeMode(mode) to resolve
+        // to a non-null TunnelMode BEFORE even checking state, so a genuine mode=null stopped
+        // payload could never be verified — every real explicit STOP looked like a verification
+        // failure and drove the app into runtime quarantine. The pre-fix fixture here used a
+        // non-null mode string, which accidentally avoided the bug and let it ship.
+        bridge.statusPayload = statusJson("stopped", mode = null)
         val result = repository.stop()
         assertTrue(result.isSuccess)
         assertEquals(ServiceState.Stopped, repository.status.value.serviceState)
@@ -190,12 +201,30 @@ class TunnelRepositoryTest {
 
     @Test
     fun missingModeReturnsSchemaError() {
-        // P1-007: When the native status JSON is missing the mode field,
-        // the repository should surface a schema error, not silently default.
-        bridge.statusPayload = """{"state":"stopped","active":false}"""
+        // P1-007: When the native status JSON is missing the mode field for a non-terminal
+        // state (where mode actually disambiguates the mapped ServiceState — e.g. running ->
+        // Serving vs Listening), the repository should surface a schema error, not silently
+        // default. FIX8 P2-002: this was previously written with state="stopped", but a missing
+        // mode alongside a genuine stop is not an error — see missingModeIsNotASchemaErrorWhenStopped
+        // below and reportsVerifiedStop's own comment for why (the real native runtime always
+        // omits mode on a clean stop).
+        bridge.statusPayload = """{"state":"running","active":true}"""
         repository.refreshStatus()
         assertEquals(ServiceState.Error, repository.status.value.serviceState)
         assertEquals("native_status_schema_error", repository.status.value.lastError?.code)
+    }
+
+    @Test
+    fun missingModeIsNotASchemaErrorWhenStopped() {
+        // FIX8 P2-002: the real native runtime always omits mode alongside a genuine stopped
+        // state (see reportsVerifiedStop's comment) — this must map cleanly to Stopped, not a
+        // schema error, or an explicit STOP could never be verified in production (this exact
+        // gap was found via on-device signoff testing: 3/3 reproducible, every real stop drove
+        // the app into runtime quarantine).
+        bridge.statusPayload = """{"state":"stopped","active":false}"""
+        repository.refreshStatus()
+        assertEquals(ServiceState.Stopped, repository.status.value.serviceState)
+        assertNull(repository.status.value.lastError)
     }
 
     @Test
@@ -637,7 +666,7 @@ class TunnelRepositoryTest {
 
     private fun statusJson(
         state: String,
-        mode: String,
+        mode: String?,
     ): String =
         Json.encodeToString(
             NativeRuntimeStatusDto(

@@ -454,11 +454,19 @@ private val TunnelStatus.withNativeRuntimeSafetyOverlay: (NativeRuntimeSafetySna
 // from the raw native fields alone (never overlaid), so [stop]'s own verification can tell a
 // true stop apart from a pre-existing quarantine that would otherwise mask it. A property (not
 // a function) for the same detekt-budget reason as [withNativeRuntimeSafetyOverlay].
+//
+// FIX8 P2-002 (found during on-device signoff testing): the real native runtime always reports
+// mode=null alongside a genuine stopped state (it nulls out mode in the same breath it sets
+// state=Stopped — see crates/p2p-mobile/src/runtime/mod.rs's apply_daemon_completion_result and
+// stop_with_grace_period — so the UI never shows a stale offer/answer label after stopping).
+// The previous implementation required resolveNativeMode(mode) to resolve to a non-null
+// TunnelMode BEFORE even checking state, so a genuine mode=null "stopped" payload could never
+// verify — every real explicit STOP looked like a verification failure and drove the app into
+// runtime quarantine. mode is irrelevant to the "stopped" case (mapNativeServiceState's own
+// "stopped" branch ignores its mode parameter entirely) — checking state directly avoids the
+// unnecessary/incorrect gate.
 private val NativeRuntimeStatusDto.reportsVerifiedStop: Boolean
-    get() =
-        resolveNativeMode(mode)?.let { modeValue ->
-            mapNativeServiceState(state, modeValue, activeSessionCount) == ServiceState.Stopped
-        } ?: false
+    get() = state == "stopped"
 
 // Truthful mapping: native "running" only means the daemon task is alive. Reserve
 // Connected for an actual active session/tunnel; otherwise show a listening/serving
@@ -501,7 +509,13 @@ private val KNOWN_LISTEN_STATES =
 
 private fun NativeRuntimeStatusDto.toTunnelStatus(previous: TunnelStatus): TunnelStatus {
     // P1-008: Reject unknown native mode explicitly.
-    val modeValue = resolveNativeMode(mode)
+    // FIX8 P2-002: a genuine stopped state always reports mode=null (see reportsVerifiedStop's
+    // comment above) — mode only disambiguates a non-terminal state (e.g. running -> Serving vs
+    // Listening), so an ABSENT mode alongside "stopped" is not a schema error; retain the
+    // previous mode (this field is non-nullable and irrelevant once stopped) instead of
+    // resolving from the native payload. A present-but-garbage mode string is still a genuine
+    // schema anomaly and must still error, stopped or not.
+    val modeValue = if (state == "stopped" && mode == null) previous.mode else resolveNativeMode(mode)
     if (modeValue == null) {
         // Unknown mode: retain previous mode, surface as schema error. P1-002-A: this native
         // status cannot be trusted, so it must clear stale live-connection truth exactly like
