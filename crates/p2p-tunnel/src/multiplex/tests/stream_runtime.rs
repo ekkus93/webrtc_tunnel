@@ -148,8 +148,8 @@ async fn session_cleanup_drains_and_aborts_stream_tasks() {
     let mut streams =
         HashMap::from([(1_u32, RuntimeStream::open(write_tx, vec![read_task, write_task]))]);
 
-    cleanup_all_streams(&mut manager, &mut streams);
-    cleanup_all_streams(&mut manager, &mut streams);
+    cleanup_all_streams(&mut manager, &mut streams).await;
+    cleanup_all_streams(&mut manager, &mut streams).await;
 
     timeout(Duration::from_secs(1), read_done_rx)
         .await

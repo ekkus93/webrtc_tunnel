@@ -559,6 +559,16 @@ pub(crate) async fn run_offer_session<'a, T: DaemonSignalingTransport>(
     }
     .await;
 
+    // The bridge only ever takes `pending_client` once the data-plane probe succeeds
+    // (see the bridge-start block above); every other exit from the loop above —
+    // shutdown, ack timeout, probe failure, ICE failure, data-channel-open timeout —
+    // leaves it untouched. Closing it gracefully here (rather than letting it drop)
+    // avoids handing the local client a raw TCP RST for a request it already sent
+    // while the tunnel was still negotiating. A no-op once the bridge has taken it.
+    if let Some(client) = pending_client.take() {
+        client.close_gracefully().await;
+    }
+
     if let Err(error) = &result {
         tracing::warn!(reason = %error, session_id = %session.session_id, "offer session failed");
     }

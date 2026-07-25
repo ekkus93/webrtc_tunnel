@@ -163,13 +163,17 @@ pub(crate) async fn close_stream(
     Ok(())
 }
 
-pub(crate) fn cleanup_all_streams(
+pub(crate) async fn cleanup_all_streams(
     manager: &mut StreamManager,
     streams: &mut HashMap<u32, RuntimeStream>,
 ) {
     manager.clear();
+    // `close()` (not a bare abort) sends a half-close down each stream's local TCP
+    // connection before tearing down its tasks — see `close_tcp_stream_gracefully`
+    // for why an unconditional abort here would RST a client whose response the
+    // whole session died before finishing delivering.
     for (_, stream) in streams.drain() {
-        stream.abort_all();
+        stream.close().await;
     }
 }
 

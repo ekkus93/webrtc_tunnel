@@ -161,9 +161,11 @@ pub(super) async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
                     };
 
                     // Second admission gate: select readiness raced with shutdown, so
-                    // re-check now that we actually hold a client.
+                    // re-check now that we actually hold a client. Close gracefully
+                    // (not a bare drop) so a client that already wrote its request
+                    // does not see a raw TCP RST for a connection we are abandoning.
                     if shutdown.is_shutdown_requested() {
-                        drop(client);
+                        client.close_gracefully().await;
                         break Ok(());
                     }
 
@@ -175,7 +177,7 @@ pub(super) async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
                             cooldown_remaining = ?remaining,
                             "data-plane probe recently failed; dropping local client during cooldown",
                         );
-                        drop(client);
+                        client.close_gracefully().await;
                         continue;
                     }
                     tracing::info!("accepted local client and entering busy offer session state");

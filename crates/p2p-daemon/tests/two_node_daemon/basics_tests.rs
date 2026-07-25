@@ -221,7 +221,7 @@ async fn offer_daemon_accepts_next_client_after_active_connection_loss() {
     let mut first_client = connect_with_retry(offer_port).await;
     first_client.write_all(b"hold").await.expect("first client write");
     let mut first_response = [0_u8; 4];
-    timeout(Duration::from_secs(10), first_client.read_exact(&mut first_response))
+    timeout(Duration::from_secs(25), first_client.read_exact(&mut first_response))
         .await
         .expect("first client should receive response")
         .expect("first client read");

@@ -72,7 +72,7 @@ async fn signaling_turbulence_does_not_interrupt_active_tcp_stream() {
         }
         client.write_all(&payload).await.expect("client write");
         let mut response = [0_u8; 4];
-        timeout(Duration::from_secs(10), client.read_exact(&mut response))
+        timeout(Duration::from_secs(25), client.read_exact(&mut response))
             .await
             .expect("client should receive response")
             .expect("client read");

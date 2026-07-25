@@ -91,7 +91,15 @@ pub(crate) fn sample_config_for(
             read_chunk_size: 16_384,
             local_eof_grace_ms: 250,
             remote_eof_grace_ms: 250,
-            data_plane_probe_timeout_ms: 5000,
+            // Widened from the 5000ms production-typical default: this is a real,
+            // reproduced source of test flakiness under CPU contention (many parallel
+            // `cargo test` binaries, each running a single-threaded runtime doing real
+            // WebRTC/ICE/crypto work — see the two_node_daemon flakiness investigation).
+            // A tight probe budget can expire from scheduling delay alone, well before
+            // any real data-plane problem. This is a test-harness-only config value,
+            // not a production constant — real deployments still default to the
+            // shorter, unwidened value.
+            data_plane_probe_timeout_ms: 15_000,
             data_plane_heartbeat_interval_ms: 5000,
             data_plane_heartbeat_max_misses: 3,
         },

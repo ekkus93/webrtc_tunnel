@@ -126,7 +126,7 @@ pub(crate) async fn run_one_in_memory_session(
         let error = client_result
             .expect("client failure should arrive in time")
             .expect_err("client should not receive a successful tunnel response");
-        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        assert_client_connection_abandoned_without_response(&error);
         answer_server.abort();
         let _ = answer_server.await;
     }

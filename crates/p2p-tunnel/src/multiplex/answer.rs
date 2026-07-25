@@ -93,7 +93,7 @@ pub async fn run_multiplex_answer(
         }
     };
 
-    cleanup_all_streams(&mut manager, &mut streams);
+    cleanup_all_streams(&mut manager, &mut streams).await;
     writer.abort();
     result
 }

@@ -11,6 +11,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
+/// Bound for a single fresh session's full establishment (signaling, ICE, DTLS, data
+/// channel, data-plane probe) plus the actual echo round trip. Must stay comfortably
+/// above the harness's own `data_plane_probe_timeout_ms` (see `harness/config.rs`) —
+/// both were widened together after CPU-contention flakiness investigation showed real
+/// test failures caused by scheduling delay alone, not a genuine session/data-plane
+/// problem. Used only for a single fresh attempt, not `try_client_round_trip`'s
+/// retry-until-success loop (which intentionally keeps each attempt short so it can
+/// re-check its own outer deadline promptly).
+const FRESH_SESSION_ROUND_TRIP_TIMEOUT: Duration = Duration::from_secs(25);
+
 pub(crate) async fn connect_with_retry(port: u16) -> TcpStream {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -33,7 +43,7 @@ pub(crate) async fn assert_client_round_trip(
     let mut client = connect_with_retry(port).await;
     client.write_all(request).await.expect("client write");
     let mut received = [0_u8; 4];
-    timeout(Duration::from_secs(10), client.read_exact(&mut received))
+    timeout(FRESH_SESSION_ROUND_TRIP_TIMEOUT, client.read_exact(&mut received))
         .await
         .expect("client should receive response in time")
         .expect("client should read response");
@@ -86,12 +96,30 @@ pub(crate) async fn assert_client_round_trip_owned(port: u16, request: [u8; 4], 
     let mut client = connect_with_retry(port).await;
     client.write_all(&request).await.expect("client write");
     let mut received = [0_u8; 4];
-    timeout(Duration::from_secs(10), client.read_exact(&mut received))
+    timeout(FRESH_SESSION_ROUND_TRIP_TIMEOUT, client.read_exact(&mut received))
         .await
         .expect("client should receive response in time")
         .expect("client should read response");
     assert_eq!(received, response);
     client.shutdown().await.expect("client shutdown");
+}
+
+/// The offer session closes an abandoned client gracefully (drains any already-sent
+/// bytes, then shuts down) rather than dropping it with unread data still buffered,
+/// which the kernel would otherwise turn into a raw `ConnectionReset`. That graceful
+/// close is itself a best-effort, bounded drain: under severe scheduler contention the
+/// client's write can still land after the drain window closes, so `ConnectionReset`
+/// remains a possible (if much rarer) outcome alongside the intended `UnexpectedEof`.
+/// Both mean the same thing to the caller — the connection was abandoned without a
+/// response — so tests assert on that, not one exact `ErrorKind`.
+pub(crate) fn assert_client_connection_abandoned_without_response(error: &std::io::Error) {
+    assert!(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+        ),
+        "expected the abandoned client's read to fail with a clean EOF or a reset, got: {error}"
+    );
 }
 
 pub(crate) async fn assert_client_stream_fails(port: u16, request: &'static [u8; 4]) {

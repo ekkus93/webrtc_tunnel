@@ -415,7 +415,7 @@ async fn target_connect_failure_for_one_peer_does_not_break_another_peer() {
         .await
         .expect("bad client should fail in time")
         .expect_err("bad client should not receive bytes");
-    assert_eq!(bad_error.kind(), std::io::ErrorKind::ConnectionReset);
+    assert_client_connection_abandoned_without_response(&bad_error);
 
     let mut good_client = connect_with_retry(good_offer_port).await;
     good_client.write_all(b"good").await.expect("good client write");

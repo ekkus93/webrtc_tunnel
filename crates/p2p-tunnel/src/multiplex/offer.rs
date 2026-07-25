@@ -210,8 +210,13 @@ pub async fn run_multiplex_offer(
         }
     };
 
-    cleanup_all_streams(&mut manager, &mut streams);
-    opening_streams.clear();
+    cleanup_all_streams(&mut manager, &mut streams).await;
+    // These clients already sent an OPEN and may have already written request bytes,
+    // but the answer side never acked before the whole session tore down — see
+    // `close_tcp_stream_gracefully` for why a bare drop here would RST them.
+    for (_, stream) in opening_streams.drain() {
+        crate::offer::close_tcp_stream_gracefully(stream).await;
+    }
     writer.abort();
     result
 }

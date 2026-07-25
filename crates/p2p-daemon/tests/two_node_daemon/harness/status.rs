@@ -9,6 +9,13 @@ use tokio::time::sleep;
 
 use super::transport::{TransportFaultControl, TransportTrace};
 
+/// Default poll deadline for status conditions gated on a fresh session's full
+/// establishment. Kept comfortably above `harness/config.rs`'s widened
+/// `data_plane_probe_timeout_ms` for the same reason: under CPU contention, real
+/// session establishment can legitimately take longer than a tight poll deadline
+/// alone, well before any genuine session/data-plane problem.
+const DEFAULT_STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(25);
+
 /// Reads and parses a status file directly, with no polling/waiting. Intended for
 /// asserting terminal state right after a daemon task has already been joined (so
 /// the file is known to be in its final form), not for observing in-flight state.
@@ -18,7 +25,7 @@ pub(crate) async fn read_status_file(path: &Path) -> serde_json::Value {
 }
 
 pub(crate) async fn wait_for_status(path: &Path, expected_state: &str) -> serde_json::Value {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + DEFAULT_STATUS_POLL_TIMEOUT;
     loop {
         if let Ok(content) = tokio::fs::read_to_string(path).await {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -39,7 +46,7 @@ pub(crate) async fn wait_for_session_count(
     path: &Path,
     expected_count: usize,
 ) -> serde_json::Value {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + DEFAULT_STATUS_POLL_TIMEOUT;
     loop {
         if let Ok(content) = tokio::fs::read_to_string(path).await {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -61,7 +68,7 @@ pub(crate) async fn wait_for_status_matching(
     description: &str,
     predicate: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
-    wait_for_status_matching_with_timeout(path, description, predicate, Duration::from_secs(10))
+    wait_for_status_matching_with_timeout(path, description, predicate, DEFAULT_STATUS_POLL_TIMEOUT)
         .await
 }
 
@@ -116,7 +123,7 @@ pub(crate) async fn wait_for_failed_publish_attempt(
     from_peer_id: &str,
     to_peer_id: &str,
 ) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + DEFAULT_STATUS_POLL_TIMEOUT;
     loop {
         if trace.attempts().iter().any(|attempt| {
             attempt.from_peer_id == from_peer_id

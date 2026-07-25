@@ -92,13 +92,6 @@ impl RuntimeStream {
             task.abort();
         }
     }
-
-    pub(crate) fn abort_all(mut self) {
-        self.write_tx.take();
-        for task in &self.tasks {
-            task.abort();
-        }
-    }
 }
 
 impl Drop for RuntimeStream {

@@ -246,7 +246,7 @@ async fn status_file_remains_consistent_during_churn_and_session_failure() {
         .await
         .expect("bad client should fail in time")
         .expect_err("bad client should not receive bytes");
-    assert_eq!(bad_error.kind(), std::io::ErrorKind::ConnectionReset);
+    assert_client_connection_abandoned_without_response(&bad_error);
     assert_client_round_trip(good_offer_port, b"live", b"live").await;
     let final_status = wait_for_status_matching(
         &answer_status,
