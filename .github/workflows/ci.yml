@@ -16,8 +16,70 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.detect.outputs.rust }}
+      android: ${{ steps.detect.outputs.android }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          # Full history so `git diff` against an arbitrary base commit always has
+          # both endpoints available locally.
+          fetch-depth: 0
+
+      # macOS and Android builds are the expensive jobs (real runner-minutes, real
+      # money); this decides whether each actually needs to run. Tags are release
+      # builds and always run everything, regardless of what changed, so nothing
+      # about the release pipeline depends on diffing an arbitrary tagged commit.
+      - name: Detect changed paths
+        id: detect
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            changed="(tag push; running the full matrix regardless of paths)"
+            rust=true
+            android=true
+          else
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              base="${{ github.event.pull_request.base.sha }}"
+            else
+              base="${{ github.event.before }}"
+            fi
+
+            # A missing/all-zero base (force-push, brand-new branch, first commit)
+            # means there is nothing safe to diff against — run everything rather
+            # than silently skipping every expensive job.
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$base" 2>/dev/null; then
+              changed="(no usable base commit; running the full matrix)"
+              rust=true
+              android=true
+            else
+              changed=$(git diff --name-only "$base" "${{ github.sha }}")
+              if echo "$changed" | grep -qE '^(crates/|bins/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/ci\.yml$)'; then
+                rust=true
+              else
+                rust=false
+              fi
+              if echo "$changed" | grep -qE '^(android/|crates/|bins/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/ci\.yml$)'; then
+                android=true
+              else
+                android=false
+              fi
+            fi
+          fi
+
+          echo "Changed files:"
+          echo "$changed"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "android=$android" >> "$GITHUB_OUTPUT"
+
   lint:
     name: Lint
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -46,14 +108,10 @@ jobs:
         run: cargo clippy --workspace --release --all-features -- -D warnings
 
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
+    name: Test (Linux)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
@@ -69,42 +127,25 @@ jobs:
         run: cargo test --workspace --all-targets --all-features
 
       - name: Validate systemd units
-        if: runner.os == 'Linux'
         run: scripts/check-systemd-units.sh
 
-      - name: Validate launchd plists
-        if: runner.os == 'macOS'
-        run: scripts/check-launchd-plists.sh
-
-      - name: launchd install-layout smoke test
-        if: runner.os == 'macOS'
-        run: sudo scripts/test-launchd-install-layout.sh
-
       - name: Debian package/install smoke test
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y fakeroot
           scripts/test-debian-package.sh
 
-      - name: Install mosquitto (Linux)
-        if: runner.os == 'Linux'
+      - name: Install mosquitto
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto
-
-      - name: Install mosquitto (macOS)
-        if: runner.os == 'macOS'
-        run: brew install mosquitto
 
       - name: Build offer/answer/p2pctl binaries for the signal lifecycle test
         run: cargo build -p p2p-offer -p p2p-answer -p p2pctl
 
       # Required, not a self-skipping best-effort check: a real mosquitto broker
-      # is provisioned above on every OS in the matrix (native process, not
-      # Docker, which GitHub's macOS runners do not provide), so this test must
-      # not silently skip here the way it may in an unprovisioned local
-      # checkout.
+      # is provisioned above, so this test must not silently skip here the way it
+      # may in an unprovisioned local checkout.
       - name: Run required real-process signal lifecycle test
         env:
           P2P_REQUIRE_SIGNAL_TEST: "1"
@@ -112,8 +153,57 @@ jobs:
           P2P_ANSWER_BIN: ${{ github.workspace }}/target/debug/p2p-answer
         run: cargo test -p p2p-daemon --test process_signal_shutdown -- --nocapture
 
+  # Expensive (real macOS runner-minutes): only runs when Rust source relevant to
+  # it changed, or on a release tag — see the `changes` job above.
+  test-macos:
+    name: Test (macOS)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets --all-features
+
+      - name: Validate launchd plists
+        run: scripts/check-launchd-plists.sh
+
+      - name: launchd install-layout smoke test
+        run: sudo scripts/test-launchd-install-layout.sh
+
+      - name: Install mosquitto
+        run: brew install mosquitto
+
+      - name: Build offer/answer/p2pctl binaries for the signal lifecycle test
+        run: cargo build -p p2p-offer -p p2p-answer -p p2pctl
+
+      # Required, not a self-skipping best-effort check: a real mosquitto broker
+      # is provisioned above (native process, not Docker, which GitHub's macOS
+      # runners do not provide), so this test must not silently skip here the way
+      # it may in an unprovisioned local checkout.
+      - name: Run required real-process signal lifecycle test
+        env:
+          P2P_REQUIRE_SIGNAL_TEST: "1"
+          P2P_OFFER_BIN: ${{ github.workspace }}/target/debug/p2p-offer
+          P2P_ANSWER_BIN: ${{ github.workspace }}/target/debug/p2p-answer
+        run: cargo test -p p2p-daemon --test process_signal_shutdown -- --nocapture
+
+  # Expensive (full NDK + Gradle build): only runs when android/, a shared Rust
+  # crate/binary, or the workspace manifest changed, or on a release tag — see the
+  # `changes` job above.
   android:
     name: Android
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -195,6 +285,7 @@ jobs:
     needs:
       - lint
       - test
+      - test-macos
       - android
     permissions:
       contents: write
