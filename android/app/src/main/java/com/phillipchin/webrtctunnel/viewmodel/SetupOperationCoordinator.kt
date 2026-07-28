@@ -27,6 +27,27 @@ internal sealed interface SetupDraftAdmission<out T> {
     data class Busy(val active: SetupDraftOperation) : SetupDraftAdmission<Nothing>
 }
 
+/**
+ * FIX9 P0-001: explicit freshness token handed to every admitted setup operation. The previous
+ * API passed a raw `Long`, which made it easy for real controller call sites to ignore freshness
+ * before publishing state or committing storage after [SetupOperationCoordinator.invalidate].
+ */
+internal class SetupOperationToken internal constructor(
+    val id: Long,
+    val operation: SetupDraftOperation,
+    private val staleCheck: (Long) -> Boolean,
+) {
+    fun isFresh(): Boolean = !staleCheck(id)
+
+    inline fun publishIfFresh(block: () -> Unit): Boolean {
+        if (!isFresh()) {
+            return false
+        }
+        block()
+        return true
+    }
+}
+
 /** An admitted operation's identity: [id] is unique per acquisition, so a stale release can never
  * be mistaken for a different, later acquisition. */
 private data class ActiveSetupDraftOperation(
@@ -69,21 +90,25 @@ internal class SetupOperationCoordinator {
         staleBefore.set(sequence.get())
     }
 
-    /** Whether the operation identified by [operationId] (received by the [runGuarded] block) was
-     * issued before the last [invalidate] call and must not publish its result. */
+    /** Whether the operation identified by [operationId] was issued before the last [invalidate]
+     * call and must not publish its result. Kept for existing tests and diagnostic assertions; new
+     * production controller code should use [SetupOperationToken.isFresh] or
+     * [SetupOperationToken.publishIfFresh]. */
     fun isStale(operationId: Long): Boolean = operationId <= staleBefore.get()
 
     suspend fun <T> tryRun(
         operation: SetupDraftOperation,
-        block: suspend (id: Long) -> T,
+        block: suspend (token: SetupOperationToken) -> T,
     ): SetupDraftAdmission<T> {
         while (true) {
-            val token = ActiveSetupDraftOperation(sequence.incrementAndGet(), operation)
-            if (active.compareAndSet(null, token)) {
+            val owner = ActiveSetupDraftOperation(sequence.incrementAndGet(), operation)
+            if (active.compareAndSet(null, owner)) {
                 return try {
-                    SetupDraftAdmission.Completed(block(token.id))
+                    SetupDraftAdmission.Completed(
+                        block(SetupOperationToken(owner.id, owner.operation, ::isStale)),
+                    )
                 } finally {
-                    check(active.compareAndSet(token, null)) {
+                    check(active.compareAndSet(owner, null)) {
                         "Setup draft admission owner changed unexpectedly"
                     }
                 }
@@ -110,22 +135,22 @@ internal class SetupOperationCoordinator {
     suspend fun <T> runGuarded(
         access: WizardStateAccess,
         operation: SetupDraftOperation,
-        block: suspend (id: Long) -> T,
+        block: suspend (token: SetupOperationToken) -> T,
     ): T? {
         try {
             val admission =
-                tryRun(operation) { id ->
+                tryRun(operation) { token ->
                     // FIX8 P1-001-A: publish isBusy=true the instant admission is acquired —
                     // otherwise a caller observing published state (not operations.isBusy
                     // directly) would see busy=false for as long as block() runs before its own
                     // first applyState call, which may be its entire duration.
-                    access.applyState(access.state())
+                    token.publishIfFresh { access.applyState(access.state()) }
                     try {
-                        block(id)
+                        block(token)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (error: Exception) {
-                        if (!isStale(id)) {
+                        token.publishIfFresh {
                             access.applyState(
                                 access.state().copy(
                                     errorMessage =
@@ -156,9 +181,8 @@ internal class SetupOperationCoordinator {
             // (tryRun's own `finally` already ran) — covers both a normal return above AND a
             // CancellationException propagating straight through (a cancelled action must still
             // release its busy indicator, not leave it stuck true for the rest of the wizard's
-            // life). [block]'s own last applyState call, if any, ran while admission was still
-            // held, so that published isBusy is stale the instant release happens; this call is
-            // what makes isBusy observably return to false afterward.
+            // life). This restamps the current state only; stale operation-specific state must be
+            // guarded by [SetupOperationToken] before this point.
             access.applyState(access.state())
         }
     }
