@@ -23,28 +23,25 @@ import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
-
-/**
- * FIX7 P1-003-C: deterministic hooks blocking `ensureDefaultConfig` mid-flight so readiness
- * stays observably `Initializing` for as long as a test needs, rather than racing the real
- * (fast, usually-instant) async transition every other test application's synchronous
- * `initialize()` call sidesteps entirely.
- */
-object InitializationRaceTestHooks {
-    val entered: AtomicReference<CountDownLatch> = AtomicReference(CountDownLatch(1))
-    val release: AtomicReference<CountDownLatch> = AtomicReference(CountDownLatch(1))
-}
 
 /**
  * An application whose default-config creation blocks until released, and whose
  * `onCreate()` calls the real async `start()` (not `initialize()`) — exercising the actual
  * production race between a start request and in-flight app initialization.
+ *
+ * The synchronization latches belong to this Application instance. Robolectric may create and
+ * start the configured Application before JUnit invokes `@Before`; global latch references reset
+ * from `@Before` can therefore disconnect the initialization coroutine from the latches observed
+ * by the test. Instance-owned latches guarantee both sides always use the same synchronization
+ * objects regardless of test-runner ordering or build variant.
  */
 class BlockingInitTestApplication : Application(), HasAppDependencies {
     private lateinit var appDependencies: AppDependencies
     override val deps: AppDependencies
         get() = appDependencies
+
+    val initializationEntered = CountDownLatch(1)
+    val initializationRelease = CountDownLatch(1)
 
     // FIX8 P2-002 (CI flakiness root-cause): AppDependencies.appScope is a real,
     // process/JVM-lifetime Dispatchers.IO-backed scope (by design — see its own doc comment,
@@ -87,8 +84,8 @@ class BlockingInitTestApplication : Application(), HasAppDependencies {
                 configRepository =
                     object : ConfigRepository(this) {
                         override suspend fun ensureDefaultConfig(contents: String): Result<Unit> {
-                            InitializationRaceTestHooks.entered.get().countDown()
-                            check(InitializationRaceTestHooks.release.get().await(10, TimeUnit.SECONDS)) {
+                            initializationEntered.countDown()
+                            check(initializationRelease.await(10, TimeUnit.SECONDS)) {
                                 "release latch was never counted down"
                             }
                             return super.ensureDefaultConfig(contents)
@@ -111,31 +108,33 @@ class BlockingInitTestApplication : Application(), HasAppDependencies {
 @RunWith(AndroidJUnit4::class)
 @Config(application = BlockingInitTestApplication::class)
 class TunnelForegroundServiceInitializationRaceTest {
-    private val controller =
-        ServiceController.of(
-            realIoService(),
-            Intent(ApplicationProvider.getApplicationContext(), TunnelForegroundService::class.java),
-        )
+    private lateinit var controller: ServiceController<TunnelForegroundService>
     private lateinit var service: TunnelForegroundService
+
+    private val testApplication: BlockingInitTestApplication
+        get() = service.applicationContext as BlockingInitTestApplication
 
     @Before
     fun setUp() {
-        InitializationRaceTestHooks.entered.set(CountDownLatch(1))
-        InitializationRaceTestHooks.release.set(CountDownLatch(1))
+        controller =
+            ServiceController.of(
+                realIoService(),
+                Intent(ApplicationProvider.getApplicationContext(), TunnelForegroundService::class.java),
+            )
         service = controller.create().get()
     }
 
     @After
     fun tearDown() {
         // Release any still-blocked ensureDefaultConfig so teardown cannot hang.
-        InitializationRaceTestHooks.release.get().countDown()
+        testApplication.initializationRelease.countDown()
         // FIX8 P2-002 (CI flakiness root-cause): join this test's own initialization coroutine
         // before returning, not just unblock it — otherwise it can still be running (or land in
         // the shared Dispatchers.IO queue behind it) when the NEXT test's fresh Application
         // starts its own coroutine, starving that one of a worker thread under a
         // resource-constrained CI runner. 10s bounds a genuine hang (matching
         // ensureDefaultConfig's own 10s release-await) rather than letting teardown hang forever.
-        val job = (service.applicationContext as BlockingInitTestApplication).initializationJob
+        val job = testApplication.initializationJob
         if (job != null) {
             runBlocking { job.join() }
         }
@@ -176,7 +175,7 @@ class TunnelForegroundServiceInitializationRaceTest {
             "ensureDefaultConfig must have been entered by now",
             // FIX8 P2-002 (CI flakiness root-cause): same real-dispatcher scheduling
             // dependency as waitForCondition above — 20s to match.
-            InitializationRaceTestHooks.entered.get().await(20, TimeUnit.SECONDS),
+            testApplication.initializationEntered.await(20, TimeUnit.SECONDS),
         )
         assertEquals(AppInitializationState.Initializing, deps.appInitializationCoordinator.state.value)
 
@@ -202,9 +201,9 @@ class TunnelForegroundServiceInitializationRaceTest {
         // FIX8 P2-002 (CI flakiness root-cause): same real-dispatcher scheduling dependency as
         // waitForCondition below — 20s to match. This exact wait failed under CI contention
         // (5s was too tight) while every local run stayed clean.
-        assertTrue(InitializationRaceTestHooks.entered.get().await(20, TimeUnit.SECONDS))
+        assertTrue(testApplication.initializationEntered.await(20, TimeUnit.SECONDS))
 
-        InitializationRaceTestHooks.release.get().countDown()
+        testApplication.initializationRelease.countDown()
         assertTrue(
             "initialization must reach Ready once released",
             waitForCondition {
