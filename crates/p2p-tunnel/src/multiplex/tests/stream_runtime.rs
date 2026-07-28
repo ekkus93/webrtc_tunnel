@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use tokio::sync::Barrier;
+
 use super::support::*;
 
 #[tokio::test]
@@ -159,6 +163,40 @@ async fn session_cleanup_drains_and_aborts_stream_tasks() {
         .await
         .expect("write task should abort")
         .expect("write task drop notify");
+    assert_eq!(manager.active_count(), 0);
+    assert!(streams.is_empty());
+}
+
+#[tokio::test]
+async fn session_cleanup_starts_all_half_closes_before_waiting_for_any_one() {
+    const STREAM_COUNT: u32 = 4;
+
+    let close_barrier = Arc::new(Barrier::new(STREAM_COUNT as usize));
+    let mut manager = StreamManager::new();
+    let mut streams = HashMap::new();
+
+    for stream_id in 1..=STREAM_COUNT {
+        manager.register(stream(stream_id, "ssh")).expect("register stream");
+        let read_task = tokio::spawn(future::pending::<()>());
+        let (write_tx, mut write_rx) = mpsc::channel(1);
+        let barrier = Arc::clone(&close_barrier);
+        let write_task = tokio::spawn(async move {
+            assert!(matches!(write_rx.recv().await, Some(TcpWriteCommand::Close)));
+            barrier.wait().await;
+        });
+        streams.insert(
+            stream_id,
+            RuntimeStream::open(write_tx, vec![read_task, write_task]),
+        );
+    }
+
+    timeout(
+        Duration::from_millis(600),
+        cleanup_all_streams(&mut manager, &mut streams),
+    )
+    .await
+    .expect("stream cleanup must close all streams concurrently, not 250 ms at a time");
+
     assert_eq!(manager.active_count(), 0);
     assert!(streams.is_empty());
 }
