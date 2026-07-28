@@ -2,8 +2,8 @@
 
 **Purpose:** trigger full validation for the FIX9 implementation pass.
 
-**Original validation requested from SHA:** `29ac4d4b1550663495bc43dc6bfb75daef5`  
-**Latest rerun requested after final identity controller function-count cleanup:** current `master` at this commit.
+**Original validation requested from SHA:** `29ac4d4b1550663495bc43dc6b6116bfb75daef5`  
+**Latest user-updated validation baseline:** `06fa50bac324dde4c540f0ccc57cb5496914ca43`
 
 This file exists only to create traceable `[full-signoff]` commits that should force the repository's full CI matrix, including lint, unit tests, Android validation, Rust validation, and E2E checks according to `.github/workflows/ci.yml`.
 
@@ -16,6 +16,8 @@ The validation run `30347751225` reduced the Android failure to two detekt compl
 The validation run `30349093311` reduced the Android failure to `TooManyFunctions` findings in `SetupIdentityController` and `SetupSaveController`. The follow-up commits moved pure/helper publication logic out of the controller classes without relaxing detekt thresholds.
 
 The validation run `30350167310` reduced the Android failure to a single `TooManyFunctions` finding in `SetupIdentityController`. The follow-up commit moved the private identity path resolver out of the controller class, leaving the production freshness behavior unchanged.
+
+The user then updated `master` at `06fa50bac324dde4c540f0ccc57cb5496914ca43` to restore setup-wizard navigation logic and forward-save messages. This full-signoff commit validates that exact user-updated baseline plus this trace-only validation-request change.
 
 Requested validation commands, mirrored from `docs/review-source/WEBRTC_TUNNEL_FIX9_IMPLEMENTATION_REPORT.md`:
 
@@ -46,4 +48,4 @@ cd android
   -Pandroid.testInstrumentationRunnerArguments.class=com.phillipchin.webrtctunnel.data.BrokerSecretRepositoryInstrumentedTest
 ```
 
-**Status:** rerun requested after final identity controller function-count cleanup; not yet passed.
+**Status:** rerun requested from the user-updated `master` baseline; not yet passed.
