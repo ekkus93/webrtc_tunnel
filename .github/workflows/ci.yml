@@ -22,21 +22,18 @@ jobs:
     outputs:
       rust: ${{ steps.detect.outputs.rust }}
       android: ${{ steps.detect.outputs.android }}
+      full_signoff: ${{ steps.detect.outputs.full_signoff }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
         with:
-          # Full history so `git diff` against an arbitrary base commit always has
-          # both endpoints available locally.
           fetch-depth: 0
 
-      # macOS and Android builds are the expensive jobs (real runner-minutes, real
-      # money); this decides whether each actually needs to run. Tags are release
-      # builds and always run everything, regardless of what changed, so nothing
-      # about the release pipeline depends on diffing an arbitrary tagged commit.
       - name: Detect changed paths
         id: detect
         shell: bash
+        env:
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           rust_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/ci\.yml$|bins/|crates/|scripts/|tests/|docs/examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$|clippy\.toml$|rustfmt\.toml$|\.rustfmt\.toml$)'
           android_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/ci\.yml$|android/|bins/|crates/|tests/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$)'
@@ -66,10 +63,6 @@ jobs:
             fi
           }
 
-          # Permanent negative/positive fixtures for the path gate. These directly use
-          # the same classifier as the real changed-file list, so a future regex edit
-          # cannot silently stop running CI for scripts, E2E tests, shared build inputs,
-          # or composite actions while still passing a disconnected test.
           assert_flags "crates/p2p-tunnel/src/lib.rs" true true
           assert_flags "scripts/check-systemd-units.sh" true false
           assert_flags "tests/e2e/android_tunnel_e2e.sh" true true
@@ -77,6 +70,11 @@ jobs:
           assert_flags "android/app/src/main/AndroidManifest.xml" false true
           assert_flags ".github/actions/example/action.yml" true true
           assert_flags "docs/architecture.md" false false
+
+          full_signoff=false
+          if [[ "${{ github.ref }}" == refs/tags/* ]] || [[ "$HEAD_COMMIT_MESSAGE" == *"[full-signoff]"* ]]; then
+            full_signoff=true
+          fi
 
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             changed="(tag push; running the full matrix regardless of paths)"
@@ -89,9 +87,6 @@ jobs:
               base="${{ github.event.before }}"
             fi
 
-            # A missing/all-zero base (force-push, brand-new branch, first commit)
-            # means there is nothing safe to diff against — run everything rather
-            # than silently skipping every expensive job.
             if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$base" 2>/dev/null; then
               changed="(no usable base commit; running the full matrix)"
               rust=true
@@ -106,35 +101,26 @@ jobs:
           echo "$changed"
           echo "rust=$rust" >> "$GITHUB_OUTPUT"
           echo "android=$android" >> "$GITHUB_OUTPUT"
+          echo "full_signoff=$full_signoff" >> "$GITHUB_OUTPUT"
 
   lint:
     name: Lint
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
-
       - name: Check formatting
         run: cargo fmt --all --check
-
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      # Release profile has debug_assertions off, so it catches warnings that the
-      # debug --all-targets run misses (e.g. imports used only under
-      # cfg(debug_assertions)). No --all-targets here: the integration tests
-      # depend on debug-only test hooks and intentionally do not build in release.
       - name: Run clippy (release profile)
         run: cargo clippy --workspace --release --all-features -- -D warnings
 
@@ -143,40 +129,28 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
-
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features
-
       - name: Validate systemd units
         run: scripts/check-systemd-units.sh
-
       - name: Debian package/install smoke test
         run: |
           sudo apt-get update
           sudo apt-get install -y fakeroot
           scripts/test-debian-package.sh
-
       - name: Install mosquitto
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto
-
       - name: Build offer/answer/p2pctl binaries for the signal lifecycle test
         run: cargo build -p p2p-offer -p p2p-answer -p p2pctl
-
-      # Required, not a self-skipping best-effort check: a real mosquitto broker
-      # is provisioned above, so this test must not silently skip here the way it
-      # may in an unprovisioned local checkout.
       - name: Run required real-process signal lifecycle test
         env:
           P2P_REQUIRE_SIGNAL_TEST: "1"
@@ -184,43 +158,28 @@ jobs:
           P2P_ANSWER_BIN: ${{ github.workspace }}/target/debug/p2p-answer
         run: cargo test -p p2p-daemon --test process_signal_shutdown -- --nocapture
 
-  # Expensive (real macOS runner-minutes): only runs when Rust source relevant to
-  # it changed, or on a release tag — see the `changes` job above.
   test-macos:
     name: Test (macOS)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: macos-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
-
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features
-
       - name: Validate launchd plists
         run: scripts/check-launchd-plists.sh
-
       - name: launchd install-layout smoke test
         run: sudo scripts/test-launchd-install-layout.sh
-
       - name: Install mosquitto
         run: brew install mosquitto
-
       - name: Build offer/answer/p2pctl binaries for the signal lifecycle test
         run: cargo build -p p2p-offer -p p2p-answer -p p2pctl
-
-      # Required, not a self-skipping best-effort check: a real mosquitto broker
-      # is provisioned above (native process, not Docker, which GitHub's macOS
-      # runners do not provide), so this test must not silently skip here the way
-      # it may in an unprovisioned local checkout.
       - name: Run required real-process signal lifecycle test
         env:
           P2P_REQUIRE_SIGNAL_TEST: "1"
@@ -228,9 +187,6 @@ jobs:
           P2P_ANSWER_BIN: ${{ github.workspace }}/target/debug/p2p-answer
         run: cargo test -p p2p-daemon --test process_signal_shutdown -- --nocapture
 
-  # Expensive (full NDK + Gradle build): only runs when android/, a shared Rust
-  # crate/binary, or the workspace manifest changed, or on a release tag — see the
-  # `changes` job above.
   android:
     name: Android
     needs: changes
@@ -239,67 +195,41 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
-
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-
       - name: Install Android SDK tools
         uses: android-actions/setup-android@v4
         with:
-          # Skip the action's default "tools platform-tools" install: "tools" is the
-          # long-deprecated legacy SDK Tools bundle (includes the old standalone
-          # emulator) and its download from Google's CDN has been failing with
-          # "Error reading Zip content from a SeekableByteChannel" — a corrupted/
-          # truncated zip, not anything this workflow controls. Nothing here needs
-          # that package anyway; the next step explicitly installs platform-tools
-          # plus everything else actually required.
           packages: ""
-
       - name: Install Android SDK components
         run: yes | sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"
-
       - name: Install Rust toolchain with Android targets
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
-
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
-
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
-
       - name: Build Android Rust JNI libraries
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.3.11579264
         run: cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
-
-      - name: Run full Gradle check (ktlint, type-resolved detekt, Android lint, unit tests)
+      - name: Run full Gradle check
         run: |
           cd android
           ./gradlew --no-daemon check
-        # FIX7 P2-002-C: `check` (not a plain `detekt` task) is required here so the
-        # type-resolved detektMain/detektTest/detektDebugAndroidTest tasks actually run in CI —
-        # rules needing type resolution (InjectDispatcher, UseOrEmpty, IgnoredReturnValue's
-        # @CheckResult enforcement) were previously only exercised locally, never in CI.
-
       - name: Run foreground-service stop-failure truthfulness tests
         run: |
           cd android
-          ./gradlew --no-daemon testDebugUnitTest \
-            --tests '*TunnelForegroundServiceStopFailureTest'
-
+          ./gradlew --no-daemon testDebugUnitTest --tests '*TunnelForegroundServiceStopFailureTest'
       - name: Build Android app and run unit tests
         run: |
           cd android
           ./gradlew --no-daemon assembleDebug testDebugUnitTest
-
-      # FIX8 P2-001-D: preserve first-failure diagnostics — ktlint/detekt/lint HTML reports and
-      # JUnit XML results — as a downloadable artifact rather than relying solely on the raw
-      # (truncated, hard-to-search) step log. Runs regardless of which prior step failed.
       - name: Upload Android lint/test reports on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -310,6 +240,171 @@ jobs:
             android/app/build/test-results/
           retention-days: 14
 
+  docker-e2e:
+    name: Docker real-data-path E2E
+    needs:
+      - changes
+      - test
+    if: needs.changes.outputs.full_signoff == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: cargo build --release -p p2p-offer -p p2p-answer -p p2pctl
+      - name: Run full TLS broker and tunnel E2E
+        run: tests/e2e/docker/run.sh
+      - name: Run Docker signal and graceful-stop lifecycle E2E
+        run: tests/e2e/docker/stop_lifecycle.sh
+
+  android-emulator-e2e:
+    name: Android emulator real-data-path E2E
+    needs:
+      - changes
+      - android
+    if: needs.changes.outputs.full_signoff == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Android SDK tools
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ""
+      - name: Install Android SDK components
+        run: yes | sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264" "emulator" "system-images;android-35;google_apis;x86_64"
+      - name: Install Rust toolchain with Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+      - name: Build Android Rust JNI libraries
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.3.11579264
+        run: cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
+      - name: Build debug APK and E2E host binaries
+        run: |
+          cargo build -p p2pctl
+          cargo build --release -p p2p-answer
+          cd android
+          ./gradlew --no-daemon assembleDebug
+      - name: Run Android offer to dockerized answer E2E
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: ADB="$ANDROID_HOME/platform-tools/adb" REBUILD=0 ANDROID_ICE_MODE=native tests/e2e/android_tunnel_e2e.sh
+
+  signoff:
+    name: Full matrix signoff
+    if: always()
+    needs:
+      - changes
+      - lint
+      - test
+      - test-macos
+      - android
+      - docker-e2e
+      - android-emulator-e2e
+    permissions:
+      statuses: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs and publish commit status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUST_REQUIRED: ${{ needs.changes.outputs.rust }}
+          ANDROID_REQUIRED: ${{ needs.changes.outputs.android }}
+          FULL_SIGNOFF: ${{ needs.changes.outputs.full_signoff }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          LINUX_RESULT: ${{ needs.test.result }}
+          MACOS_RESULT: ${{ needs.test-macos.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+          DOCKER_E2E_RESULT: ${{ needs.docker-e2e.result }}
+          ANDROID_EMULATOR_E2E_RESULT: ${{ needs.android-emulator-e2e.result }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          state=success
+          description="full required matrix passed"
+
+          require_result() {
+            local job_name="$1"
+            local actual="$2"
+            local expected="$3"
+            if [ "$actual" != "$expected" ]; then
+              state=failure
+              description="$job_name was $actual; expected $expected"
+            fi
+          }
+
+          require_result "path detection" "$CHANGES_RESULT" success
+          if [ "$RUST_REQUIRED" = true ]; then
+            require_result "Rust lint" "$LINT_RESULT" success
+            require_result "Linux tests" "$LINUX_RESULT" success
+            require_result "macOS tests" "$MACOS_RESULT" success
+          else
+            require_result "Rust lint" "$LINT_RESULT" skipped
+            require_result "Linux tests" "$LINUX_RESULT" skipped
+            require_result "macOS tests" "$MACOS_RESULT" skipped
+          fi
+
+          if [ "$ANDROID_REQUIRED" = true ]; then
+            require_result "Android" "$ANDROID_RESULT" success
+          else
+            require_result "Android" "$ANDROID_RESULT" skipped
+          fi
+
+          matrix_state="$state"
+          matrix_description="$description"
+
+          post_status() {
+            local context="$1"
+            local status_state="$2"
+            local status_description="$3"
+            local payload
+            payload=$(printf '{"state":"%s","target_url":"%s","description":"%s","context":"%s"}' \
+              "$status_state" "$TARGET_URL" "$status_description" "$context")
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "${{ github.api_url }}/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+              --data "$payload"
+          }
+
+          post_status "ci/full-matrix" "$matrix_state" "$matrix_description"
+
+          if [ "$FULL_SIGNOFF" = true ]; then
+            require_result "Docker E2E" "$DOCKER_E2E_RESULT" success
+            require_result "Android emulator E2E" "$ANDROID_EMULATOR_E2E_RESULT" success
+            post_status "ci/release-candidate" "$state" "$description"
+          else
+            require_result "Docker E2E" "$DOCKER_E2E_RESULT" skipped
+            require_result "Android emulator E2E" "$ANDROID_EMULATOR_E2E_RESULT" skipped
+          fi
+
+          if [ "$state" != success ]; then
+            echo "$description" >&2
+            exit 1
+          fi
+
   release-artifacts:
     name: Release artifacts (${{ matrix.os }})
     if: startsWith(github.ref, 'refs/tags/')
@@ -318,6 +413,9 @@ jobs:
       - test
       - test-macos
       - android
+      - docker-e2e
+      - android-emulator-e2e
+      - signoff
     permissions:
       contents: write
     runs-on: ${{ matrix.os }}
@@ -327,20 +425,15 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
-
       - name: Build release binaries
         run: cargo build --release --workspace
-
       - name: Package release binaries
         shell: bash
         run: |
@@ -351,13 +444,11 @@ jobs:
           cp target/release/p2p-answer "$artifact_dir/"
           cp README.md LICENSE "$artifact_dir/"
           tar -czf "${artifact_dir}.tar.gz" "$artifact_dir"
-
       - name: Upload release artifacts
         uses: actions/upload-artifact@v7
         with:
           name: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}
           path: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.tar.gz
-
       - name: Upload release assets
         uses: softprops/action-gh-release@v3
         with:
