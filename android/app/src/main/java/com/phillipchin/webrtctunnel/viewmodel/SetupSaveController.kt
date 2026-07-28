@@ -15,7 +15,7 @@ import com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinator
 import com.phillipchin.webrtctunnel.data.SetupPersistenceRequest
 import com.phillipchin.webrtctunnel.data.SetupPersistenceResult
 import com.phillipchin.webrtctunnel.data.SetupRollbackException
-import com.phillipchin.webrtctunnel.data.SetupRollbackStageResult
+import com.phillipchin.webrtunnel.data.SetupRollbackStageResult
 import com.phillipchin.webrtctunnel.data.ValidationWorkspaceRenderInputs
 import com.phillipchin.webrtctunnel.data.renderOfferConfig
 import com.phillipchin.webrtctunnel.data.renderOfferConfigForValidationWorkspace
@@ -42,6 +42,8 @@ private class SaveError(
     message: String,
     val redact: Boolean,
 ) : Exception(message)
+
+private class StaleSetupOperationException : Exception("Setup operation became stale")
 
 /**
  * Read/write access to the shared wizard state, so controllers split out of
@@ -118,21 +120,19 @@ internal class SetupSaveController(
 
     fun startTunnelFromReview(onSuccess: (() -> Unit)? = null) {
         scope.launch {
-            val saved = saveAndApplyConfigInternal()
-            if (!saved) {
-                return@launch
+            saveAndApplyConfigInternal {
+                ContextCompat.startForegroundService(
+                    deps.context,
+                    Intent(deps.context, TunnelForegroundService::class.java)
+                        .setAction(TunnelForegroundService.ACTION_START_OFFER),
+                )
+                access.applyState(access.state().copy(saveResult = "Tunnel start requested", errorMessage = null))
+                onSuccess?.invoke()
             }
-            ContextCompat.startForegroundService(
-                deps.context,
-                Intent(deps.context, TunnelForegroundService::class.java)
-                    .setAction(TunnelForegroundService.ACTION_START_OFFER),
-            )
-            access.applyState(access.state().copy(saveResult = "Tunnel start requested", errorMessage = null))
-            onSuccess?.invoke()
         }
     }
 
-    private suspend fun saveAndApplyConfigInternal(): Boolean {
+    private suspend fun saveAndApplyConfigInternal(onFreshSuccess: (() -> Unit)? = null): Boolean {
         // FIX8 P1-001-B: block while the setup baseline has not finished loading — a save built
         // from an incoherent baseline (e.g. a corrupt setup-input file never actually recovered
         // from) must never proceed.
@@ -143,37 +143,53 @@ internal class SetupSaveController(
             )
             return false
         }
-        // FIX8 P1-001-A: final save holds setup-local admission (so no identity/forward-edit
-        // action can mutate the shared draft mid-save) and, from inside it, still acquires the
-        // application-scoped ConfigurationMutationCoordinator's SetupSave admission (FIX7
-        // P0-001-C) — an overlapping config import/forward mutation/reset must also be rejected,
-        // not just another setup save. Either rejection is visibly and durably reported.
-        return access.operations.runGuarded(access, SetupDraftOperation.FinalSave) {
+        // FIX9 P0-001-F: final save holds setup-local admission and carries the freshness token
+        // through validation, global admission, persistence, and optional start-from-review. A
+        // stale save may not publish UI state or start the service after setup cancellation.
+        return access.operations.runGuarded(access, SetupDraftOperation.FinalSave) { token ->
+            if (!token.isFresh()) {
+                return@runGuarded false
+            }
             when (
                 val admission =
                     deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.SetupSave) {
-                        runSaveAndApply()
+                        if (!token.isFresh()) {
+                            false
+                        } else {
+                            runSaveAndApply(token)
+                        }
                     }
             ) {
-                is ConfigurationAdmission.Completed -> admission.value
+                is ConfigurationAdmission.Completed -> {
+                    val saved = admission.value
+                    if (saved && token.isFresh()) {
+                        onFreshSuccess?.invoke()
+                    }
+                    saved && token.isFresh()
+                }
                 is ConfigurationAdmission.Busy -> {
-                    access.applyState(
-                        access.state().copy(
-                            errorMessage =
-                                "Another configuration operation is already in progress: ${admission.active}",
-                            saveResult = null,
-                        ),
-                    )
+                    token.publishIfFresh {
+                        access.applyState(
+                            access.state().copy(
+                                errorMessage =
+                                    "Another configuration operation is already in progress: ${admission.active}",
+                                saveResult = null,
+                            ),
+                        )
+                    }
                     false
                 }
             }
         } ?: false
     }
 
-    private suspend fun runSaveAndApply(): Boolean {
+    private suspend fun runSaveAndApply(token: SetupOperationToken): Boolean {
         // Capture the current state only after the lock is held, so a serialized second save
         // works from fresh state rather than a snapshot taken before the first finished.
         val current = access.state()
+        if (!token.isFresh()) {
+            return false
+        }
         // P0-001-B: rethrow CancellationException rather than folding it into a visible save
         // error (the old enclosing runCatching reported cancellation as a failure). Only real
         // errors become an errorMessage; a cancelled save reports neither success nor failure —
@@ -183,7 +199,7 @@ internal class SetupSaveController(
         // re-running setup to fully repair.
         val outcome =
             try {
-                Result.success(validateAndCommit(current))
+                Result.success(validateAndCommit(current, token))
             } catch (cancelled: CancellationException) {
                 reportRollbackIncompleteIfPresent(cancelled, current)
                 throw cancelled
@@ -192,24 +208,32 @@ internal class SetupSaveController(
             }
         return outcome.fold(
             onSuccess = { identity ->
+                if (!token.isFresh()) {
+                    return false
+                }
                 // FIX8 P0-001-D: a committed save clears the draft (its private bytes were
                 // wiped in validateAndCommit's finally); a failed save leaves the draft for retry.
                 identityDraft.clear()
-                access.applyState(
-                    current.copy(
-                        localPublicIdentity = identity.publicIdentity,
-                        identityPeerId = identity.peerId,
-                        errorMessage = null,
-                        saveResult = "Configuration saved",
-                    ),
-                )
+                token.publishIfFresh {
+                    access.applyState(
+                        current.copy(
+                            localPublicIdentity = identity.publicIdentity,
+                            identityPeerId = identity.peerId,
+                            errorMessage = null,
+                            saveResult = "Configuration saved",
+                        ),
+                    )
+                }
                 true
             },
             onFailure = { error ->
+                if (error is StaleSetupOperationException) {
+                    return false
+                }
                 val message = error.message ?: "Failed saving configuration"
                 val text =
                     if (error is SaveError && !error.redact) message else SensitiveDataRedactor.redactText(message)
-                access.applyState(current.copy(errorMessage = text, saveResult = null))
+                token.publishIfFresh { access.applyState(current.copy(errorMessage = text, saveResult = null)) }
                 false
             },
         )
@@ -251,12 +275,18 @@ internal class SetupSaveController(
      * Throws [SaveError] on any validation/persistence failure and always wipes the plaintext
      * identity buffer. Returns the resolved identity for the success path.
      */
-    private suspend fun validateAndCommit(current: SetupWizardState): ResolvedIdentity {
+    private suspend fun validateAndCommit(
+        current: SetupWizardState,
+        token: SetupOperationToken,
+    ): ResolvedIdentity {
+        throwIfStale(token)
         val input = current.input
         val enabledForwards = access.forwards().filter { it.enabled }
         validateStep(deps, SetupStep.Review, current)?.let { saveError(it, redact = false) }
+        throwIfStale(token)
         val identity = resolveSaveIdentity()
         try {
+            throwIfStale(token)
             if (identity.peerId != input.localPeerId) {
                 saveError(
                     "Local peer ID must match private identity peer ID (${identity.peerId})",
@@ -270,8 +300,11 @@ internal class SetupSaveController(
                 } else {
                     null
                 }
+            throwIfStale(token)
             val prefs = deps.configRepository.preferences.first()
+            throwIfStale(token)
             validateInIsolatedWorkspace(input, enabledForwards, authorizedLine, identity.privateIdentity, prefs)
+            throwIfStale(token)
             // Validation used an isolated workspace copy of authorized_keys/broker-secret paths
             // (P0-003-C); the commit candidate below references the real (about-to-be-committed)
             // live paths instead — the workspace is already deleted by this point.
@@ -283,7 +316,9 @@ internal class SetupSaveController(
                     androidIceMode = prefs.androidIceMode,
                     brokerPasswordPath = resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path),
                 )
+            throwIfStale(token)
             commitSetup(input, commitCandidate, prefs, access.forwards(), SetupIdentityChange(identity, authorizedLine))
+            throwIfStale(token)
             return identity
         } finally {
             // Wipe the plaintext identity buffer; only the public id/peer id are used afterward.
@@ -476,6 +511,12 @@ private class SetupIdentityChange(
     val identity: ResolvedIdentity,
     val authorizedLine: String?,
 )
+
+private fun throwIfStale(token: SetupOperationToken) {
+    if (!token.isFresh()) {
+        throw StaleSetupOperationException()
+    }
+}
 
 private fun saveError(
     message: String,
