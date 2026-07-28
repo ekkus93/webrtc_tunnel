@@ -47,59 +47,8 @@ internal class SetupIdentityController(
                 }
                 return@launchIdentityAction
             }
-            // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
-            // calls the native validation bridge. FIX8 P0-001-B: populate the draft, do not
-            // persist; the final save uses the draft (no path re-read / TOCTOU).
-            val resolved =
-                withContext(deps.dispatchers.io) {
-                    try {
-                        val privateIdentity = readPrivateIdentityFile(trimmed).getOrThrow()
-                        val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
-                        require(validated.valid) { validated.message ?: "Invalid private identity" }
-                        Result.success(requireCanonicalIdentity(validated))
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (error: Exception) {
-                        Result.failure(error)
-                    }
-                }
-            resolved.onSuccess { replacement ->
-                val published =
-                    token.publishIfFresh {
-                        identityDraft.replace(
-                            replacement.privateIdentity,
-                            replacement.publicIdentity,
-                            replacement.peerId,
-                        )
-                        access.applyState(
-                            current.copy(
-                                importIdentityPath = trimmed,
-                                identityPeerId = replacement.peerId,
-                                localPublicIdentity = replacement.publicIdentity,
-                                input = current.input.copy(localPeerId = replacement.peerId),
-                                errorMessage = null,
-                                saveResult = "Identity imported",
-                            ),
-                        )
-                    }
-                if (!published) {
-                    replacement.wipe()
-                }
-            }.onFailure {
-                token.publishIfFresh {
-                    access.applyState(
-                        current.copy(
-                            identityPeerId = null,
-                            localPublicIdentity = "",
-                            errorMessage =
-                                SensitiveDataRedactor.redactSecretValues(
-                                    it.message ?: "Invalid private identity file",
-                                ),
-                            saveResult = null,
-                        ),
-                    )
-                }
-            }
+            val resolved = resolvePrivateIdentityFromPath(trimmed)
+            publishPathIdentityImportResult(token, current, trimmed, resolved)
         }
 
     fun importIdentityFromUri(uri: Uri) =
@@ -246,6 +195,82 @@ internal class SetupIdentityController(
                 }
             }
         }
+
+    private suspend fun resolvePrivateIdentityFromPath(path: String): Result<DraftIdentityReplacement> =
+        withContext(deps.dispatchers.io) {
+            try {
+                val privateIdentity = readPrivateIdentityFile(path).getOrThrow()
+                val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
+                require(validated.valid) { validated.message ?: "Invalid private identity" }
+                Result.success(requireCanonicalIdentity(validated))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
+        }
+
+    private fun publishPathIdentityImportResult(
+        token: SetupOperationToken,
+        current: SetupWizardState,
+        trimmedPath: String,
+        resolved: Result<DraftIdentityReplacement>,
+    ) {
+        resolved.onSuccess { replacement ->
+            publishImportedPathIdentity(token, current, trimmedPath, replacement)
+        }.onFailure { error ->
+            publishPrivateIdentityImportFailure(token, current, error)
+        }
+    }
+
+    private fun publishImportedPathIdentity(
+        token: SetupOperationToken,
+        current: SetupWizardState,
+        trimmedPath: String,
+        replacement: DraftIdentityReplacement,
+    ) {
+        val published =
+            token.publishIfFresh {
+                identityDraft.replace(
+                    replacement.privateIdentity,
+                    replacement.publicIdentity,
+                    replacement.peerId,
+                )
+                access.applyState(
+                    current.copy(
+                        importIdentityPath = trimmedPath,
+                        identityPeerId = replacement.peerId,
+                        localPublicIdentity = replacement.publicIdentity,
+                        input = current.input.copy(localPeerId = replacement.peerId),
+                        errorMessage = null,
+                        saveResult = "Identity imported",
+                    ),
+                )
+            }
+        if (!published) {
+            replacement.wipe()
+        }
+    }
+
+    private fun publishPrivateIdentityImportFailure(
+        token: SetupOperationToken,
+        current: SetupWizardState,
+        error: Throwable,
+    ) {
+        token.publishIfFresh {
+            access.applyState(
+                current.copy(
+                    identityPeerId = null,
+                    localPublicIdentity = "",
+                    errorMessage =
+                        SensitiveDataRedactor.redactSecretValues(
+                            error.message ?: "Invalid private identity file",
+                        ),
+                    saveResult = null,
+                ),
+            )
+        }
+    }
 
     /**
      * FIX8 P0-001-B: canonicalizes a validated import result into an owned
