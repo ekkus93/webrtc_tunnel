@@ -91,6 +91,38 @@ class RecordingBridge : TunnelNativeBridge {
         return validationResult
     }
 
+    // FIX9: deterministic production-path barrier for setup identity-import cancellation tests.
+    // The blocked call is reached through SetupIdentityController.importIdentityFromPath/Uri, not
+    // a direct helper seam, so tests can prove cancel() invalidation suppresses stale publication.
+    private val blockPrivateIdentityValidationAtomic = AtomicBoolean(false)
+    private val privateIdentityValidationEntered = AtomicReference(CountDownLatch(0))
+    private val privateIdentityValidationRelease = AtomicReference(CountDownLatch(0))
+    private val forcedPrivateIdentityValidationResult = AtomicReference<IdentityValidationResult?>(null)
+
+    fun blockNextPrivateIdentityValidation() {
+        privateIdentityValidationEntered.set(CountDownLatch(1))
+        privateIdentityValidationRelease.set(CountDownLatch(1))
+        blockPrivateIdentityValidationAtomic.set(true)
+    }
+
+    fun privateIdentityValidationEnteredNow(): Boolean = privateIdentityValidationEntered.get().count == 0L
+
+    fun releaseBlockedPrivateIdentityValidation(result: IdentityValidationResult? = null) {
+        forcedPrivateIdentityValidationResult.set(result)
+        privateIdentityValidationRelease.get().countDown()
+    }
+
+    private fun privateIdentityValidationResultAfterOptionalBlock(): IdentityValidationResult? {
+        if (blockPrivateIdentityValidationAtomic.compareAndSet(true, false)) {
+            privateIdentityValidationEntered.get().countDown()
+            check(privateIdentityValidationRelease.get().await(5, TimeUnit.SECONDS)) {
+                "blocked private identity validation was never released"
+            }
+            forcedPrivateIdentityValidationResult.getAndSet(null)?.let { return it }
+        }
+        return privateIdentityValidationResult
+    }
+
     override fun startOffer(
         configPath: String,
         identityBytes: ByteArray?,
@@ -132,7 +164,7 @@ class RecordingBridge : TunnelNativeBridge {
     }
 
     override fun validatePrivateIdentity(identityToml: String): IdentityValidationResult =
-        privateIdentityValidationResult ?: IdentityValidationResult(
+        privateIdentityValidationResultAfterOptionalBlock() ?: IdentityValidationResult(
             valid = true,
             canonicalPublicIdentity = "canon",
             canonicalPrivateIdentity = identityToml,
