@@ -38,11 +38,11 @@ internal class SetupIdentityController(
     }
 
     fun importIdentityFromPath() =
-        launchIdentityAction {
+        launchIdentityAction { token ->
             val current = access.state()
             val trimmed = current.importIdentityPath.trim()
             if (trimmed.isBlank()) {
-                access.applyState(current.copy(errorMessage = "Choose an identity file path to import"))
+                token.publishIfFresh { access.applyState(current.copy(errorMessage = "Choose an identity file path to import")) }
                 return@launchIdentityAction
             }
             // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
@@ -62,34 +62,42 @@ internal class SetupIdentityController(
                     }
                 }
             resolved.onSuccess { replacement ->
-                identityDraft.replace(replacement.privateIdentity, replacement.publicIdentity, replacement.peerId)
-                access.applyState(
-                    current.copy(
-                        importIdentityPath = trimmed,
-                        identityPeerId = replacement.peerId,
-                        localPublicIdentity = replacement.publicIdentity,
-                        input = current.input.copy(localPeerId = replacement.peerId),
-                        errorMessage = null,
-                        saveResult = "Identity imported",
-                    ),
-                )
-            }.onFailure {
-                access.applyState(
-                    current.copy(
-                        identityPeerId = null,
-                        localPublicIdentity = "",
-                        errorMessage =
-                            SensitiveDataRedactor.redactSecretValues(
-                                it.message ?: "Invalid private identity file",
+                val published =
+                    token.publishIfFresh {
+                        identityDraft.replace(replacement.privateIdentity, replacement.publicIdentity, replacement.peerId)
+                        access.applyState(
+                            current.copy(
+                                importIdentityPath = trimmed,
+                                identityPeerId = replacement.peerId,
+                                localPublicIdentity = replacement.publicIdentity,
+                                input = current.input.copy(localPeerId = replacement.peerId),
+                                errorMessage = null,
+                                saveResult = "Identity imported",
                             ),
-                        saveResult = null,
-                    ),
-                )
+                        )
+                    }
+                if (!published) {
+                    replacement.wipe()
+                }
+            }.onFailure {
+                token.publishIfFresh {
+                    access.applyState(
+                        current.copy(
+                            identityPeerId = null,
+                            localPublicIdentity = "",
+                            errorMessage =
+                                SensitiveDataRedactor.redactSecretValues(
+                                    it.message ?: "Invalid private identity file",
+                                ),
+                            saveResult = null,
+                        ),
+                    )
+                }
             }
         }
 
     fun importIdentityFromUri(uri: Uri) =
-        launchIdentityAction {
+        launchIdentityAction { token ->
             val current = access.state()
             // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
             // calls the native validation bridge. FIX8 P0-001-B: draft-only, no persistence.
@@ -109,38 +117,47 @@ internal class SetupIdentityController(
                     }
                 }
             resolved.onSuccess { replacement ->
-                identityDraft.replace(replacement.privateIdentity, replacement.publicIdentity, replacement.peerId)
-                access.applyState(
-                    current.copy(
-                        identityPeerId = replacement.peerId,
-                        localPublicIdentity = replacement.publicIdentity,
-                        input = current.input.copy(localPeerId = replacement.peerId),
-                        importIdentityPath = "",
-                        errorMessage = null,
-                        saveResult = "Identity imported",
-                    ),
-                )
-            }.onFailure {
-                access.applyState(
-                    current.copy(
-                        errorMessage =
-                            SensitiveDataRedactor.redactSecretValues(
-                                it.message ?: "Invalid private identity file",
+                val published =
+                    token.publishIfFresh {
+                        identityDraft.replace(replacement.privateIdentity, replacement.publicIdentity, replacement.peerId)
+                        access.applyState(
+                            current.copy(
+                                identityPeerId = replacement.peerId,
+                                localPublicIdentity = replacement.publicIdentity,
+                                input = current.input.copy(localPeerId = replacement.peerId),
+                                importIdentityPath = "",
+                                errorMessage = null,
+                                saveResult = "Identity imported",
                             ),
-                        saveResult = null,
-                    ),
-                )
+                        )
+                    }
+                if (!published) {
+                    replacement.wipe()
+                }
+            }.onFailure {
+                token.publishIfFresh {
+                    access.applyState(
+                        current.copy(
+                            errorMessage =
+                                SensitiveDataRedactor.redactSecretValues(
+                                    it.message ?: "Invalid private identity file",
+                                ),
+                            saveResult = null,
+                        ),
+                    )
+                }
             }
         }
 
     fun validateRemotePublicIdentity() =
-        launchIdentityAction {
+        launchIdentityAction { token ->
             val current = access.state()
-            access.applyState(resolveRemotePublicIdentity(current, current.importPublicIdentity.trim()))
+            val resolved = resolveRemotePublicIdentity(current, current.importPublicIdentity.trim())
+            token.publishIfFresh { access.applyState(resolved) }
         }
 
     fun importPublicIdentityFromUri(uri: Uri) =
-        launchIdentityAction {
+        launchIdentityAction { token ->
             val current = access.state()
             // FIX8 P1-001-C: a pure content-URI text read — explicit cancellation-first
             // try/catch(Exception), never runCatching (which would also swallow fatal Error).
@@ -160,21 +177,24 @@ internal class SetupIdentityController(
             text.onSuccess { value ->
                 val withText =
                     current.copy(importPublicIdentity = value, remoteIdentityPeerId = null, errorMessage = null)
-                access.applyState(resolveRemotePublicIdentity(withText, value.trim()))
+                val resolved = resolveRemotePublicIdentity(withText, value.trim())
+                token.publishIfFresh { access.applyState(resolved) }
             }.onFailure {
-                access.applyState(
-                    current.copy(
-                        errorMessage =
-                            SensitiveDataRedactor.redactSecretValues(
-                                it.message ?: "Failed importing remote public identity",
-                            ),
-                    ),
-                )
+                token.publishIfFresh {
+                    access.applyState(
+                        current.copy(
+                            errorMessage =
+                                SensitiveDataRedactor.redactSecretValues(
+                                    it.message ?: "Failed importing remote public identity",
+                                ),
+                        ),
+                    )
+                }
             }
         }
 
     fun generateIdentity() =
-        launchIdentityAction {
+        launchIdentityAction { token ->
             val current = access.state()
             val generated =
                 withContext(deps.dispatchers.io) { deps.identityValidation.generateIdentity(current.input.localPeerId) }
@@ -185,28 +205,34 @@ internal class SetupIdentityController(
                 // FIX8 P1-001-C: generated.message comes from the native bridge — redact it
                 // like every other native-validation message before it reaches UI state.
                 !generated.valid ->
-                    access.applyState(
-                        current.copy(
-                            errorMessage =
-                                SensitiveDataRedactor.redactText(generated.message ?: "Identity generation failed"),
-                        ),
-                    )
+                    token.publishIfFresh {
+                        access.applyState(
+                            current.copy(
+                                errorMessage =
+                                    SensitiveDataRedactor.redactText(generated.message ?: "Identity generation failed"),
+                            ),
+                        )
+                    }
                 // FIX8 P0-001-B: fail closed on any missing canonical field (including peer ID) —
                 // no `generated.peerId ?: current.input.localPeerId` fallback.
                 privateIdentity.isNullOrBlank() || publicIdentity.isNullOrBlank() || peerId.isNullOrBlank() ->
-                    access.applyState(current.copy(errorMessage = "Identity generation returned incomplete data"))
+                    token.publishIfFresh {
+                        access.applyState(current.copy(errorMessage = "Identity generation returned incomplete data"))
+                    }
                 else -> {
                     // FIX8 P0-001-B: draft-only — do NOT call storeEncryptedIdentity here.
-                    identityDraft.replace(privateIdentity.encodeToByteArray(), publicIdentity, peerId)
-                    access.applyState(
-                        current.copy(
-                            input = current.input.copy(localPeerId = peerId),
-                            localPublicIdentity = publicIdentity,
-                            identityPeerId = peerId,
-                            errorMessage = null,
-                            saveResult = "Identity generated",
-                        ),
-                    )
+                    token.publishIfFresh {
+                        identityDraft.replace(privateIdentity.encodeToByteArray(), publicIdentity, peerId)
+                        access.applyState(
+                            current.copy(
+                                input = current.input.copy(localPeerId = peerId),
+                                localPublicIdentity = publicIdentity,
+                                identityPeerId = peerId,
+                                errorMessage = null,
+                                saveResult = "Identity generated",
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -270,9 +296,9 @@ internal class SetupIdentityController(
      * setup-local coordinator (so isBusy is derived from real admission ownership, not toggled
      * independently) with a cancellation-first/redacted-catch safety net for any exception
      * [block] does not already handle itself. */
-    private fun launchIdentityAction(block: suspend () -> Unit) {
+    private fun launchIdentityAction(block: suspend (SetupOperationToken) -> Unit) {
         scope.launch {
-            access.operations.runGuarded(access, SetupDraftOperation.IdentityAction) { block() }
+            access.operations.runGuarded(access, SetupDraftOperation.IdentityAction) { token -> block(token) }
         }
     }
 }
