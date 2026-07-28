@@ -42,7 +42,9 @@ internal class SetupIdentityController(
             val current = access.state()
             val trimmed = current.importIdentityPath.trim()
             if (trimmed.isBlank()) {
-                token.publishIfFresh { access.applyState(current.copy(errorMessage = "Choose an identity file path to import")) }
+                token.publishIfFresh {
+                    access.applyState(current.copy(errorMessage = "Choose an identity file path to import"))
+                }
                 return@launchIdentityAction
             }
             // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this
@@ -64,7 +66,11 @@ internal class SetupIdentityController(
             resolved.onSuccess { replacement ->
                 val published =
                     token.publishIfFresh {
-                        identityDraft.replace(replacement.privateIdentity, replacement.publicIdentity, replacement.peerId)
+                        identityDraft.replace(
+                            replacement.privateIdentity,
+                            replacement.publicIdentity,
+                            replacement.peerId,
+                        )
                         access.applyState(
                             current.copy(
                                 importIdentityPath = trimmed,
@@ -119,7 +125,11 @@ internal class SetupIdentityController(
             resolved.onSuccess { replacement ->
                 val published =
                     token.publishIfFresh {
-                        identityDraft.replace(replacement.privateIdentity, replacement.publicIdentity, replacement.peerId)
+                        identityDraft.replace(
+                            replacement.privateIdentity,
+                            replacement.publicIdentity,
+                            replacement.peerId,
+                        )
                         access.applyState(
                             current.copy(
                                 identityPeerId = replacement.peerId,
