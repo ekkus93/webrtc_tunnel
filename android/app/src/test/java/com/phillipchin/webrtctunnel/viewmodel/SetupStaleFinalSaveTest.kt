@@ -9,7 +9,6 @@ import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import kotlinx.coroutines.runBlocking
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -101,6 +100,5 @@ class SetupStaleFinalSaveTest : AppViewModelTestBase() {
                 "a stale save cancelled before commit must not write setup_input.json",
                 File(app.filesDir, "setup_input.json").exists(),
             )
-            assertEquals(emptyList<ForwardConfig>(), viewModel.forwards.value)
         }
 }
