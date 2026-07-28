@@ -141,7 +141,10 @@ class ImportExportViewModel(private val deps: AppDependencies) : ViewModel() {
     suspend fun publicIdentityForShare(): String {
         cachedPublicIdentity?.let { return it }
         return withContext(deps.dispatchers.io) {
-            val value = deps.identityRepository.readPublicIdentity()
+            // FIX9 P0-003: read public identity through the same coherent encrypted/public pair
+            // snapshot used by setup save, not a standalone public-file read that can race an
+            // identity-pair replacement.
+            val value = deps.identityRepository.readStoredIdentityMaterial?.publicIdentity.orEmpty()
             require(value.isNotBlank()) { "No public identity available" }
             value
         }.also { cachedPublicIdentity = it }
@@ -223,22 +226,30 @@ private class ImportExportOps(
             ) {
                 is ConfigurationAdmission.Busy -> {
                     val message = "Another configuration operation is already in progress: ${admission.active}"
-                    val failure = OperationFailure("configuration_operation_busy", message)
-                    state.value = state.value.copy(resultMessage = message, lastOperationFailure = failure)
+                    state.value =
+                        state.value.copy(
+                            resultMessage = message,
+                            lastOperationFailure = OperationFailure("configuration_operation_busy", message),
+                        )
                     snackbar.show(message)
                 }
                 is ConfigurationAdmission.Completed -> {
                     val result = admission.value
                     if (result.isSuccess) onSuccess()
-                    // FIX7 P1-004-C: redact on failure — the underlying exception's raw
-                    // message is not known-safe.
                     val message =
                         result.fold(
                             { successMessage },
-                            { SensitiveDataRedactor.redactText(it.message ?: failureFallback) },
+                            { error ->
+                                val prefix =
+                                    if (error is CandidateCleanupException) {
+                                        "candidate_cleanup_failed: "
+                                    } else {
+                                        ""
+                                    }
+                                prefix + SensitiveDataRedactor.redactText(error.message ?: failureFallback)
+                            },
                         )
-                    val failure =
-                        result.exceptionOrNull()?.let { OperationFailure(importExportFailureCode(it), message) }
+                    val failure = result.exceptionOrNull()?.let { OperationFailure("import_export_failed", message) }
                     state.value = state.value.copy(resultMessage = message, lastOperationFailure = failure)
                     snackbar.show(message)
                 }
@@ -246,13 +257,3 @@ private class ImportExportOps(
         }
     }
 }
-
-/**
- * FIX7 P1-001-C: a candidate-cleanup-only failure (the import itself — validation and write —
- * succeeded, only the temp candidate file couldn't be removed afterward) gets its own durable
- * code distinct from an ordinary import failure, so it is never silently indistinguishable from
- * a real validation/write failure. Top-level (not a class member) so it doesn't count against
- * this file's detekt function budget for no behavioral reason.
- */
-private fun importExportFailureCode(error: Throwable): String =
-    if (error is CandidateCleanupException) "candidate_cleanup_failed" else "import_export_failed"
