@@ -38,6 +38,46 @@ jobs:
         id: detect
         shell: bash
         run: |
+          rust_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/ci\.yml$|bins/|crates/|scripts/|tests/|docs/examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$|clippy\.toml$|rustfmt\.toml$|\.rustfmt\.toml$)'
+          android_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/ci\.yml$|android/|bins/|crates/|tests/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$)'
+
+          detect_paths() {
+            local paths="$1"
+            if grep -qE "$rust_path_pattern" <<< "$paths"; then
+              rust=true
+            else
+              rust=false
+            fi
+            if grep -qE "$android_path_pattern" <<< "$paths"; then
+              android=true
+            else
+              android=false
+            fi
+          }
+
+          assert_flags() {
+            local sample_path="$1"
+            local expected_rust="$2"
+            local expected_android="$3"
+            detect_paths "$sample_path"
+            if [ "$rust" != "$expected_rust" ] || [ "$android" != "$expected_android" ]; then
+              echo "path classification regression for $sample_path: rust=$rust android=$android; expected rust=$expected_rust android=$expected_android" >&2
+              exit 1
+            fi
+          }
+
+          # Permanent negative/positive fixtures for the path gate. These directly use
+          # the same classifier as the real changed-file list, so a future regex edit
+          # cannot silently stop running CI for scripts, E2E tests, shared build inputs,
+          # or composite actions while still passing a disconnected test.
+          assert_flags "crates/p2p-tunnel/src/lib.rs" true true
+          assert_flags "scripts/check-systemd-units.sh" true false
+          assert_flags "tests/e2e/android_tunnel_e2e.sh" true true
+          assert_flags "docs/examples/offer-config.toml" true false
+          assert_flags "android/app/src/main/AndroidManifest.xml" false true
+          assert_flags ".github/actions/example/action.yml" true true
+          assert_flags "docs/architecture.md" false false
+
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             changed="(tag push; running the full matrix regardless of paths)"
             rust=true
@@ -58,16 +98,7 @@ jobs:
               android=true
             else
               changed=$(git diff --name-only "$base" "${{ github.sha }}")
-              if echo "$changed" | grep -qE '^(crates/|bins/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/ci\.yml$)'; then
-                rust=true
-              else
-                rust=false
-              fi
-              if echo "$changed" | grep -qE '^(android/|crates/|bins/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/ci\.yml$)'; then
-                android=true
-              else
-                android=false
-              fi
+              detect_paths "$changed"
             fi
           fi
 
