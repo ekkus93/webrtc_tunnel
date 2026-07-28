@@ -47,7 +47,7 @@ internal class SetupIdentityController(
                 }
                 return@launchIdentityAction
             }
-            val resolved = resolvePrivateIdentityFromPath(trimmed)
+            val resolved = resolvePrivateIdentityFromPath(deps, trimmed)
             publishPathIdentityImportResult(token, current, trimmed, resolved)
         }
 
@@ -196,20 +196,6 @@ internal class SetupIdentityController(
             }
         }
 
-    private suspend fun resolvePrivateIdentityFromPath(path: String): Result<DraftIdentityReplacement> =
-        withContext(deps.dispatchers.io) {
-            try {
-                val privateIdentity = readPrivateIdentityFile(path).getOrThrow()
-                val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
-                require(validated.valid) { validated.message ?: "Invalid private identity" }
-                Result.success(requireCanonicalIdentity(validated))
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                Result.failure(error)
-            }
-        }
-
     private fun publishPathIdentityImportResult(
         token: SetupOperationToken,
         current: SetupWizardState,
@@ -282,6 +268,23 @@ internal class SetupIdentityController(
         }
     }
 }
+
+private suspend fun resolvePrivateIdentityFromPath(
+    deps: AppDependencies,
+    path: String,
+): Result<DraftIdentityReplacement> =
+    withContext(deps.dispatchers.io) {
+        try {
+            val privateIdentity = readPrivateIdentityFile(path).getOrThrow()
+            val validated = deps.identityValidation.validatePrivateIdentity(privateIdentity)
+            require(validated.valid) { validated.message ?: "Invalid private identity" }
+            Result.success(requireCanonicalIdentity(validated))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+    }
 
 /**
  * FIX8 P0-001-B: canonicalizes a validated import result into an owned
