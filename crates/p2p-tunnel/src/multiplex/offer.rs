@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use futures_util::future::join_all;
 use p2p_core::{TunnelConfig, TunnelFrameType};
 use p2p_webrtc::{DataChannelEvent, DataChannelHandle};
 use tokio::net::TcpStream;
@@ -213,10 +214,12 @@ pub async fn run_multiplex_offer(
     cleanup_all_streams(&mut manager, &mut streams).await;
     // These clients already sent an OPEN and may have already written request bytes,
     // but the answer side never acked before the whole session tore down — see
-    // `close_tcp_stream_gracefully` for why a bare drop here would RST them.
-    for (_, stream) in opening_streams.drain() {
-        crate::offer::close_tcp_stream_gracefully(stream).await;
-    }
+    // `close_tcp_stream_gracefully` for why a bare drop here would RST them. Drive all
+    // bounded drains concurrently so teardown is not opening_stream_count × 50 ms.
+    let opening_closes = opening_streams
+        .drain()
+        .map(|(_, stream)| crate::offer::close_tcp_stream_gracefully(stream));
+    join_all(opening_closes).await;
     writer.abort();
     result
 }
