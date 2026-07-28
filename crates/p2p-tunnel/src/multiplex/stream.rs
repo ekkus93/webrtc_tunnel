@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use futures_util::future::join_all;
 use p2p_core::TunnelConfig;
 use p2p_webrtc::DataChannelHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -168,13 +169,10 @@ pub(crate) async fn cleanup_all_streams(
     streams: &mut HashMap<u32, RuntimeStream>,
 ) {
     manager.clear();
-    // `close()` (not a bare abort) sends a half-close down each stream's local TCP
-    // connection before tearing down its tasks — see `close_tcp_stream_gracefully`
-    // for why an unconditional abort here would RST a client whose response the
-    // whole session died before finishing delivering.
-    for (_, stream) in streams.drain() {
-        stream.close().await;
-    }
+    // Every close has its own bounded half-close wait. Drive them concurrently so
+    // session teardown remains bounded by one wait window rather than stream_count ×
+    // wait_window when many logical streams are active.
+    join_all(streams.drain().map(|(_, stream)| stream.close())).await;
 }
 
 pub(crate) async fn send_stream_error(
@@ -194,46 +192,23 @@ pub(crate) async fn send_stream_error(
 
 pub(crate) fn spawn_writer_only(
     data_channel: DataChannelHandle,
-    mut outbound_rx: mpsc::Receiver<TunnelFrame>,
+    mut frame_rx: mpsc::Receiver<TunnelFrame>,
     failure_tx: mpsc::Sender<TunnelError>,
-) -> JoinHandle<Result<(), TunnelError>> {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
-        while let Some(frame) = outbound_rx.recv().await {
-            let frame_type = frame.frame_type;
-            let stream_id = frame.stream_id;
-            let encoded = match TunnelFrameCodec::encode(&frame) {
-                Ok(encoded) => encoded,
-                Err(error) => {
-                    // Redacted: frame type/stream id/error only, never payload bytes.
-                    tracing::warn!(
-                        frame_type = ?frame_type,
-                        stream_id,
-                        reason = %error,
-                        "failed to encode tunnel frame; closing writer",
-                    );
-                    // Already logged above; this best-effort forward to the supervisor
-                    // only fails if it is already shutting down for its own reasons.
-                    let _ = failure_tx.send(error).await;
-                    return Err(TunnelError::WriterClosed);
+        while let Some(frame) = frame_rx.recv().await {
+            match TunnelFrameCodec::encode(&frame) {
+                Ok(encoded) => {
+                    if let Err(error) = data_channel.send(encoded).await {
+                        let _ = failure_tx.send(TunnelError::WebRtc(error)).await;
+                        break;
+                    }
                 }
-            };
-            if let Err(error) = data_channel.send(&encoded).await {
-                // The data-channel send path failing is a prime diagnostic signal
-                // (e.g. the Android SCTP data-plane stall): surface it, redacted.
-                tracing::warn!(
-                    frame_type = ?frame_type,
-                    stream_id,
-                    encoded_len = encoded.len(),
-                    reason = %error,
-                    "data channel send failed; closing writer",
-                );
-                let tunnel_error = TunnelError::WebRtc(error);
-                // Already logged above; see the encode-failure comment for why a failed
-                // forward here is not itself worth logging.
-                let _ = failure_tx.send(tunnel_error).await;
-                return Err(TunnelError::WriterClosed);
+                Err(error) => {
+                    let _ = failure_tx.send(error).await;
+                    break;
+                }
             }
         }
-        Ok(())
     })
 }
