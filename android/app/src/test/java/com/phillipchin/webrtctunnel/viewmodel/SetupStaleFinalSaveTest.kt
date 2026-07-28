@@ -34,57 +34,9 @@ class SetupStaleFinalSaveTest : AppViewModelTestBase() {
     @Test
     fun cancelDuringFinalSaveValidationDoesNotPersistOrPublishSuccess() =
         runBlocking {
-            listOf("config.toml", "setup_input.json", "identity.enc", "identity.pub", "authorized_keys").forEach {
-                File(app.filesDir, it).delete()
-            }
-            File(app.filesDir, "runtime").deleteRecursively()
-            File(app.filesDir, "forwards.json").delete()
-
-            recordingBridge.privateIdentityValidationResult =
-                IdentityValidationResult(
-                    valid = true,
-                    message = null,
-                    peerId = "android-phone",
-                    canonicalPublicIdentity = "canon-pub",
-                    canonicalPrivateIdentity = "canon-private",
-                )
-            recordingBridge.publicIdentityValidationResult =
-                IdentityValidationResult(
-                    valid = true,
-                    message = null,
-                    peerId = "remote-peer",
-                    canonicalPublicIdentity = "remote-public",
-                    canonicalPrivateIdentity = null,
-                )
-            recordingBridge.validationResult = ValidationResult(true, null)
-            recordingBridge.blockNextValidateConfig()
-
-            val deps = realIoDeps()
-            deps.identityRepository.storeEncryptedIdentity("stored-private".toByteArray(), "stored-public")
-            deps.forwardsStore.saveForwards(
-                listOf(
-                    ForwardConfig(
-                        id = "svc",
-                        name = "svc",
-                        localPort = 8080,
-                        remoteForwardId = "svc",
-                        enabled = true,
-                    ),
-                ),
-            )
-            deps.forwardsRepository.refresh()
-            val viewModel = SetupViewModel(deps)
-            awaitCondition(description = "setup load state Ready") { viewModel.loadState.value is SetupLoadState.Ready }
-            viewModel.setImportPublicIdentity("remote-public")
-            viewModel.setInput(
-                viewModel.state.value.input.copy(
-                    brokerHost = "broker.local",
-                    remotePeerId = "remote-peer",
-                ),
-            )
-
-            viewModel.save.saveAndApplyConfig()
-            awaitCondition(description = "config validation entered") { recordingBridge.validateConfigEnteredNow() }
+            clearStorageFiles()
+            configureSuccessfulValidationBridge()
+            val viewModel = setupWizardBlockedInFinalValidation()
 
             viewModel.cancel()
             recordingBridge.releaseBlockedValidateConfig(ValidationResult(true, null))
@@ -101,4 +53,63 @@ class SetupStaleFinalSaveTest : AppViewModelTestBase() {
                 File(app.filesDir, "setup_input.json").exists(),
             )
         }
+
+    private fun clearStorageFiles() {
+        listOf("config.toml", "setup_input.json", "identity.enc", "identity.pub", "authorized_keys").forEach {
+            File(app.filesDir, it).delete()
+        }
+        File(app.filesDir, "runtime").deleteRecursively()
+        File(app.filesDir, "forwards.json").delete()
+    }
+
+    private fun configureSuccessfulValidationBridge() {
+        recordingBridge.privateIdentityValidationResult =
+            IdentityValidationResult(
+                valid = true,
+                message = null,
+                peerId = "android-phone",
+                canonicalPublicIdentity = "canon-pub",
+                canonicalPrivateIdentity = "canon-private",
+            )
+        recordingBridge.publicIdentityValidationResult =
+            IdentityValidationResult(
+                valid = true,
+                message = null,
+                peerId = "remote-peer",
+                canonicalPublicIdentity = "remote-public",
+                canonicalPrivateIdentity = null,
+            )
+        recordingBridge.validationResult = ValidationResult(true, null)
+        recordingBridge.blockNextValidateConfig()
+    }
+
+    private suspend fun setupWizardBlockedInFinalValidation(): SetupViewModel {
+        val deps = realIoDeps()
+        deps.identityRepository.storeEncryptedIdentity("stored-private".toByteArray(), "stored-public")
+        deps.forwardsStore.saveForwards(
+            listOf(
+                ForwardConfig(
+                    id = "svc",
+                    name = "svc",
+                    localPort = 8080,
+                    remoteForwardId = "svc",
+                    enabled = true,
+                ),
+            ),
+        )
+        deps.forwardsRepository.refresh()
+        val viewModel = SetupViewModel(deps)
+        awaitCondition(description = "setup load state Ready") { viewModel.loadState.value is SetupLoadState.Ready }
+        viewModel.setImportPublicIdentity("remote-public")
+        viewModel.setInput(
+            viewModel.state.value.input.copy(
+                brokerHost = "broker.local",
+                remotePeerId = "remote-peer",
+            ),
+        )
+
+        viewModel.save.saveAndApplyConfig()
+        awaitCondition(description = "config validation entered") { recordingBridge.validateConfigEnteredNow() }
+        return viewModel
+    }
 }
