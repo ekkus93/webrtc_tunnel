@@ -8,7 +8,7 @@ import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.loadSetupInputResult
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtctunnel.model.SetupConfigInput
+import com.phillipchin.webrtunnel.model.SetupConfigInput
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -227,7 +227,9 @@ class SetupViewModel(
                 }
                 val index = steps.indexOf(current.currentStep)
                 if (index < steps.lastIndex) {
-                    token.publishIfFresh { applyState(current.copy(currentStep = steps[index + 1], errorMessage = null)) }
+                    token.publishIfFresh {
+                        applyState(current.copy(currentStep = steps[index + 1], errorMessage = null))
+                    }
                 }
             }
         }
@@ -235,94 +237,5 @@ class SetupViewModel(
 
     fun canAdvanceFromCurrentStep(): Boolean {
         return _state.value.canAdvance
-    }
-}
-
-private fun SetupWizardState.withCanAdvance(
-    deps: AppDependencies,
-    forwards: List<ForwardConfig>,
-): SetupWizardState = copy(canAdvance = canAdvance(deps, this, forwards))
-
-private fun canAdvance(
-    deps: AppDependencies,
-    state: SetupWizardState,
-    forwards: List<ForwardConfig>,
-): Boolean =
-    when (state.currentStep) {
-        SetupStep.Mode -> true
-        SetupStep.Identity -> state.localPublicIdentity.isNotBlank() || state.importIdentityPath.isNotBlank()
-        SetupStep.Broker -> brokerInputReady(state.input)
-        SetupStep.Peer -> peerInputReady(state)
-        SetupStep.Forwards -> forwardsReady(deps, forwards)
-        SetupStep.NetworkPolicy -> true
-        SetupStep.Review -> brokerInputReady(state.input) && peerInputReady(state) && forwardsReady(deps, forwards)
-    }
-
-private fun brokerInputReady(input: SetupConfigInput): Boolean =
-    input.brokerHost.isNotBlank() && input.brokerPort in 1..MAX_PORT
-
-private fun peerInputReady(state: SetupWizardState): Boolean =
-    state.input.remotePeerId.isNotBlank() && state.importPublicIdentity.isNotBlank()
-
-private fun forwardsReady(
-    deps: AppDependencies,
-    forwards: List<ForwardConfig>,
-): Boolean =
-    // Mirror validateForwardsStep: the step is only advanceable with at least one *enabled*
-    // forward, so the Next button reflects the same rule that save-time validation enforces
-    // (otherwise the button enables but advancing is rejected).
-    forwards.isNotEmpty() &&
-        forwards.any { it.enabled } &&
-        deps.forwardsStore.validateForwards(forwards) == null
-
-internal fun setupLoadNotReadyMessage(state: SetupLoadState): String =
-    when (state) {
-        SetupLoadState.Initializing -> "Setup baseline is still loading (setup_draft_operation_busy)"
-        is SetupLoadState.Failed -> state.message
-        SetupLoadState.Ready -> "Setup baseline is ready"
-    }
-
-/**
- * FIX8 P1-001-B: reads the setup-input file (IO-dispatched, off the main thread — never
- * synchronously in the ViewModel constructor) and awaits the already-async identity/forwards
- * baselines, publishing [SetupLoadState.Ready] only once all three are coherent, or a durable
- * [SetupLoadState.Failed] (`setup_draft_load_failed`) if any could not be read. A corrupt/
- * unreadable setup-input file is never silently treated as "no saved draft" — the file itself is
- * left untouched, and no content from it is included in the error.
- */
-private suspend fun loadSetupWizardBaseline(
-    deps: AppDependencies,
-    access: WizardStateAccess,
-    identity: SetupIdentityController,
-    forwardsEditor: SetupForwardsController,
-    loadState: MutableStateFlow<SetupLoadState>,
-) {
-    val setupInputResult = withContext(deps.dispatchers.io) { deps.configRepository.loadSetupInputResult() }
-    identity.loadStoredIdentityBaseline()
-    forwardsEditor.refreshForwardsBaseline()
-    val forwardsLoadState = deps.forwardsRepository.loadState.value
-    when {
-        setupInputResult.isFailure -> {
-            val message =
-                "Saved setup could not be loaded (setup_draft_load_failed). " +
-                    "The existing saved draft was left untouched."
-            loadState.value = SetupLoadState.Failed(message)
-            access.applyState(access.state().copy(errorMessage = message))
-        }
-        forwardsLoadState is ForwardsLoadState.Failed -> {
-            val message =
-                "Saved forwards could not be loaded (setup_draft_load_failed): " +
-                    SensitiveDataRedactor.redactText(forwardsLoadState.message)
-            loadState.value = SetupLoadState.Failed(message)
-            access.applyState(access.state().copy(errorMessage = message))
-        }
-        else -> {
-            setupInputResult.onSuccess { saved ->
-                if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
-                    access.applyState(access.state().copy(input = saved))
-                }
-            }
-            loadState.value = SetupLoadState.Ready
-        }
     }
 }
