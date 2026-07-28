@@ -2,19 +2,43 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use p2p_core::ForwardOfferConfig;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout_at};
 
 use crate::TunnelError;
 
-/// Bound on how long [`close_tcp_stream_gracefully`] waits for the peer to stop sending
-/// before giving up and closing anyway. Long enough to catch an already-sent, bounded
-/// request sitting in the kernel receive buffer; short enough that abandoning a
-/// connection (shutdown, cooldown, a session that never reached the bridge, or a
-/// multiplex stream still awaiting its OPEN-ack when the whole session tears down)
-/// still completes promptly.
+/// Total bound for [`close_tcp_stream_gracefully`], not a fresh timeout per read.
+/// Long enough to catch an already-sent, bounded request sitting in the kernel receive
+/// buffer; short enough that abandoning a connection (shutdown, cooldown, a session that
+/// never reached the bridge, or a multiplex stream still awaiting its OPEN-ack when the
+/// whole session tears down) still completes promptly even if the client keeps writing.
 const GRACEFUL_CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
+
+async fn drain_until_deadline<R>(reader: &mut R)
+where
+    R: AsyncRead + Unpin,
+{
+    let deadline = Instant::now() + GRACEFUL_CLOSE_DRAIN_TIMEOUT;
+    let mut discard = [0_u8; 1024];
+    loop {
+        match timeout_at(deadline, reader.read(&mut discard)).await {
+            Ok(Ok(read)) if read > 0 => continue,
+            Ok(Ok(_)) => break,
+            Ok(Err(error)) => {
+                tracing::debug!(
+                    reason = %error,
+                    "abandoned local TCP stream drain ended with a read error"
+                );
+                break;
+            }
+            Err(_) => {
+                tracing::trace!("abandoned local TCP stream drain reached its deadline");
+                break;
+            }
+        }
+    }
+}
 
 /// Closes a local TCP connection that is being abandoned before its data was ever
 /// fully relayed, instead of letting a bare drop discard it. An ordinary drop here
@@ -23,19 +47,18 @@ const GRACEFUL_CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 /// close, which surfaces to the peer as a confusing `ConnectionReset` even though
 /// nothing on the wire was actually corrupted — the tunnel genuinely just never came
 /// up (or stopped accepting) in time. Draining whatever is already buffered, bounded
-/// by a short grace period since a well-behaved peer may still be mid-write or may
-/// send nothing further, avoids that in the common case. Shared by [`OfferClient`]
+/// by one absolute grace deadline since a peer may keep writing forever, avoids that
+/// in the common case without allowing teardown to hang. Shared by [`OfferClient`]
 /// (a client never handed to the bridge) and the multiplex offer/answer loops (a
 /// stream still opening when the whole session tears down).
 pub(crate) async fn close_tcp_stream_gracefully(mut stream: TcpStream) {
-    let mut discard = [0_u8; 1024];
-    loop {
-        match timeout(GRACEFUL_CLOSE_DRAIN_TIMEOUT, stream.read(&mut discard)).await {
-            Ok(Ok(read)) if read > 0 => continue,
-            _ => break,
-        }
+    drain_until_deadline(&mut stream).await;
+    if let Err(error) = stream.shutdown().await {
+        tracing::debug!(
+            reason = %error,
+            "abandoned local TCP stream shutdown did not complete cleanly"
+        );
     }
-    let _ = stream.shutdown().await;
 }
 
 pub struct OfferListener {
@@ -103,14 +126,41 @@ impl OfferClient {
 
 #[cfg(test)]
 mod tests {
-    use p2p_core::ForwardOfferConfig;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
 
-    use super::OfferListener;
+    use p2p_core::ForwardOfferConfig;
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
+    use tokio::net::TcpStream;
+    use tokio::time::timeout;
+
+    use super::{OfferListener, drain_until_deadline};
 
     fn offer_config() -> ForwardOfferConfig {
         ForwardOfferConfig { listen_host: "127.0.0.1".to_owned(), listen_port: 0 }
+    }
+
+    struct EndlessYieldingReader {
+        yield_next: bool,
+    }
+
+    impl AsyncRead for EndlessYieldingReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if self.yield_next {
+                self.yield_next = false;
+                context.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            self.yield_next = true;
+            buffer.put_slice(&[0_u8]);
+            Poll::Ready(Ok(()))
+        }
     }
 
     #[tokio::test]
@@ -136,6 +186,14 @@ mod tests {
         assert_eq!(second.forward_id(), "web-ui");
     }
 
+    #[tokio::test]
+    async fn drain_uses_one_total_deadline_even_when_reads_never_end() {
+        let mut reader = EndlessYieldingReader { yield_next: false };
+        timeout(Duration::from_secs(1), drain_until_deadline(&mut reader))
+            .await
+            .expect("one absolute drain deadline must terminate an endless reader");
+    }
+
     /// Reproduces the real bug this fix closes: a client that already wrote request
     /// bytes the server never read must see a clean close (EOF) when the server
     /// abandons the connection, not a `ConnectionReset` — the whole point of
@@ -156,7 +214,7 @@ mod tests {
 
         // Give the bytes a moment to actually land in the server-side kernel receive
         // buffer before the server abandons the connection, matching the real race.
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
         accepted.close_gracefully().await;
 
