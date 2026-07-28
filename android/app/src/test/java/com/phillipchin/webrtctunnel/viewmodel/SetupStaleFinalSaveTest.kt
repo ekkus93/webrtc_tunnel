@@ -35,6 +35,12 @@ class SetupStaleFinalSaveTest : AppViewModelTestBase() {
     @Test
     fun cancelDuringFinalSaveValidationDoesNotPersistOrPublishSuccess() =
         runBlocking {
+            listOf("config.toml", "setup_input.json", "identity.enc", "identity.pub", "authorized_keys").forEach {
+                File(app.filesDir, it).delete()
+            }
+            File(app.filesDir, "runtime").deleteRecursively()
+            File(app.filesDir, "forwards.json").delete()
+
             recordingBridge.privateIdentityValidationResult =
                 IdentityValidationResult(
                     valid = true,
@@ -67,7 +73,7 @@ class SetupStaleFinalSaveTest : AppViewModelTestBase() {
                     ),
                 ),
             )
-            runBlocking { deps.forwardsRepository.refresh() }
+            deps.forwardsRepository.refresh()
             val viewModel = SetupViewModel(deps)
             awaitCondition(description = "setup load state Ready") { viewModel.loadState.value is SetupLoadState.Ready }
             viewModel.setImportPublicIdentity("remote-public")
