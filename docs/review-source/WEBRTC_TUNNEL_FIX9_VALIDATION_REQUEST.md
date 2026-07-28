@@ -3,7 +3,7 @@
 **Purpose:** trigger full validation for the FIX9 implementation pass.
 
 **Original validation requested from SHA:** `29ac4d4b1550663495bc43dc6b6116bfb75daef5`  
-**Latest user-updated validation baseline:** `06fa50bac324dde4c540f0ccc57cb5496914ca43`
+**Latest validation baseline:** `1f99b703e93d488eb2c2052bc765121759ef4c68`
 
 This file exists only to create traceable `[full-signoff]` commits that should force the repository's full CI matrix, including lint, unit tests, Android validation, Rust validation, and E2E checks according to `.github/workflows/ci.yml`.
 
@@ -17,7 +17,9 @@ The validation run `30349093311` reduced the Android failure to `TooManyFunction
 
 The validation run `30350167310` reduced the Android failure to a single `TooManyFunctions` finding in `SetupIdentityController`. The follow-up commit moved the private identity path resolver out of the controller class, leaving the production freshness behavior unchanged.
 
-The user then updated `master` at `06fa50bac324dde4c540f0ccc57cb5496914ca43` to restore setup-wizard navigation logic and forward-save messages. This full-signoff commit validates that exact user-updated baseline plus this trace-only validation-request change.
+The user updated `master` at `06fa50bac324dde4c540f0ccc57cb5496914ca43` to restore setup-wizard navigation logic and forward-save messages.
+
+The validation run `30353490703` passed Android static analysis and debug unit tests, but release unit tests exposed a synchronization race in `TunnelForegroundServiceInitializationRaceTest`: Robolectric could start the configured Application before JUnit `@Before` replaced global latch references. Commit `1f99b703e93d488eb2c2052bc765121759ef4c68` binds the latches to each `BlockingInitTestApplication` instance and constructs the service controller in `setUp()`, ensuring the coroutine and assertions always observe the same latches.
 
 Requested validation commands, mirrored from `docs/review-source/WEBRTC_TUNNEL_FIX9_IMPLEMENTATION_REPORT.md`:
 
@@ -48,4 +50,4 @@ cd android
   -Pandroid.testInstrumentationRunnerArguments.class=com.phillipchin.webrtctunnel.data.BrokerSecretRepositoryInstrumentedTest
 ```
 
-**Status:** rerun requested from the user-updated `master` baseline; not yet passed.
+**Status:** rerun requested after the release initialization-race test fix; not yet passed.
