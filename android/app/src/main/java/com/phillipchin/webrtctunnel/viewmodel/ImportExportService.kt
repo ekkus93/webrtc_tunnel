@@ -117,15 +117,19 @@ class ImportExportService(
         require(validated.valid) { validated.message ?: "Invalid private identity" }
         // FIX7 P1-001-D: hold the canonical private bytes in a nullable variable and wipe them
         // in finally regardless of outcome — storeEncryptedIdentity does not take ownership of
-        // (and does not wipe) the buffer it is given.
+        // (and does not wipe) the buffer it is given. FIX9 P0-004: a valid native response that
+        // omits canonical private material is now a hard failure, not a silent source-text fallback.
         var canonicalBytes: ByteArray? = null
         try {
-            canonicalBytes = (validated.canonicalPrivateIdentity ?: privateIdentity).toByteArray()
-            deps.identityRepository.storeEncryptedIdentity(
-                canonicalBytes,
-                validated.canonicalPublicIdentity
-                    ?: throw IllegalArgumentException("Missing canonical public identity"),
-            )
+            canonicalBytes =
+                requireNotNull(validated.canonicalPrivateIdentity) {
+                    "Identity validation returned no canonical private identity"
+                }.toByteArray()
+            val canonicalPublic =
+                requireNotNull(validated.canonicalPublicIdentity) {
+                    "Missing canonical public identity"
+                }
+            deps.identityRepository.storeEncryptedIdentity(canonicalBytes, canonicalPublic)
         } finally {
             canonicalBytes?.fill(0)
         }
