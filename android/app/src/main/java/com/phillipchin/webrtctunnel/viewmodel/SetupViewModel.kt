@@ -8,7 +8,7 @@ import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.data.loadSetupInputResult
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtunnel.model.SetupConfigInput
+import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
