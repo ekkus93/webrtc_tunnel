@@ -10,7 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.phillipchin.webrtctunnel.BuildConfig
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtctunnel.model.SetupConfigInput
+import com.phillipchin.webrtunnel.model.SetupConfigInput
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
@@ -21,7 +21,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.io.IOException
 import java.nio.file.Files
 
 val Context.dataStore by preferencesDataStore(name = "android_app_prefs")
@@ -83,8 +82,7 @@ open class ConfigRepository internal constructor(
 
     // P1-016: Wrap preference writes so failures are visible.
     @CheckResult
-    open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> {
-        var result = Result.success(Unit)
+    open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
         try {
             context.dataStore.edit { prefs ->
                 prefs[Keys.allowMetered] = update.allowMetered
@@ -95,15 +93,12 @@ open class ConfigRepository internal constructor(
                 prefs[Keys.androidIceMode] = normalizeAndroidIceMode(update.androidIceMode)
                 prefs.remove(Keys.pauseOnMetered)
             }
+            Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (e: IllegalStateException) {
-            result = Result.failure(e)
-        } catch (e: IOException) {
-            result = Result.failure(e)
+        } catch (error: Exception) {
+            Result.failure(error)
         }
-        return result
-    }
 
     /**
      * Ensures a default config exists, returning the outcome (FIX6 P0-001-A / INV-010).
@@ -165,27 +160,32 @@ open class ConfigRepository internal constructor(
      * config. No-op when no config exists yet; changes take effect on the next engine build
      * (tunnel restart), since the ICE mode is fixed when the WebRTC engine is built.
      *
-     * Returns [Result.success] on success, [Result.failure] if the config write fails,
+     * Returns [Result.success] on success, [Result.failure] if the config read/write fails,
      * so startup can abort rather than proceeding with a stale or wrong config.
      */
     @CheckResult
     open suspend fun prepareActiveConfigForStart(
         iceMode: String,
         advertisedIpv4: String?,
-    ): Result<Unit> {
-        return fileMutex.withLock {
-            val current = configContents
-            if (current.isBlank()) {
-                return@withLock Result.success(Unit)
+    ): Result<Unit> =
+        fileMutex.withLock {
+            try {
+                val current = if (configFile.exists()) configFile.readText() else ""
+                if (current.isBlank()) {
+                    return@withLock Result.success(Unit)
+                }
+                val withIceMode = upsertAndroidIceMode(current, resolveAndroidIceMode(iceMode))
+                writeConfigAtomicallyWith(
+                    configFile,
+                    upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4),
+                    atomicFileOps,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
             }
-            val withIceMode = upsertAndroidIceMode(current, resolveAndroidIceMode(iceMode))
-            writeConfigAtomicallyWith(
-                configFile,
-                upsertAdvertisedLocalIpv4(withIceMode, advertisedIpv4),
-                atomicFileOps,
-            )
         }
-    }
 
     /**
      * P1-007: Atomic write with unique temp file under [fileMutex].
@@ -218,7 +218,14 @@ open class ConfigRepository internal constructor(
      */
     internal open val replaceConfigTransactionally: suspend (String) -> Result<Unit> = { contents ->
         fileMutex.withLock {
-            val priorSnapshot = captureExactFileSnapshot(configFile).getOrThrow()
+            val priorSnapshot =
+                try {
+                    captureExactFileSnapshot(configFile).getOrThrow()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    return@withLock Result.failure(error)
+                }
             try {
                 writeConfigAtomicallyWith(configFile, contents, atomicFileOps).getOrThrow()
                 Result.success(Unit)
@@ -426,41 +433,4 @@ private fun debugAndroidIceModeOverrideOrNull(): String? {
         }
     val trimmed = raw?.trim()?.lowercase().orEmpty()
     return if (trimmed in VALID_ANDROID_ICE_MODES) trimmed else null
-}
-
-private object Keys {
-    val allowMetered = booleanPreferencesKey("allow_metered")
-    val pauseOnMetered = booleanPreferencesKey("pause_on_metered")
-    val resumeOnUnmetered = booleanPreferencesKey("resume_on_unmetered")
-    val showMeteredWarning = booleanPreferencesKey("show_metered_warning")
-    val debugLogsEnabled = booleanPreferencesKey("debug_logs_enabled")
-    val advancedSettingsEnabled = booleanPreferencesKey("advanced_settings_enabled")
-    val androidIceMode = stringPreferencesKey("android_ice_mode")
-}
-
-private fun Preferences.toAppPreferences() =
-    AndroidAppPreferences(
-        allowMetered = this[Keys.allowMetered] ?: false,
-        resumeOnUnmetered = this[Keys.resumeOnUnmetered] ?: true,
-        showMeteredWarning = this[Keys.showMeteredWarning] ?: true,
-        debugLogsEnabled = this[Keys.debugLogsEnabled] ?: false,
-        advancedSettingsEnabled = this[Keys.advancedSettingsEnabled] ?: false,
-        androidIceMode = normalizeAndroidIceMode(this[Keys.androidIceMode]),
-    )
-
-/**
- * Decides the effective broker password path with no I/O (FIX7 P0-003-A): the user's explicit
- * "advanced" path always wins; otherwise, if a password was entered, [managedPath] (the caller's
- * already-persisted [BrokerSecretRepository.path]) is used; otherwise there is no password file.
- */
-fun resolveBrokerPasswordPath(
-    input: SetupConfigInput,
-    managedPath: String,
-): String? {
-    val advancedPath = input.brokerPasswordFile.trim()
-    return when {
-        advancedPath.isNotBlank() -> advancedPath
-        input.brokerPassword.isBlank() -> null
-        else -> managedPath
-    }
 }
