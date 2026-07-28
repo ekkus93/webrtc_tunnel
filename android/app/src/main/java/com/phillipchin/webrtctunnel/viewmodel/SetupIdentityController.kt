@@ -1,10 +1,10 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import android.net.Uri
-import com.phillipchin.webrtctunnel.data.AppDependencies
-import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
-import com.phillipchin.webrtctunnel.model.IdentityValidationResult
-import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
+import com.phillipchin.webrtunnel.data.AppDependencies
+import com.phillipchin.webrtunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtunnel.model.IdentityValidationResult
+import com.phillipchin.webrtunnel.security.readPrivateIdentityFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -111,7 +111,7 @@ internal class SetupIdentityController(
     fun validateRemotePublicIdentity() =
         launchIdentityAction { token ->
             val current = access.state()
-            val resolved = resolveRemotePublicIdentity(current, current.importPublicIdentity.trim())
+            val resolved = resolveRemotePublicIdentity(deps, current, current.importPublicIdentity.trim())
             token.publishIfFresh { access.applyState(resolved) }
         }
 
@@ -136,7 +136,7 @@ internal class SetupIdentityController(
             text.onSuccess { value ->
                 val withText =
                     current.copy(importPublicIdentity = value, remoteIdentityPeerId = null, errorMessage = null)
-                val resolved = resolveRemotePublicIdentity(withText, value.trim())
+                val resolved = resolveRemotePublicIdentity(deps, withText, value.trim())
                 token.publishIfFresh { access.applyState(resolved) }
             }.onFailure {
                 token.publishIfFresh {
@@ -272,61 +272,6 @@ internal class SetupIdentityController(
         }
     }
 
-    /**
-     * FIX8 P0-001-B: canonicalizes a validated import result into an owned
-     * [DraftIdentityReplacement], failing closed (with a fixed message) when any required
-     * canonical field is absent. The private identity is transferred as a fresh byte array
-     * the caller hands to [SetupIdentityDraft]; the bridge's canonical private String is not
-     * retained here.
-     */
-    private fun requireCanonicalIdentity(validated: IdentityValidationResult): DraftIdentityReplacement {
-        val canonicalPrivate =
-            requireNotNull(validated.canonicalPrivateIdentity) {
-                "Identity validation returned no canonical private identity"
-            }
-        val canonicalPublic =
-            requireNotNull(validated.canonicalPublicIdentity) {
-                "Identity validation returned no canonical public identity"
-            }
-        val peerId = requireNotNull(validated.peerId) { "Identity validation returned no peer ID" }
-        require(canonicalPrivate.isNotBlank()) { "Identity validation returned a blank canonical private identity" }
-        require(canonicalPublic.isNotBlank()) { "Identity validation returned a blank canonical public identity" }
-        require(peerId.isNotBlank()) { "Identity validation returned a blank peer ID" }
-        return DraftIdentityReplacement(canonicalPrivate.encodeToByteArray(), canonicalPublic, peerId)
-    }
-
-    private suspend fun resolveRemotePublicIdentity(
-        current: SetupWizardState,
-        value: String,
-    ): SetupWizardState {
-        if (value.isBlank()) {
-            return current.copy(remoteIdentityPeerId = null, errorMessage = "Remote public identity is required")
-        }
-        val validated = withContext(deps.dispatchers.io) { deps.identityValidation.validatePublicIdentity(value) }
-        return when {
-            // FIX8 P1-001-C: validated.message comes from the native bridge — redact it like
-            // every other native-validation message before it reaches UI state.
-            !validated.valid ->
-                current.copy(
-                    remoteIdentityPeerId = null,
-                    errorMessage =
-                        SensitiveDataRedactor.redactText(validated.message ?: "Invalid remote public identity"),
-                )
-            validated.peerId == current.input.localPeerId ->
-                current.copy(
-                    remoteIdentityPeerId = null,
-                    errorMessage = "Remote public identity cannot match local identity",
-                )
-            else ->
-                current.copy(
-                    importPublicIdentity = validated.canonicalPublicIdentity ?: value,
-                    remoteIdentityPeerId = validated.peerId,
-                    errorMessage = null,
-                    saveResult = "Remote public identity validated",
-                )
-        }
-    }
-
     /** FIX8 P1-001-A/C: replaces the old per-controller `launchBusy` — routes through the shared
      * setup-local coordinator (so isBusy is derived from real admission ownership, not toggled
      * independently) with a cancellation-first/redacted-catch safety net for any exception
@@ -335,5 +280,60 @@ internal class SetupIdentityController(
         scope.launch {
             access.operations.runGuarded(access, SetupDraftOperation.IdentityAction) { token -> block(token) }
         }
+    }
+}
+
+/**
+ * FIX8 P0-001-B: canonicalizes a validated import result into an owned
+ * [DraftIdentityReplacement], failing closed (with a fixed message) when any required
+ * canonical field is absent. The private identity is transferred as a fresh byte array
+ * the caller hands to [SetupIdentityDraft]; the bridge's canonical private String is not
+ * retained here.
+ */
+private fun requireCanonicalIdentity(validated: IdentityValidationResult): DraftIdentityReplacement {
+    val canonicalPrivate =
+        requireNotNull(validated.canonicalPrivateIdentity) {
+            "Identity validation returned no canonical private identity"
+        }
+    val canonicalPublic =
+        requireNotNull(validated.canonicalPublicIdentity) {
+            "Identity validation returned no canonical public identity"
+        }
+    val peerId = requireNotNull(validated.peerId) { "Identity validation returned no peer ID" }
+    require(canonicalPrivate.isNotBlank()) { "Identity validation returned a blank canonical private identity" }
+    require(canonicalPublic.isNotBlank()) { "Identity validation returned a blank canonical public identity" }
+    require(peerId.isNotBlank()) { "Identity validation returned a blank peer ID" }
+    return DraftIdentityReplacement(canonicalPrivate.encodeToByteArray(), canonicalPublic, peerId)
+}
+
+private suspend fun resolveRemotePublicIdentity(
+    deps: AppDependencies,
+    current: SetupWizardState,
+    value: String,
+): SetupWizardState {
+    if (value.isBlank()) {
+        return current.copy(remoteIdentityPeerId = null, errorMessage = "Remote public identity is required")
+    }
+    val validated = withContext(deps.dispatchers.io) { deps.identityValidation.validatePublicIdentity(value) }
+    return when {
+        // FIX8 P1-001-C: validated.message comes from the native bridge — redact it like
+        // every other native-validation message before it reaches UI state.
+        !validated.valid ->
+            current.copy(
+                remoteIdentityPeerId = null,
+                errorMessage = SensitiveDataRedactor.redactText(validated.message ?: "Invalid remote public identity"),
+            )
+        validated.peerId == current.input.localPeerId ->
+            current.copy(
+                remoteIdentityPeerId = null,
+                errorMessage = "Remote public identity cannot match local identity",
+            )
+        else ->
+            current.copy(
+                importPublicIdentity = validated.canonicalPublicIdentity ?: value,
+                remoteIdentityPeerId = validated.peerId,
+                errorMessage = null,
+                saveResult = "Remote public identity validated",
+            )
     }
 }
