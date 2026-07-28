@@ -187,30 +187,24 @@ internal class SetupSaveController(
         // Capture the current state only after the lock is held, so a serialized second save
         // works from fresh state rather than a snapshot taken before the first finished.
         val current = access.state()
-        if (!token.isFresh()) {
-            return false
-        }
-        // P0-001-B: rethrow CancellationException rather than folding it into a visible save
-        // error (the old enclosing runCatching reported cancellation as a failure). Only real
-        // errors become an errorMessage; a cancelled save reports neither success nor failure —
-        // except the one required diagnostic (FIX7 P0-004-E) when the coordinator's own
-        // cancellation-path rollback could not fully restore an earlier stage: that is not a
-        // normal save success/failure, just a durable heads-up that live storage may need
-        // re-running setup to fully repair.
-        val outcome =
-            try {
-                Result.success(validateAndCommit(current, token))
-            } catch (cancelled: CancellationException) {
-                reportRollbackIncompleteIfPresent(cancelled, current)
-                throw cancelled
-            } catch (error: Exception) {
-                Result.failure(error)
-            }
-        return outcome.fold(
-            onSuccess = { identity ->
-                if (!token.isFresh()) {
-                    return false
+        var saved = false
+        if (token.isFresh()) {
+            // P0-001-B: rethrow CancellationException rather than folding it into a visible save
+            // error (the old enclosing runCatching reported cancellation as a failure). Only real
+            // errors become an errorMessage; a cancelled save reports neither success nor failure —
+            // except the one required diagnostic (FIX7 P0-004-E) when the coordinator's own
+            // cancellation-path rollback could not fully restore an earlier stage.
+            val outcome =
+                try {
+                    Result.success(validateAndCommit(current, token))
+                } catch (cancelled: CancellationException) {
+                    reportRollbackIncompleteIfPresent(cancelled, current)
+                    throw cancelled
+                } catch (error: Exception) {
+                    Result.failure(error)
                 }
+            val identity = outcome.getOrNull()
+            if (identity != null && token.isFresh()) {
                 // FIX8 P0-001-D: a committed save clears the draft (its private bytes were
                 // wiped in validateAndCommit's finally); a failed save leaves the draft for retry.
                 identityDraft.clear()
@@ -224,19 +218,24 @@ internal class SetupSaveController(
                         ),
                     )
                 }
-                true
-            },
-            onFailure = { error ->
-                if (error is StaleSetupOperationException) {
-                    return false
+                saved = true
+            } else {
+                val error = outcome.exceptionOrNull()
+                if (error != null && error !is StaleSetupOperationException && token.isFresh()) {
+                    val message = error.message ?: "Failed saving configuration"
+                    val text =
+                        if (error is SaveError && !error.redact) {
+                            message
+                        } else {
+                            SensitiveDataRedactor.redactText(message)
+                        }
+                    token.publishIfFresh {
+                        access.applyState(current.copy(errorMessage = text, saveResult = null))
+                    }
                 }
-                val message = error.message ?: "Failed saving configuration"
-                val text =
-                    if (error is SaveError && !error.redact) message else SensitiveDataRedactor.redactText(message)
-                token.publishIfFresh { access.applyState(current.copy(errorMessage = text, saveResult = null)) }
-                false
-            },
-        )
+            }
+        }
+        return saved
     }
 
     /**
