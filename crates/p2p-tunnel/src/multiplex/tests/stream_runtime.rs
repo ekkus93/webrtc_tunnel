@@ -184,18 +184,12 @@ async fn session_cleanup_starts_all_half_closes_before_waiting_for_any_one() {
             assert!(matches!(write_rx.recv().await, Some(TcpWriteCommand::Close)));
             barrier.wait().await;
         });
-        streams.insert(
-            stream_id,
-            RuntimeStream::open(write_tx, vec![read_task, write_task]),
-        );
+        streams.insert(stream_id, RuntimeStream::open(write_tx, vec![read_task, write_task]));
     }
 
-    timeout(
-        Duration::from_millis(600),
-        cleanup_all_streams(&mut manager, &mut streams),
-    )
-    .await
-    .expect("stream cleanup must close all streams concurrently, not 250 ms at a time");
+    timeout(Duration::from_millis(600), cleanup_all_streams(&mut manager, &mut streams))
+        .await
+        .expect("stream cleanup must close all streams concurrently, not 250 ms at a time");
 
     assert_eq!(manager.active_count(), 0);
     assert!(streams.is_empty());
