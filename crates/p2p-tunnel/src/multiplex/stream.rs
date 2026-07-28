@@ -132,7 +132,7 @@ pub(crate) async fn handle_stream_runtime_event(
             if notify_peer && (manager.get(stream_id).is_ok() || streams.contains_key(&stream_id)) {
                 send_stream_error(frame_tx, stream_id, "local_io_error", &message).await?;
             }
-            close_stream(stream_id, manager, streams).await?;
+            close_stream(frame.stream_id, manager, streams).await?;
         }
     }
     Ok(())
@@ -199,7 +199,7 @@ pub(crate) fn spawn_writer_only(
         while let Some(frame) = frame_rx.recv().await {
             match TunnelFrameCodec::encode(&frame) {
                 Ok(encoded) => {
-                    if let Err(error) = data_channel.send(encoded).await {
+                    if let Err(error) = data_channel.send(&encoded).await {
                         let _ = failure_tx.send(TunnelError::WebRtc(error)).await;
                         break;
                     }
