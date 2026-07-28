@@ -187,55 +187,78 @@ internal class SetupSaveController(
         // Capture the current state only after the lock is held, so a serialized second save
         // works from fresh state rather than a snapshot taken before the first finished.
         val current = access.state()
-        var saved = false
-        if (token.isFresh()) {
-            // P0-001-B: rethrow CancellationException rather than folding it into a visible save
-            // error (the old enclosing runCatching reported cancellation as a failure). Only real
-            // errors become an errorMessage; a cancelled save reports neither success nor failure —
-            // except the one required diagnostic (FIX7 P0-004-E) when the coordinator's own
-            // cancellation-path rollback could not fully restore an earlier stage.
-            val outcome =
-                try {
-                    Result.success(validateAndCommit(current, token))
-                } catch (cancelled: CancellationException) {
-                    reportRollbackIncompleteIfPresent(cancelled, current)
-                    throw cancelled
-                } catch (error: Exception) {
-                    Result.failure(error)
-                }
-            val identity = outcome.getOrNull()
-            if (identity != null && token.isFresh()) {
-                // FIX8 P0-001-D: a committed save clears the draft (its private bytes were
-                // wiped in validateAndCommit's finally); a failed save leaves the draft for retry.
-                identityDraft.clear()
-                token.publishIfFresh {
-                    access.applyState(
-                        current.copy(
-                            localPublicIdentity = identity.publicIdentity,
-                            identityPeerId = identity.peerId,
-                            errorMessage = null,
-                            saveResult = "Configuration saved",
-                        ),
-                    )
-                }
-                saved = true
-            } else {
-                val error = outcome.exceptionOrNull()
-                if (error != null && error !is StaleSetupOperationException && token.isFresh()) {
-                    val message = error.message ?: "Failed saving configuration"
-                    val text =
-                        if (error is SaveError && !error.redact) {
-                            message
-                        } else {
-                            SensitiveDataRedactor.redactText(message)
-                        }
-                    token.publishIfFresh {
-                        access.applyState(current.copy(errorMessage = text, saveResult = null))
-                    }
-                }
-            }
+        if (!token.isFresh()) {
+            return false
         }
-        return saved
+        val outcome = validateAndCommitSafely(current, token)
+        val identity = outcome.getOrNull()
+        return if (identity == null) {
+            publishSaveFailureIfNeeded(token, current, outcome.exceptionOrNull())
+            false
+        } else {
+            publishSaveSuccessIfFresh(token, current, identity)
+        }
+    }
+
+    private suspend fun validateAndCommitSafely(
+        current: SetupWizardState,
+        token: SetupOperationToken,
+    ): Result<ResolvedIdentity> =
+        try {
+            Result.success(validateAndCommit(current, token))
+        } catch (cancelled: CancellationException) {
+            reportRollbackIncompleteIfPresent(cancelled, current)
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+
+    private fun publishSaveSuccessIfFresh(
+        token: SetupOperationToken,
+        current: SetupWizardState,
+        identity: ResolvedIdentity,
+    ): Boolean {
+        if (!token.isFresh()) {
+            return false
+        }
+        // FIX8 P0-001-D: a committed save clears the draft (its private bytes were wiped in
+        // validateAndCommit's finally); a failed save leaves the draft for retry.
+        identityDraft.clear()
+        token.publishIfFresh {
+            access.applyState(
+                current.copy(
+                    localPublicIdentity = identity.publicIdentity,
+                    identityPeerId = identity.peerId,
+                    errorMessage = null,
+                    saveResult = "Configuration saved",
+                ),
+            )
+        }
+        return true
+    }
+
+    private fun publishSaveFailureIfNeeded(
+        token: SetupOperationToken,
+        current: SetupWizardState,
+        error: Throwable?,
+    ) {
+        if (error == null || error is StaleSetupOperationException || !token.isFresh()) {
+            return
+        }
+        token.publishIfFresh {
+            access.applyState(
+                current.copy(errorMessage = saveFailureText(error), saveResult = null),
+            )
+        }
+    }
+
+    private fun saveFailureText(error: Throwable): String {
+        val message = error.message ?: "Failed saving configuration"
+        return if (error is SaveError && !error.redact) {
+            message
+        } else {
+            SensitiveDataRedactor.redactText(message)
+        }
     }
 
     /**
