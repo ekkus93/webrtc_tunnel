@@ -39,7 +39,7 @@ internal class SetupOperationToken internal constructor(
 ) {
     fun isFresh(): Boolean = !staleCheck(id)
 
-    inline fun publishIfFresh(block: () -> Unit): Boolean {
+    fun publishIfFresh(block: () -> Unit): Boolean {
         if (!isFresh()) {
             return false
         }
@@ -113,25 +113,11 @@ internal class SetupOperationCoordinator {
                     }
                 }
             }
-            // Lost the race to acquire; the true owner may have already released between the
-            // failed compareAndSet above and this read — retry rather than report a stale or
-            // null-derived owner (same reasoning as ConfigurationMutationCoordinator.tryRun).
             val busyOwner = active.get() ?: continue
             return SetupDraftAdmission.Busy(busyOwner.operation)
         }
     }
 
-    /**
-     * Runs [block] under setup-local admission for [operation]. Cancellation is caught first and
-     * rethrown; any other exception escaping [block] is reported as a fixed/redacted, durable
-     * `errorMessage` — [block] itself is still expected to handle its own anticipated failures
-     * with specific messages, this is the safety net so an unanticipated exception can never
-     * merely clear busy with no visible message (FIX8 P1-001-C). A busy rejection is reported the
-     * same durable/visible way, naming the active operation. Returns `null` when [block] did not
-     * complete normally (busy rejection or a caught ordinary exception) — a caller that needs to
-     * chain a follow-up action only on genuine success (e.g. starting the tunnel after a save)
-     * checks for `null`.
-     */
     suspend fun <T> runGuarded(
         access: WizardStateAccess,
         operation: SetupDraftOperation,
@@ -140,10 +126,6 @@ internal class SetupOperationCoordinator {
         try {
             val admission =
                 tryRun(operation) { token ->
-                    // FIX8 P1-001-A: publish isBusy=true the instant admission is acquired —
-                    // otherwise a caller observing published state (not operations.isBusy
-                    // directly) would see busy=false for as long as block() runs before its own
-                    // first applyState call, which may be its entire duration.
                     token.publishIfFresh { access.applyState(access.state()) }
                     try {
                         block(token)
@@ -177,12 +159,6 @@ internal class SetupOperationCoordinator {
                 }
             }
         } finally {
-            // FIX8 P1-001-A/C: re-stamps isBusy now that admission has definitely been released
-            // (tryRun's own `finally` already ran) — covers both a normal return above AND a
-            // CancellationException propagating straight through (a cancelled action must still
-            // release its busy indicator, not leave it stuck true for the rest of the wizard's
-            // life). This restamps the current state only; stale operation-specific state must be
-            // guarded by [SetupOperationToken] before this point.
             access.applyState(access.state())
         }
     }
