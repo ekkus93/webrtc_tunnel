@@ -1,0 +1,77 @@
+name: RC diagnostics
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  focused-rust:
+    name: Focused Rust diagnostics
+    if: contains(github.event.head_commit.message, '[full-signoff]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run focused checks and retain complete output
+        id: checks
+        shell: bash
+        run: |
+          mkdir -p rc-diagnostics
+          set +e
+          cargo fmt --all --check >rc-diagnostics/rustfmt.log 2>&1
+          fmt_status=$?
+          cargo test -p p2p-tunnel --all-targets --all-features >rc-diagnostics/p2p-tunnel-test.log 2>&1
+          test_status=$?
+          set -e
+          echo "fmt_status=$fmt_status" >> "$GITHUB_OUTPUT"
+          echo "test_status=$test_status" >> "$GITHUB_OUTPUT"
+
+      - name: Upload focused diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rc-focused-rust-diagnostics
+          path: rc-diagnostics/
+          retention-days: 14
+
+      - name: Publish diagnostic status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FMT_STATUS: ${{ steps.checks.outputs.fmt_status }}
+          TEST_STATUS: ${{ steps.checks.outputs.test_status }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          state=success
+          description="focused Rust diagnostics passed"
+          if [ "$FMT_STATUS" != 0 ] || [ "$TEST_STATUS" != 0 ]; then
+            state=failure
+            description="rustfmt=$FMT_STATUS p2p-tunnel-test=$TEST_STATUS"
+          fi
+          payload=$(printf '{"state":"%s","target_url":"%s","description":"%s","context":"ci/rc-diagnostics"}' \
+            "$state" "$TARGET_URL" "$description")
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            --data "$payload"
+          [ "$state" = success ]
