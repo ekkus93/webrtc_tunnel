@@ -3,12 +3,12 @@ package com.phillipchin.webrtctunnel.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.data.AppDependencies
-import com.phillipchin.webrtctunnel.data.ForwardsLoadState
-import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
-import com.phillipchin.webrtctunnel.data.loadSetupInputResult
-import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
-import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtctunnel.model.SetupConfigInput
+import com.phillipchin.webrtunnel.data.ForwardsLoadState
+import com.phillipchin.webrtunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtunnel.data.loadSetupInputResult
+import com.phillipchin.webrtunnel.model.AndroidAppPreferences
+import com.phillipchin.webrtunnel.model.ForwardConfig
+import com.phillipchin.webrtunnel.model.SetupConfigInput
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -213,21 +213,21 @@ class SetupViewModel(
         }
         if (operations.isBusy) return
         viewModelScope.launch {
-            operations.runGuarded(stateAccess, SetupDraftOperation.ValidationNavigation) { id ->
+            operations.runGuarded(stateAccess, SetupDraftOperation.ValidationNavigation) { token ->
                 val current = _state.value
                 // Step validation can call native code; keep it off the main thread.
                 val validationError =
                     withContext(deps.dispatchers.io) { validateStep(deps, current.currentStep, current) }
-                // FIX8 P1-001-A: a cancel() during this suspend call must not resurrect stale
+                // FIX9 P0-001: a cancel() during this suspend call must not resurrect stale
                 // step/error state over whatever the reset already published.
-                if (operations.isStale(id)) return@runGuarded
+                if (!token.isFresh()) return@runGuarded
                 if (validationError != null) {
-                    applyState(current.copy(errorMessage = validationError))
+                    token.publishIfFresh { applyState(current.copy(errorMessage = validationError)) }
                     return@runGuarded
                 }
                 val index = steps.indexOf(current.currentStep)
                 if (index < steps.lastIndex) {
-                    applyState(current.copy(currentStep = steps[index + 1], errorMessage = null))
+                    token.publishIfFresh { applyState(current.copy(currentStep = steps[index + 1], errorMessage = null)) }
                 }
             }
         }
