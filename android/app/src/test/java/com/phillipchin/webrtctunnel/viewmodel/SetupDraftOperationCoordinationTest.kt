@@ -4,6 +4,7 @@ import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.awaitCondition
 import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
@@ -122,6 +123,42 @@ class SetupDraftOperationCoordinationTest : AppViewModelTestBase() {
         assertEquals(stepBefore, viewModel.state.value.currentStep)
         assertTrue(viewModel.state.value.errorMessage != null)
     }
+
+    // FIX9 P0-001-G: real production-path test, not a direct runGuarded seam.
+    @Test
+    fun cancelDuringIdentityImportFromPathDoesNotPublishImportedIdentity() =
+        runBlocking {
+            val staleIdentityFile =
+                File(app.filesDir, "stale_identity.toml").apply {
+                    writeText("peer_id = \"stale-peer\"\nsecret = \"abc\"")
+                }
+            recordingBridge.privateIdentityValidationResult =
+                IdentityValidationResult(
+                    valid = true,
+                    canonicalPrivateIdentity = "stale-private",
+                    canonicalPublicIdentity = "stale-public",
+                    peerId = "stale-peer",
+                )
+            recordingBridge.blockNextPrivateIdentityValidation()
+            val viewModel = SetupViewModel(realIoDeps())
+            awaitLoadReady(viewModel)
+            viewModel.setImportIdentityPath(staleIdentityFile.absolutePath)
+
+            viewModel.identity.importIdentityFromPath()
+            awaitCondition(description = "private identity validation entered") {
+                recordingBridge.privateIdentityValidationEnteredNow()
+            }
+
+            viewModel.cancel()
+            recordingBridge.releaseBlockedPrivateIdentityValidation()
+            awaitSetupState(viewModel) { !it.isBusy }
+
+            val state = viewModel.state.value
+            assertEquals("", state.localPublicIdentity)
+            assertEquals(null, state.identityPeerId)
+            assertEquals("", state.importIdentityPath)
+            assertNull("stale imported private identity must not remain in the draft", viewModel.identityDraft.copyForSave())
+        }
 
     // overlappingIdentityAndForwardActionsCannotPublishStaleBusyOrState
     @Test
