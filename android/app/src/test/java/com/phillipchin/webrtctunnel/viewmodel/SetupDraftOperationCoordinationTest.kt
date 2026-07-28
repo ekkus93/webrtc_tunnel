@@ -157,7 +157,10 @@ class SetupDraftOperationCoordinationTest : AppViewModelTestBase() {
             assertEquals("", state.localPublicIdentity)
             assertEquals(null, state.identityPeerId)
             assertEquals("", state.importIdentityPath)
-            assertNull("stale imported private identity must not remain in the draft", viewModel.identityDraft.copyForSave())
+            assertNull(
+                "stale imported private identity must not remain in the draft",
+                viewModel.identityDraft.copyForSave(),
+            )
         }
 
     // overlappingIdentityAndForwardActionsCannotPublishStaleBusyOrState
