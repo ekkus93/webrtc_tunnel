@@ -10,7 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.phillipchin.webrtctunnel.BuildConfig
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
-import com.phillipchin.webrtunnel.model.SetupConfigInput
+import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
