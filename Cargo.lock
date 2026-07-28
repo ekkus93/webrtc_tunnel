@@ -1837,6 +1837,7 @@ name = "p2p-tunnel"
 version = "0.3.2"
 dependencies = [
  "bytes",
+ "futures-util",
  "p2p-core",
  "p2p-webrtc",
  "rand_core 0.6.4",

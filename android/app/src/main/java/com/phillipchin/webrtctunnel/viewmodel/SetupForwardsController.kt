@@ -47,7 +47,7 @@ internal class SetupForwardsController(
             }
             token.publishIfFresh {
                 access.setForwards(after)
-                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward draft updated"))
+                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward saved"))
             }
         }
     }
@@ -57,7 +57,7 @@ internal class SetupForwardsController(
             val after = access.forwards().filterNot { it.id == forwardId }
             token.publishIfFresh {
                 access.setForwards(after)
-                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward draft removed"))
+                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward deleted"))
             }
         }
     }
