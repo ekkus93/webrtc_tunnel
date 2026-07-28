@@ -35,8 +35,8 @@ jobs:
         env:
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          rust_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/ci\.yml$|bins/|crates/|scripts/|tests/|docs/examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$|clippy\.toml$|rustfmt\.toml$|\.rustfmt\.toml$)'
-          android_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/ci\.yml$|android/|bins/|crates/|tests/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$)'
+          rust_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/|bins/|crates/|scripts/|tests/|docs/examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$|clippy\.toml$|rustfmt\.toml$|\.rustfmt\.toml$)'
+          android_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/|android/|bins/|crates/|tests/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$)'
 
           detect_paths() {
             local paths="$1"
@@ -69,6 +69,7 @@ jobs:
           assert_flags "docs/examples/offer-config.toml" true false
           assert_flags "android/app/src/main/AndroidManifest.xml" false true
           assert_flags ".github/actions/example/action.yml" true true
+          assert_flags ".github/workflows/rc-diagnostics.yml" true true
           assert_flags "docs/architecture.md" false false
 
           full_signoff=false
@@ -95,6 +96,13 @@ jobs:
               changed=$(git diff --name-only "$base" "${{ github.sha }}")
               detect_paths "$changed"
             fi
+          fi
+
+          # A release-candidate or tag signoff must never inherit a path-based skip.
+          # The explicit signoff request itself is the reason to execute every platform.
+          if [ "$full_signoff" = true ]; then
+            rust=true
+            android=true
           fi
 
           echo "Changed files:"
