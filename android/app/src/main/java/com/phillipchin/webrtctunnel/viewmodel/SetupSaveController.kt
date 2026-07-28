@@ -15,7 +15,7 @@ import com.phillipchin.webrtctunnel.data.SetupPersistenceCoordinator
 import com.phillipchin.webrtctunnel.data.SetupPersistenceRequest
 import com.phillipchin.webrtctunnel.data.SetupPersistenceResult
 import com.phillipchin.webrtctunnel.data.SetupRollbackException
-import com.phillipchin.webrtunnel.data.SetupRollbackStageResult
+import com.phillipchin.webrtctunnel.data.SetupRollbackStageResult
 import com.phillipchin.webrtctunnel.data.ValidationWorkspaceRenderInputs
 import com.phillipchin.webrtctunnel.data.renderOfferConfig
 import com.phillipchin.webrtctunnel.data.renderOfferConfigForValidationWorkspace
