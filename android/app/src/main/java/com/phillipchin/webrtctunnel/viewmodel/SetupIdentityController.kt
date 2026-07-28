@@ -1,10 +1,10 @@
 package com.phillipchin.webrtctunnel.viewmodel
 
 import android.net.Uri
-import com.phillipchin.webrtunnel.data.AppDependencies
-import com.phillipchin.webrtunnel.data.SensitiveDataRedactor
-import com.phillipchin.webrtunnel.model.IdentityValidationResult
-import com.phillipchin.webrtunnel.security.readPrivateIdentityFile
+import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
+import com.phillipchin.webrtctunnel.model.IdentityValidationResult
+import com.phillipchin.webrtctunnel.security.readPrivateIdentityFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
