@@ -38,22 +38,27 @@ internal class SetupForwardsController(
     }
 
     fun upsertForward(forward: ForwardConfig) {
-        launchForwardEdit {
+        launchForwardEdit { token ->
             val after = withUpsert(access.forwards(), forward)
             val error = deps.forwardsStore.validateForwards(after)
             if (error != null) {
-                access.applyState(access.state().copy(errorMessage = error, saveResult = null))
+                token.publishIfFresh { access.applyState(access.state().copy(errorMessage = error, saveResult = null)) }
                 return@launchForwardEdit
             }
-            access.setForwards(after)
-            access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward saved"))
+            token.publishIfFresh {
+                access.setForwards(after)
+                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward draft updated"))
+            }
         }
     }
 
     fun deleteForward(forwardId: String) {
-        launchForwardEdit {
-            access.setForwards(access.forwards().filterNot { it.id == forwardId })
-            access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward deleted"))
+        launchForwardEdit { token ->
+            val after = access.forwards().filterNot { it.id == forwardId }
+            token.publishIfFresh {
+                access.setForwards(after)
+                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward draft removed"))
+            }
         }
     }
 
@@ -73,19 +78,21 @@ internal class SetupForwardsController(
      * already is, now that edits no longer route through ForwardsRepository's own
      * blockedMutationReason check for this.
      */
-    private fun launchForwardEdit(block: suspend () -> Unit) {
+    private fun launchForwardEdit(block: suspend (SetupOperationToken) -> Unit) {
         scope.launch {
-            access.operations.runGuarded(access, SetupDraftOperation.ForwardEdit) {
+            access.operations.runGuarded(access, SetupDraftOperation.ForwardEdit) { token ->
                 if (access.loadState() !is SetupLoadState.Ready) {
-                    access.applyState(
-                        access.state().copy(
-                            errorMessage = setupLoadNotReadyMessage(access.loadState()),
-                            saveResult = null,
-                        ),
-                    )
+                    token.publishIfFresh {
+                        access.applyState(
+                            access.state().copy(
+                                errorMessage = setupLoadNotReadyMessage(access.loadState()),
+                                saveResult = null,
+                            ),
+                        )
+                    }
                     return@runGuarded
                 }
-                block()
+                block(token)
             }
         }
     }
