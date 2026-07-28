@@ -104,7 +104,8 @@ internal class SetupSaveController(
                     Socket().use { socket ->
                         socket.connect(InetSocketAddress(host, port), BROKER_PROBE_TIMEOUT_MS)
                     }
-                    "TCP connection to $host:$port succeeded. Full MQTT/TLS auth is confirmed when the tunnel connects."
+                    "TCP connection to $host:$port succeeded. Full MQTT/TLS auth is confirmed " +
+                        "when the tunnel connects."
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
@@ -134,8 +135,7 @@ internal class SetupSaveController(
 
     private suspend fun saveAndApplyConfigInternal(onFreshSuccess: (() -> Unit)? = null): Boolean {
         // FIX8 P1-001-B: block while the setup baseline has not finished loading — a save built
-        // from an incoherent baseline (e.g. a corrupt setup-input file never actually recovered
-        // from) must never proceed.
+        // from an incoherent baseline must never proceed.
         val loadState = access.loadState()
         if (loadState !is SetupLoadState.Ready) {
             access.applyState(
@@ -144,8 +144,7 @@ internal class SetupSaveController(
             return false
         }
         // FIX9 P0-001-F: final save holds setup-local admission and carries the freshness token
-        // through validation, global admission, persistence, and optional start-from-review. A
-        // stale save may not publish UI state or start the service after setup cancellation.
+        // through validation, global admission, persistence, and optional start-from-review.
         return access.operations.runGuarded(access, SetupDraftOperation.FinalSave) { token ->
             if (!token.isFresh()) {
                 return@runGuarded false
@@ -153,10 +152,10 @@ internal class SetupSaveController(
             when (
                 val admission =
                     deps.configurationMutationCoordinator.tryRun(ConfigurationOperation.SetupSave) {
-                        if (!token.isFresh()) {
-                            false
-                        } else {
+                        if (token.isFresh()) {
                             runSaveAndApply(token)
+                        } else {
+                            false
                         }
                     }
             ) {
@@ -193,10 +192,10 @@ internal class SetupSaveController(
         val outcome = validateAndCommitSafely(current, token)
         val identity = outcome.getOrNull()
         return if (identity == null) {
-            publishSaveFailureIfNeeded(token, current, outcome.exceptionOrNull())
+            publishSaveFailureIfNeeded(access, token, current, outcome.exceptionOrNull())
             false
         } else {
-            publishSaveSuccessIfFresh(token, current, identity)
+            publishSaveSuccessIfFresh(access, identityDraft, token, current, identity)
         }
     }
 
@@ -207,86 +206,11 @@ internal class SetupSaveController(
         try {
             Result.success(validateAndCommit(current, token))
         } catch (cancelled: CancellationException) {
-            reportRollbackIncompleteIfPresent(cancelled, current)
+            reportRollbackIncompleteIfPresent(access, cancelled, current)
             throw cancelled
         } catch (error: Exception) {
             Result.failure(error)
         }
-
-    private fun publishSaveSuccessIfFresh(
-        token: SetupOperationToken,
-        current: SetupWizardState,
-        identity: ResolvedIdentity,
-    ): Boolean {
-        if (!token.isFresh()) {
-            return false
-        }
-        // FIX8 P0-001-D: a committed save clears the draft (its private bytes were wiped in
-        // validateAndCommit's finally); a failed save leaves the draft for retry.
-        identityDraft.clear()
-        token.publishIfFresh {
-            access.applyState(
-                current.copy(
-                    localPublicIdentity = identity.publicIdentity,
-                    identityPeerId = identity.peerId,
-                    errorMessage = null,
-                    saveResult = "Configuration saved",
-                ),
-            )
-        }
-        return true
-    }
-
-    private fun publishSaveFailureIfNeeded(
-        token: SetupOperationToken,
-        current: SetupWizardState,
-        error: Throwable?,
-    ) {
-        if (error == null || error is StaleSetupOperationException || !token.isFresh()) {
-            return
-        }
-        token.publishIfFresh {
-            access.applyState(
-                current.copy(errorMessage = saveFailureText(error), saveResult = null),
-            )
-        }
-    }
-
-    private fun saveFailureText(error: Throwable): String {
-        val message = error.message ?: "Failed saving configuration"
-        return if (error is SaveError && !error.redact) {
-            message
-        } else {
-            SensitiveDataRedactor.redactText(message)
-        }
-    }
-
-    /**
-     * FIX7 P0-004-E: a cancelled save reports no normal success/failure snackbar — except this
-     * one required diagnostic when [SetupPersistenceCoordinator]'s own cancellation-path rollback
-     * (attached as [SetupRollbackException]s suppressed on [cancelled]) could not fully restore
-     * an earlier stage. Called synchronously before the cancellation propagates: [access]'s
-     * `applyState` is a plain (non-suspend) callback, so it is safe to invoke here even though the
-     * coroutine is already being cancelled.
-     */
-    private fun reportRollbackIncompleteIfPresent(
-        cancelled: CancellationException,
-        current: SetupWizardState,
-    ) {
-        val incompleteStages =
-            cancelled.suppressedExceptions.filterIsInstance<SetupRollbackException>().map { it.stage }
-        if (incompleteStages.isEmpty()) {
-            return
-        }
-        access.applyState(
-            current.copy(
-                errorMessage =
-                    "Setup was cancelled and could not be fully rolled back " +
-                        "(setup_cancelled_rollback_incomplete): $incompleteStages",
-                saveResult = null,
-            ),
-        )
-    }
 
     /**
      * Validate the review state in an isolated workspace and, if valid, commit the whole save
@@ -328,8 +252,7 @@ internal class SetupSaveController(
             validateInIsolatedWorkspace(input, enabledForwards, authorizedLine, identity.privateIdentity, prefs)
             throwIfStale(token)
             // Validation used an isolated workspace copy of authorized_keys/broker-secret paths
-            // (P0-003-C); the commit candidate below references the real (about-to-be-committed)
-            // live paths instead — the workspace is already deleted by this point.
+            // (P0-003-C); the commit candidate below references the real paths instead.
             val commitCandidate =
                 deps.configRepository.renderOfferConfig(
                     input = input,
@@ -350,20 +273,14 @@ internal class SetupSaveController(
 
     private suspend fun resolveSaveIdentity(): ResolvedIdentity {
         // FIX8 P0-001-D: a wizard-generated/imported identity is resolved ONLY from the
-        // draft's save-owned bytes — no import-path re-read / TOCTOU. The draft copy is
-        // wiped by validateAndCommit's finally like any other resolved identity.
+        // draft's save-owned bytes — no import-path re-read / TOCTOU.
         identityDraft.copyForSave()?.let { draft ->
             return ResolvedIdentity(draft.privateIdentity, draft.publicIdentity, draft.peerId, fromImport = true)
         }
-        // FIX8 P0-007-C: read the encrypted/public identity pair as one coherent snapshot
-        // (not a separate hasEncryptedIdentity check followed by separate reads) so a
-        // concurrent identity replacement can never be observed half-applied.
+        // FIX8 P0-007-C: read the encrypted/public identity pair as one coherent snapshot.
         val material = deps.identityRepository.readStoredIdentityMaterial
         val resolved =
             if (material == null) {
-                // Absence and present-but-unreadable are different states (P1-001/P1-007): only
-                // absence may report "missing" — a present identity that fails to load/validate
-                // must say so, not tell the user their identity vanished.
                 saveError("Missing encrypted identity", redact = true)
             } else {
                 resolveStoredIdentity(deps, ioDispatcher, material)
@@ -377,11 +294,8 @@ internal class SetupSaveController(
 
     /**
      * FIX7 P0-003-C: renders a candidate referencing an isolated workspace copy of
-     * `authorized_keys` (the live file merged with [authorizedLine], never the live file itself)
-     * and, if a new plaintext broker password was entered, a workspace copy of the broker secret
-     * — then validates that candidate. Workspace cleanup failure after an otherwise-successful
-     * validation must still block the commit (P0-002 cleanup composition throws
-     * [CandidateCleanupException] in exactly that case), surfaced here as `candidate_cleanup_failed`.
+     * `authorized_keys` and, if a new plaintext broker password was entered, a workspace copy of
+     * the broker secret — then validates that candidate.
      */
     private suspend fun validateInIsolatedWorkspace(
         input: SetupConfigInput,
@@ -436,13 +350,8 @@ internal class SetupSaveController(
 
     /**
      * FIX7 P0-003-D/P0-004-A: commits the setup save through the transactional coordinator in
-     * one call. The broker secret is now its own `BrokerSecret` stage (positioned before
-     * `SetupInput`/`Preferences`/`Config`, per the coordinator's fixed order) rather than a
-     * direct pre-coordinator write, so a later stage's failure rolls it back along with
-     * identity/authorized-keys instead of leaving it committed. Identity and authorized-key
-     * mutations flow through the coordinator's Identity/AuthorizedKeys stages — no outer
-     * identity snapshot/restore is needed here because nothing is written live until this
-     * point, and the coordinator captures its own snapshot and rolls back on failure.
+     * one call. The broker secret is now its own `BrokerSecret` stage, so a later stage's failure
+     * rolls it back along with identity/authorized-keys instead of leaving it committed.
      */
     private suspend fun commitSetup(
         input: SetupConfigInput,
@@ -451,10 +360,6 @@ internal class SetupSaveController(
         forwards: List<ForwardConfig>,
         identityChange: SetupIdentityChange,
     ) {
-        // FIX8 P0-002-C: reuse the one preference snapshot already read by validateAndCommit for
-        // rendering, rather than re-reading here — final config rendering and the persisted
-        // request must derive from the same object, not two separate reads that could observe
-        // different values.
         val request =
             SetupPersistenceRequest(
                 configContents = candidate,
@@ -464,9 +369,6 @@ internal class SetupSaveController(
                         allowMetered = input.allowMetered,
                         resumeOnUnmetered = input.resumeOnUnmetered,
                     ),
-                // FIX8 P0-004-F: the full setup-wizard forwards draft (including disabled
-                // entries) — the Forwards stage persists this as ForwardsRepository's new
-                // authoritative state, distinct from the enabledForwards subset rendered above.
                 forwards = forwards,
                 optionalChanges =
                     SetupOptionalChanges(
@@ -480,11 +382,6 @@ internal class SetupSaveController(
                                 null
                             },
                         authorizedPublicIdentityToAdd = identityChange.authorizedLine,
-                        // FIX7 P0-004-A: an "advanced" externally-managed password file means the
-                        // managed secret must not be touched at all (stage omitted); otherwise
-                        // the stage is always requested — including Remove — so an
-                        // intentionally-cleared password reliably deletes a stale managed secret
-                        // rather than orphaning it.
                         brokerSecretChange =
                             if (input.brokerPasswordFile.isNotBlank()) {
                                 null
@@ -527,8 +424,7 @@ private data class ResolvedIdentity(
     val fromImport: Boolean,
 )
 
-/** Groups [commitSetup]'s two identity-related inputs into one parameter so that function stays
- * under detekt's LongParameterList threshold. */
+/** Groups [SetupSaveController.commitSetup]'s two identity-related inputs into one parameter. */
 private class SetupIdentityChange(
     val identity: ResolvedIdentity,
     val authorizedLine: String?,
@@ -544,6 +440,76 @@ private fun saveError(
     message: String,
     redact: Boolean,
 ): Nothing = throw SaveError(message, redact)
+
+private fun publishSaveSuccessIfFresh(
+    access: WizardStateAccess,
+    identityDraft: SetupIdentityDraft,
+    token: SetupOperationToken,
+    current: SetupWizardState,
+    identity: ResolvedIdentity,
+): Boolean {
+    if (!token.isFresh()) {
+        return false
+    }
+    // FIX8 P0-001-D: a committed save clears the draft; a failed save leaves it for retry.
+    identityDraft.clear()
+    token.publishIfFresh {
+        access.applyState(
+            current.copy(
+                localPublicIdentity = identity.publicIdentity,
+                identityPeerId = identity.peerId,
+                errorMessage = null,
+                saveResult = "Configuration saved",
+            ),
+        )
+    }
+    return true
+}
+
+private fun publishSaveFailureIfNeeded(
+    access: WizardStateAccess,
+    token: SetupOperationToken,
+    current: SetupWizardState,
+    error: Throwable?,
+) {
+    if (error == null || error is StaleSetupOperationException || !token.isFresh()) {
+        return
+    }
+    token.publishIfFresh {
+        access.applyState(
+            current.copy(errorMessage = saveFailureText(error), saveResult = null),
+        )
+    }
+}
+
+private fun saveFailureText(error: Throwable): String {
+    val message = error.message ?: "Failed saving configuration"
+    return if (error is SaveError && !error.redact) {
+        message
+    } else {
+        SensitiveDataRedactor.redactText(message)
+    }
+}
+
+private fun reportRollbackIncompleteIfPresent(
+    access: WizardStateAccess,
+    cancelled: CancellationException,
+    current: SetupWizardState,
+) {
+    val incompleteStages =
+        cancelled.suppressedExceptions.filterIsInstance<SetupRollbackException>().map { it.stage }
+    if (incompleteStages.isEmpty()) {
+        return
+    }
+    access.applyState(
+        current.copy(
+            errorMessage =
+                "Setup was cancelled and could not be fully rolled back " +
+                    "(setup_cancelled_rollback_incomplete): $incompleteStages",
+            saveResult = null,
+        ),
+    )
+}
 
 /** FIX7 P0-003-C: the live `authorized_keys` content merged with [authorizedLine] (if any),
  * mirroring `IdentityRepository.appendAuthorizedPublicIdentity`'s own dedupe-and-sort merge —
