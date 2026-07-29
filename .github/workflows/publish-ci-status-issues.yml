@@ -41,8 +41,8 @@ jobs:
           case "${EVENT_WORKFLOW_NAME}" in
             "CI")
               issue_number="1"
-              issue_title="CI Status: Full Matrix"
-              issue_heading="Latest Full Matrix CI"
+              issue_title="CI Status: Main Workflow"
+              issue_heading="Latest Main CI Workflow"
               ;;
             "RC diagnostics")
               issue_number="2"
@@ -193,6 +193,34 @@ jobs:
           not_run = status == "completed" and (all_jobs_skipped or no_jobs_completed)
           effective_conclusion = "not_run" if not_run else (workflow_conclusion or "pending")
 
+          def job_was_required(job: dict | None) -> bool:
+              if job is None:
+                  return False
+              return job["status"] != "completed" or job["conclusion"] not in {None, "skipped"}
+
+          if run.get("name") != "CI":
+              scope = "focused"
+          elif not jobs:
+              scope = "pending" if status != "completed" else "metadata_only"
+          else:
+              jobs_by_name = {job["name"]: job for job in jobs}
+              release_names = {
+                  "Docker real-data-path E2E",
+                  "Android emulator real-data-path E2E",
+              }
+              core_names = {
+                  "Lint",
+                  "Test (Linux)",
+                  "Test (macOS)",
+                  "Android",
+              }
+              if any(job_was_required(jobs_by_name.get(name)) for name in release_names):
+                  scope = "release_candidate"
+              elif any(job_was_required(jobs_by_name.get(name)) for name in core_names):
+                  scope = "path_required"
+              else:
+                  scope = "metadata_only"
+
           observed_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
           payload = {
               "schema_version": 2,
@@ -200,6 +228,7 @@ jobs:
               "workflow": run.get("name"),
               "workflow_id": run.get("workflow_id"),
               "workflow_path": run.get("path"),
+              "scope": scope,
               "run_id": run.get("id"),
               "run_number": run.get("run_number"),
               "run_attempt": run.get("run_attempt"),
@@ -238,6 +267,7 @@ jobs:
                   f'- **Status:** `{status}`',
                   f'- **Conclusion:** `{effective_conclusion}`',
                   f'- **Workflow conclusion:** `{workflow_conclusion or "pending"}`',
+                  f'- **Scope:** `{scope}`',
                   f'- **Executed:** `{str(not not_run).lower()}`',
                   f'- **Run:** [{run.get("id")}]({run.get("html_url")})',
                   f'- **Run number / attempt:** `{run.get("run_number")}` / `{run.get("run_attempt")}`',
