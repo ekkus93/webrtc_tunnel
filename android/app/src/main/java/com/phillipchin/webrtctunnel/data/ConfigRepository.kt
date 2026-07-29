@@ -40,6 +40,17 @@ class ConfigReplaceRollbackIncompleteException(
 open class ConfigRepository internal constructor(
     private val context: Context,
     private val atomicFileOps: AtomicConfigFileOps = RealAtomicConfigFileOps,
+    private val preferenceWriter: suspend (AndroidAppPreferences) -> Unit = { update ->
+        context.dataStore.edit { prefs ->
+            prefs[Keys.allowMetered] = update.allowMetered
+            prefs[Keys.resumeOnUnmetered] = update.resumeOnUnmetered
+            prefs[Keys.showMeteredWarning] = update.showMeteredWarning
+            prefs[Keys.debugLogsEnabled] = update.debugLogsEnabled
+            prefs[Keys.advancedSettingsEnabled] = update.advancedSettingsEnabled
+            prefs[Keys.androidIceMode] = normalizeAndroidIceMode(update.androidIceMode)
+            prefs.remove(Keys.pauseOnMetered)
+        }
+    },
 ) {
     private val configFile: File get() = File(context.filesDir, "config.toml")
     private val setupInputFile: File get() = File(context.filesDir, "setup_input.json")
@@ -55,15 +66,7 @@ open class ConfigRepository internal constructor(
     @CheckResult
     open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
         try {
-            context.dataStore.edit { prefs ->
-                prefs[Keys.allowMetered] = update.allowMetered
-                prefs[Keys.resumeOnUnmetered] = update.resumeOnUnmetered
-                prefs[Keys.showMeteredWarning] = update.showMeteredWarning
-                prefs[Keys.debugLogsEnabled] = update.debugLogsEnabled
-                prefs[Keys.advancedSettingsEnabled] = update.advancedSettingsEnabled
-                prefs[Keys.androidIceMode] = normalizeAndroidIceMode(update.androidIceMode)
-                prefs.remove(Keys.pauseOnMetered)
-            }
+preferenceWriter(update)
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled

@@ -262,7 +262,7 @@ internal class SetupSaveController(
                     brokerPasswordPath = resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path),
                 )
             throwIfStale(token)
-            commitSetup(input, commitCandidate, prefs, access.forwards(), SetupIdentityChange(identity, authorizedLine))
+            commitSetup(input, commitCandidate, prefs, access.forwards(), SetupIdentityChange(identity, authorizedLine), token)
             throwIfStale(token)
             return identity
         } finally {
@@ -359,6 +359,7 @@ internal class SetupSaveController(
         prefs: AndroidAppPreferences,
         forwards: List<ForwardConfig>,
         identityChange: SetupIdentityChange,
+        token: SetupOperationToken,
     ) {
         val request =
             SetupPersistenceRequest(
@@ -392,7 +393,21 @@ internal class SetupSaveController(
                             },
                     ),
             )
+        // This is the final cancellable boundary before authoritative mutation. A cancel
+        // before this point is a no-op; a cancel inside persist is rolled back transactionally.
+        throwIfStale(token)
         val result = withContext(ioDispatcher) { persistence.persist(request) }
+        if (result is SetupPersistenceResult.Success && !token.isFresh()) {
+            access.applyState(
+                access.state().copy(
+                    errorMessage =
+                        "Setup was abandoned after configuration committed " +
+                            "(setup_commit_completed_after_cancel). Review saved configuration before starting.",
+                    saveResult = null,
+                ),
+            )
+            throw StaleSetupOperationException()
+        }
         if (result is SetupPersistenceResult.Failed) {
             val rollbackIncomplete = result.rollback.any { it is SetupRollbackStageResult.Failure }
             val message =

@@ -307,7 +307,10 @@ class IdentityRepository(
         }
     }
 
-    fun readPublicIdentity(): String = if (publicFile.exists()) publicFile.readText() else ""
+    fun readPublicIdentity(): String =
+        synchronized(storageLock) {
+            if (publicFile.exists()) publicFile.readText() else ""
+        }
 
     // FIX7 P1-005-B: explicit cancellation-first try/catch, not runCatching — this is a real
     // file mutation (authorized_keys append), and runCatching's Throwable-catching could

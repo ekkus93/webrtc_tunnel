@@ -18,6 +18,9 @@ internal class SetupForwardsController(
     private val deps: AppDependencies,
     private val access: WizardStateAccess,
     private val scope: CoroutineScope,
+    private val inspectForwardDraft: suspend (List<ForwardConfig>) -> String? = { candidates ->
+        deps.forwardsStore.validateForwards(candidates)
+    },
 ) {
     fun validateForwardDraft(
         draft: ForwardConfig,
@@ -40,14 +43,14 @@ internal class SetupForwardsController(
     fun upsertForward(forward: ForwardConfig) {
         launchForwardEdit { token ->
             val after = withUpsert(access.forwards(), forward)
-            val error = deps.forwardsStore.validateForwards(after)
+            val error = inspectForwardDraft(after)
             if (error != null) {
                 token.publishIfFresh { access.applyState(access.state().copy(errorMessage = error, saveResult = null)) }
                 return@launchForwardEdit
             }
             token.publishIfFresh {
                 access.setForwards(after)
-                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward saved"))
+                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward draft updated"))
             }
         }
     }
@@ -55,9 +58,12 @@ internal class SetupForwardsController(
     fun deleteForward(forwardId: String) {
         launchForwardEdit { token ->
             val after = access.forwards().filterNot { it.id == forwardId }
+            // Deletion remains allowed even if the remaining draft is temporarily invalid, but
+            // inspection is still a real suspend boundary that cancellation/freshness protects.
+            inspectForwardDraft(after)
             token.publishIfFresh {
                 access.setForwards(after)
-                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward deleted"))
+                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward draft removed"))
             }
         }
     }

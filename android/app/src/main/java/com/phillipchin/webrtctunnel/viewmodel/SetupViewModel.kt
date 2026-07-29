@@ -65,6 +65,9 @@ class SetupViewModel(
     private val persistPreferences: suspend (
         AndroidAppPreferences,
     ) -> Result<Unit> = { deps.configRepository.savePreferences(it) },
+    private val inspectForwardDraft: suspend (List<ForwardConfig>) -> String? = { candidates ->
+        deps.forwardsStore.validateForwards(candidates)
+    },
 ) : ViewModel() {
     private val _state = MutableStateFlow(SetupWizardState())
     val state: StateFlow<SetupWizardState> = _state.asStateFlow()
@@ -119,7 +122,7 @@ class SetupViewModel(
 
     internal val identity = SetupIdentityController(deps, stateAccess, viewModelScope, identityDraft)
 
-    internal val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope)
+    internal val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope, inspectForwardDraft)
 
     init {
         // FIX8 P1-001-B: no synchronous file I/O here — the setup-input read/decode (previously a
