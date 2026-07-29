@@ -62,7 +62,7 @@ jobs:
               """    private val persistPreferences: suspend (\n        AndroidAppPreferences,\n    ) -> Result<Unit> = { deps.configRepository.savePreferences(it) },\n    private val inspectForwardDraft: suspend (List<ForwardConfig>) -> String? = { candidates ->\n        deps.forwardsStore.validateForwards(candidates)\n    },\n) : ViewModel() {""",
           )
           replace(
-              "android/app/src/main/java/com/phillipchin/webrtunnel/viewmodel/SetupViewModel.kt",
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupViewModel.kt",
               "internal val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope)",
               "internal val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope, inspectForwardDraft)",
           )
