@@ -40,7 +40,12 @@ class Fix9SourceContractAuditTest {
         val config = source("data/ConfigRepository.kt")
         val savePreferences = functionWindow(config, "open suspend fun savePreferences", "@CheckResult")
         val prepare = functionWindow(config, "open suspend fun prepareActiveConfigForStart", "@CheckResult")
-        val replace = functionWindow(config, "internal open val replaceConfigTransactionally", "open fun saveSetupInput")
+        val replace =
+            functionWindow(
+                config,
+                "internal open val replaceConfigTransactionally",
+                "open fun saveSetupInput",
+            )
 
         listOf(savePreferences, prepare, replace).forEach { body ->
             assertTrue(body.contains("catch (cancelled: CancellationException)"))
@@ -51,9 +56,11 @@ class Fix9SourceContractAuditTest {
     @Test
     fun resultContractDetectorRejectsRequiredNegativeFixtures() {
         val selectedCatch =
-            "fun bad(): Result<Unit> = try { Result.success(Unit) } catch (error: java.io.IOException) { Result.failure(error) }"
+            "fun bad(): Result<Unit> = try { Result.success(Unit) } " +
+                "catch (error: java.io.IOException) { Result.failure(error) }"
         val earlyThrow =
-            "fun bad(): Result<Unit> { value.getOrThrow(); return try { Result.success(Unit) } catch (error: Exception) { Result.failure(error) } }"
+            "fun bad(): Result<Unit> { value.getOrThrow(); return try { Result.success(Unit) } " +
+                "catch (error: Exception) { Result.failure(error) } }"
         val fakeConsumption = "fun caller() { mutate().also { audit() } }"
 
         assertTrue(resultContractViolations(selectedCatch).contains("selected_catch"))

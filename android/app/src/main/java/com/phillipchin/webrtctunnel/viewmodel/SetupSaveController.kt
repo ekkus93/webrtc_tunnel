@@ -262,7 +262,13 @@ internal class SetupSaveController(
                     brokerPasswordPath = resolveBrokerPasswordPath(input, deps.brokerSecretRepository.path),
                 )
             throwIfStale(token)
-            commitSetup(input, commitCandidate, prefs, access.forwards(), SetupIdentityChange(identity, authorizedLine), token)
+            commitSetup(
+                input,
+                commitCandidate,
+                prefs,
+                access.forwards(),
+                SetupCommitContext(identity, authorizedLine, token),
+            )
             throwIfStale(token)
             return identity
         } finally {
@@ -358,9 +364,9 @@ internal class SetupSaveController(
         candidate: String,
         prefs: AndroidAppPreferences,
         forwards: List<ForwardConfig>,
-        identityChange: SetupIdentityChange,
-        token: SetupOperationToken,
+        commitContext: SetupCommitContext,
     ) {
+        val identityChange = commitContext.identityChange
         val request =
             SetupPersistenceRequest(
                 configContents = candidate,
@@ -395,9 +401,9 @@ internal class SetupSaveController(
             )
         // This is the final cancellable boundary before authoritative mutation. A cancel
         // before this point is a no-op; a cancel inside persist is rolled back transactionally.
-        throwIfStale(token)
+        throwIfStale(commitContext.token)
         val result = withContext(ioDispatcher) { persistence.persist(request) }
-        if (result is SetupPersistenceResult.Success && !token.isFresh()) {
+        if (result is SetupPersistenceResult.Success && !commitContext.token.isFresh()) {
             access.applyState(
                 access.state().copy(
                     errorMessage =
@@ -439,7 +445,15 @@ private data class ResolvedIdentity(
     val fromImport: Boolean,
 )
 
-/** Groups [SetupSaveController.commitSetup]'s two identity-related inputs into one parameter. */
+/** Commit-only inputs that must travel together across the final persistence boundary. */
+private class SetupCommitContext(
+    identity: ResolvedIdentity,
+    authorizedLine: String?,
+    val token: SetupOperationToken,
+) {
+    val identityChange = SetupIdentityChange(identity, authorizedLine)
+}
+
 private class SetupIdentityChange(
     val identity: ResolvedIdentity,
     val authorizedLine: String?,
