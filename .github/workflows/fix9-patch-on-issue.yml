@@ -1,0 +1,153 @@
+name: Apply FIX9 Patch From Issue
+
+on:
+  issues:
+    types:
+      - edited
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  apply:
+    if: github.event.issue.number == 4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Extract setup persistence request construction
+        id: patch
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          {
+            python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path("android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveController.kt")
+          text = path.read_text()
+          pattern = re.compile(
+              r"        val identityChange = commitContext\.identityChange\n"
+              r"        val request =\n.*?"
+              r"(?=        // This is the final cancellable boundary)",
+              re.DOTALL,
+          )
+          text, count = pattern.subn(
+              "        val request =\n"
+              "            buildSetupPersistenceRequest(input, candidate, prefs, forwards, commitContext)\n",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f"expected one request block, got {count}")
+
+          marker = "\n/**\n * P0-002: Named type for resolved identity components."
+          helper = '''
+
+private fun buildSetupPersistenceRequest(
+    input: SetupConfigInput,
+    candidate: String,
+    prefs: AndroidAppPreferences,
+    forwards: List<ForwardConfig>,
+    commitContext: SetupCommitContext,
+): SetupPersistenceRequest {
+    val identityChange = commitContext.identityChange
+    return SetupPersistenceRequest(
+        configContents = candidate,
+        setupInput = input,
+        preferences =
+            prefs.copy(
+                allowMetered = input.allowMetered,
+                resumeOnUnmetered = input.resumeOnUnmetered,
+            ),
+        forwards = forwards,
+        optionalChanges =
+            SetupOptionalChanges(
+                replacementIdentity =
+                    if (identityChange.identity.fromImport) {
+                        IdentityReplacement(
+                            identityChange.identity.privateIdentity,
+                            identityChange.identity.publicIdentity,
+                        )
+                    } else {
+                        null
+                    },
+                authorizedPublicIdentityToAdd = identityChange.authorizedLine,
+                brokerSecretChange =
+                    if (input.brokerPasswordFile.isNotBlank()) {
+                        null
+                    } else if (input.brokerPassword.isNotBlank()) {
+                        BrokerSecretChange.Set(input.brokerPassword)
+                    } else {
+                        BrokerSecretChange.Remove
+                    },
+            ),
+    )
+}
+'''
+          index = text.find(marker)
+          if index < 0:
+              raise SystemExit("resolved identity marker not found")
+          path.write_text(text[:index] + helper + text[index:])
+          PY
+            patch_status=$?
+            if [ "$patch_status" -eq 0 ]; then
+              git rm \
+                .github/workflows/fix9-patch-on-issue.yml \
+                .github/workflows/fix9-ralph-longmethod-cleanup-apply.yml \
+                .github/workflows/publish-fix9-patch-status.yml
+              git config user.name github-actions[bot]
+              git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+              git add android/app/src/main/java
+              git commit -m "fix9: extract setup persistence request construction"
+              git pull --rebase origin master
+              git push origin HEAD:master
+            fi
+          } > /tmp/fix9-issue-patch.log 2>&1
+          status=$?
+          cat /tmp/fix9-issue-patch.log
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Report issue-triggered patch result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATCH_OUTCOME: ${{ steps.patch.outcome }}
+          PATCH_STATUS: ${{ steps.patch.outputs.status }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("/tmp/fix9-issue-patch.log")
+          log = path.read_text(encoding="utf-8", errors="replace") if path.exists() else "No log produced."
+          body = "\n".join(
+              [
+                  "<!-- temporary FIX9 Ralph-loop status endpoint -->",
+                  "# FIX9 Patch Application",
+                  "",
+                  f'- **Outcome:** `{os.environ.get("PATCH_OUTCOME")}`',
+                  f'- **Exit status:** `{os.environ.get("PATCH_STATUS") or "unknown"}`',
+                  f'- **Source SHA:** `{os.environ.get("GITHUB_SHA")}`',
+                  f'- **Run:** {os.environ.get("GITHUB_SERVER_URL")}/{os.environ.get("GITHUB_REPOSITORY")}/actions/runs/{os.environ.get("GITHUB_RUN_ID")}',
+                  "",
+                  "```text",
+                  log[-12000:],
+                  "```",
+              ]
+          )
+          Path("/tmp/issue.json").write_text(json.dumps({"body": body, "state": "open"}))
+          PY
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/4" --input /tmp/issue.json >/dev/null
+          if [ "$PATCH_OUTCOME" != success ]; then
+            exit 1
+          fi
