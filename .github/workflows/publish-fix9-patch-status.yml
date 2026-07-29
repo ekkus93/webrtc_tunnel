@@ -1,0 +1,72 @@
+name: Publish FIX9 Patch Status
+
+on:
+  workflow_run:
+    workflows:
+      - Apply FIX9 final long-method cleanup
+    types:
+      - requested
+      - in_progress
+      - completed
+
+permissions:
+  actions: read
+  issues: write
+
+concurrency:
+  group: publish-fix9-patch-status
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish patch workflow state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          run_file="${RUNNER_TEMP}/run.json"
+          jobs_file="${RUNNER_TEMP}/jobs.json"
+          issue_file="${RUNNER_TEMP}/issue.json"
+          gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" > "$run_file"
+          gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" > "$jobs_file"
+          python3 - "$run_file" "$jobs_file" "$issue_file" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          run_path, jobs_path, issue_path = map(Path, sys.argv[1:])
+          run = json.loads(run_path.read_text())
+          jobs = json.loads(jobs_path.read_text()).get("jobs", [])
+          failed = []
+          active = []
+          for job in jobs:
+              for step in job.get("steps") or []:
+                  item = f'{job.get("name")} / {step.get("name")}'
+                  if step.get("conclusion") in {"failure", "cancelled", "timed_out", "startup_failure"}:
+                      failed.append(item)
+                  if step.get("status") == "in_progress":
+                      active.append(item)
+          body = "\n".join(
+              [
+                  "<!-- temporary FIX9 Ralph-loop status endpoint -->",
+                  "# FIX9 Patch Application",
+                  "",
+                  f'- **Status:** `{run.get("status")}`',
+                  f'- **Conclusion:** `{run.get("conclusion") or "pending"}`',
+                  f'- **Commit:** `{run.get("head_sha")}`',
+                  f'- **Run:** [{run.get("id")}]({run.get("html_url")})',
+                  f'- **Failed steps:** {", ".join(failed) if failed else "None"}',
+                  f'- **Active steps:** {", ".join(active) if active else "None"}',
+                  "",
+                  "```json",
+                  json.dumps({"run": run, "jobs": jobs}, indent=2),
+                  "```",
+              ]
+          )
+          issue_path.write_text(json.dumps({"title": "CI Status: FIX9 Patch Application", "body": body, "state": "open"}))
+          PY
+          gh api --method PATCH "repos/${REPOSITORY}/issues/4" --input "$issue_file" >/dev/null
