@@ -1,0 +1,111 @@
+name: Apply FIX9 production hardening
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fix9-ralph-production-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Apply production patches
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if old not in text:
+                  raise SystemExit(f"expected snippet not found in {path}: {old[:120]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupForwardsController.kt",
+              """internal class SetupForwardsController(\n    private val deps: AppDependencies,\n    private val access: WizardStateAccess,\n    private val scope: CoroutineScope,\n) {""",
+              """internal class SetupForwardsController(\n    private val deps: AppDependencies,\n    private val access: WizardStateAccess,\n    private val scope: CoroutineScope,\n    private val inspectForwardDraft: suspend (List<ForwardConfig>) -> String? = { candidates ->\n        deps.forwardsStore.validateForwards(candidates)\n    },\n) {""",
+          )
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupForwardsController.kt",
+              "val error = deps.forwardsStore.validateForwards(after)",
+              "val error = inspectForwardDraft(after)",
+          )
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupForwardsController.kt",
+              "access.applyState(access.state().copy(errorMessage = null, saveResult = \"Forward saved\"))",
+              "access.applyState(access.state().copy(errorMessage = null, saveResult = \"Forward draft updated\"))",
+          )
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupForwardsController.kt",
+              """            val after = access.forwards().filterNot { it.id == forwardId }\n            token.publishIfFresh {""",
+              """            val after = access.forwards().filterNot { it.id == forwardId }\n            // Deletion remains allowed even if the remaining draft is temporarily invalid, but\n            // inspection is still a real suspend boundary that cancellation/freshness protects.\n            inspectForwardDraft(after)\n            token.publishIfFresh {""",
+          )
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupForwardsController.kt",
+              "access.applyState(access.state().copy(errorMessage = null, saveResult = \"Forward deleted\"))",
+              "access.applyState(access.state().copy(errorMessage = null, saveResult = \"Forward draft removed\"))",
+          )
+
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupViewModel.kt",
+              """    private val persistPreferences: suspend (\n        AndroidAppPreferences,\n    ) -> Result<Unit> = { deps.configRepository.savePreferences(it) },\n) : ViewModel() {""",
+              """    private val persistPreferences: suspend (\n        AndroidAppPreferences,\n    ) -> Result<Unit> = { deps.configRepository.savePreferences(it) },\n    private val inspectForwardDraft: suspend (List<ForwardConfig>) -> String? = { candidates ->\n        deps.forwardsStore.validateForwards(candidates)\n    },\n) : ViewModel() {""",
+          )
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtunnel/viewmodel/SetupViewModel.kt",
+              "internal val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope)",
+              "internal val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope, inspectForwardDraft)",
+          )
+
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveController.kt",
+              "commitSetup(input, commitCandidate, prefs, access.forwards(), SetupIdentityChange(identity, authorizedLine))",
+              "commitSetup(input, commitCandidate, prefs, access.forwards(), SetupIdentityChange(identity, authorizedLine), token)",
+          )
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveController.kt",
+              """    private suspend fun commitSetup(\n        input: SetupConfigInput,\n        candidate: String,\n        prefs: AndroidAppPreferences,\n        forwards: List<ForwardConfig>,\n        identityChange: SetupIdentityChange,\n    ) {""",
+              """    private suspend fun commitSetup(\n        input: SetupConfigInput,\n        candidate: String,\n        prefs: AndroidAppPreferences,\n        forwards: List<ForwardConfig>,\n        identityChange: SetupIdentityChange,\n        token: SetupOperationToken,\n    ) {""",
+          )
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveController.kt",
+              """        val result = withContext(ioDispatcher) { persistence.persist(request) }\n        if (result is SetupPersistenceResult.Failed) {""",
+              """        // This is the final cancellable boundary before authoritative mutation. A cancel\n        // before this point is a no-op; a cancel inside persist is rolled back transactionally.\n        throwIfStale(token)\n        val result = withContext(ioDispatcher) { persistence.persist(request) }\n        if (result is SetupPersistenceResult.Success && !token.isFresh()) {\n            access.applyState(\n                access.state().copy(\n                    errorMessage =\n                        \"Setup was abandoned after configuration committed \" +\n                            \"(setup_commit_completed_after_cancel). Review saved configuration before starting.\",\n                    saveResult = null,\n                ),\n            )\n            throw StaleSetupOperationException()\n        }\n        if (result is SetupPersistenceResult.Failed) {""",
+          )
+
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/security/IdentityRepository.kt",
+              "fun readPublicIdentity(): String = if (publicFile.exists()) publicFile.readText() else \"\"",
+              """fun readPublicIdentity(): String =\n        synchronized(storageLock) {\n            if (publicFile.exists()) publicFile.readText() else \"\"\n        }""",
+          )
+
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt",
+              """open class ConfigRepository internal constructor(\n    private val context: Context,\n    private val atomicFileOps: AtomicConfigFileOps = RealAtomicConfigFileOps,\n) {""",
+              """open class ConfigRepository internal constructor(\n    private val context: Context,\n    private val atomicFileOps: AtomicConfigFileOps = RealAtomicConfigFileOps,\n    private val preferenceWriter: suspend (AndroidAppPreferences) -> Unit = { update ->\n        context.dataStore.edit { prefs ->\n            prefs[Keys.allowMetered] = update.allowMetered\n            prefs[Keys.resumeOnUnmetered] = update.resumeOnUnmetered\n            prefs[Keys.showMeteredWarning] = update.showMeteredWarning\n            prefs[Keys.debugLogsEnabled] = update.debugLogsEnabled\n            prefs[Keys.advancedSettingsEnabled] = update.advancedSettingsEnabled\n            prefs[Keys.androidIceMode] = normalizeAndroidIceMode(update.androidIceMode)\n            prefs.remove(Keys.pauseOnMetered)\n        }\n    },\n) {""",
+          )
+          replace(
+              "android/app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt",
+              """            context.dataStore.edit { prefs ->\n                prefs[Keys.allowMetered] = update.allowMetered\n                prefs[Keys.resumeOnUnmetered] = update.resumeOnUnmetered\n                prefs[Keys.showMeteredWarning] = update.showMeteredWarning\n                prefs[Keys.debugLogsEnabled] = update.debugLogsEnabled\n                prefs[Keys.advancedSettingsEnabled] = update.advancedSettingsEnabled\n                prefs[Keys.androidIceMode] = normalizeAndroidIceMode(update.androidIceMode)\n                prefs.remove(Keys.pauseOnMetered)\n            }""",
+              "preferenceWriter(update)",
+          )
+          PY
+      - name: Commit production hardening
+        shell: bash
+        run: |
+          git rm .github/workflows/fix9-ralph-production-apply.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add android/app/src/main/java
+          git commit -m "fix9: complete cancellation and coherence production paths"
+          git push origin HEAD:master
