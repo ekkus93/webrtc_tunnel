@@ -21,55 +21,28 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
+          import re
           from pathlib import Path
 
           path = Path("android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveController.kt")
           text = path.read_text()
-          old = '''        val identityChange = commitContext.identityChange
-        val request =
-            SetupPersistenceRequest(
-                configContents = candidate,
-                setupInput = input,
-                preferences =
-                    prefs.copy(
-                        allowMetered = input.allowMetered,
-                        resumeOnUnmetered = input.resumeOnUnmetered,
-                    ),
-                forwards = forwards,
-                optionalChanges =
-                    SetupOptionalChanges(
-                        replacementIdentity =
-                            if (identityChange.identity.fromImport) {
-                                IdentityReplacement(
-                                    identityChange.identity.privateIdentity,
-                                    identityChange.identity.publicIdentity,
-                                )
-                            } else {
-                                null
-                            },
-                        authorizedPublicIdentityToAdd = identityChange.authorizedLine,
-                        brokerSecretChange =
-                            if (input.brokerPasswordFile.isNotBlank()) {
-                                null
-                            } else if (input.brokerPassword.isNotBlank()) {
-                                BrokerSecretChange.Set(input.brokerPassword)
-                            } else {
-                                BrokerSecretChange.Remove
-                            },
-                    ),
-            )
-'''
-          new = '''        val request = buildSetupPersistenceRequest(input, candidate, prefs, forwards, commitContext)
-'''
-          if old not in text:
-              raise SystemExit("commit request construction block not found")
-          text = text.replace(old, new, 1)
-          marker = '''}
+          request_pattern = re.compile(
+              r"        val identityChange = commitContext\.identityChange\n"
+              r"        val request =\n.*?"
+              r"(?=        // This is the final cancellable boundary)",
+              re.DOTALL,
+          )
+          text, replacements = request_pattern.subn(
+              "        val request =\n"
+              "            buildSetupPersistenceRequest(input, candidate, prefs, forwards, commitContext)\n",
+              text,
+              count=1,
+          )
+          if replacements != 1:
+              raise SystemExit(f"expected one request-construction replacement, got {replacements}")
 
-/**
- * P0-002: Named type for resolved identity components.
-'''
-          helper = '''}
+          marker = "\n/**\n * P0-002: Named type for resolved identity components."
+          helper = '''
 
 private fun buildSetupPersistenceRequest(
     input: SetupConfigInput,
@@ -111,13 +84,12 @@ private fun buildSetupPersistenceRequest(
             ),
     )
 }
-
-/**
- * P0-002: Named type for resolved identity components.
 '''
-          if marker not in text:
-              raise SystemExit("helper insertion marker not found")
-          path.write_text(text.replace(marker, helper, 1))
+          marker_index = text.find(marker)
+          if marker_index < 0:
+              raise SystemExit("resolved-identity marker not found")
+          text = text[:marker_index] + helper + text[marker_index:]
+          path.write_text(text)
           PY
       - name: Commit long-method cleanup
         shell: bash
