@@ -1,0 +1,81 @@
+name: Apply FIX9 detekt cleanup
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fix9-ralph-detekt-cleanup-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Refactor commit context and wrap audit fixtures
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if old not in text:
+                  raise SystemExit(f"expected snippet not found in {path}: {old[:120]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          save = "android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveController.kt"
+          replace(
+              save,
+              "commitSetup(input, commitCandidate, prefs, access.forwards(), SetupIdentityChange(identity, authorizedLine), token)",
+              """commitSetup(\n                input,\n                commitCandidate,\n                prefs,\n                access.forwards(),\n                SetupCommitContext(identity, authorizedLine, token),\n            )""",
+          )
+          replace(
+              save,
+              """        identityChange: SetupIdentityChange,\n        token: SetupOperationToken,\n    ) {""",
+              """        commitContext: SetupCommitContext,\n    ) {\n        val identityChange = commitContext.identityChange""",
+          )
+          replace(
+              save,
+              "throwIfStale(token)\n        val result = withContext(ioDispatcher) { persistence.persist(request) }",
+              """throwIfStale(commitContext.token)\n        val result = withContext(ioDispatcher) { persistence.persist(request) }""",
+          )
+          replace(
+              save,
+              "if (result is SetupPersistenceResult.Success && !token.isFresh()) {",
+              "if (result is SetupPersistenceResult.Success && !commitContext.token.isFresh()) {",
+          )
+          replace(
+              save,
+              """/** Groups [SetupSaveController.commitSetup]'s two identity-related inputs into one parameter. */\nprivate class SetupIdentityChange(\n    val identity: ResolvedIdentity,\n    val authorizedLine: String?,\n)""",
+              """/** Commit-only inputs that must travel together across the final persistence boundary. */\nprivate class SetupCommitContext(\n    identity: ResolvedIdentity,\n    authorizedLine: String?,\n    val token: SetupOperationToken,\n) {\n    val identityChange = SetupIdentityChange(identity, authorizedLine)\n}\n\nprivate class SetupIdentityChange(\n    val identity: ResolvedIdentity,\n    val authorizedLine: String?,\n)""",
+          )
+
+          audit = "android/app/src/test/java/com/phillipchin/webrtctunnel/Fix9SourceContractAuditTest.kt"
+          replace(
+              audit,
+              "val replace = functionWindow(config, \"internal open val replaceConfigTransactionally\", \"open fun saveSetupInput\")",
+              """val replace =\n            functionWindow(\n                config,\n                \"internal open val replaceConfigTransactionally\",\n                \"open fun saveSetupInput\",\n            )""",
+          )
+          replace(
+              audit,
+              """        val selectedCatch =\n            \"fun bad(): Result<Unit> = try { Result.success(Unit) } catch (error: java.io.IOException) { Result.failure(error) }\"\n        val earlyThrow =\n            \"fun bad(): Result<Unit> { value.getOrThrow(); return try { Result.success(Unit) } catch (error: Exception) { Result.failure(error) } }\"""",
+              """        val selectedCatch =\n            \"fun bad(): Result<Unit> = try { Result.success(Unit) } \" +\n                \"catch (error: java.io.IOException) { Result.failure(error) }\"\n        val earlyThrow =\n            \"fun bad(): Result<Unit> { value.getOrThrow(); return try { Result.success(Unit) } \" +\n                \"catch (error: Exception) { Result.failure(error) } }\"""",
+          )
+          PY
+      - name: Commit detekt cleanup
+        shell: bash
+        run: |
+          git rm .github/workflows/fix9-ralph-detekt-cleanup-apply.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add android/app/src/main/java android/app/src/test/java
+          git commit -m "fix9: clean final commit and audit detekt findings"
+          git pull --rebase origin master
+          git push origin HEAD:master
