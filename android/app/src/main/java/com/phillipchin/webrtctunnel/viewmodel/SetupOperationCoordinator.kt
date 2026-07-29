@@ -2,8 +2,11 @@ package com.phillipchin.webrtctunnel.viewmodel
 
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
+
+private const val SETUP_ABANDONED_REASON = "setup abandoned"
 
 /**
  * The setup-wizard-local asynchronous actions that must never run concurrently (FIX8 P1-001-A):
@@ -48,73 +51,84 @@ internal class SetupOperationToken internal constructor(
     }
 }
 
-/** An admitted operation's identity: [id] is unique per acquisition, so a stale release can never
- * be mistaken for a different, later acquisition. */
-private data class ActiveSetupDraftOperation(
+/**
+ * An admitted operation's identity. The owning [job] is captured at admission so abandoning the
+ * wizard can cancel the actual production coroutine, not merely hide its eventual publication.
+ */
+private class ActiveSetupDraftOperation(
     val id: Long,
     val operation: SetupDraftOperation,
+    val job: Job,
 )
 
 /**
  * Setup-wizard-local admission gate (FIX8 P1-001-A/§5.2), mirroring
- * [com.phillipchin.webrtctunnel.data.ConfigurationMutationCoordinator]'s atomic-owner-token design
- * at the wizard's own scope: serializes baseline load, identity actions, forward edits,
- * validation/navigation, and final save so overlapping setup actions can never publish stale UI
- * state or clear `isBusy` while another operation is still active. Policy is visible
- * reject-on-overlap, not queueing — the same choice `ConfigurationMutationCoordinator` makes.
- *
- * This is NOT a substitute for the application-scoped `ConfigurationMutationCoordinator`: final
- * save acquires *this* setup-local admission and then, from inside it, the global `SetupSave`
- * admission (nested) — see [SetupSaveController].
+ * [com.phillipchin.webrtctunnel.data.ConfigurationMutationCoordinator]'s owner-token design at the
+ * wizard's own scope. Admission state is protected by [ownerLock], but the lock is never held while
+ * user work suspends. This lets [invalidateAndCancelActive] atomically identify the current owner,
+ * mark its token stale, and cancel its exact coroutine without allowing a stale owner to clear a
+ * later acquisition.
  */
 internal class SetupOperationCoordinator {
     private val sequence = AtomicLong(0)
-    private val active = AtomicReference<ActiveSetupDraftOperation?>(null)
-
-    // FIX8 P1-001-A: "no stale action completion may overwrite newer draft state" — the only way
-    // that can happen under reject-on-overlap admission is [invalidate] (the wizard's own abandon
-    // action, which must always be able to interrupt an in-flight operation rather than being
-    // rejected as busy, so it does not itself go through [tryRun]). Any operation whose token was
-    // issued at or before the last [invalidate] call is stale; its caller must skip publishing a
-    // result once it observes that via [isStale].
+    private val ownerLock = Any()
+    private var active: ActiveSetupDraftOperation? = null
     private val staleBefore = AtomicLong(0)
 
-    /** Derived from actual admission ownership (FIX8 P1-001-A) — never toggled independently by
-     * a controller. */
-    val isBusy: Boolean get() = active.get() != null
+    /** Derived from actual admission ownership; never toggled independently by a controller. */
+    val isBusy: Boolean
+        get() = synchronized(ownerLock) { active != null }
 
-    /** Marks every operation currently in flight (or already completed but not yet observed) as
-     * stale — called when the user abandons the wizard, so a still-running operation's eventual
-     * completion cannot overwrite the freshly-reset draft state. */
-    fun invalidate() {
-        staleBefore.set(sequence.get())
+    /**
+     * Marks the current operation stale and cancels its owning coroutine. Cancellation propagates
+     * into transactional final-save persistence, whose coordinator performs rollback under
+     * `NonCancellable` before rethrowing. The job is cancelled outside [ownerLock] so cancellation
+     * handlers can never deadlock while releasing admission.
+     */
+    fun invalidateAndCancelActive(reason: String = SETUP_ABANDONED_REASON) {
+        val jobToCancel =
+            synchronized(ownerLock) {
+                staleBefore.set(sequence.get())
+                active?.job
+            }
+        jobToCancel?.cancel(CancellationException(reason))
     }
 
-    /** Whether the operation identified by [operationId] was issued before the last [invalidate]
-     * call and must not publish its result. Kept for existing tests and diagnostic assertions; new
-     * production controller code should use [SetupOperationToken.isFresh] or
-     * [SetupOperationToken.publishIfFresh]. */
+    /** Compatibility entry point: invalidation is cancellation, never a silent UI-only reset. */
+    fun invalidate() = invalidateAndCancelActive()
+
+    /** Whether [operationId] belongs to an operation invalidated by setup abandonment. */
     fun isStale(operationId: Long): Boolean = operationId <= staleBefore.get()
 
     suspend fun <T> tryRun(
         operation: SetupDraftOperation,
         block: suspend (token: SetupOperationToken) -> T,
     ): SetupDraftAdmission<T> {
-        while (true) {
-            val owner = ActiveSetupDraftOperation(sequence.incrementAndGet(), operation)
-            if (active.compareAndSet(null, owner)) {
-                return try {
-                    SetupDraftAdmission.Completed(
-                        block(SetupOperationToken(owner.id, owner.operation, ::isStale)),
-                    )
-                } finally {
-                    check(active.compareAndSet(owner, null)) {
-                        "Setup draft admission owner changed unexpectedly"
-                    }
+        val job = checkNotNull(currentCoroutineContext()[Job]) { "Setup operation requires a coroutine Job" }
+        val ownerOrBusy =
+            synchronized(ownerLock) {
+                val busyOwner = active
+                if (busyOwner != null) {
+                    SetupDraftAdmission.Busy(busyOwner.operation)
+                } else {
+                    val owner = ActiveSetupDraftOperation(sequence.incrementAndGet(), operation, job)
+                    active = owner
+                    owner
                 }
             }
-            val busyOwner = active.get() ?: continue
-            return SetupDraftAdmission.Busy(busyOwner.operation)
+        if (ownerOrBusy is SetupDraftAdmission.Busy) {
+            return ownerOrBusy
+        }
+        val owner = ownerOrBusy as ActiveSetupDraftOperation
+        return try {
+            SetupDraftAdmission.Completed(
+                block(SetupOperationToken(owner.id, owner.operation, ::isStale)),
+            )
+        } finally {
+            synchronized(ownerLock) {
+                check(active === owner) { "Setup draft admission owner changed unexpectedly" }
+                active = null
+            }
         }
     }
 
@@ -159,10 +173,12 @@ internal class SetupOperationCoordinator {
                 }
             }
         } finally {
+            // Re-stamp only the current state. After cancel(), this is the reset state, never a
+            // captured stale operation state; it merely reflects the released admission owner.
             access.applyState(access.state())
         }
     }
 
-    /** Read-only visibility for tests; never mutated outside [tryRun]. */
-    internal fun activeOperationForTest(): SetupDraftOperation? = active.get()?.operation
+    /** Read-only visibility for tests; never mutated outside [tryRun]/cancellation. */
+    internal fun activeOperationForTest(): SetupDraftOperation? = synchronized(ownerLock) { active?.operation }
 }
