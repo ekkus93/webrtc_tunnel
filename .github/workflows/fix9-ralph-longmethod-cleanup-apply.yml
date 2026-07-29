@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   apply:
@@ -17,10 +18,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Extract setup persistence request construction
+
+      - name: Extract and publish setup persistence refactor
+        id: cleanup
+        continue-on-error: true
         shell: bash
         run: |
-          python3 - <<'PY'
+          set +e
+          {
+            python3 - <<'PY'
           import re
           from pathlib import Path
 
@@ -91,13 +97,61 @@ private fun buildSetupPersistenceRequest(
           text = text[:marker_index] + helper + text[marker_index:]
           path.write_text(text)
           PY
-      - name: Commit long-method cleanup
+            patch_status=$?
+            if [ "$patch_status" -eq 0 ]; then
+              git rm .github/workflows/fix9-ralph-longmethod-cleanup-apply.yml
+              git config user.name github-actions[bot]
+              git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+              git add android/app/src/main/java
+              git commit -m "fix9: extract setup persistence request construction"
+              git pull --rebase origin master
+              git push origin HEAD:master
+            fi
+          } > /tmp/fix9-patch.log 2>&1
+          status=$?
+          cat /tmp/fix9-patch.log
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Publish patch result
+        if: always()
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          CLEANUP_STATUS: ${{ steps.cleanup.outputs.status }}
         run: |
-          git rm .github/workflows/fix9-ralph-longmethod-cleanup-apply.yml
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add android/app/src/main/java
-          git commit -m "fix9: extract setup persistence request construction"
-          git pull --rebase origin master
-          git push origin HEAD:master
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          log_path = Path("/tmp/fix9-patch.log")
+          log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else "No patch log was produced."
+          log = log[-12000:]
+          body = "\n".join(
+              [
+                  "<!-- temporary FIX9 Ralph-loop status endpoint -->",
+                  "# FIX9 Patch Application",
+                  "",
+                  f'- **Commit:** `{os.environ.get("GITHUB_SHA")}`',
+                  f'- **Outcome:** `{os.environ.get("CLEANUP_OUTCOME")}`',
+                  f'- **Exit status:** `{os.environ.get("CLEANUP_STATUS") or "unknown"}`',
+                  f'- **Run:** {os.environ.get("GITHUB_SERVER_URL")}/{os.environ.get("GITHUB_REPOSITORY")}/actions/runs/{os.environ.get("GITHUB_RUN_ID")}',
+                  "",
+                  "## Log tail",
+                  "",
+                  "```text",
+                  log,
+                  "```",
+              ]
+          )
+          Path("/tmp/fix9-issue.json").write_text(
+              json.dumps({"title": "CI Status: FIX9 Patch Application", "body": body, "state": "open"}),
+              encoding="utf-8",
+          )
+          PY
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/4" --input /tmp/fix9-issue.json >/dev/null
+          if [ "$CLEANUP_OUTCOME" != success ]; then
+            exit 1
+          fi
