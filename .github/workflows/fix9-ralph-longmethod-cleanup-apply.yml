@@ -1,0 +1,131 @@
+name: Apply FIX9 final long-method cleanup
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fix9-ralph-longmethod-cleanup-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Extract setup persistence request construction
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveController.kt")
+          text = path.read_text()
+          old = '''        val identityChange = commitContext.identityChange
+        val request =
+            SetupPersistenceRequest(
+                configContents = candidate,
+                setupInput = input,
+                preferences =
+                    prefs.copy(
+                        allowMetered = input.allowMetered,
+                        resumeOnUnmetered = input.resumeOnUnmetered,
+                    ),
+                forwards = forwards,
+                optionalChanges =
+                    SetupOptionalChanges(
+                        replacementIdentity =
+                            if (identityChange.identity.fromImport) {
+                                IdentityReplacement(
+                                    identityChange.identity.privateIdentity,
+                                    identityChange.identity.publicIdentity,
+                                )
+                            } else {
+                                null
+                            },
+                        authorizedPublicIdentityToAdd = identityChange.authorizedLine,
+                        brokerSecretChange =
+                            if (input.brokerPasswordFile.isNotBlank()) {
+                                null
+                            } else if (input.brokerPassword.isNotBlank()) {
+                                BrokerSecretChange.Set(input.brokerPassword)
+                            } else {
+                                BrokerSecretChange.Remove
+                            },
+                    ),
+            )
+'''
+          new = '''        val request = buildSetupPersistenceRequest(input, candidate, prefs, forwards, commitContext)
+'''
+          if old not in text:
+              raise SystemExit("commit request construction block not found")
+          text = text.replace(old, new, 1)
+          marker = '''}
+
+/**
+ * P0-002: Named type for resolved identity components.
+'''
+          helper = '''}
+
+private fun buildSetupPersistenceRequest(
+    input: SetupConfigInput,
+    candidate: String,
+    prefs: AndroidAppPreferences,
+    forwards: List<ForwardConfig>,
+    commitContext: SetupCommitContext,
+): SetupPersistenceRequest {
+    val identityChange = commitContext.identityChange
+    return SetupPersistenceRequest(
+        configContents = candidate,
+        setupInput = input,
+        preferences =
+            prefs.copy(
+                allowMetered = input.allowMetered,
+                resumeOnUnmetered = input.resumeOnUnmetered,
+            ),
+        forwards = forwards,
+        optionalChanges =
+            SetupOptionalChanges(
+                replacementIdentity =
+                    if (identityChange.identity.fromImport) {
+                        IdentityReplacement(
+                            identityChange.identity.privateIdentity,
+                            identityChange.identity.publicIdentity,
+                        )
+                    } else {
+                        null
+                    },
+                authorizedPublicIdentityToAdd = identityChange.authorizedLine,
+                brokerSecretChange =
+                    if (input.brokerPasswordFile.isNotBlank()) {
+                        null
+                    } else if (input.brokerPassword.isNotBlank()) {
+                        BrokerSecretChange.Set(input.brokerPassword)
+                    } else {
+                        BrokerSecretChange.Remove
+                    },
+            ),
+    )
+}
+
+/**
+ * P0-002: Named type for resolved identity components.
+'''
+          if marker not in text:
+              raise SystemExit("helper insertion marker not found")
+          path.write_text(text.replace(marker, helper, 1))
+          PY
+      - name: Commit long-method cleanup
+        shell: bash
+        run: |
+          git rm .github/workflows/fix9-ralph-longmethod-cleanup-apply.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add android/app/src/main/java
+          git commit -m "fix9: extract setup persistence request construction"
+          git pull --rebase origin master
+          git push origin HEAD:master
