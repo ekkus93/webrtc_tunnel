@@ -123,6 +123,68 @@ class RecordingBridge : TunnelNativeBridge {
         return privateIdentityValidationResult
     }
 
+    private val blockGenerateIdentityAtomic = AtomicBoolean(false)
+    private val generateIdentityEntered = AtomicReference(CountDownLatch(0))
+    private val generateIdentityRelease = AtomicReference(CountDownLatch(0))
+    private val forcedGenerateIdentityResult = AtomicReference<IdentityValidationResult?>(null)
+
+    fun blockNextGenerateIdentity() {
+        generateIdentityEntered.set(CountDownLatch(1))
+        generateIdentityRelease.set(CountDownLatch(1))
+        blockGenerateIdentityAtomic.set(true)
+    }
+
+    fun generateIdentityEnteredNow(): Boolean = generateIdentityEntered.get().count == 0L
+
+    fun releaseBlockedGenerateIdentity(result: IdentityValidationResult? = null) {
+        forcedGenerateIdentityResult.set(result)
+        generateIdentityRelease.get().countDown()
+    }
+
+    private fun generateIdentityResultAfterOptionalBlock(): IdentityValidationResult? {
+        if (blockGenerateIdentityAtomic.compareAndSet(true, false)) {
+            generateIdentityEntered.get().countDown()
+            check(generateIdentityRelease.get().await(5, TimeUnit.SECONDS)) {
+                "blocked identity generation was never released"
+            }
+            forcedGenerateIdentityResult.getAndSet(null)?.let { return it }
+        }
+        return generateIdentityResult
+    }
+
+    private val blockPublicIdentityValidationAtomic = AtomicBoolean(false)
+    private val publicIdentityValidationEntered = AtomicReference(CountDownLatch(0))
+    private val publicIdentityValidationRelease = AtomicReference(CountDownLatch(0))
+    private val forcedPublicIdentityValidationResult = AtomicReference<IdentityValidationResult?>(null)
+
+    fun blockNextPublicIdentityValidation() {
+        publicIdentityValidationEntered.set(CountDownLatch(1))
+        publicIdentityValidationRelease.set(CountDownLatch(1))
+        blockPublicIdentityValidationAtomic.set(true)
+    }
+
+    fun publicIdentityValidationEnteredNow(): Boolean = publicIdentityValidationEntered.get().count == 0L
+
+    fun releaseBlockedPublicIdentityValidation(result: IdentityValidationResult? = null) {
+        forcedPublicIdentityValidationResult.set(result)
+        publicIdentityValidationRelease.get().countDown()
+    }
+
+    private fun publicIdentityValidationResultAfterOptionalBlock(line: String): IdentityValidationResult {
+        if (blockPublicIdentityValidationAtomic.compareAndSet(true, false)) {
+            publicIdentityValidationEntered.get().countDown()
+            check(publicIdentityValidationRelease.get().await(5, TimeUnit.SECONDS)) {
+                "blocked public identity validation was never released"
+            }
+            forcedPublicIdentityValidationResult.getAndSet(null)?.let { return it }
+        }
+        return publicIdentityValidationResult ?: IdentityValidationResult(
+            valid = true,
+            canonicalPublicIdentity = line.trim(),
+            peerId = "remote-peer",
+        )
+    }
+
     override fun startOffer(
         configPath: String,
         identityBytes: ByteArray?,
@@ -172,14 +234,10 @@ class RecordingBridge : TunnelNativeBridge {
         )
 
     override fun validatePublicIdentity(line: String): IdentityValidationResult =
-        publicIdentityValidationResult ?: IdentityValidationResult(
-            valid = true,
-            canonicalPublicIdentity = line.trim(),
-            peerId = "remote-peer",
-        )
+        publicIdentityValidationResultAfterOptionalBlock(line)
 
     override fun generateIdentity(peerId: String): IdentityValidationResult =
-        generateIdentityResult ?: IdentityValidationResult(
+        generateIdentityResultAfterOptionalBlock() ?: IdentityValidationResult(
             valid = true,
             canonicalPublicIdentity = "canon",
             canonicalPrivateIdentity = "private",
