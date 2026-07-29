@@ -140,7 +140,7 @@ jobs:
                       }
                       failed_steps.append(item)
                       job_failed_steps.append(step)
-                  if step["status"] != "completed":
+                  if step["status"] == "in_progress":
                       item = {
                           "job_id": raw_job.get("id"),
                           "job": raw_job.get("name"),
@@ -249,6 +249,11 @@ jobs:
               "jobs": jobs,
           }
 
+          def summarize_jobs(items: list[dict]) -> str:
+              if not items:
+                  return "None"
+              return ", ".join(f'{item["name"]} (`{item["id"]}`)' for item in items)
+
           def summarize_steps(items: list[dict]) -> str:
               if not items:
                   return "None"
@@ -273,6 +278,7 @@ jobs:
                   f'- **Run number / attempt:** `{run.get("run_number")}` / `{run.get("run_attempt")}`',
                   f'- **Commit:** `{run.get("head_sha")}`',
                   f'- **Branch/event:** `{run.get("head_branch")}` / `{run.get("event")}`',
+                  f'- **Failed jobs:** {summarize_jobs(failed_jobs)}',
                   f'- **Failed steps:** {summarize_steps(failed_steps)}',
                   f'- **Active steps:** {summarize_steps(active_steps)}',
                   f'- **Artifacts:** {summarize_artifacts(artifacts)}',
