@@ -1,0 +1,408 @@
+name: Apply FIX9 contract and enforcement tests
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fix9-ralph-contract-tests-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Add FIX9 contract tests
+        shell: bash
+        run: |
+          cat > android/app/src/test/java/com/phillipchin/webrtctunnel/data/ConfigRepositoryFix9ResultContractTest.kt <<'KOTLIN'
+          package com.phillipchin.webrtctunnel.data
+
+          import androidx.test.core.app.ApplicationProvider
+          import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
+          import kotlinx.coroutines.CancellationException
+          import kotlinx.coroutines.runBlocking
+          import org.junit.Assert.assertFalse
+          import org.junit.Assert.assertTrue
+          import org.junit.Before
+          import org.junit.Test
+          import org.junit.runner.RunWith
+          import org.robolectric.RobolectricTestRunner
+          import java.io.File
+
+          @RunWith(RobolectricTestRunner::class)
+          class ConfigRepositoryFix9ResultContractTest {
+              private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+
+              @Before
+              fun setUp() {
+                  File(context.filesDir, "config.toml").deleteRecursively()
+              }
+
+              @Test
+              fun savePreferencesOrdinaryExceptionReturnsFailure() =
+                  runBlocking {
+                      val repository =
+                          ConfigRepository(
+                              context,
+                              preferenceWriter = { throw SecurityException("preference write denied") },
+                          )
+
+                      val result = repository.savePreferences(AndroidAppPreferences())
+
+                      assertTrue(result.isFailure)
+                      assertTrue(result.exceptionOrNull() is SecurityException)
+                  }
+
+              @Test
+              fun savePreferencesCancellationPropagates() =
+                  runBlocking {
+                      val repository =
+                          ConfigRepository(
+                              context,
+                              preferenceWriter = { throw CancellationException("cancel preference write") },
+                          )
+                      var propagated = false
+
+                      try {
+                          repository.savePreferences(AndroidAppPreferences())
+                      } catch (_: CancellationException) {
+                          propagated = true
+                      }
+
+                      assertTrue(propagated)
+                  }
+
+              @Test
+              fun prepareActiveConfigReadFailureReturnsFailure() =
+                  runBlocking {
+                      val repository = ConfigRepository(context)
+                      val configPath = File(repository.configPath)
+                      assertTrue(configPath.mkdirs())
+
+                      val result = repository.prepareActiveConfigForStart("native", null)
+
+                      assertTrue(result.isFailure)
+                      assertTrue(configPath.isDirectory)
+                  }
+
+              @Test
+              fun replaceConfigCaptureFailureReturnsFailureAndDoesNotWrite() =
+                  runBlocking {
+                      val repository = ConfigRepository(context)
+                      val configPath = File(repository.configPath)
+                      assertTrue(configPath.mkdirs())
+
+                      val result = repository.replaceConfigTransactionally("replacement")
+
+                      assertTrue(result.isFailure)
+                      assertTrue(configPath.isDirectory)
+                      assertFalse(File(configPath, "replacement").exists())
+                  }
+          }
+          KOTLIN
+
+          cat > android/app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/Fix9ResultContractViewModelTest.kt <<'KOTLIN'
+          package com.phillipchin.webrtctunnel.viewmodel
+
+          import com.phillipchin.webrtctunnel.awaitCondition
+          import com.phillipchin.webrtctunnel.data.AppDependencies
+          import com.phillipchin.webrtctunnel.data.ConfigRepository
+          import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
+          import com.phillipchin.webrtctunnel.model.NetworkType
+          import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+          import org.junit.Assert.assertEquals
+          import org.junit.Test
+          import org.junit.runner.RunWith
+          import org.robolectric.RobolectricTestRunner
+
+          @RunWith(RobolectricTestRunner::class)
+          class Fix9ResultContractViewModelTest : AppViewModelTestBase() {
+              private fun dependencies(repository: ConfigRepository): AppDependencies =
+                  AppDependencies(
+                      context = app,
+                      nativeBridgeFactory = { recordingBridge },
+                      configRepository = repository,
+                      networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                      identityRepository = deps.identityRepository,
+                      dispatchers = inlineTestDispatchers(),
+                  )
+
+              @Test
+              fun settingsPublishesPreferencesSaveFailedForThrownRepositoryWriterException() {
+                  val repository =
+                      ConfigRepository(
+                          app,
+                          preferenceWriter = { throw SecurityException("settings write denied") },
+                      )
+                  val viewModel = SettingsViewModel(dependencies(repository))
+
+                  viewModel.savePreferences(AndroidAppPreferences())
+                  awaitCondition(description = "settings preference failure") {
+                      viewModel.uiState.value.lastOperationFailure != null
+                  }
+
+                  assertEquals("preferences_save_failed", viewModel.uiState.value.lastOperationFailure?.code)
+              }
+
+              @Test
+              fun networkPolicyPublishesFailureForThrownRepositoryWriterException() {
+                  val repository =
+                      ConfigRepository(
+                          app,
+                          preferenceWriter = { throw IllegalArgumentException("network write rejected") },
+                      )
+                  val viewModel = NetworkPolicyViewModel(dependencies(repository))
+
+                  viewModel.savePreferences(AndroidAppPreferences())
+                  awaitCondition(description = "network preference failure") {
+                      viewModel.uiState.value.lastOperationFailure != null
+                  }
+
+                  assertEquals("network_preference_save_failed", viewModel.uiState.value.lastOperationFailure?.code)
+              }
+          }
+          KOTLIN
+
+          cat > android/app/src/test/java/com/phillipchin/webrtctunnel/security/IdentityRepositoryCoherentReadTest.kt <<'KOTLIN'
+          package com.phillipchin.webrtctunnel.security
+
+          import androidx.test.core.app.ApplicationProvider
+          import kotlinx.coroutines.CompletableDeferred
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.async
+          import kotlinx.coroutines.launch
+          import kotlinx.coroutines.runBlocking
+          import kotlinx.coroutines.yield
+          import org.junit.Assert.assertEquals
+          import org.junit.Assert.assertFalse
+          import org.junit.Test
+          import org.junit.runner.RunWith
+          import org.robolectric.RobolectricTestRunner
+          import java.util.concurrent.atomic.AtomicBoolean
+          import java.util.concurrent.atomic.AtomicInteger
+
+          @RunWith(RobolectricTestRunner::class)
+          class IdentityRepositoryCoherentReadTest {
+              private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+
+              @Test
+              fun readPublicIdentityCannotObserveHalfWrittenPair() =
+                  runBlocking {
+                      val blockReplacement = AtomicBoolean(false)
+                      val replacementCount = AtomicInteger(0)
+                      val publicReplaceEntered = CompletableDeferred<Unit>()
+                      val releasePublicReplace = CompletableDeferred<Unit>()
+                      val repository =
+                          IdentityRepository(
+                              context,
+                              crypto = PassThroughIdentityCrypto,
+                              atomicReplace = { file, bytes ->
+                                  file.parentFile?.mkdirs()
+                                  if (blockReplacement.get() && replacementCount.incrementAndGet() == 2) {
+                                      publicReplaceEntered.complete(Unit)
+                                      runBlocking { releasePublicReplace.await() }
+                                  }
+                                  file.writeBytes(bytes)
+                              },
+                          )
+                      repository.storeEncryptedIdentity("old-private".toByteArray(), "old-public")
+                      replacementCount.set(0)
+                      blockReplacement.set(true)
+
+                      val writer =
+                          launch(Dispatchers.IO) {
+                              repository.storeEncryptedIdentity("new-private".toByteArray(), "new-public")
+                          }
+                      publicReplaceEntered.await()
+                      val readerStarted = CompletableDeferred<Unit>()
+                      val reader =
+                          async(Dispatchers.IO) {
+                              readerStarted.complete(Unit)
+                              repository.readPublicIdentity()
+                          }
+                      readerStarted.await()
+                      yield()
+
+                      assertFalse("coherent read must wait while pair replacement holds the lock", reader.isCompleted)
+                      releasePublicReplace.complete(Unit)
+                      writer.join()
+                      assertEquals("new-public", reader.await())
+                  }
+
+              private object PassThroughIdentityCrypto : IdentityCrypto {
+                  override fun encrypt(plaintext: ByteArray): ByteArray = plaintext.copyOf()
+
+                  override fun decrypt(payload: ByteArray): ByteArray = payload.copyOf()
+              }
+          }
+          KOTLIN
+
+          cat > android/app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportCanonicalContractTest.kt <<'KOTLIN'
+          package com.phillipchin.webrtctunnel.viewmodel
+
+          import com.phillipchin.webrtctunnel.model.IdentityValidationResult
+          import kotlinx.coroutines.runBlocking
+          import org.junit.Assert.assertTrue
+          import org.junit.Test
+          import org.junit.runner.RunWith
+          import org.robolectric.RobolectricTestRunner
+
+          @RunWith(RobolectricTestRunner::class)
+          class ImportExportCanonicalContractTest : AppViewModelTestBase() {
+              @Test
+              fun privateIdentityImportFailsWhenCanonicalPrivateMissing() =
+                  runBlocking {
+                      recordingBridge.privateIdentityValidationResult =
+                          IdentityValidationResult(
+                              valid = true,
+                              canonicalPrivateIdentity = null,
+                              canonicalPublicIdentity = "canonical-public",
+                              peerId = "android-phone",
+                          )
+                      val error = importPrivateIdentityFailure()
+
+                      assertTrue(error.message.orEmpty().contains("canonical private identity"))
+                  }
+
+              @Test
+              fun privateIdentityImportFailsWhenCanonicalPublicMissing() =
+                  runBlocking {
+                      recordingBridge.privateIdentityValidationResult =
+                          IdentityValidationResult(
+                              valid = true,
+                              canonicalPrivateIdentity = "canonical-private",
+                              canonicalPublicIdentity = null,
+                              peerId = "android-phone",
+                          )
+                      val error = importPrivateIdentityFailure()
+
+                      assertTrue(error.message.orEmpty().contains("canonical public identity"))
+                  }
+
+              private suspend fun importPrivateIdentityFailure(): Exception {
+                  return try {
+                      ImportExportService(deps).importContent(ImportKind.PrivateIdentity, "source-private")
+                      error("private identity import unexpectedly succeeded")
+                  } catch (error: Exception) {
+                      error
+                  }
+              }
+          }
+          KOTLIN
+
+          cat > android/app/src/test/java/com/phillipchin/webrtctunnel/Fix9SourceContractAuditTest.kt <<'KOTLIN'
+          package com.phillipchin.webrtctunnel
+
+          import org.junit.Assert.assertFalse
+          import org.junit.Assert.assertTrue
+          import org.junit.Test
+          import java.io.File
+
+          class Fix9SourceContractAuditTest {
+              @Test
+              fun setupControllersRetainTokenAndDraftTruthContracts() {
+                  val forwards = source("viewmodel/SetupForwardsController.kt")
+                  val identity = source("viewmodel/SetupIdentityController.kt")
+                  val save = source("viewmodel/SetupSaveController.kt")
+                  val coordinator = source("viewmodel/SetupOperationCoordinator.kt")
+
+                  assertFalse(forwards.contains("Forward saved"))
+                  assertFalse(forwards.contains("Forward deleted"))
+                  assertTrue(forwards.contains("runGuarded(access, SetupDraftOperation.ForwardEdit) { token ->"))
+                  assertTrue(identity.contains("runGuarded(access, SetupDraftOperation.IdentityAction) { token ->"))
+                  assertTrue(save.contains("runGuarded(access, SetupDraftOperation.FinalSave) { token ->"))
+                  assertTrue(save.contains("throwIfStale(token)\n        val result = withContext(ioDispatcher)"))
+                  assertTrue(coordinator.contains("val job: Job"))
+                  assertTrue(coordinator.contains("jobToCancel?.cancel(CancellationException(reason))"))
+              }
+
+              @Test
+              fun publicIdentityReadRemainsSerializedWithPairReplacement() {
+                  val identityRepository = source("security/IdentityRepository.kt")
+                  val pattern =
+                      Regex(
+                          """fun readPublicIdentity\(\): String\s*=\s*synchronized\(storageLock\)""",
+                          RegexOption.DOT_MATCHES_ALL,
+                      )
+
+                  assertTrue(pattern.containsMatchIn(identityRepository))
+              }
+
+              @Test
+              fun configResultApisRetainCancellationFirstOrdinaryFailureContract() {
+                  val config = source("data/ConfigRepository.kt")
+                  val savePreferences = functionWindow(config, "open suspend fun savePreferences", "@CheckResult")
+                  val prepare = functionWindow(config, "open suspend fun prepareActiveConfigForStart", "@CheckResult")
+                  val replace = functionWindow(config, "internal open val replaceConfigTransactionally", "open fun saveSetupInput")
+
+                  listOf(savePreferences, prepare, replace).forEach { body ->
+                      assertTrue(body.contains("catch (cancelled: CancellationException)"))
+                      assertTrue(body.contains("catch (error: Exception)"))
+                  }
+              }
+
+              @Test
+              fun resultContractDetectorRejectsRequiredNegativeFixtures() {
+                  val selectedCatch =
+                      "fun bad(): Result<Unit> = try { Result.success(Unit) } catch (error: java.io.IOException) { Result.failure(error) }"
+                  val earlyThrow =
+                      "fun bad(): Result<Unit> { value.getOrThrow(); return try { Result.success(Unit) } catch (error: Exception) { Result.failure(error) } }"
+                  val fakeConsumption = "fun caller() { mutate().also { audit() } }"
+
+                  assertTrue(resultContractViolations(selectedCatch).contains("selected_catch"))
+                  assertTrue(resultContractViolations(earlyThrow).contains("get_or_throw_before_try"))
+                  assertTrue(resultContractViolations(fakeConsumption).contains("also_fake_consumption"))
+              }
+
+              private fun resultContractViolations(source: String): Set<String> =
+                  buildSet {
+                      if (source.contains("catch (error: java.io.IOException)") &&
+                          !source.contains("catch (error: Exception)")) {
+                          add("selected_catch")
+                      }
+                      val firstTry = source.indexOf("try")
+                      val firstThrow = source.indexOf("getOrThrow()")
+                      if (firstThrow >= 0 && (firstTry < 0 || firstThrow < firstTry)) {
+                          add("get_or_throw_before_try")
+                      }
+                      if (source.contains(".also {")) {
+                          add("also_fake_consumption")
+                      }
+                  }
+
+              private fun functionWindow(source: String, start: String, end: String): String {
+                  val startIndex = source.indexOf(start)
+                  require(startIndex >= 0) { "missing function start: $start" }
+                  val endIndex = source.indexOf(end, startIndex + start.length).let { if (it < 0) source.length else it }
+                  return source.substring(startIndex, endIndex)
+              }
+
+              private fun source(relativePath: String): String {
+                  val root = "src/main/java/com/phillipchin/webrtctunnel"
+                  val candidates =
+                      listOf(
+                          File(root, relativePath),
+                          File("app/$root", relativePath),
+                          File(System.getProperty("user.dir"), "app/$root/$relativePath"),
+                      )
+                  return candidates.firstOrNull { it.exists() }?.readText()
+                      ?: error("source file not found: $relativePath")
+              }
+          }
+          KOTLIN
+      - name: Commit contract tests
+        shell: bash
+        run: |
+          git rm .github/workflows/fix9-ralph-contract-tests-apply.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add android/app/src/test/java
+          git commit -m "test(fix9): enforce result identity and token contracts"
+          git pull --rebase origin master
+          git push origin HEAD:master
