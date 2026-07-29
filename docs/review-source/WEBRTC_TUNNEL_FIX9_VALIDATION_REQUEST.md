@@ -3,7 +3,7 @@
 **Purpose:** trigger full validation for the FIX9 implementation pass.
 
 **Original validation requested from SHA:** `29ac4d4b1550663495bc43dc6b6116bfb75daef5`  
-**Latest implementation/test baseline:** `1c92815b84f151edc49266232724bd6f99f3f3e1`
+**Latest implementation/test baseline:** `d303959a6ef9860d9a59dce2db72332c551a9fdd`
 
 This file exists only to create traceable `[full-signoff]` commits that force the repository's full CI matrix, including lint, unit tests, Android validation, Rust validation, Docker/Android E2E, focused RC diagnostics, and broker-secret permission instrumentation.
 
@@ -15,16 +15,17 @@ This file exists only to create traceable `[full-signoff]` commits that force th
 - Run `30349093311` exposed `TooManyFunctions` in the setup controllers; helper logic was moved out without weakening thresholds.
 - Run `30350167310` exposed the final `SetupIdentityController` function-count finding; the resolver was moved out.
 - Run `30353490703` passed static analysis and debug tests but exposed a Robolectric release-test latch race; commit `1f99b703e93d488eb2c2052bc765121759ef4c68` bound latches to the test Application instance.
+- Run `30499169031` passed Rust lint, Linux, macOS, and Docker E2E. Android stopped at detekt with one `LongParameterList` and four `MaxLineLength` findings; commit `d303959a6ef9860d9a59dce2db72332c551a9fdd` grouped commit-only inputs and wrapped the audit fixtures without suppressing rules.
 
 ## FIX9 completion changes under validation
 
-- Active setup ownership now captures and cancels the real coroutine `Job` when setup is abandoned.
+- Active setup ownership captures and cancels the real coroutine `Job` when setup is abandoned.
 - Final save checks freshness immediately before transactional persistence; cancellation inside persistence rolls back attempted stages.
 - A stale operation that somehow observes a completed commit publishes a durable `setup_commit_completed_after_cancel` warning and never starts the tunnel.
 - `IdentityRepository.readPublicIdentity()` is serialized under the same storage lock as identity-pair replacement.
 - Setup forward edits use draft-truthful messages.
 - `ConfigRepository.savePreferences()` has an injected writer seam proving ordinary thrown failures become `Result.failure` while cancellation propagates.
-- Production-path stale tests now cover path/URI import, generation, forward upsert/delete, navigation validation, pre-commit save cancellation, cancellation during transactional persistence, start-from-review, and newer-error preservation.
+- Production-path stale tests cover path/URI import, generation, forward upsert/delete, navigation validation, pre-commit save cancellation, cancellation during transactional persistence, start-from-review, and newer-error preservation.
 - Added coherent identity-pair concurrency proof, canonical identity-field failure tests, Result-contract tests, and source-level FIX9 enforcement tests.
 
 ## Required validation
@@ -58,4 +59,4 @@ cd android
   -Pandroid.testInstrumentationRunnerArguments.class=com.phillipchin.webrtctunnel.data.BrokerSecretRepositoryInstrumentedTest
 ```
 
-**Status:** full FIX9 validation requested; do not claim signoff until every required workflow passes for this exact commit SHA.
+**Status:** rerun requested after detekt cleanup; do not claim signoff until every required workflow passes for this exact commit SHA.
