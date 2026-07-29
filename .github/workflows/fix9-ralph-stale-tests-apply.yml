@@ -1,0 +1,375 @@
+name: Apply FIX9 stale-operation regression tests
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fix9-ralph-stale-tests-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Add deterministic identity barriers and stale-operation tests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if old not in text:
+                  raise SystemExit(f"expected snippet not found in {path}: {old[:120]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          base = "android/app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/AppViewModelTestBase.kt"
+          replace(
+              base,
+              """    private fun privateIdentityValidationResultAfterOptionalBlock(): IdentityValidationResult? {\n        if (blockPrivateIdentityValidationAtomic.compareAndSet(true, false)) {\n            privateIdentityValidationEntered.get().countDown()\n            check(privateIdentityValidationRelease.get().await(5, TimeUnit.SECONDS)) {\n                \"blocked private identity validation was never released\"\n            }\n            forcedPrivateIdentityValidationResult.getAndSet(null)?.let { return it }\n        }\n        return privateIdentityValidationResult\n    }\n\n    override fun startOffer(""",
+              """    private fun privateIdentityValidationResultAfterOptionalBlock(): IdentityValidationResult? {\n        if (blockPrivateIdentityValidationAtomic.compareAndSet(true, false)) {\n            privateIdentityValidationEntered.get().countDown()\n            check(privateIdentityValidationRelease.get().await(5, TimeUnit.SECONDS)) {\n                \"blocked private identity validation was never released\"\n            }\n            forcedPrivateIdentityValidationResult.getAndSet(null)?.let { return it }\n        }\n        return privateIdentityValidationResult\n    }\n\n    private val blockGenerateIdentityAtomic = AtomicBoolean(false)\n    private val generateIdentityEntered = AtomicReference(CountDownLatch(0))\n    private val generateIdentityRelease = AtomicReference(CountDownLatch(0))\n    private val forcedGenerateIdentityResult = AtomicReference<IdentityValidationResult?>(null)\n\n    fun blockNextGenerateIdentity() {\n        generateIdentityEntered.set(CountDownLatch(1))\n        generateIdentityRelease.set(CountDownLatch(1))\n        blockGenerateIdentityAtomic.set(true)\n    }\n\n    fun generateIdentityEnteredNow(): Boolean = generateIdentityEntered.get().count == 0L\n\n    fun releaseBlockedGenerateIdentity(result: IdentityValidationResult? = null) {\n        forcedGenerateIdentityResult.set(result)\n        generateIdentityRelease.get().countDown()\n    }\n\n    private fun generateIdentityResultAfterOptionalBlock(): IdentityValidationResult? {\n        if (blockGenerateIdentityAtomic.compareAndSet(true, false)) {\n            generateIdentityEntered.get().countDown()\n            check(generateIdentityRelease.get().await(5, TimeUnit.SECONDS)) {\n                \"blocked identity generation was never released\"\n            }\n            forcedGenerateIdentityResult.getAndSet(null)?.let { return it }\n        }\n        return generateIdentityResult\n    }\n\n    private val blockPublicIdentityValidationAtomic = AtomicBoolean(false)\n    private val publicIdentityValidationEntered = AtomicReference(CountDownLatch(0))\n    private val publicIdentityValidationRelease = AtomicReference(CountDownLatch(0))\n    private val forcedPublicIdentityValidationResult = AtomicReference<IdentityValidationResult?>(null)\n\n    fun blockNextPublicIdentityValidation() {\n        publicIdentityValidationEntered.set(CountDownLatch(1))\n        publicIdentityValidationRelease.set(CountDownLatch(1))\n        blockPublicIdentityValidationAtomic.set(true)\n    }\n\n    fun publicIdentityValidationEnteredNow(): Boolean = publicIdentityValidationEntered.get().count == 0L\n\n    fun releaseBlockedPublicIdentityValidation(result: IdentityValidationResult? = null) {\n        forcedPublicIdentityValidationResult.set(result)\n        publicIdentityValidationRelease.get().countDown()\n    }\n\n    private fun publicIdentityValidationResultAfterOptionalBlock(line: String): IdentityValidationResult {\n        if (blockPublicIdentityValidationAtomic.compareAndSet(true, false)) {\n            publicIdentityValidationEntered.get().countDown()\n            check(publicIdentityValidationRelease.get().await(5, TimeUnit.SECONDS)) {\n                \"blocked public identity validation was never released\"\n            }\n            forcedPublicIdentityValidationResult.getAndSet(null)?.let { return it }\n        }\n        return publicIdentityValidationResult ?: IdentityValidationResult(\n            valid = true,\n            canonicalPublicIdentity = line.trim(),\n            peerId = \"remote-peer\",\n        )\n    }\n\n    override fun startOffer(""",
+          )
+          replace(
+              base,
+              """    override fun validatePublicIdentity(line: String): IdentityValidationResult =\n        publicIdentityValidationResult ?: IdentityValidationResult(\n            valid = true,\n            canonicalPublicIdentity = line.trim(),\n            peerId = \"remote-peer\",\n        )""",
+              """    override fun validatePublicIdentity(line: String): IdentityValidationResult =\n        publicIdentityValidationResultAfterOptionalBlock(line)""",
+          )
+          replace(
+              base,
+              """    override fun generateIdentity(peerId: String): IdentityValidationResult =\n        generateIdentityResult ?: IdentityValidationResult(""",
+              """    override fun generateIdentity(peerId: String): IdentityValidationResult =\n        generateIdentityResultAfterOptionalBlock() ?: IdentityValidationResult(""",
+          )
+
+          test_file = Path(
+              "android/app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SetupFix9CancellationRegressionTest.kt"
+          )
+          test_file.write_text(r'''package com.phillipchin.webrtctunnel.viewmodel
+
+import android.net.Uri
+import com.phillipchin.webrtctunnel.awaitCondition
+import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.ConfigRepository
+import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
+import com.phillipchin.webrtctunnel.model.ForwardConfig
+import com.phillipchin.webrtctunnel.model.IdentityValidationResult
+import com.phillipchin.webrtctunnel.model.NetworkType
+import com.phillipchin.webrtctunnel.model.ValidationResult
+import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
+import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
+
+@RunWith(RobolectricTestRunner::class)
+class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
+    private fun realIoDeps(): AppDependencies =
+        AppDependencies(
+            context = app,
+            nativeBridgeFactory = { recordingBridge },
+            configRepository = ConfigRepository(app),
+            networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+            identityRepository = deps.identityRepository,
+            dispatchers = realIoTestDispatchers(),
+        )
+
+    private fun awaitReady(viewModel: SetupViewModel) {
+        awaitCondition(description = "setup baseline Ready") {
+            viewModel.loadState.value is SetupLoadState.Ready
+        }
+    }
+
+    private fun awaitSettled(viewModel: SetupViewModel) {
+        awaitCondition(description = "setup operation settled") { !viewModel.state.value.isBusy }
+    }
+
+    private fun validIdentity(peerId: String = "android-phone") =
+        IdentityValidationResult(
+            valid = true,
+            canonicalPrivateIdentity = "canonical-private",
+            canonicalPublicIdentity = "canonical-public",
+            peerId = peerId,
+        )
+
+    @Test
+    fun cancelDuringIdentityImportFromUriDoesNotPublishImportedIdentity() =
+        runBlocking {
+            val source = File(app.filesDir, "stale-uri-identity.toml").apply { writeText("private") }
+            val result = validIdentity("uri-peer")
+            recordingBridge.privateIdentityValidationResult = result
+            recordingBridge.blockNextPrivateIdentityValidation()
+            val viewModel = SetupViewModel(realIoDeps())
+            awaitReady(viewModel)
+
+            viewModel.identity.importIdentityFromUri(Uri.fromFile(source))
+            awaitCondition(description = "URI identity validation entered") {
+                recordingBridge.privateIdentityValidationEnteredNow()
+            }
+            viewModel.cancel()
+            recordingBridge.releaseBlockedPrivateIdentityValidation(result)
+            awaitSettled(viewModel)
+
+            assertEquals("", viewModel.state.value.localPublicIdentity)
+            assertNull(viewModel.state.value.identityPeerId)
+            assertNull(viewModel.identityDraft.copyForSave())
+        }
+
+    @Test
+    fun cancelDuringGenerateIdentityDoesNotPublishGeneratedIdentity() =
+        runBlocking {
+            val generated = validIdentity("generated-peer")
+            recordingBridge.generateIdentityResult = generated
+            recordingBridge.blockNextGenerateIdentity()
+            val viewModel = SetupViewModel(realIoDeps())
+            awaitReady(viewModel)
+
+            viewModel.identity.generateIdentity()
+            awaitCondition(description = "identity generation entered") {
+                recordingBridge.generateIdentityEnteredNow()
+            }
+            viewModel.cancel()
+            recordingBridge.releaseBlockedGenerateIdentity(generated)
+            awaitSettled(viewModel)
+
+            assertEquals("", viewModel.state.value.localPublicIdentity)
+            assertNull(viewModel.state.value.identityPeerId)
+            assertNull(viewModel.state.value.saveResult)
+            assertNull(viewModel.identityDraft.copyForSave())
+        }
+
+    @Test
+    fun cancelDuringForwardUpsertDoesNotPublishDraftChange() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val viewModel =
+                SetupViewModel(
+                    realIoDeps(),
+                    inspectForwardDraft = {
+                        entered.complete(Unit)
+                        withContext(NonCancellable) { release.await() }
+                        null
+                    },
+                )
+            awaitReady(viewModel)
+
+            viewModel.forwardsEditor.upsertForward(validForward())
+            entered.await()
+            viewModel.cancel()
+            release.complete(Unit)
+            awaitSettled(viewModel)
+
+            assertTrue(viewModel.forwards.value.isEmpty())
+            assertNull(viewModel.state.value.saveResult)
+        }
+
+    @Test
+    fun cancelDuringForwardDeleteDoesNotPublishDraftChange() =
+        runBlocking {
+            val testDeps = realIoDeps()
+            val existing = validForward()
+            testDeps.forwardsStore.saveForwards(listOf(existing))
+            testDeps.forwardsRepository.refresh()
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val viewModel =
+                SetupViewModel(
+                    testDeps,
+                    inspectForwardDraft = {
+                        entered.complete(Unit)
+                        withContext(NonCancellable) { release.await() }
+                        null
+                    },
+                )
+            awaitReady(viewModel)
+
+            viewModel.forwardsEditor.deleteForward(existing.id)
+            entered.await()
+            viewModel.cancel()
+            release.complete(Unit)
+            awaitSettled(viewModel)
+            awaitCondition(description = "authoritative forwards restored") {
+                viewModel.forwards.value == listOf(existing)
+            }
+
+            assertEquals(listOf(existing), viewModel.forwards.value)
+            assertNull(viewModel.state.value.saveResult)
+        }
+
+    @Test
+    fun cancelDuringNavigationValidationDoesNotAdvanceStep() =
+        runBlocking {
+            val testDeps = realIoDeps()
+            testDeps.identityRepository.storeEncryptedIdentity("stored-private".toByteArray(), "stored-public")
+            val viewModel = SetupViewModel(testDeps)
+            awaitReady(viewModel)
+            viewModel.goNext()
+            awaitCondition { viewModel.state.value.currentStep == SetupStep.Identity }
+            viewModel.goNext()
+            awaitCondition { viewModel.state.value.currentStep == SetupStep.Broker }
+            viewModel.setInput(viewModel.state.value.input.copy(brokerHost = "broker.local"))
+            viewModel.goNext()
+            awaitCondition { viewModel.state.value.currentStep == SetupStep.Peer }
+            val remote =
+                IdentityValidationResult(
+                    valid = true,
+                    canonicalPublicIdentity = "remote-public",
+                    peerId = "remote-peer",
+                )
+            recordingBridge.publicIdentityValidationResult = remote
+            recordingBridge.blockNextPublicIdentityValidation()
+            viewModel.setImportPublicIdentity("remote-public")
+            viewModel.setInput(viewModel.state.value.input.copy(remotePeerId = "remote-peer"))
+
+            viewModel.goNext()
+            awaitCondition(description = "navigation validation entered") {
+                recordingBridge.publicIdentityValidationEnteredNow()
+            }
+            viewModel.cancel()
+            recordingBridge.releaseBlockedPublicIdentityValidation(remote)
+            awaitSettled(viewModel)
+
+            assertEquals(SetupStep.Mode, viewModel.state.value.currentStep)
+        }
+
+    @Test
+    fun cancelDuringFinalSaveRollsBackAuthoritativeStagesAndCancelsJob() =
+        runBlocking {
+            val entered = CompletableDeferred<Unit>()
+            val cancellationObserved = CompletableDeferred<Unit>()
+            val writes = AtomicInteger(0)
+            val viewModel =
+                prepareFinalSaveViewModel { _: AndroidAppPreferences ->
+                    if (writes.incrementAndGet() == 1) {
+                        entered.complete(Unit)
+                        try {
+                            CompletableDeferred<Unit>().await()
+                        } catch (cancelled: CancellationException) {
+                            cancellationObserved.complete(Unit)
+                            throw cancelled
+                        }
+                    }
+                    Result.success(Unit)
+                }
+
+            viewModel.save.saveAndApplyConfig()
+            entered.await()
+            assertTrue(File(app.filesDir, "setup_input.json").exists())
+            viewModel.cancel()
+            cancellationObserved.await()
+            awaitSettled(viewModel)
+
+            assertFalse(File(app.filesDir, "config.toml").exists())
+            assertFalse(File(app.filesDir, "setup_input.json").exists())
+            assertFalse(File(app.filesDir, "authorized_keys").exists())
+            assertFalse(File(app.filesDir, "runtime/mqtt_password.txt").exists())
+            assertEquals(null, viewModel.operations.activeOperationForTest())
+            assertNull(viewModel.state.value.saveResult)
+            assertNull(viewModel.state.value.errorMessage)
+        }
+
+    @Test
+    fun cancelDuringStartTunnelFromReviewDoesNotStartForegroundService() =
+        runBlocking {
+            val viewModel = prepareFinalSaveViewModel()
+            recordingBridge.blockNextValidateConfig()
+
+            viewModel.save.startTunnelFromReview()
+            awaitCondition(description = "start review validation entered") {
+                recordingBridge.validateConfigEnteredNow()
+            }
+            viewModel.cancel()
+            recordingBridge.releaseBlockedValidateConfig(ValidationResult(true, null))
+            awaitSettled(viewModel)
+
+            assertEquals(null, Shadows.shadowOf(app).nextStartedService)
+            assertNull(viewModel.state.value.saveResult)
+        }
+
+    @Test
+    fun staleFinalSaveCannotClearNewerSetupError() =
+        runBlocking {
+            val viewModel = prepareFinalSaveViewModel()
+            recordingBridge.blockNextValidateConfig()
+
+            viewModel.save.saveAndApplyConfig()
+            awaitCondition(description = "stale final validation entered") {
+                recordingBridge.validateConfigEnteredNow()
+            }
+            viewModel.cancel()
+            viewModel.stateAccess.applyState(
+                viewModel.state.value.copy(errorMessage = "newer setup error", saveResult = null),
+            )
+            recordingBridge.releaseBlockedValidateConfig(ValidationResult(true, null))
+            awaitSettled(viewModel)
+
+            assertEquals("newer setup error", viewModel.state.value.errorMessage)
+            assertNull(viewModel.state.value.saveResult)
+        }
+
+    private suspend fun prepareFinalSaveViewModel(
+        persistPreferences: suspend (AndroidAppPreferences) -> Result<Unit> = {
+            deps.configRepository.savePreferences(it)
+        },
+    ): SetupViewModel {
+        val testDeps = realIoDeps()
+        testDeps.identityRepository.storeEncryptedIdentity("stored-private".toByteArray(), "stored-public")
+        testDeps.forwardsStore.saveForwards(listOf(validForward()))
+        testDeps.forwardsRepository.refresh()
+        recordingBridge.publicIdentityValidationResult =
+            IdentityValidationResult(
+                valid = true,
+                canonicalPublicIdentity = "remote-public",
+                peerId = "remote-peer",
+            )
+        recordingBridge.validationResult = ValidationResult(true, null)
+        val viewModel = SetupViewModel(testDeps, persistPreferences = persistPreferences)
+        awaitReady(viewModel)
+        viewModel.setImportPublicIdentity("remote-public")
+        viewModel.setInput(
+            viewModel.state.value.input.copy(
+                localPeerId = "android-phone",
+                brokerHost = "broker.local",
+                remotePeerId = "remote-peer",
+            ),
+        )
+        return viewModel
+    }
+
+    private fun validForward() =
+        ForwardConfig(
+            id = "svc",
+            name = "svc",
+            localPort = 8080,
+            remoteForwardId = "svc",
+            enabled = true,
+        )
+}
+''')
+          PY
+      - name: Commit stale-operation regression tests
+        shell: bash
+        run: |
+          git rm .github/workflows/fix9-ralph-stale-tests-apply.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add android/app/src/test/java
+          git commit -m "test(fix9): cover production stale setup cancellation paths"
+          git push origin HEAD:master
