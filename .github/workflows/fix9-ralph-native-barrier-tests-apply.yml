@@ -1,0 +1,155 @@
+name: Apply FIX9 native barrier tests
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fix9-ralph-native-barrier-tests-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Add native bridge barriers and tests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("android/app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/AppViewModelTestBase.kt")
+          text = path.read_text()
+          marker = """    override fun startOffer(\n        configPath: String,"""
+          addition = """    private val blockGenerateIdentityAtomic = AtomicBoolean(false)\n    private val generateIdentityEntered = AtomicReference(CountDownLatch(0))\n    private val generateIdentityRelease = AtomicReference(CountDownLatch(0))\n    private val forcedGenerateIdentityResult = AtomicReference<IdentityValidationResult?>(null)\n\n    fun blockNextGenerateIdentity() {\n        generateIdentityEntered.set(CountDownLatch(1))\n        generateIdentityRelease.set(CountDownLatch(1))\n        blockGenerateIdentityAtomic.set(true)\n    }\n\n    fun generateIdentityEnteredNow(): Boolean = generateIdentityEntered.get().count == 0L\n\n    fun releaseBlockedGenerateIdentity(result: IdentityValidationResult? = null) {\n        forcedGenerateIdentityResult.set(result)\n        generateIdentityRelease.get().countDown()\n    }\n\n    private fun generateIdentityResultAfterOptionalBlock(): IdentityValidationResult? {\n        if (blockGenerateIdentityAtomic.compareAndSet(true, false)) {\n            generateIdentityEntered.get().countDown()\n            check(generateIdentityRelease.get().await(5, TimeUnit.SECONDS)) {\n                \"blocked identity generation was never released\"\n            }\n            forcedGenerateIdentityResult.getAndSet(null)?.let { return it }\n        }\n        return generateIdentityResult\n    }\n\n    private val blockPublicIdentityValidationAtomic = AtomicBoolean(false)\n    private val publicIdentityValidationEntered = AtomicReference(CountDownLatch(0))\n    private val publicIdentityValidationRelease = AtomicReference(CountDownLatch(0))\n    private val forcedPublicIdentityValidationResult = AtomicReference<IdentityValidationResult?>(null)\n\n    fun blockNextPublicIdentityValidation() {\n        publicIdentityValidationEntered.set(CountDownLatch(1))\n        publicIdentityValidationRelease.set(CountDownLatch(1))\n        blockPublicIdentityValidationAtomic.set(true)\n    }\n\n    fun publicIdentityValidationEnteredNow(): Boolean = publicIdentityValidationEntered.get().count == 0L\n\n    fun releaseBlockedPublicIdentityValidation(result: IdentityValidationResult? = null) {\n        forcedPublicIdentityValidationResult.set(result)\n        publicIdentityValidationRelease.get().countDown()\n    }\n\n    private fun publicIdentityValidationResultAfterOptionalBlock(line: String): IdentityValidationResult {\n        if (blockPublicIdentityValidationAtomic.compareAndSet(true, false)) {\n            publicIdentityValidationEntered.get().countDown()\n            check(publicIdentityValidationRelease.get().await(5, TimeUnit.SECONDS)) {\n                \"blocked public identity validation was never released\"\n            }\n            forcedPublicIdentityValidationResult.getAndSet(null)?.let { return it }\n        }\n        return publicIdentityValidationResult ?: IdentityValidationResult(\n            valid = true,\n            canonicalPublicIdentity = line.trim(),\n            peerId = \"remote-peer\",\n        )\n    }\n\n"""
+          if marker not in text:
+              raise SystemExit("startOffer marker not found")
+          text = text.replace(marker, addition + marker, 1)
+          old_public = """    override fun validatePublicIdentity(line: String): IdentityValidationResult =\n        publicIdentityValidationResult ?: IdentityValidationResult(\n            valid = true,\n            canonicalPublicIdentity = line.trim(),\n            peerId = \"remote-peer\",\n        )"""
+          new_public = """    override fun validatePublicIdentity(line: String): IdentityValidationResult =\n        publicIdentityValidationResultAfterOptionalBlock(line)"""
+          if old_public not in text:
+              raise SystemExit("public identity implementation not found")
+          text = text.replace(old_public, new_public, 1)
+          old_generate = """    override fun generateIdentity(peerId: String): IdentityValidationResult =\n        generateIdentityResult ?: IdentityValidationResult("""
+          new_generate = """    override fun generateIdentity(peerId: String): IdentityValidationResult =\n        generateIdentityResultAfterOptionalBlock() ?: IdentityValidationResult("""
+          if old_generate not in text:
+              raise SystemExit("generate identity implementation not found")
+          path.write_text(text.replace(old_generate, new_generate, 1))
+          PY
+
+          cat > android/app/src/test/java/com/phillipchin/webrtctunnel/viewmodel/SetupFix9NativeBarrierCancellationTest.kt <<'KOTLIN'
+          package com.phillipchin.webrtctunnel.viewmodel
+
+          import com.phillipchin.webrtctunnel.awaitCondition
+          import com.phillipchin.webrtctunnel.data.AppDependencies
+          import com.phillipchin.webrtctunnel.data.ConfigRepository
+          import com.phillipchin.webrtctunnel.model.IdentityValidationResult
+          import com.phillipchin.webrtctunnel.model.NetworkType
+          import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+          import kotlinx.coroutines.runBlocking
+          import org.junit.Assert.assertEquals
+          import org.junit.Assert.assertNull
+          import org.junit.Test
+          import org.junit.runner.RunWith
+          import org.robolectric.RobolectricTestRunner
+
+          @RunWith(RobolectricTestRunner::class)
+          class SetupFix9NativeBarrierCancellationTest : AppViewModelTestBase() {
+              private fun realIoDeps(): AppDependencies =
+                  AppDependencies(
+                      context = app,
+                      nativeBridgeFactory = { recordingBridge },
+                      configRepository = ConfigRepository(app),
+                      networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                      identityRepository = deps.identityRepository,
+                      dispatchers = realIoTestDispatchers(),
+                  )
+
+              private fun awaitReady(viewModel: SetupViewModel) {
+                  awaitCondition(description = "setup baseline Ready") {
+                      viewModel.loadState.value is SetupLoadState.Ready
+                  }
+              }
+
+              @Test
+              fun cancelDuringGenerateIdentityDoesNotPublishGeneratedIdentity() =
+                  runBlocking {
+                      val generated =
+                          IdentityValidationResult(
+                              valid = true,
+                              canonicalPrivateIdentity = "generated-private",
+                              canonicalPublicIdentity = "generated-public",
+                              peerId = "generated-peer",
+                          )
+                      recordingBridge.generateIdentityResult = generated
+                      recordingBridge.blockNextGenerateIdentity()
+                      val viewModel = SetupViewModel(realIoDeps())
+                      awaitReady(viewModel)
+                      viewModel.setInput(viewModel.state.value.input.copy(localPeerId = "generated-peer"))
+
+                      viewModel.identity.generateIdentity()
+                      awaitCondition(description = "identity generation entered") {
+                          recordingBridge.generateIdentityEnteredNow()
+                      }
+                      viewModel.cancel()
+                      recordingBridge.releaseBlockedGenerateIdentity(generated)
+                      awaitCondition(description = "identity generation settled") { !viewModel.state.value.isBusy }
+
+                      assertEquals("", viewModel.state.value.localPublicIdentity)
+                      assertNull(viewModel.state.value.identityPeerId)
+                      assertNull(viewModel.state.value.saveResult)
+                      assertNull(viewModel.identityDraft.copyForSave())
+                  }
+
+              @Test
+              fun cancelDuringNavigationValidationDoesNotAdvanceStep() =
+                  runBlocking {
+                      val testDeps = realIoDeps()
+                      testDeps.identityRepository.storeEncryptedIdentity("stored-private".toByteArray(), "stored-public")
+                      val viewModel = SetupViewModel(testDeps)
+                      awaitReady(viewModel)
+                      viewModel.goNext()
+                      awaitCondition { viewModel.state.value.currentStep == SetupStep.Identity }
+                      viewModel.goNext()
+                      awaitCondition { viewModel.state.value.currentStep == SetupStep.Broker }
+                      viewModel.setInput(viewModel.state.value.input.copy(brokerHost = "broker.local"))
+                      viewModel.goNext()
+                      awaitCondition { viewModel.state.value.currentStep == SetupStep.Peer }
+                      val remote =
+                          IdentityValidationResult(
+                              valid = true,
+                              canonicalPublicIdentity = "remote-public",
+                              peerId = "remote-peer",
+                          )
+                      recordingBridge.publicIdentityValidationResult = remote
+                      recordingBridge.blockNextPublicIdentityValidation()
+                      viewModel.setImportPublicIdentity("remote-public")
+                      viewModel.setInput(viewModel.state.value.input.copy(remotePeerId = "remote-peer"))
+
+                      viewModel.goNext()
+                      awaitCondition(description = "navigation validation entered") {
+                          recordingBridge.publicIdentityValidationEnteredNow()
+                      }
+                      viewModel.cancel()
+                      recordingBridge.releaseBlockedPublicIdentityValidation(remote)
+                      awaitCondition(description = "navigation validation settled") { !viewModel.state.value.isBusy }
+
+                      assertEquals(SetupStep.Mode, viewModel.state.value.currentStep)
+                  }
+          }
+          KOTLIN
+      - name: Commit native barrier tests
+        shell: bash
+        run: |
+          git rm .github/workflows/fix9-ralph-native-barrier-tests-apply.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add android/app/src/test/java
+          git commit -m "test(fix9): cover generation and navigation cancellation"
+          git pull --rebase origin master
+          git push origin HEAD:master
