@@ -1,11 +1,11 @@
 # WebRTC Tunnel FIX9 Validation Request
 
-**Purpose:** trigger full validation for the FIX9 implementation pass.
+**Purpose:** trigger full validation for the completed FIX9 implementation and enforcement pass.
 
 **Original validation requested from SHA:** `29ac4d4b1550663495bc43dc6b6116bfb75daef5`  
-**Latest implementation/test baseline:** `0cf4bf61f2518dde1a1fd1b9745a4b47d2fc10c3`
+**Latest implementation/test baseline:** `022f754f724e9664e191594be9dde7623ae36de0`
 
-This file exists only to create traceable `[full-signoff]` commits that force the repository's full CI matrix, including lint, unit tests, Android validation, Rust validation, Docker/Android E2E, focused RC diagnostics, and broker-secret permission instrumentation.
+This file creates traceable `[full-signoff]` commits that force the repository's full CI matrix, including lint, unit tests, Android validation, Rust validation, Docker/Android E2E, focused RC diagnostics, and broker-secret permission instrumentation.
 
 ## Previous validation history
 
@@ -20,6 +20,8 @@ This file exists only to create traceable `[full-signoff]` commits that force th
 - Temporary patch workflows and marker files were removed, issue #4 was closed, and the authoritative status publisher was restored to status-only behavior at `04386c97cdf317aff77803457e341dcf8c54c573`.
 - Run `30502929767` passed Rust lint, Linux, macOS, RC diagnostics, and Docker E2E. Android reached the full Gradle check and failed only because `ConfigRepository.kt` had one unexpected-indentation ktlint finding; commit `039696b1c34f5bf8458d86b0d325fbd0557206c4` corrected it.
 - Broker instrumentation run `30502929768` did not execute the test because the emulator action ran `cd android` and `./gradlew` in separate shells. Commit `0cf4bf61f2518dde1a1fd1b9745a4b47d2fc10c3` now invokes `./android/gradlew -p android` directly from repository root.
+- Commits `1ce0153fca7e147b78107a5d1463a32608c7e873` and `a8ffde57af963e7e518ffe6d7ae200d288356ea4` added comment-resistant source enforcement for identity-draft, forward-draft, final-persist, and tunnel-start freshness boundaries.
+- Runs `30504403878` and `30505101514` exposed only ktlint formatting defects in the pre-existing Result-contract source audit. Commits `096d0b4b8a23f23530e2b085772b8fb0f0700ab7` and `022f754f724e9664e191594be9dde7623ae36de0` corrected them without weakening any assertion.
 
 ## FIX9 completion changes under validation
 
@@ -30,7 +32,7 @@ This file exists only to create traceable `[full-signoff]` commits that force th
 - Setup forward edits use draft-truthful messages.
 - `ConfigRepository.savePreferences()` has an injected writer seam proving ordinary thrown failures become `Result.failure` while cancellation propagates.
 - Production-path stale tests cover path/URI import, generation, forward upsert/delete, navigation validation, pre-commit save cancellation, cancellation during transactional persistence, start-from-review, and newer-error preservation.
-- Added coherent identity-pair concurrency proof, canonical identity-field failure tests, Result-contract tests, and source-level FIX9 enforcement tests.
+- Added coherent identity-pair concurrency proof, canonical identity-field failure tests, Result-contract tests, CheckResult enforcement, and source-level FIX9 freshness enforcement.
 
 ## Required validation
 
@@ -62,4 +64,4 @@ tests/e2e/docker/stop_lifecycle.sh
   -Pandroid.testInstrumentationRunnerArguments.class=com.phillipchin.webrtctunnel.data.BrokerSecretRepositoryInstrumentedTest
 ```
 
-**Status:** rerun requested after Android ktlint and emulator-invocation cleanup; do not claim signoff until every required workflow passes for this exact commit SHA.
+**Status:** final exact-SHA implementation/test validation requested; do not claim signoff until every required workflow passes for this commit.
