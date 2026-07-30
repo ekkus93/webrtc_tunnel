@@ -66,7 +66,7 @@ open class ConfigRepository internal constructor(
     @CheckResult
     open suspend fun savePreferences(update: AndroidAppPreferences): Result<Unit> =
         try {
-preferenceWriter(update)
+            preferenceWriter(update)
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled
