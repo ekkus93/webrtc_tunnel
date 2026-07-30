@@ -5,6 +5,7 @@ import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -37,23 +38,19 @@ class ConfigRepositoryFix9ResultContractTest {
         }
 
     @Test
-    fun savePreferencesCancellationPropagates() =
-        runBlocking {
-            val repository =
-                ConfigRepository(
-                    context,
-                    preferenceWriter = { throw CancellationException("cancel preference write") },
-                )
-            var propagated = false
+    fun savePreferencesCancellationPropagates() {
+        val repository =
+            ConfigRepository(
+                context,
+                preferenceWriter = { throw CancellationException("cancel preference write") },
+            )
 
-            try {
-                repository.savePreferences(AndroidAppPreferences())
-            } catch (_: CancellationException) {
-                propagated = true
+        assertThrows(CancellationException::class.java) {
+            runBlocking {
+                repository.savePreferences(AndroidAppPreferences()).getOrThrow()
             }
-
-            assertTrue(propagated)
         }
+    }
 
     @Test
     fun prepareActiveConfigReadFailureReturnsFailure() =
