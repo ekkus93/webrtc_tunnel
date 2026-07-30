@@ -3,7 +3,7 @@
 **Purpose:** trigger full validation for the FIX9 implementation pass.
 
 **Original validation requested from SHA:** `29ac4d4b1550663495bc43dc6b6116bfb75daef5`  
-**Latest implementation/test baseline:** `04386c97cdf317aff77803457e341dcf8c54c573`
+**Latest implementation/test baseline:** `0cf4bf61f2518dde1a1fd1b9745a4b47d2fc10c3`
 
 This file exists only to create traceable `[full-signoff]` commits that force the repository's full CI matrix, including lint, unit tests, Android validation, Rust validation, Docker/Android E2E, focused RC diagnostics, and broker-secret permission instrumentation.
 
@@ -18,6 +18,8 @@ This file exists only to create traceable `[full-signoff]` commits that force th
 - Commit `85e77ea5d933c9c7ea85e130bd873d3ff4f8a01b` extracted persistence-request construction without changing cancellation, rollback, or stale-commit warning behavior.
 - Commit `25f6e4699aa042884eb9ab7cbafaed3026e7cb5a` aligned the source contract audit with the refactored persistence boundary.
 - Temporary patch workflows and marker files were removed, issue #4 was closed, and the authoritative status publisher was restored to status-only behavior at `04386c97cdf317aff77803457e341dcf8c54c573`.
+- Run `30502929767` passed Rust lint, Linux, macOS, RC diagnostics, and Docker E2E. Android reached the full Gradle check and failed only because `ConfigRepository.kt` had one unexpected-indentation ktlint finding; commit `039696b1c34f5bf8458d86b0d325fbd0557206c4` corrected it.
+- Broker instrumentation run `30502929768` did not execute the test because the emulator action ran `cd android` and `./gradlew` in separate shells. Commit `0cf4bf61f2518dde1a1fd1b9745a4b47d2fc10c3` now invokes `./android/gradlew -p android` directly from repository root.
 
 ## FIX9 completion changes under validation
 
@@ -55,10 +57,9 @@ tests/e2e/docker/stop_lifecycle.sh
 ```
 
 ```bash
-cd android
-./gradlew --no-daemon connectedDebugAndroidTest \
+./android/gradlew -p android --no-daemon connectedDebugAndroidTest \
   -PskipRustBuild=true \
   -Pandroid.testInstrumentationRunnerArguments.class=com.phillipchin.webrtctunnel.data.BrokerSecretRepositoryInstrumentedTest
 ```
 
-**Status:** clean full FIX9 validation requested; do not claim signoff until every required workflow passes for this exact commit SHA.
+**Status:** rerun requested after Android ktlint and emulator-invocation cleanup; do not claim signoff until every required workflow passes for this exact commit SHA.
