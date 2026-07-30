@@ -366,39 +366,7 @@ internal class SetupSaveController(
         forwards: List<ForwardConfig>,
         commitContext: SetupCommitContext,
     ) {
-        val identityChange = commitContext.identityChange
-        val request =
-            SetupPersistenceRequest(
-                configContents = candidate,
-                setupInput = input,
-                preferences =
-                    prefs.copy(
-                        allowMetered = input.allowMetered,
-                        resumeOnUnmetered = input.resumeOnUnmetered,
-                    ),
-                forwards = forwards,
-                optionalChanges =
-                    SetupOptionalChanges(
-                        replacementIdentity =
-                            if (identityChange.identity.fromImport) {
-                                IdentityReplacement(
-                                    identityChange.identity.privateIdentity,
-                                    identityChange.identity.publicIdentity,
-                                )
-                            } else {
-                                null
-                            },
-                        authorizedPublicIdentityToAdd = identityChange.authorizedLine,
-                        brokerSecretChange =
-                            if (input.brokerPasswordFile.isNotBlank()) {
-                                null
-                            } else if (input.brokerPassword.isNotBlank()) {
-                                BrokerSecretChange.Set(input.brokerPassword)
-                            } else {
-                                BrokerSecretChange.Remove
-                            },
-                    ),
-            )
+        val request = buildSetupPersistenceRequest(input, candidate, prefs, forwards, commitContext)
         // This is the final cancellable boundary before authoritative mutation. A cancel
         // before this point is a no-op; a cancel inside persist is rolled back transactionally.
         throwIfStale(commitContext.token)
@@ -428,6 +396,47 @@ internal class SetupSaveController(
             saveError(message, redact = false)
         }
     }
+}
+
+private fun buildSetupPersistenceRequest(
+    input: SetupConfigInput,
+    candidate: String,
+    prefs: AndroidAppPreferences,
+    forwards: List<ForwardConfig>,
+    commitContext: SetupCommitContext,
+): SetupPersistenceRequest {
+    val identityChange = commitContext.identityChange
+    return SetupPersistenceRequest(
+        configContents = candidate,
+        setupInput = input,
+        preferences =
+            prefs.copy(
+                allowMetered = input.allowMetered,
+                resumeOnUnmetered = input.resumeOnUnmetered,
+            ),
+        forwards = forwards,
+        optionalChanges =
+            SetupOptionalChanges(
+                replacementIdentity =
+                    if (identityChange.identity.fromImport) {
+                        IdentityReplacement(
+                            identityChange.identity.privateIdentity,
+                            identityChange.identity.publicIdentity,
+                        )
+                    } else {
+                        null
+                    },
+                authorizedPublicIdentityToAdd = identityChange.authorizedLine,
+                brokerSecretChange =
+                    if (input.brokerPasswordFile.isNotBlank()) {
+                        null
+                    } else if (input.brokerPassword.isNotBlank()) {
+                        BrokerSecretChange.Set(input.brokerPassword)
+                    } else {
+                        BrokerSecretChange.Remove
+                    },
+            ),
+    )
 }
 
 /**
