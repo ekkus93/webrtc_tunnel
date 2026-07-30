@@ -3,7 +3,7 @@
 **Purpose:** trigger full validation for the completed FIX9 implementation and enforcement pass.
 
 **Original validation requested from SHA:** `29ac4d4b1550663495bc43dc6b6116bfb75daef5`  
-**Latest implementation/test baseline:** `022f754f724e9664e191594be9dde7623ae36de0`
+**Latest implementation/test baseline:** `12dcfbe6233e2dcb54786f6b5902f8e4817538e0`
 
 This file creates traceable `[full-signoff]` commits that force the repository's full CI matrix, including lint, unit tests, Android validation, Rust validation, Docker/Android E2E, focused RC diagnostics, and broker-secret permission instrumentation.
 
@@ -13,15 +13,15 @@ This file creates traceable `[full-signoff]` commits that force the repository's
 - Run `30346404007` proved the broker-secret instrumentation test passed, but its custom status-posting step failed. The workflow now uses its authoritative job result.
 - Runs `30347751225`, `30349093311`, and `30350167310` exposed remaining controller complexity findings; helper logic was moved out without weakening thresholds.
 - Run `30353490703` exposed a Robolectric release-test latch race; commit `1f99b703e93d488eb2c2052bc765121759ef4c68` bound latches to the test Application instance.
-- Run `30499169031` passed Rust lint, Linux, macOS, RC diagnostics, and Docker E2E. Android stopped at detekt with one `LongParameterList` and four `MaxLineLength` findings.
-- Run `30499670720` again passed every non-Android main job and RC diagnostics. Android stopped at one final `LongMethod` finding in `commitSetup`.
+- Runs `30499169031` and `30499670720` exposed the final Android controller detekt findings; helper extraction fixed them without suppressions.
 - Commit `85e77ea5d933c9c7ea85e130bd873d3ff4f8a01b` extracted persistence-request construction without changing cancellation, rollback, or stale-commit warning behavior.
-- Commit `25f6e4699aa042884eb9ab7cbafaed3026e7cb5a` aligned the source contract audit with the refactored persistence boundary.
 - Temporary patch workflows and marker files were removed, issue #4 was closed, and the authoritative status publisher was restored to status-only behavior at `04386c97cdf317aff77803457e341dcf8c54c573`.
-- Run `30502929767` passed Rust lint, Linux, macOS, RC diagnostics, and Docker E2E. Android reached the full Gradle check and failed only because `ConfigRepository.kt` had one unexpected-indentation ktlint finding; commit `039696b1c34f5bf8458d86b0d325fbd0557206c4` corrected it.
-- Broker instrumentation run `30502929768` did not execute the test because the emulator action ran `cd android` and `./gradlew` in separate shells. Commit `0cf4bf61f2518dde1a1fd1b9745a4b47d2fc10c3` now invokes `./android/gradlew -p android` directly from repository root.
+- Run `30502929767` passed every non-Android gate and exposed one `ConfigRepository.kt` ktlint indentation issue; commit `039696b1c34f5bf8458d86b0d325fbd0557206c4` corrected it.
+- Broker run `30502929768` exposed a multiline emulator-action shell-directory defect; commit `0cf4bf61f2518dde1a1fd1b9745a4b47d2fc10c3` now invokes `./android/gradlew -p android` directly.
 - Commits `1ce0153fca7e147b78107a5d1463a32608c7e873` and `a8ffde57af963e7e518ffe6d7ae200d288356ea4` added comment-resistant source enforcement for identity-draft, forward-draft, final-persist, and tunnel-start freshness boundaries.
-- Runs `30504403878` and `30505101514` exposed only ktlint formatting defects in the pre-existing Result-contract source audit. Commits `096d0b4b8a23f23530e2b085772b8fb0f0700ab7` and `022f754f724e9664e191594be9dde7623ae36de0` corrected them without weakening any assertion.
+- Runs `30504403878` and `30505101514` exposed two ktlint formatting defects in the Result-contract source audit. Commits `096d0b4b8a23f23530e2b085772b8fb0f0700ab7` and `022f754f724e9664e191594be9dde7623ae36de0` corrected them without weakening assertions.
+- Final-candidate broker run `30505896676` passed the real broker-secret permission instrumentation test.
+- Main run `30505896686` passed Rust lint, Linux, macOS, and Docker E2E, then exposed three test-only detekt findings: two non-injected IO dispatchers and one ignored `Result`. Commits `8c3911ed1d4b8a82a7d5ce1228262d138ad66dbb` and `12dcfbe6233e2dcb54786f6b5902f8e4817538e0` consume the Result and use a closed injected test dispatcher.
 
 ## FIX9 completion changes under validation
 
@@ -64,4 +64,4 @@ tests/e2e/docker/stop_lifecycle.sh
   -Pandroid.testInstrumentationRunnerArguments.class=com.phillipchin.webrtctunnel.data.BrokerSecretRepositoryInstrumentedTest
 ```
 
-**Status:** final exact-SHA implementation/test validation requested; do not claim signoff until every required workflow passes for this commit.
+**Status:** exact-SHA validation requested after detekt-compliant test cleanup; do not claim signoff until every required workflow passes for this commit.
