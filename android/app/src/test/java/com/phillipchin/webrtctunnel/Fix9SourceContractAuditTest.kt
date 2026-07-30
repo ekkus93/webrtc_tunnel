@@ -89,10 +89,15 @@ class Fix9SourceContractAuditTest {
             }
         }
 
-    private fun functionWindow(source: String, start: String, end: String): String {
+    private fun functionWindow(
+        source: String,
+        start: String,
+        end: String,
+    ): String {
         val startIndex = source.indexOf(start)
         require(startIndex >= 0) { "missing function start: $start" }
-        val endIndex = source.indexOf(end, startIndex + start.length).let { if (it < 0) source.length else it }
+        val nextIndex = source.indexOf(end, startIndex + start.length)
+        val endIndex = if (nextIndex < 0) source.length else nextIndex
         return source.substring(startIndex, endIndex)
     }
 
