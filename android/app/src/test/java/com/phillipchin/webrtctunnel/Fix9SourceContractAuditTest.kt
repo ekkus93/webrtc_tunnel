@@ -75,8 +75,10 @@ class Fix9SourceContractAuditTest {
 
     private fun resultContractViolations(source: String): Set<String> =
         buildSet {
-            if (source.contains("catch (error: java.io.IOException)") &&
-                !source.contains("catch (error: Exception)")) {
+            if (
+                source.contains("catch (error: java.io.IOException)") &&
+                !source.contains("catch (error: Exception)")
+            ) {
                 add("selected_catch")
             }
             val firstTry = source.indexOf("try")
