@@ -1,5 +1,3 @@
 # FIX9 Patch Executor Trigger
 
-This temporary marker was added after `.github/workflows/fix9-patch-after-ci.yml` was already present on the default branch, so completion of this commit's `CI` workflow can invoke the registered one-time `workflow_run` patch executor.
-
-The executor must delete this marker together with all temporary FIX9 patch workflows when it commits the `SetupSaveController.commitSetup` long-method refactor.
+The established `Publish CI Status Issues` workflow now contains the one-time FIX9 patch job. Completion of this metadata-only commit's `CI` workflow must invoke that registered publisher, extract `SetupPersistenceRequest` construction from `SetupSaveController.commitSetup`, and delete this marker plus every temporary FIX9 patch workflow.
