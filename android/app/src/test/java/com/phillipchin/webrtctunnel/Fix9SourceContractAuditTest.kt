@@ -18,7 +18,12 @@ class Fix9SourceContractAuditTest {
         assertTrue(forwards.contains("runGuarded(access, SetupDraftOperation.ForwardEdit) { token ->"))
         assertTrue(identity.contains("runGuarded(access, SetupDraftOperation.IdentityAction) { token ->"))
         assertTrue(save.contains("runGuarded(access, SetupDraftOperation.FinalSave) { token ->"))
-        assertTrue(save.contains("throwIfStale(token)\n        val result = withContext(ioDispatcher)"))
+        assertTrue(
+            save.contains(
+                "throwIfStale(commitContext.token)\n" +
+                    "        val result = withContext(ioDispatcher)",
+            ),
+        )
         assertTrue(coordinator.contains("val job: Job"))
         assertTrue(coordinator.contains("jobToCancel?.cancel(CancellationException(reason))"))
     }
