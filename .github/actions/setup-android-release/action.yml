@@ -19,7 +19,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        [[ -e /dev/kvm ]] || {
+        [[ -c /dev/kvm ]] || {
           echo '/dev/kvm is unavailable on this runner; hardware-accelerated release smoke testing is required' >&2
           exit 1
         }
@@ -27,11 +27,7 @@ runs:
           sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
-        [[ -r /dev/kvm && -w /dev/kvm ]] || {
-          echo '/dev/kvm is not readable and writable after permission setup' >&2
-          ls -l /dev/kvm >&2 || true
-          exit 1
-        }
+        "$ANDROID_SDK_ROOT/emulator/emulator" -accel-check
     - name: Install Rust toolchain with Android targets
       uses: dtolnay/rust-toolchain@stable
       with:
