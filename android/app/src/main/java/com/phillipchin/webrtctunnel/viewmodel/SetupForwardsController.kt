@@ -50,7 +50,7 @@ internal class SetupForwardsController(
             }
             token.publishIfFresh {
                 access.setForwards(after)
-                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward saved"))
+                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward draft updated"))
             }
         }
     }
@@ -63,7 +63,7 @@ internal class SetupForwardsController(
             inspectForwardDraft(after)
             token.publishIfFresh {
                 access.setForwards(after)
-                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward deleted"))
+                access.applyState(access.state().copy(errorMessage = null, saveResult = "Forward draft removed"))
             }
         }
     }
