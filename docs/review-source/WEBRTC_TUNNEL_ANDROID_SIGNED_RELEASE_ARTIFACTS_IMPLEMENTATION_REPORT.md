@@ -95,9 +95,28 @@ The following cannot be completed safely through repository source changes alone
 
 The repository intentionally fails closed until those steps are complete.
 
-
 ## Explicit AAB signing correction
 
 The first production-style build successfully generated an APK and AAB, but strict JDK verification rejected the Android Gradle Plugin-signed AAB because `JarFile` and `JarInputStream` disagreed about signature metadata ordering. The verifier remained fail-closed; staging, emulator testing, and upload did not run.
 
 The corrected chain builds the AAB unsigned, rejects pre-existing signature metadata, signs a distinct bundle with `jarsigner`, validates exactly one signer and the pinned certificate, validates the bundle with pinned bundletool 1.18.3, generates a universal APK, and verifies/smoke-tests both distribution paths. The failed run remains evidence and is not reclassified as success.
+
+## ChatGPT-readable Android CI status bridge
+
+The repository now has a dedicated persistent status issue, `CI Status: Android Signed Release — master` (#6), maintained by `.github/workflows/publish-ci-status-issues.yml` for the exact `Android signed release` workflow on `master`.
+
+The publisher:
+
+- handles `requested`, `in_progress`, and `completed` workflow-run activity;
+- rejects unrelated branches and stale run IDs before modifying the issue;
+- verifies the issue ownership marker before overwrite;
+- uses only `actions: read`, `contents: read`, and `issues: write`;
+- does not check out or execute the triggering workflow's source;
+- paginates job and artifact metadata;
+- publishes exact SHA, run ID, attempt, job IDs, every available step state, abnormal steps, timing, and artifact metadata in Markdown plus parseable JSON;
+- distinguishes a metadata-only invocation from an executed release gate with explicit `executed`, `scope`, and `not_run` state;
+- preserves all problem jobs and problem steps when deterministic size compaction is required.
+
+Bridge publication was observed end to end on run `30667306901` for SHA `e585e9d28fb62a0ca7900371c8e0cb6f9b87580b`. That run was a metadata-only `workflow_run` invocation and is not evidence that the signed APK/AAB dry-run path passed. The full dry-run path must pass on a fresh exact master SHA before this report claims Android release validation success.
+
+The emulator runner shell contract was also corrected at `b8ab314f77ced3fc1503cc35a9f217595f34447e`: the action invokes its `script` through `/bin/sh`, so the smoke body now explicitly transfers execution to Bash while retaining `-e`, `-u`, and `pipefail`. This correction does not weaken APK installation, launch, PID, package-version, uninstall, signing, or artifact checks.
