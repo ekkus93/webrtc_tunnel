@@ -214,7 +214,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            set -euo pipefail
+            exec bash -eu -o pipefail <<'BASH'
             smoke_test() {
               local apk="$1"
               adb install "$apk"
@@ -235,6 +235,7 @@ jobs:
             }
             smoke_test android/app/build/outputs/apk/release/app-release.apk
             smoke_test "$RUNNER_TEMP/android-release-from-aab.apk"
+            BASH
       - name: Upload non-production dry-run artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -439,7 +440,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            set -euo pipefail
+            exec bash -eu -o pipefail <<'BASH'
             smoke_test() {
               local apk="$1"
               adb install "$apk"
@@ -460,6 +461,7 @@ jobs:
             }
             smoke_test android/app/build/outputs/apk/release/app-release.apk
             smoke_test "$RUNNER_TEMP/android-release-from-aab.apk"
+            BASH
       - name: Upload verified workflow artifacts for retention and inspection
         uses: actions/upload-artifact@v7
         with:
