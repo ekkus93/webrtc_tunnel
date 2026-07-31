@@ -1,0 +1,283 @@
+name: Exact SHA Closure
+run-name: Exact SHA Closure — ${{ inputs.manifest_path }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: Closure manifest under .github/closure-manifests
+        required: true
+        default: .github/closure-manifests/fix9-review-followup.json
+        type: string
+      target_sha:
+        description: Optional exact current master SHA; blank uses the dispatch SHA
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: exact-sha-closure-master
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  statuses: write
+
+jobs:
+  close:
+    name: Create and validate exact candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 135
+
+    steps:
+      - name: Check out requested master state
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate closure manifest
+        id: manifest
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          output_file="${RUNNER_TEMP}/closure-manifest.outputs"
+          python3 scripts/exact_sha_closure.py validate \
+            --repo-root . \
+            --manifest "${MANIFEST_PATH}" \
+            > "${output_file}"
+          cat "${output_file}"
+          cat "${output_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate target is the exact current master head
+        id: target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REQUESTED_TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          target_sha="${REQUESTED_TARGET_SHA:-${GITHUB_SHA}}"
+          if [[ ! "${target_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'target_sha must be a full lowercase commit SHA: %s\n' "${target_sha}" >&2
+            exit 1
+          fi
+          git cat-file -e "${target_sha}^{commit}"
+          git fetch --no-tags origin master
+          fetched_master="$(git rev-parse origin/master)"
+          api_master="$(gh api "repos/${REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+          if [[ "${target_sha}" != "${fetched_master}" || "${target_sha}" != "${api_master}" ]]; then
+            printf 'target is not current master: target=%s fetched=%s api=%s\n' \
+              "${target_sha}" "${fetched_master}" "${api_master}" >&2
+            exit 1
+          fi
+          commit_message="$(gh api "repos/${REPOSITORY}/commits/${target_sha}" --jq '.commit.message')"
+          if [[ "${commit_message}" == *"[full-signoff]"* ]]; then
+            printf 'target is already a full-signoff candidate; create a corrective implementation commit first\n' >&2
+            exit 1
+          fi
+          echo "target_sha=${target_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create unique full-signoff candidate and advance master
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+          CLOSURE_ID: ${{ steps.manifest.outputs.closure_id }}
+          ORCHESTRATOR_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          current_master="$(gh api "repos/${REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+          if [[ "${current_master}" != "${TARGET_SHA}" ]]; then
+            printf 'master moved before candidate creation: expected=%s actual=%s\n' \
+              "${TARGET_SHA}" "${current_master}" >&2
+            exit 1
+          fi
+
+          tree_sha="$(gh api "repos/${REPOSITORY}/git/commits/${TARGET_SHA}" --jq '.tree.sha')"
+          commit_payload="$(
+            jq -n \
+              --arg message "[full-signoff] closure: ${CLOSURE_ID}" \
+              --arg tree "${tree_sha}" \
+              --arg parent "${TARGET_SHA}" \
+              '{message: $message, tree: $tree, parents: [$parent]}'
+          )"
+          candidate_sha="$(
+            gh api \
+              --method POST \
+              "repos/${REPOSITORY}/git/commits" \
+              --input - \
+              --jq '.sha' \
+              <<< "${commit_payload}"
+          )"
+          if [[ ! "${candidate_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'GitHub did not return a valid candidate SHA\n' >&2
+            exit 1
+          fi
+
+          current_master="$(gh api "repos/${REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+          if [[ "${current_master}" != "${TARGET_SHA}" ]]; then
+            printf 'master moved while candidate was being created: expected=%s actual=%s\n' \
+              "${TARGET_SHA}" "${current_master}" >&2
+            exit 1
+          fi
+          ref_payload="$(jq -n --arg sha "${candidate_sha}" '{sha: $sha, force: false}')"
+          gh api \
+            --method PATCH \
+            "repos/${REPOSITORY}/git/refs/heads/master" \
+            --input - \
+            <<< "${ref_payload}" \
+            >/dev/null
+          advanced_master="$(gh api "repos/${REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+          if [[ "${advanced_master}" != "${candidate_sha}" ]]; then
+            printf 'master did not advance to candidate: candidate=%s actual=%s\n' \
+              "${candidate_sha}" "${advanced_master}" >&2
+            exit 1
+          fi
+
+          status_payload="$(
+            jq -n \
+              --arg state pending \
+              --arg context "closure/${CLOSURE_ID}" \
+              --arg description "validation workflows dispatched for exact candidate" \
+              --arg target_url "${ORCHESTRATOR_URL}" \
+              '{state: $state, context: $context, description: $description, target_url: $target_url}'
+          )"
+          gh api \
+            --method POST \
+            "repos/${REPOSITORY}/statuses/${candidate_sha}" \
+            --input - \
+            <<< "${status_payload}" \
+            >/dev/null
+
+          echo "candidate_sha=${candidate_sha}" >> "${GITHUB_OUTPUT}"
+          echo "Created exact candidate ${candidate_sha} from ${TARGET_SHA}."
+
+      - name: Dispatch exact-SHA validation workflows
+        id: dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
+          CLOSURE_ID: ${{ steps.manifest.outputs.closure_id }}
+          ORCHESTRATOR_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          dispatch_workflow() {
+            local workflow="$1"
+            local inputs_json="$2"
+            local payload
+            payload="$(jq -n --arg ref master --argjson inputs "${inputs_json}" '{ref: $ref, inputs: $inputs}')"
+            gh api \
+              --method POST \
+              "repos/${REPOSITORY}/actions/workflows/${workflow}/dispatches" \
+              --input - \
+              <<< "${payload}" \
+              >/dev/null
+            printf 'Dispatched %s for %s\n' "${workflow}" "${CANDIDATE_SHA}"
+          }
+
+          dispatch_workflow \
+            ci.yml \
+            "$(jq -n --arg sha "${CANDIDATE_SHA}" '{expected_sha: $sha, full_signoff: "true"}')"
+          dispatch_workflow \
+            rc-diagnostics.yml \
+            "$(jq -n --arg sha "${CANDIDATE_SHA}" '{expected_sha: $sha}')"
+          dispatch_workflow \
+            fix9-broker-secret-instrumentation.yml \
+            "$(jq -n --arg sha "${CANDIDATE_SHA}" '{expected_sha: $sha}')"
+
+          issue_body="$(cat <<EOF
+          <!-- maintained by exact-sha-closure.yml -->
+          # Exact SHA Closure
+
+          - **Closure:** \`${CLOSURE_ID}\`
+          - **State:** \`pending\`
+          - **Candidate:** \`${CANDIDATE_SHA}\`
+          - **Current master:** \`${CANDIDATE_SHA}\`
+          - **Orchestrator:** ${ORCHESTRATOR_URL}
+          - **Detail:** Required validation workflows were explicitly dispatched for the exact candidate.
+
+          The workflow fails if master moves, any required status fails, a status is missing at timeout, or a required workflow is cancelled. Failed workflows are not retried automatically.
+          EOF
+          )"
+          issue_payload="$(jq -n --arg title "CI Status: Exact SHA Closure" --arg body "${issue_body}" '{title: $title, body: $body, state: "open"}')"
+          gh api \
+            --method PATCH \
+            "repos/${REPOSITORY}/issues/5" \
+            --input - \
+            <<< "${issue_payload}" \
+            >/dev/null
+
+      - name: Wait for exact candidate closure
+        id: wait
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/exact_sha_closure.py wait \
+            --repository "${{ github.repository }}" \
+            --candidate-sha "${{ steps.candidate.outputs.candidate_sha }}" \
+            --closure-id "${{ steps.manifest.outputs.closure_id }}" \
+            --target-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --issue-number 5 \
+            --timeout-seconds 7200 \
+            --poll-seconds 30
+
+      - name: Publish pre-aggregation failure
+        if: ${{ failure() && steps.candidate.outputs.candidate_sha != '' && steps.wait.outcome == 'skipped' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
+          CLOSURE_ID: ${{ steps.manifest.outputs.closure_id }}
+          ORCHESTRATOR_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          description="orchestrator failed before status aggregation"
+          status_payload="$(
+            jq -n \
+              --arg state failure \
+              --arg context "closure/${CLOSURE_ID}" \
+              --arg description "${description}" \
+              --arg target_url "${ORCHESTRATOR_URL}" \
+              '{state: $state, context: $context, description: $description, target_url: $target_url}'
+          )"
+          gh api \
+            --method POST \
+            "repos/${REPOSITORY}/statuses/${CANDIDATE_SHA}" \
+            --input - \
+            <<< "${status_payload}" \
+            >/dev/null
+          master_head="$(gh api "repos/${REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+          issue_body="$(cat <<EOF
+          <!-- maintained by exact-sha-closure.yml -->
+          # Exact SHA Closure
+
+          - **Closure:** \`${CLOSURE_ID}\`
+          - **State:** \`failure\`
+          - **Candidate:** \`${CANDIDATE_SHA}\`
+          - **Current master:** \`${master_head}\`
+          - **Orchestrator:** ${ORCHESTRATOR_URL}
+          - **Detail:** ${description}
+
+          Inspect the failed orchestrator step. No validation workflow was retried automatically.
+          EOF
+          )"
+          issue_payload="$(jq -n --arg title "CI Status: Exact SHA Closure" --arg body "${issue_body}" '{title: $title, body: $body, state: "open"}')"
+          gh api \
+            --method PATCH \
+            "repos/${REPOSITORY}/issues/5" \
+            --input - \
+            <<< "${issue_payload}" \
+            >/dev/null

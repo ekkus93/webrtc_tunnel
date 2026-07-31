@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - master
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact master SHA this diagnostic run must validate
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,14 +17,33 @@ permissions:
 jobs:
   focused-rust:
     name: Focused Rust diagnostics
-    if: contains(github.event.head_commit.message, '[full-signoff]')
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-signoff]')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       statuses: write
     steps:
+      - name: Validate exact requested SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'expected_sha must be a full lowercase commit SHA\n' >&2
+            exit 1
+          fi
+          if [[ "${EXPECTED_SHA}" != "${GITHUB_SHA}" ]]; then
+            printf 'workflow dispatch SHA mismatch: expected=%s event=%s\n' \
+              "${EXPECTED_SHA}" "${GITHUB_SHA}" >&2
+            exit 1
+          fi
+
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -56,6 +81,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FMT_STATUS: ${{ steps.checks.outputs.fmt_status }}
           TEST_STATUS: ${{ steps.checks.outputs.test_status }}
+          TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
           TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
@@ -72,6 +98,6 @@ jobs:
             --header "Accept: application/vnd.github+json" \
             --header "Authorization: Bearer $GH_TOKEN" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/statuses/${TARGET_SHA}" \
             --data "$payload"
           [ "$state" = success ]

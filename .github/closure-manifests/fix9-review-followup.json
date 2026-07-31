@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "closure_id": "fix9-review-followup",
+  "todo_path": "docs/WEBRTC_TUNNEL_FIX9_REVIEW_FOLLOWUP_TODO.md",
+  "required_documents": [
+    "docs/WEBRTC_TUNNEL_FIX9_REVIEW_FOLLOWUP_TODO.md",
+    "docs/review-source/WEBRTC_TUNNEL_FIX9_REVIEW_FOLLOWUP_IMPLEMENTATION_REPORT.md",
+    "docs/review-source/WEBRTC_TUNNEL_FIX9_FOLLOWUP_STATIC_CONTRACT_INVENTORY.md",
+    "docs/EXACT_SHA_CLOSURE_AUTOMATION.md",
+    "docs/review-source/WEBRTC_TUNNEL_EXACT_SHA_CLOSURE_AUTOMATION_REPORT.md"
+  ],
+  "required_statuses": [
+    "ci/rc-diagnostics",
+    "ci/full-matrix",
+    "ci/release-candidate",
+    "ci/broker-secret-instrumentation"
+  ]
+}
