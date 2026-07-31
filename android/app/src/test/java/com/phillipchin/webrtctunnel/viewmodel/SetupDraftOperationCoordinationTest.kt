@@ -21,6 +21,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
 
+private const val SETUP_COORDINATION_TEST_TIMEOUT_MS = 15_000L
+
 /**
  * FIX8 P1-001: the shared setup-local [SetupOperationCoordinator] — baseline load off the main
  * thread, load-state gating, overlap rejection deriving `isBusy` from real admission (not
@@ -125,7 +127,7 @@ class SetupDraftOperationCoordinationTest : AppViewModelTestBase() {
     }
 
     // FIX9 P0-001-G: real production-path test, not a direct runGuarded seam.
-    @Test
+    @Test(timeout = SETUP_COORDINATION_TEST_TIMEOUT_MS)
     fun cancelDuringIdentityImportFromPathDoesNotPublishImportedIdentity() =
         runBlocking {
             val staleIdentityFile =
@@ -164,7 +166,7 @@ class SetupDraftOperationCoordinationTest : AppViewModelTestBase() {
         }
 
     // overlappingIdentityAndForwardActionsCannotPublishStaleBusyOrState
-    @Test
+    @Test(timeout = SETUP_COORDINATION_TEST_TIMEOUT_MS)
     fun overlappingIdentityAndForwardActionsCannotPublishStaleBusyOrState() =
         runBlocking {
             val viewModel = SetupViewModel(deps)
@@ -254,7 +256,7 @@ class SetupDraftOperationCoordinationTest : AppViewModelTestBase() {
         }
 
     // setupActionCancellationEmitsNoOrdinaryResultAndReleasesOwnership
-    @Test
+    @Test(timeout = SETUP_COORDINATION_TEST_TIMEOUT_MS)
     fun setupActionCancellationEmitsNoOrdinaryResultAndReleasesOwnership() =
         runBlocking {
             val viewModel = SetupViewModel(deps)
