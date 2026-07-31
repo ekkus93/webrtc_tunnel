@@ -4,8 +4,9 @@
 **Initial audit baseline:** `141a5425f620ae6b37a29ee0d8956cbfbd4d7b27`  
 **Implementation baseline:** `6bad7a1f18b180676cc567031f93f7a99fb91d52`  
 **Validated functional repair candidate:** `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc`  
+**Latest startup-hardening correction:** `673ea778d104673826f83592325fef46271133e9`  
 **Task evidence:** `docs/review-source/WEBRTC_TUNNEL_FIX9_COMPLETION_EVIDENCE.md`  
-**Status:** implementation and functional exact-SHA release-candidate validation complete. Final documentation/evidence closure is valid only if the exact `[full-signoff]` commit containing this report passes all applicable same-SHA gates.
+**Status:** implementation and functional exact-SHA release-candidate validation are complete. The first documentation-only closure candidate failed the emulator startup gate; final closure remains conditional on a new exact `[full-signoff]` SHA passing every applicable gate.
 
 ## Delivered behavior
 
@@ -36,13 +37,13 @@ The production race was a check-before-launch error: both diagnostics export API
 - `6bad7a1f18b180676cc567031f93f7a99fb91d52` replaces scheduler-speed assumptions with a blocked single-thread IO dispatcher and bounded latches.
 - Path-scoped run `30600821345` passed full Gradle `check`, the dedicated stop-failure suite, the second full debug unit invocation, and path-scoped signoff without retry.
 
-### Android emulator Settings-navigation race
+### Android emulator Settings-navigation false-positive
 
 Exact candidate `7be00838feef85d374f20aa8dd6b7365969ba3dd` passed the non-emulator matrix but failed the real emulator E2E with `could not find Settings nav tab`.
 
 The old `bounds_of_text()` shell pipeline ended in `awk`. Empty input therefore produced empty output but status zero, so the readiness check falsely treated a missing node as present and attempted navigation before Compose semantics were available.
 
-Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` repairs the actual harness contract:
+Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` repairs that harness contract:
 
 - missing semantic nodes or unusable bounds return failure;
 - startup waits for exported Settings semantics instead of a fixed sleep;
@@ -50,12 +51,35 @@ Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` repairs the actual harness con
 - both selectors remain app-owned UI semantics from the same `uiautomator` tree;
 - no coordinate fallback, silent skip, retry suppression, or timeout inflation was added.
 
+### Documentation-candidate Android startup prerequisite failure
+
+Documentation-only candidate `9b1d1999fa81865adb051574221a68f4e15e8d74` passed RC diagnostics, broker-secret instrumentation, Rust/Linux/macOS/Docker, the Android full Gradle check, the dedicated stop-failure suite, and the second full Android unit invocation. Its emulator job `91080851616` nevertheless failed with `home never rendered Settings navigation` after emulator boot, APK installation, app-state reset, and Activity launch.
+
+The failed run exposed a second fail-open harness prerequisite:
+
+- after `pm clear`, `POST_NOTIFICATIONS` was granted with `|| true`;
+- a failed grant could therefore be ignored while `NotificationPermissionGate` covered Home with a modal;
+- plain `am start` did not wait for ActivityManager completion;
+- UI-dump failures and stale/invalid output were discarded rather than retained as bounded evidence.
+
+Commit `673ea778d104673826f83592325fef46271133e9` hardens the production E2E startup contract:
+
+- validates the Android SDK level;
+- requires `pm grant POST_NOTIFICATIONS` and verifies `granted=true` through package state;
+- requires device wake and keyguard dismissal;
+- uses `am start -W` and requires `Status: ok`;
+- empties failed/stale UI dumps instead of reusing them;
+- recognizes a visible notification-permission modal as a prerequisite failure rather than dismissing it;
+- emits bounded package, focus, activity, UI-hierarchy, and logcat diagnostics before any identity or broker secret is entered;
+- retains the original 30-second semantic bound and does not add retry-only behavior or timeout inflation.
+
 ## Principal correction commits
 
 - `41b3e08cffe83292776eaeb62524a4133837e19a` — truthful setup readiness after baseline admission release
 - `590c66717a7c67cb4d8fd08f48daa881d8834641` — atomic diagnostics export admission
 - `6bad7a1f18b180676cc567031f93f7a99fb91d52` — deterministic diagnostics concurrency regression
 - `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` — fail-closed Android UI semantic lookup and readiness wait
+- `673ea778d104673826f83592325fef46271133e9` — fail-closed notification, ActivityManager, keyguard, and UI-dump startup prerequisites
 
 ## Principal production files
 
@@ -87,6 +111,7 @@ Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` repairs the actual harness con
 - `BrokerSecretRepositoryInstrumentedTest`
 - `LogsViewModelTest.concurrentExportIsRejectedWhileOneIsAlreadyInFlight`
 - Android emulator real-data-path E2E job `91074610794`
+- failed final-candidate emulator startup job `91080851616`
 
 ## Exact successful functional candidate
 
@@ -110,7 +135,7 @@ The emulator run completed all seven setup steps, reached `Listening`, launched 
 
 ## Final documentation/evidence signoff rule
 
-The final candidate is the exact `[full-signoff]` commit containing this report and the companion closure documents. Its SHA is intentionally self-referenced rather than guessed before publication.
+The final candidate is the exact `[full-signoff]` commit containing this report, the companion closure documents, and startup correction `673ea778d104673826f83592325fef46271133e9`. Its SHA is intentionally self-referenced rather than guessed before publication.
 
 Commit-level FIX9 closure becomes valid only when the authoritative commit status API and CI status issues show, for that exact SHA:
 
@@ -121,7 +146,7 @@ Commit-level FIX9 closure becomes valid only when the authoritative commit statu
 - all required Rust/Linux/macOS/Android/Docker jobs: success
 - Android emulator real-data-path E2E: success
 
-A successful parent, a rerun from another SHA, or the previously validated functional candidate is not a substitute for the final documentation SHA.
+A successful parent, a retry, a rerun from another SHA, or the previously validated functional candidate is not a substitute for the final documentation SHA.
 
 ## Release artifacts
 
