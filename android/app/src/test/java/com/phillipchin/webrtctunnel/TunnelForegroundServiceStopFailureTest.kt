@@ -48,17 +48,13 @@ class TunnelForegroundServiceStopFailureTest {
 
     @Before
     fun setUp() {
-        // P0-001: Reset all failure injection hooks before each test to prevent cross-test contamination.
-        TunnelForegroundServiceTestHooks.identityReadFailure.set(null)
-        TunnelForegroundServiceTestHooks.configPrepFailure.set(null)
-        TunnelForegroundServiceTestHooks.policyBlockReason.set(null)
-        TunnelForegroundServiceTestHooks.configValidationFailure.set(null)
-        TunnelForegroundServiceTestHooks.validationThrows.set(null)
-        // P0-003: Reset config preparation throw injection hook.
-        TunnelForegroundServiceTestHooks.configPrepThrows.set(null)
-        TunnelForegroundServiceTestHooks.preferenceReadFailure.set(null)
-        TunnelForegroundServiceTestHooks.preferenceReadCancels.set(false)
-        TunnelForegroundServiceTestHooks.preferenceReadInterceptSkipCount.set(0)
+        // Robolectric can reuse the test Application across methods and consecutive Gradle test
+        // tasks. Reset every static injection point and install a fresh bridge/repository/runtime
+        // safety owner before the service reads AppDependencies, so quarantine and counters from
+        // a previous method cannot affect this one.
+        TunnelForegroundServiceTestHooks.resetForTest()
+        ApplicationProvider.getApplicationContext<TunnelForegroundServiceTestApplication>()
+            .resetDependenciesForTest()
         service = controller.create().get()
     }
 
@@ -389,10 +385,13 @@ class TunnelForegroundServiceStopFailureTest {
         )
         assertEquals(ServiceState.Error, deps.tunnelRepository.status.value.serviceState)
 
-        // Retry/reevaluation stays open: a subsequent successful pause still lands cleanly.
-        runBlocking { service.offer.pauseForPolicy("retry policy pause") }
-        assertTrue(service.pausedByPolicy.get())
-        assertEquals(ServiceState.PausedMeteredBlocked, deps.tunnelRepository.status.value.serviceState)
+        // Quarantine recovery is deliberately stricter than a policy reevaluation: only a
+        // verified explicit STOP may clear the uncertain-runtime state. Prove that recovery
+        // path directly instead of allowing a later non-explicit pause to disguise quarantine.
+        runBlocking { service.offer.stopServiceWork() }
+        assertFalse(service.pausedByPolicy.get())
+        assertFalse(service.nativeRuntimeSafety.state.value.quarantined)
+        assertEquals(ServiceState.Stopped, deps.tunnelRepository.status.value.serviceState)
     }
 
     /**
