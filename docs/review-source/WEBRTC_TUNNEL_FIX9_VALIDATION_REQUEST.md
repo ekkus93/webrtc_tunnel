@@ -1,14 +1,15 @@
 # WebRTC Tunnel FIX9 Final Validation Request
 
-**Purpose:** trigger the definitive exact-SHA documentation/evidence signoff after the FIX9 implementation, diagnostics-admission correction, Android emulator E2E harness repair, and successful functional release-candidate run.
+**Purpose:** trigger the definitive exact-SHA documentation/evidence signoff after the FIX9 implementation, diagnostics-admission correction, Android UI semantic repair, and fail-closed emulator startup-prerequisite hardening.
 
 **Initial audit baseline:** `141a5425f620ae6b37a29ee0d8956cbfbd4d7b27`  
 **Implementation baseline:** `6bad7a1f18b180676cc567031f93f7a99fb91d52`  
 **Validated functional repair candidate:** `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc`  
+**Latest startup-hardening correction:** `673ea778d104673826f83592325fef46271133e9`  
 **Completion ledger:** `docs/review-source/WEBRTC_TUNNEL_FIX9_COMPLETION_EVIDENCE.md`  
 **TODO closure ledger:** `docs/WEBRTC_TUNNEL_STALE_SETUP_RESULT_CONTRACT_FIX9_TODO.md`
 
-This file is the trigger for the final documentation-only `[full-signoff]` candidate. The candidate SHA is the exact commit containing this file. A successful parent, a status from another SHA, or a retry of an earlier candidate is insufficient.
+This file triggers the final `[full-signoff]` candidate. The candidate SHA is the exact commit containing this file, all companion ledgers, and correction `673ea778d104673826f83592325fef46271133e9`. A successful parent, a status from another SHA, or a retry of an earlier candidate is insufficient.
 
 ## Functional candidate already proven
 
@@ -29,16 +30,40 @@ Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` passed the complete applicable
 - Full matrix signoff job `91076875217`: success
 - Failed jobs and failed steps: none
 
-## Android emulator E2E repair under final documentation signoff
-
-The previous candidate `7be00838feef85d374f20aa8dd6b7365969ba3dd` failed after emulator boot and app launch because the shell harness treated an empty `uiautomator` lookup as success. The final implementation repair in `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc`:
-
-- returns failure for missing semantic nodes or unusable bounds;
-- waits for actual Settings navigation semantics rather than a fixed startup sleep;
-- locates Settings by visible text or the app-owned `Settings tab icon` content description;
-- uses no coordinate fallback, silent skip, retry suppression, or timeout inflation.
-
 The successful emulator run completed all seven setup steps, reached `Listening`, negotiated with the dockerized answer, delivered the marker through the Android tunnel, and verified `PING`/`PONG` data-plane traffic.
+
+## Rejected documentation-only candidate
+
+Candidate `9b1d1999fa81865adb051574221a68f4e15e8d74` was correctly rejected by main run `30606054232`.
+
+It passed RC diagnostics, broker-secret instrumentation, Rust/Linux/macOS/Docker, the Android full Gradle check, the dedicated stop-failure suite, and the second full Android unit invocation. Android emulator job `91080851616` failed with:
+
+`[e2e FAIL] home never rendered Settings navigation`
+
+The emulator booted, installed the APK, cleared app state, and launched the app. Because the emulator E2E failed, that SHA did not satisfy `ci/full-matrix` or `ci/release-candidate`, and no FIX9 signoff was claimed.
+
+## Startup-prerequisite correction under validation
+
+Inspection of the rejected candidate found an authoritative result that the harness silently ignored:
+
+`pm grant ... POST_NOTIFICATIONS ... || true`
+
+After `pm clear`, a failed notification-permission grant could therefore be ignored while the app's `NotificationPermissionGate` displayed a modal over Home. The harness also used a non-waiting ActivityManager launch and suppressed failed/stale `uiautomator` evidence.
+
+Correction `673ea778d104673826f83592325fef46271133e9`:
+
+- validates the Android SDK level;
+- requires `pm grant POST_NOTIFICATIONS` on API 33+;
+- verifies package state reports `android.permission.POST_NOTIFICATIONS: granted=true`;
+- requires device wake and keyguard dismissal;
+- launches through `am start -W` and requires `Status: ok`;
+- empties failed or invalid UI dumps so stale output cannot be reused;
+- preserves bounded UI-dump errors;
+- treats a visible notification-permission modal as a prerequisite failure rather than dismissing it silently;
+- emits bounded permission, focus, activity, UI-hierarchy, and logcat diagnostics before identity or broker input;
+- retains the existing 30-second Settings semantic bound.
+
+No retry-only rerun, hardcoded coordinate fallback, silent dismissal, result suppression, or timeout inflation is part of the correction.
 
 ## Required conclusions on this exact final candidate
 
@@ -57,9 +82,9 @@ The exact commit containing this request must produce all of the following:
 - Android emulator real-data-path E2E: success
 - Full matrix signoff: success
 
-Required jobs must execute. A skipped required job, a pending status, or a status associated with another SHA is a failure of final signoff.
+Required jobs must execute. A skipped required job, a pending status, a canceled job, or a status associated with another SHA is a failure of final signoff.
 
-The authoritative CI status issues and the commit status API are the machine-readable closure record. When they identify this exact SHA and every applicable conclusion above is successful, FIX9 commit-level closure is complete.
+The authoritative CI status issues and commit status API are the machine-readable closure record. When they identify this exact SHA and every applicable conclusion above is successful, FIX9 commit-level closure is complete.
 
 ## Release-artifact boundary
 
