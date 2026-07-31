@@ -9,6 +9,7 @@ import com.phillipchin.webrtctunnel.data.loadSetupInputResult
 import com.phillipchin.webrtctunnel.model.AndroidAppPreferences
 import com.phillipchin.webrtctunnel.model.ForwardConfig
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -125,15 +126,24 @@ class SetupViewModel(
     internal val forwardsEditor = SetupForwardsController(deps, stateAccess, viewModelScope, inspectForwardDraft)
 
     init {
-        // FIX8 P1-001-B: no synchronous file I/O here — the setup-input read/decode (previously a
-        // direct blocking call in this constructor) now happens inside a coroutine, IO-dispatched,
-        // alongside the already-async identity/forwards baselines, under BaselineLoad admission so
-        // nothing else can run concurrently with it. loadState publishes Ready only once all three
-        // baselines are coherent; a corrupt/unreadable setup-input file is a durable Failed state
-        // (setup_draft_load_failed), never silently treated as "no saved draft".
+        // FIX8 P1-001-B / FIX9: no synchronous file I/O here. Baseline files are read under
+        // BaselineLoad admission, but Ready/Failed is deliberately published only after
+        // runGuarded returns and releases that admission. Publishing Ready from inside the
+        // admitted block exposed a real race where UI/tests observed Ready and immediately had
+        // their first forward/save action rejected as Busy(BaselineLoad).
         viewModelScope.launch {
-            operations.runGuarded(stateAccess, SetupDraftOperation.BaselineLoad) {
-                loadSetupWizardBaseline(deps, stateAccess, identity, forwardsEditor, _loadState)
+            val terminalLoadState =
+                operations.runGuarded(stateAccess, SetupDraftOperation.BaselineLoad) { token ->
+                    loadSetupWizardBaseline(deps, stateAccess, identity, forwardsEditor)
+                        .takeIf { token.isFresh() }
+                } ?: return@launch
+
+            // runGuarded has released BaselineLoad and re-stamped isBusy=false before this write.
+            // Therefore Ready is a truthful contract: a caller observing it can immediately seek
+            // setup admission without racing the just-completed baseline owner.
+            _loadState.value = terminalLoadState
+            if (terminalLoadState is SetupLoadState.Failed) {
+                applyState(_state.value.copy(errorMessage = terminalLoadState.message))
             }
         }
     }
@@ -288,46 +298,48 @@ internal fun setupLoadNotReadyMessage(state: SetupLoadState): String =
     }
 
 /**
- * FIX8 P1-001-B: reads the setup-input file (IO-dispatched, off the main thread — never
- * synchronously in the ViewModel constructor) and awaits the already-async identity/forwards
- * baselines, publishing [SetupLoadState.Ready] only once all three are coherent, or a durable
- * [SetupLoadState.Failed] (`setup_draft_load_failed`) if any could not be read. A corrupt/
- * unreadable setup-input file is never silently treated as "no saved draft" — the file itself is
- * left untouched, and no content from it is included in the error.
+ * FIX8 P1-001-B / FIX9: reads the setup-input file off the main thread and loads coherent
+ * identity/forwards baselines while the caller owns BaselineLoad admission. It returns, but does
+ * not publish, the terminal load state; SetupViewModel publishes Ready/Failed only after admission
+ * release. Ordinary failures fail closed as a durable, redacted Failed result rather than leaving
+ * the wizard indefinitely Initializing or silently falling back to a blank baseline.
  */
 private suspend fun loadSetupWizardBaseline(
     deps: AppDependencies,
     access: WizardStateAccess,
     identity: SetupIdentityController,
     forwardsEditor: SetupForwardsController,
-    loadState: MutableStateFlow<SetupLoadState>,
-) {
-    val setupInputResult = withContext(deps.dispatchers.io) { deps.configRepository.loadSetupInputResult() }
-    identity.loadStoredIdentityBaseline()
-    forwardsEditor.refreshForwardsBaseline()
-    val forwardsLoadState = deps.forwardsRepository.loadState.value
-    when {
-        setupInputResult.isFailure -> {
-            val message =
-                "Saved setup could not be loaded (setup_draft_load_failed). " +
-                    "The existing saved draft was left untouched."
-            loadState.value = SetupLoadState.Failed(message)
-            access.applyState(access.state().copy(errorMessage = message))
-        }
-        forwardsLoadState is ForwardsLoadState.Failed -> {
-            val message =
-                "Saved forwards could not be loaded (setup_draft_load_failed): " +
-                    SensitiveDataRedactor.redactText(forwardsLoadState.message)
-            loadState.value = SetupLoadState.Failed(message)
-            access.applyState(access.state().copy(errorMessage = message))
-        }
-        else -> {
-            setupInputResult.onSuccess { saved ->
-                if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
-                    access.applyState(access.state().copy(input = saved))
+): SetupLoadState =
+    try {
+        val setupInputResult = withContext(deps.dispatchers.io) { deps.configRepository.loadSetupInputResult() }
+        identity.loadStoredIdentityBaseline()
+        forwardsEditor.refreshForwardsBaseline()
+        val forwardsLoadState = deps.forwardsRepository.loadState.value
+        when {
+            setupInputResult.isFailure ->
+                SetupLoadState.Failed(
+                    "Saved setup could not be loaded (setup_draft_load_failed). " +
+                        "The existing saved draft was left untouched.",
+                )
+            forwardsLoadState is ForwardsLoadState.Failed ->
+                SetupLoadState.Failed(
+                    "Saved forwards could not be loaded (setup_draft_load_failed): " +
+                        SensitiveDataRedactor.redactText(forwardsLoadState.message),
+                )
+            else -> {
+                setupInputResult.onSuccess { saved ->
+                    if (saved.brokerHost.isNotBlank() || saved.remotePeerId.isNotBlank()) {
+                        access.applyState(access.state().copy(input = saved))
+                    }
                 }
+                SetupLoadState.Ready
             }
-            loadState.value = SetupLoadState.Ready
         }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        SetupLoadState.Failed(
+            "Saved setup could not be loaded (setup_draft_load_failed): " +
+                SensitiveDataRedactor.redactText(error.message ?: "unknown load failure"),
+        )
     }
-}
