@@ -5,14 +5,9 @@ import org.junit.Test
 import java.io.File
 
 /**
- * Post-FIX9 contract enforcement.
- *
- * Android Lint's real CheckResult detector remains the proof for ordinary bare ignored calls.
- * This focused scanner closes the shapes that CheckResult considers syntactically "used" even
- * though the authoritative outcome is still discarded (`also`, `apply`, and `run { ...; Unit }`).
- * It also keeps cancellation-first mutation files and setup-token production paths under an
- * explicit source inventory. This is a test tripwire, not a replacement for runtime regression
- * tests or the compiler/lint type system.
+ * Post-FIX9 source tripwires. Android Lint's real CheckResult detector remains the
+ * type-aware proof for ordinary ignored calls; this scanner closes deliberate fake-consumption
+ * shapes and protects the finite mutation/setup-controller inventories below.
  */
 class Fix9FollowupContractAuditTest {
     private val authoritativeApis =
@@ -49,7 +44,6 @@ class Fix9FollowupContractAuditTest {
                     "${file.invariantSeparatorsPath}: $violation"
                 }
             }
-
         assertTrue(
             "Authoritative result fake-consumption violations:\n${violations.joinToString("\n")}",
             violations.isEmpty(),
@@ -66,11 +60,10 @@ class Fix9FollowupContractAuditTest {
                 run { identity.restoreStorageSnapshot(snapshot); Unit }
             }
             """.trimIndent()
-
         val violations = fakeConsumptionViolations(fixture, authoritativeApis)
-        assertTrue(violations.any { it.contains("savePreferences") && it.contains("also") })
-        assertTrue(violations.any { it.contains("persist") && it.contains("apply") })
-        assertTrue(violations.any { it.contains("restoreStorageSnapshot") && it.contains("discarded in run") })
+        assertTrue(violations.any { "savePreferences" in it && "also" in it })
+        assertTrue(violations.any { "persist" in it && "apply" in it })
+        assertTrue(violations.any { "restoreStorageSnapshot" in it && "discarded in run" in it })
     }
 
     @Test
@@ -84,12 +77,11 @@ class Fix9FollowupContractAuditTest {
                 return broker.persist("secret")
             }
             """.trimIndent()
-
         assertTrue(fakeConsumptionViolations(fixture, authoritativeApis).isEmpty())
     }
 
     @Test
-    fun mutationSensitiveFilesRejectRunCatchingAndCatchThrowable() {
+    fun mutationSensitiveFilesRejectExecutableRunCatchingAndCatchThrowable() {
         val sensitiveFiles =
             listOf(
                 "data/ConfigRepository.kt",
@@ -104,15 +96,16 @@ class Fix9FollowupContractAuditTest {
             )
         val violations =
             sensitiveFiles.flatMap { relative ->
-                val source = source(relative)
+                val executable = executableSource(source(relative))
                 buildList {
-                    if (source.contains("runCatching")) add("$relative: runCatching")
-                    if (Regex("""catch\s*\(\s*\w+\s*:\s*Throwable\s*\)""").containsMatchIn(source)) {
+                    if (Regex("""\brunCatching\s*\{""").containsMatchIn(executable)) {
+                        add("$relative: runCatching")
+                    }
+                    if (Regex("""catch\s*\(\s*\w+\s*:\s*Throwable\s*\)""").containsMatchIn(executable)) {
                         add("$relative: catch(Throwable)")
                     }
                 }
             }
-
         assertTrue(
             "Mutation error-handling violations:\n${violations.joinToString("\n")}",
             violations.isEmpty(),
@@ -120,62 +113,66 @@ class Fix9FollowupContractAuditTest {
     }
 
     @Test
-    fun realSetupActionsRetainFreshnessTokenContracts() {
-        val identity = source("viewmodel/SetupIdentityController.kt")
-        val forwards = source("viewmodel/SetupForwardsController.kt")
-        val save = source("viewmodel/SetupSaveController.kt")
-        val viewModel = source("viewmodel/SetupViewModel.kt")
+    fun commentOnlyForbiddenWordsAreIgnored() {
+        val source =
+            """
+            // never use runCatching { around this mutation
+            /** catch (error: Throwable) is forbidden here. */
+            fun safe(): Result<Unit> = try {
+                Result.success(Unit)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
+            """.trimIndent()
+        val executable = executableSource(source)
+        assertTrue(!Regex("""\brunCatching\s*\{""").containsMatchIn(executable))
+        assertTrue(!Regex("""catch\s*\(\s*\w+\s*:\s*Throwable\s*\)""").containsMatchIn(executable))
+    }
 
+    @Test
+    fun realSetupActionsRetainFreshnessTokenContracts() {
+        val combined =
+            listOf(
+                "viewmodel/SetupIdentityController.kt",
+                "viewmodel/SetupForwardsController.kt",
+                "viewmodel/SetupSaveController.kt",
+                "viewmodel/SetupViewModel.kt",
+            ).joinToString("\n") { source(it) }
         val required =
             mapOf(
                 "identity path import" to
-                    listOf(
-                        "launchIdentityAction { token ->",
-                        "publishPathIdentityImportResult(token",
-                        "publishImportedPathIdentity(token",
-                    ),
+                    listOf("launchIdentityAction { token ->", "publishPathIdentityImportResult(token"),
                 "identity URI import" to
-                    listOf(
-                        "fun importIdentityFromUri(uri: Uri)",
-                        "val published =\n                    token.publishIfFresh",
-                        "if (!published) {\n                    replacement.wipe()",
-                    ),
+                    listOf("fun importIdentityFromUri(uri: Uri)", "replacement.wipe()"),
                 "identity generation" to
-                    listOf(
-                        "fun generateIdentity()",
-                        "token.publishIfFresh {\n                        identityDraft.replace",
-                    ),
+                    listOf("fun generateIdentity()", "identityDraft.replace"),
                 "remote identity paths" to
-                    listOf(
-                        "fun validateRemotePublicIdentity()",
-                        "fun importPublicIdentityFromUri(uri: Uri)",
-                        "token.publishIfFresh { access.applyState(resolved) }",
-                    ),
+                    listOf("fun validateRemotePublicIdentity()", "fun importPublicIdentityFromUri(uri: Uri)"),
                 "forward draft edits" to
-                    listOf(
-                        "launchForwardEdit { token ->",
-                        "fun upsertForward(forward: ForwardConfig)",
-                        "fun deleteForward(forwardId: String)",
-                        "token.publishIfFresh {",
-                    ),
+                    listOf("fun upsertForward(forward: ForwardConfig)", "fun deleteForward(forwardId: String)"),
                 "validation navigation" to
-                    listOf(
-                        "SetupDraftOperation.ValidationNavigation) { token ->",
-                        "if (!token.isFresh()) return@runGuarded",
-                        "token.publishIfFresh {\n                        applyState",
-                    ),
+                    listOf("SetupDraftOperation.ValidationNavigation) { token ->", "if (!token.isFresh()) return@runGuarded"),
                 "final save and start" to
                     listOf(
                         "SetupDraftOperation.FinalSave) { token ->",
                         "throwIfStale(commitContext.token)",
-                        "if (saved && token.isFresh()) {\n                        onFreshSuccess?.invoke()",
+                        "if (saved && token.isFresh())",
                     ),
             )
-
-        val combined = identity + "\n" + forwards + "\n" + save + "\n" + viewModel
+        val sharedFreshnessFragments =
+            listOf(
+                "runGuarded(access, SetupDraftOperation.IdentityAction) { token ->",
+                "runGuarded(access, SetupDraftOperation.ForwardEdit) { token ->",
+                "token.publishIfFresh",
+            )
         val missing =
-            required.flatMap { (contract, fragments) ->
-                fragments.filterNot(combined::contains).map { fragment -> "$contract: $fragment" }
+            buildList {
+                required.forEach { (contract, fragments) ->
+                    fragments.filterNot(combined::contains).forEach { add("$contract: $it") }
+                }
+                sharedFreshnessFragments.filterNot(combined::contains).forEach { add("shared: $it") }
             }
         assertTrue(
             "Missing setup freshness contract fragments:\n${missing.joinToString("\n")}",
@@ -203,10 +200,7 @@ class Fix9FollowupContractAuditTest {
             }
         }
 
-    private fun callClosingOffsets(
-        source: String,
-        api: String,
-    ): List<Int> =
+    private fun callClosingOffsets(source: String, api: String): List<Int> =
         buildList {
             var searchFrom = 0
             while (searchFrom < source.length) {
@@ -215,30 +209,24 @@ class Fix9FollowupContractAuditTest {
                 val beforeOk = nameAt == 0 || !source[nameAt - 1].isJavaIdentifierPart()
                 var openAt = nameAt + api.length
                 while (openAt < source.length && source[openAt].isWhitespace()) openAt++
-                val afterOk = openAt < source.length && source[openAt] == '('
-                if (beforeOk && afterOk) {
+                if (beforeOk && openAt < source.length && source[openAt] == '(') {
                     findMatchingParen(source, openAt)?.let(::add)
                 }
                 searchFrom = nameAt + api.length
             }
         }
 
-    private fun findMatchingParen(
-        source: String,
-        openAt: Int,
-    ): Int? {
+    private fun findMatchingParen(source: String, openAt: Int): Int? {
         var depth = 0
         var quote: Char? = null
         var escaped = false
         for (index in openAt until source.length) {
             val char = source[index]
             if (quote != null) {
-                if (escaped) {
-                    escaped = false
-                } else if (char == '\\') {
-                    escaped = true
-                } else if (char == quote) {
-                    quote = null
+                when {
+                    escaped -> escaped = false
+                    char == '\\' -> escaped = true
+                    char == quote -> quote = null
                 }
                 continue
             }
@@ -248,19 +236,65 @@ class Fix9FollowupContractAuditTest {
             }
             when (char) {
                 '(' -> depth++
-                ')' -> {
-                    depth--
-                    if (depth == 0) return index
-                }
+                ')' -> if (--depth == 0) return index
             }
         }
         return null
     }
 
-    private fun productionSources(): List<File> {
-        val root = productionRoot()
-        return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+    /** Removes comments and quoted values while preserving line/character separation. */
+    private fun executableSource(source: String): String {
+        val output = StringBuilder(source.length)
+        var index = 0
+        var blockComment = false
+        while (index < source.length) {
+            when {
+                blockComment && source.startsWith("*/", index) -> {
+                    blockComment = false
+                    output.append("  ")
+                    index += 2
+                }
+                blockComment -> {
+                    output.append(if (source[index] == '\n') '\n' else ' ')
+                    index++
+                }
+                source.startsWith("/*", index) -> {
+                    blockComment = true
+                    output.append("  ")
+                    index += 2
+                }
+                source.startsWith("//", index) -> {
+                    while (index < source.length && source[index] != '\n') {
+                        output.append(' ')
+                        index++
+                    }
+                }
+                source[index] == '"' || source[index] == '\'' -> {
+                    val quote = source[index]
+                    output.append(' ')
+                    index++
+                    var escaped = false
+                    while (index < source.length) {
+                        val char = source[index]
+                        output.append(if (char == '\n') '\n' else ' ')
+                        index++
+                        if (escaped) {
+                            escaped = false
+                        } else if (char == '\\') {
+                            escaped = true
+                        } else if (char == quote) {
+                            break
+                        }
+                    }
+                }
+                else -> output.append(source[index++])
+            }
+        }
+        return output.toString()
     }
+
+    private fun productionSources(): List<File> =
+        productionRoot().walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
 
     private fun source(relativePath: String): String =
         File(productionRoot(), relativePath).takeIf(File::exists)?.readText()
@@ -269,12 +303,7 @@ class Fix9FollowupContractAuditTest {
     private fun productionRoot(): File {
         val relative = "src/main/java/com/phillipchin/webrtctunnel"
         val candidates =
-            listOf(
-                File(relative),
-                File("app/$relative"),
-                File(System.getProperty("user.dir"), "app/$relative"),
-            )
-        return candidates.firstOrNull(File::isDirectory)
-            ?: error("production source root not found")
+            listOf(File(relative), File("app/$relative"), File(System.getProperty("user.dir"), "app/$relative"))
+        return candidates.firstOrNull(File::isDirectory) ?: error("production source root not found")
     }
 }
