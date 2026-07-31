@@ -133,66 +133,72 @@ class Fix9FollowupContractAuditTest {
 
     @Test
     fun realSetupActionsRetainFreshnessTokenContracts() {
-        val combined =
-            listOf(
-                "viewmodel/SetupIdentityController.kt",
-                "viewmodel/SetupForwardsController.kt",
-                "viewmodel/SetupSaveController.kt",
-                "viewmodel/SetupViewModel.kt",
-            ).joinToString("\n") { source(it) }
-        val required =
-            mapOf(
-                "identity path import" to
-                    listOf(
-                        "launchIdentityAction { token ->",
-                        "publishPathIdentityImportResult(token",
-                    ),
-                "identity URI import" to
-                    listOf("fun importIdentityFromUri(uri: Uri)", "replacement.wipe()"),
-                "identity generation" to
-                    listOf("fun generateIdentity()", "identityDraft.replace"),
-                "remote identity paths" to
-                    listOf(
-                        "fun validateRemotePublicIdentity()",
-                        "fun importPublicIdentityFromUri(uri: Uri)",
-                    ),
-                "forward draft edits" to
-                    listOf(
-                        "fun upsertForward(forward: ForwardConfig)",
-                        "fun deleteForward(forwardId: String)",
-                    ),
-                "validation navigation" to
-                    listOf(
-                        "SetupDraftOperation.ValidationNavigation) { token ->",
-                        "if (!token.isFresh()) return@runGuarded",
-                    ),
-                "final save and start" to
-                    listOf(
-                        "SetupDraftOperation.FinalSave) { token ->",
-                        "throwIfStale(commitContext.token)",
-                        "if (saved && token.isFresh())",
-                    ),
-            )
-        val sharedFreshnessFragments =
-            listOf(
-                "runGuarded(access, SetupDraftOperation.IdentityAction) { token ->",
-                "runGuarded(access, SetupDraftOperation.ForwardEdit) { token ->",
-                "token.publishIfFresh",
-            )
-        val missing =
-            buildList {
-                required.forEach { (contract, fragments) ->
-                    fragments.filterNot(combined::contains).forEach { add("$contract: $it") }
-                }
-                sharedFreshnessFragments
-                    .filterNot(combined::contains)
-                    .forEach { add("shared: $it") }
-            }
+        val combined = setupProductionSource()
+        val missing = missingSetupContractFragments(combined)
         assertTrue(
             "Missing setup freshness contract fragments:\n${missing.joinToString("\n")}",
             missing.isEmpty(),
         )
     }
+
+    private fun setupProductionSource(): String =
+        listOf(
+            "viewmodel/SetupIdentityController.kt",
+            "viewmodel/SetupForwardsController.kt",
+            "viewmodel/SetupSaveController.kt",
+            "viewmodel/SetupViewModel.kt",
+        ).joinToString("\n") { source(it) }
+
+    private fun missingSetupContractFragments(combined: String): List<String> =
+        buildList {
+            setupContractFragments().forEach { (contract, fragments) ->
+                fragments.filterNot(combined::contains).forEach { add("$contract: $it") }
+            }
+            sharedFreshnessFragments()
+                .filterNot(combined::contains)
+                .forEach { add("shared: $it") }
+        }
+
+    private fun setupContractFragments(): Map<String, List<String>> =
+        mapOf(
+            "identity path import" to
+                listOf(
+                    "launchIdentityAction { token ->",
+                    "publishPathIdentityImportResult(token",
+                ),
+            "identity URI import" to
+                listOf("fun importIdentityFromUri(uri: Uri)", "replacement.wipe()"),
+            "identity generation" to
+                listOf("fun generateIdentity()", "identityDraft.replace"),
+            "remote identity paths" to
+                listOf(
+                    "fun validateRemotePublicIdentity()",
+                    "fun importPublicIdentityFromUri(uri: Uri)",
+                ),
+            "forward draft edits" to
+                listOf(
+                    "fun upsertForward(forward: ForwardConfig)",
+                    "fun deleteForward(forwardId: String)",
+                ),
+            "validation navigation" to
+                listOf(
+                    "SetupDraftOperation.ValidationNavigation) { token ->",
+                    "if (!token.isFresh()) return@runGuarded",
+                ),
+            "final save and start" to
+                listOf(
+                    "SetupDraftOperation.FinalSave) { token ->",
+                    "throwIfStale(commitContext.token)",
+                    "if (saved && token.isFresh())",
+                ),
+        )
+
+    private fun sharedFreshnessFragments(): List<String> =
+        listOf(
+            "runGuarded(access, SetupDraftOperation.IdentityAction) { token ->",
+            "runGuarded(access, SetupDraftOperation.ForwardEdit) { token ->",
+            "token.publishIfFresh",
+        )
 
     private fun fakeConsumptionViolations(
         source: String,
@@ -237,27 +243,47 @@ class Fix9FollowupContractAuditTest {
         source: String,
         openAt: Int,
     ): Int? {
-        var depth = 0
-        var quote: Char? = null
-        var escaped = false
-        for (index in openAt until source.length) {
-            val char = source[index]
-            if (quote != null) {
-                when {
-                    escaped -> escaped = false
-                    char == '\\' -> escaped = true
-                    char == quote -> quote = null
-                }
-            } else if (char == '"' || char == '\'') {
-                quote = char
-            } else {
-                when (char) {
-                    '(' -> depth++
-                    ')' -> if (--depth == 0) return index
-                }
+        val state = ParenthesisScanState()
+        var index = openAt
+        while (index < source.length) {
+            if (advanceParenthesisScan(state, source[index])) {
+                return index
             }
+            index++
         }
         return null
+    }
+
+    private fun advanceParenthesisScan(
+        state: ParenthesisScanState,
+        char: Char,
+    ): Boolean =
+        when {
+            state.quote != null -> {
+                advanceQuotedScan(state, char)
+                false
+            }
+            char == '"' || char == '\'' -> {
+                state.quote = char
+                false
+            }
+            char == '(' -> {
+                state.depth++
+                false
+            }
+            char == ')' -> --state.depth == 0
+            else -> false
+        }
+
+    private fun advanceQuotedScan(
+        state: ParenthesisScanState,
+        char: Char,
+    ) {
+        when {
+            state.escaped -> state.escaped = false
+            char == '\\' -> state.escaped = true
+            char == state.quote -> state.quote = null
+        }
     }
 
     /** Removes comments before scanning for executable forbidden constructs. */
@@ -284,6 +310,12 @@ class Fix9FollowupContractAuditTest {
         return candidates.firstOrNull(File::isDirectory)
             ?: error("production source root not found")
     }
+
+    private class ParenthesisScanState(
+        var depth: Int = 0,
+        var quote: Char? = null,
+        var escaped: Boolean = false,
+    )
 
     private companion object {
         val RUN_CATCHING_REGEX = Regex("""\brunCatching\s*\{""")
