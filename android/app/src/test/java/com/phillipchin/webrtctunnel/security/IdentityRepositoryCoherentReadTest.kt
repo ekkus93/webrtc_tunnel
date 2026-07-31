@@ -114,10 +114,4 @@ private fun CountDownLatch.awaitDeadline(): Boolean = await(CONCURRENCY_WAIT_SEC
 private fun daemonThread(
     name: String,
     block: () -> Unit,
-): Thread =
-    thread(
-        start = true,
-        isDaemon = true,
-        name = name,
-        block = block,
-    )
+): Thread = thread(start = true, isDaemon = true, name = name, block = block)
