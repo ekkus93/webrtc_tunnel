@@ -1,11 +1,12 @@
 # WebRTC Tunnel FIX9 Completion Evidence
 
-**Source TODO:** `docs/WEBRTC_TUNNEL_STALE_SETUP_RESULT_CONTRACT_FIX9_TODO.md`  
+**Source TODO / closure ledger:** `docs/WEBRTC_TUNNEL_STALE_SETUP_RESULT_CONTRACT_FIX9_TODO.md`  
 **Initial audit baseline:** `141a5425f620ae6b37a29ee0d8956cbfbd4d7b27`  
-**Implementation baseline submitted for the next exact-SHA signoff:** `6bad7a1f18b180676cc567031f93f7a99fb91d52`  
-**Disposition:** functional implementation and enforcement are complete; release signoff remains conditional on all required workflows succeeding on the exact companion `[full-signoff]` commit.
+**Implementation baseline:** `6bad7a1f18b180676cc567031f93f7a99fb91d52`  
+**Validated functional repair candidate:** `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc`  
+**Disposition:** functional implementation, enforcement, and a complete exact-SHA release-candidate run are proven. Final documentation/evidence closure is valid only if the exact `[full-signoff]` commit containing this ledger passes the same applicable gates.
 
-This ledger maps FIX9 requirements to production paths and named evidence. A helper seam or partially green workflow is not treated as completion.
+This ledger maps FIX9 requirements to production paths and named evidence. A helper seam, partial matrix, successful parent SHA, or retry from another commit is not treated as completion.
 
 ## P0-001 — Real setup-operation stale/cancel semantics
 
@@ -24,7 +25,7 @@ Run `30593967688` exposed a production race: `SetupLoadState.Ready` could become
 
 - `savePreferences(...)`, `prepareActiveConfigForStart(...)`, and `replaceConfigTransactionally(...)` convert ordinary exceptions to `Result.failure` and preserve cancellation.
 - Behavioral tests prove fixed visible failure codes and no mutation after snapshot-capture failure.
-- `Fix9ResultContractSourceAuditTest`, the existing `CheckResult` enforcement suite, and negative fixtures reject selected-subclass catches, pre-try `getOrThrow()`, ignored results, and fake `.also { }` consumption.
+- `Fix9ResultContractSourceAuditTest`, the existing `CheckResult` enforcement suite, and negative fixtures reject selected-subclass catches, pre-`try` `getOrThrow()`, ignored results, and fake `.also { }` consumption.
 
 ## P0-003 — Coherent public-identity reads
 
@@ -49,42 +50,115 @@ Setup-only forward changes report draft updates/removals. Source enforcement ban
 - FIX9 Result audits and the existing FIX8 inventories remain active for unsafe `runCatching`, unchecked authoritative filesystem booleans, empty-snapshot fallbacks, controller authoritative writes, unsafe `catch (Throwable)`, and Rust zero-timestamp fallbacks.
 - Required concurrency tests use bounded latches/deferred barriers rather than timing sleeps.
 
-## Failed exact candidate `34b95051defd1a63d67836f01de6b1716f694ac3`
+## Failed exact candidate — diagnostics admission
 
-The candidate was correctly rejected:
+Candidate `34b95051defd1a63d67836f01de6b1716f694ac3` was correctly rejected:
 
-- `ci/rc-diagnostics`: **success**, run `30599682091`
-- broker-secret instrumentation: **success**, run `30599682072`
-- Rust lint/Linux/macOS/Docker: **success**, main run `30599682106`
-- Android full Gradle `check`: **success**
-- dedicated foreground-service stop-failure suite: **success**
-- second `assembleDebug testDebugUnitTest`: **failure**
-- `ci/full-matrix`: **failure**
-- `ci/release-candidate`: **failure**
+- `ci/rc-diagnostics`: success, run `30599682091`
+- broker-secret instrumentation: success, run `30599682072`
+- Rust lint/Linux/macOS/Docker: success, main run `30599682106`
+- Android full Gradle `check`: success
+- dedicated foreground-service stop-failure suite: success
+- second `assembleDebug testDebugUnitTest`: failure
+- `ci/full-matrix`: failure
+- `ci/release-candidate`: failure
 - Android emulator E2E: correctly skipped because Android failed
 
 The failing test, `LogsViewModelTest.concurrentExportIsRejectedWhileOneIsAlreadyInFlight`, exposed a real check-before-launch race: both diagnostics export entry points checked `_isBusy` before launching but claimed it only inside the coroutine. Two immediate calls could both be admitted.
 
-## Diagnostics export admission correction
+### Diagnostics export correction
 
 - Commit `590c66717a7c67cb4d8fd08f48daa881d8834641` atomically claims shared path/URI export admission with `MutableStateFlow.compareAndSet(false, true)` before launch.
-- Commit `6bad7a1f18b180676cc567031f93f7a99fb91d52` replaces scheduler-speed assumptions with a blocked single-thread IO dispatcher and bounded latches. The regression now proves admission synchronously, attempts the second export while IO is parked, releases the first, and verifies the rejected destination is never written.
+- Commit `6bad7a1f18b180676cc567031f93f7a99fb91d52` replaces scheduler-speed assumptions with a blocked single-thread IO dispatcher and bounded latches.
 - No retry, sleep, suppression, relaxed rule, or extended timeout is used.
 - Path-scoped Android run `30600821345` passed full Gradle `check`, the dedicated stop-failure suite, the second `assembleDebug testDebugUnitTest`, and path-scoped full-matrix signoff.
 
-## Exact-SHA signoff requirements
+## Failed exact candidate — Android Settings navigation
 
-The companion `[full-signoff]` commit must prove, on that same SHA:
+Candidate `7be00838feef85d374f20aa8dd6b7365969ba3dd` reached the real Android emulator and failed the E2E script with:
+
+`[e2e FAIL] could not find Settings nav tab`
+
+The emulator booted, the APK installed, and the app launched. The failure was in the shell harness readiness contract, not emulator provisioning or WebRTC.
+
+### Root cause
+
+The old `bounds_of_text()` pipeline ended with `awk`. When no node matched, `awk` produced no coordinates but still returned success. The startup readiness check therefore treated a missing Settings node as found and immediately attempted the tap.
+
+### Repair
+
+Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc`:
+
+- makes missing-node and unusable-bounds lookup return failure;
+- waits for actual app-owned Settings semantics instead of relying on a fixed startup sleep;
+- resolves Settings by either visible text or the existing `Settings tab icon` content description;
+- keeps selectors screen-size independent and sourced from the same `uiautomator` tree;
+- adds no coordinate fallback, silent bypass, retry suppression, or timeout inflation.
+
+## Exact successful functional candidate
+
+Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` passed every applicable commit-level gate.
+
+### Commit statuses
+
+- `ci/rc-diagnostics`: **success**, run `30603969425`
+- `ci/full-matrix`: **success**, run `30603969420`
+- `ci/release-candidate`: **success**, run `30603969420`
+
+### Independent instrumentation
+
+- broker-secret permission instrumentation: **success**, run `30603969417`
+
+### Main workflow `30603969420`
+
+- Detect changed paths: success
+- Lint: success
+- Test (Linux): success
+- Test (macOS): success
+- Android: success
+  - full Gradle `check`: success
+  - foreground-service stop-failure truthfulness tests: success
+  - second `assembleDebug testDebugUnitTest`: success without retry
+- Docker real-data-path E2E: success
+- Android emulator real-data-path E2E: success, job `91074610794`
+- Full matrix signoff: success, job `91076875217`
+- Failed jobs: none
+- Failed steps: none
+
+### Real Android data-path proof
+
+The emulator job completed the production wizard path:
+
+- Mode
+- Identity generation
+- TLS broker configuration
+- Remote peer authorization
+- Forwards and network-policy defaults
+- Review and start
+- `Listening`
+
+It then launched the dockerized answer, triggered WebRTC negotiation, delivered the marker through the Android-offer tunnel, and verified that the answer received `PING` and replied `PONG`.
+
+## Final documentation/evidence exact-SHA rule
+
+The final candidate is the exact `[full-signoff]` commit containing this ledger and its companion documents. The SHA is intentionally defined by the published commit rather than guessed in advance.
+
+FIX9 commit-level closure is valid only when all of these records identify that exact SHA:
 
 - `ci/rc-diagnostics`: success
 - `ci/full-matrix`: success
 - `ci/release-candidate`: success
-- broker-secret instrumentation: success
-- Android full Gradle check and the second full debug unit invocation: success
+- broker-secret permission instrumentation: success
+- Android full Gradle check and second full debug unit invocation: success
 - Android emulator real-data-path E2E: success
-- Rust fmt/clippy/tests/package/lifecycle gates: success
+- Rust formatting/clippy/tests/package/lifecycle gates: success
+- Linux/macOS install-layout and lifecycle gates: success
 - Docker TLS/data-path and graceful-stop E2E: success
 
-Release APK/AAB packaging jobs are **tag-only** by workflow design. They are expected to skip on a `[full-signoff]` commit and are not dependencies of `ci/full-matrix` or `ci/release-candidate`; they must pass when a release tag is created.
+The authoritative CI status issues and commit status API are the machine-readable closure evidence. Any failure, pending state, skipped required job, or status belonging to another SHA keeps FIX9 open.
 
-FIX9 is not release-signed until the exact companion candidate satisfies every applicable requirement above.
+## Release artifacts
+
+Release APK/AAB packaging jobs are tag-only by workflow design. They are expected to skip on a `[full-signoff]` commit and are not dependencies of commit-level `ci/full-matrix` or `ci/release-candidate`.
+
+They must pass on the eventual release tag, and the produced artifacts must be verified before publication. This future tag evidence is intentionally not claimed by FIX9 commit-level signoff.
