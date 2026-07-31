@@ -95,6 +95,20 @@ object TunnelForegroundServiceTestHooks {
     // Result.failure path.
     @get:JvmName("stopThrowsUnexpectedly")
     val stopThrowsUnexpectedly: AtomicReference<Throwable?> = AtomicReference(null)
+
+    /** Resets every static injection point before installing fresh per-test dependencies. */
+    fun resetForTest() {
+        identityReadFailure.set(null)
+        configPrepFailure.set(null)
+        policyBlockReason.set(null)
+        configValidationFailure.set(null)
+        validationThrows.set(null)
+        configPrepThrows.set(null)
+        preferenceReadFailure.set(null)
+        preferenceReadCancels.set(false)
+        preferenceReadInterceptSkipCount.set(0)
+        stopThrowsUnexpectedly.set(null)
+    }
 }
 
 /**
@@ -134,6 +148,15 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
 
     override fun onCreate() {
         super.onCreate()
+        resetDependenciesForTest()
+    }
+
+    /**
+     * Robolectric may reuse this Application across test methods and even consecutive Gradle test
+     * tasks. Rebuild the application-scoped bridge, repository and native-runtime safety owner so
+     * quarantine/status/counters from one test cannot make the next test pass or fail by order.
+     */
+    internal fun resetDependenciesForTest() {
         val bridge = FailableRecordingBridge()
         TunnelForegroundServiceTestHooks.bridge = bridge
         // P0-001: Wire config preparation failure injection hook.
@@ -141,7 +164,7 @@ class TunnelForegroundServiceTestApplication : Application(), HasAppDependencies
             object : ConfigRepository(this) {
                 // P1-002: preferences-read failure/cancellation injection (see
                 // interceptPreferenceReadHook for the actual decision logic, kept
-                // top-level to keep this onCreate() under detekt's LongMethod/ReturnCount
+                // top-level to keep this reset method under detekt's LongMethod/ReturnCount
                 // thresholds).
                 override val preferences: kotlinx.coroutines.flow.Flow<AndroidAppPreferences>
                     get() = interceptPreferenceReadHook(super.preferences)
