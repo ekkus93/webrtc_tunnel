@@ -98,10 +98,10 @@ class Fix9FollowupContractAuditTest {
             sensitiveFiles.flatMap { relative ->
                 val executable = executableSource(source(relative))
                 buildList {
-                    if (Regex("""\brunCatching\s*\{""").containsMatchIn(executable)) {
+                    if (RUN_CATCHING_REGEX.containsMatchIn(executable)) {
                         add("$relative: runCatching")
                     }
-                    if (Regex("""catch\s*\(\s*\w+\s*:\s*Throwable\s*\)""").containsMatchIn(executable)) {
+                    if (CATCH_THROWABLE_REGEX.containsMatchIn(executable)) {
                         add("$relative: catch(Throwable)")
                     }
                 }
@@ -127,8 +127,8 @@ class Fix9FollowupContractAuditTest {
             }
             """.trimIndent()
         val executable = executableSource(source)
-        assertTrue(!Regex("""\brunCatching\s*\{""").containsMatchIn(executable))
-        assertTrue(!Regex("""catch\s*\(\s*\w+\s*:\s*Throwable\s*\)""").containsMatchIn(executable))
+        assertTrue(!RUN_CATCHING_REGEX.containsMatchIn(executable))
+        assertTrue(!CATCH_THROWABLE_REGEX.containsMatchIn(executable))
     }
 
     @Test
@@ -143,17 +143,29 @@ class Fix9FollowupContractAuditTest {
         val required =
             mapOf(
                 "identity path import" to
-                    listOf("launchIdentityAction { token ->", "publishPathIdentityImportResult(token"),
+                    listOf(
+                        "launchIdentityAction { token ->",
+                        "publishPathIdentityImportResult(token",
+                    ),
                 "identity URI import" to
                     listOf("fun importIdentityFromUri(uri: Uri)", "replacement.wipe()"),
                 "identity generation" to
                     listOf("fun generateIdentity()", "identityDraft.replace"),
                 "remote identity paths" to
-                    listOf("fun validateRemotePublicIdentity()", "fun importPublicIdentityFromUri(uri: Uri)"),
+                    listOf(
+                        "fun validateRemotePublicIdentity()",
+                        "fun importPublicIdentityFromUri(uri: Uri)",
+                    ),
                 "forward draft edits" to
-                    listOf("fun upsertForward(forward: ForwardConfig)", "fun deleteForward(forwardId: String)"),
+                    listOf(
+                        "fun upsertForward(forward: ForwardConfig)",
+                        "fun deleteForward(forwardId: String)",
+                    ),
                 "validation navigation" to
-                    listOf("SetupDraftOperation.ValidationNavigation) { token ->", "if (!token.isFresh()) return@runGuarded"),
+                    listOf(
+                        "SetupDraftOperation.ValidationNavigation) { token ->",
+                        "if (!token.isFresh()) return@runGuarded",
+                    ),
                 "final save and start" to
                     listOf(
                         "SetupDraftOperation.FinalSave) { token ->",
@@ -172,7 +184,9 @@ class Fix9FollowupContractAuditTest {
                 required.forEach { (contract, fragments) ->
                     fragments.filterNot(combined::contains).forEach { add("$contract: $it") }
                 }
-                sharedFreshnessFragments.filterNot(combined::contains).forEach { add("shared: $it") }
+                sharedFreshnessFragments
+                    .filterNot(combined::contains)
+                    .forEach { add("shared: $it") }
             }
         assertTrue(
             "Missing setup freshness contract fragments:\n${missing.joinToString("\n")}",
@@ -200,23 +214,29 @@ class Fix9FollowupContractAuditTest {
             }
         }
 
-    private fun callClosingOffsets(source: String, api: String): List<Int> =
+    private fun callClosingOffsets(
+        source: String,
+        api: String,
+    ): List<Int> =
         buildList {
-            var searchFrom = 0
-            while (searchFrom < source.length) {
-                val nameAt = source.indexOf(api, searchFrom)
-                if (nameAt < 0) break
+            var nameAt = source.indexOf(api)
+            while (nameAt >= 0) {
                 val beforeOk = nameAt == 0 || !source[nameAt - 1].isJavaIdentifierPart()
                 var openAt = nameAt + api.length
-                while (openAt < source.length && source[openAt].isWhitespace()) openAt++
+                while (openAt < source.length && source[openAt].isWhitespace()) {
+                    openAt++
+                }
                 if (beforeOk && openAt < source.length && source[openAt] == '(') {
                     findMatchingParen(source, openAt)?.let(::add)
                 }
-                searchFrom = nameAt + api.length
+                nameAt = source.indexOf(api, nameAt + api.length)
             }
         }
 
-    private fun findMatchingParen(source: String, openAt: Int): Int? {
+    private fun findMatchingParen(
+        source: String,
+        openAt: Int,
+    ): Int? {
         var depth = 0
         var quote: Char? = null
         var escaped = false
@@ -242,56 +262,11 @@ class Fix9FollowupContractAuditTest {
         return null
     }
 
-    /** Removes comments and quoted values while preserving line/character separation. */
-    private fun executableSource(source: String): String {
-        val output = StringBuilder(source.length)
-        var index = 0
-        var blockComment = false
-        while (index < source.length) {
-            when {
-                blockComment && source.startsWith("*/", index) -> {
-                    blockComment = false
-                    output.append("  ")
-                    index += 2
-                }
-                blockComment -> {
-                    output.append(if (source[index] == '\n') '\n' else ' ')
-                    index++
-                }
-                source.startsWith("/*", index) -> {
-                    blockComment = true
-                    output.append("  ")
-                    index += 2
-                }
-                source.startsWith("//", index) -> {
-                    while (index < source.length && source[index] != '\n') {
-                        output.append(' ')
-                        index++
-                    }
-                }
-                source[index] == '"' || source[index] == '\'' -> {
-                    val quote = source[index]
-                    output.append(' ')
-                    index++
-                    var escaped = false
-                    while (index < source.length) {
-                        val char = source[index]
-                        output.append(if (char == '\n') '\n' else ' ')
-                        index++
-                        if (escaped) {
-                            escaped = false
-                        } else if (char == '\\') {
-                            escaped = true
-                        } else if (char == quote) {
-                            break
-                        }
-                    }
-                }
-                else -> output.append(source[index++])
-            }
-        }
-        return output.toString()
-    }
+    /** Removes comments before scanning for executable forbidden constructs. */
+    private fun executableSource(source: String): String =
+        source
+            .replace(BLOCK_COMMENT_REGEX, "")
+            .replace(LINE_COMMENT_REGEX, "")
 
     private fun productionSources(): List<File> =
         productionRoot().walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
@@ -303,7 +278,19 @@ class Fix9FollowupContractAuditTest {
     private fun productionRoot(): File {
         val relative = "src/main/java/com/phillipchin/webrtctunnel"
         val candidates =
-            listOf(File(relative), File("app/$relative"), File(System.getProperty("user.dir"), "app/$relative"))
-        return candidates.firstOrNull(File::isDirectory) ?: error("production source root not found")
+            listOf(
+                File(relative),
+                File("app/$relative"),
+                File(System.getProperty("user.dir"), "app/$relative"),
+            )
+        return candidates.firstOrNull(File::isDirectory)
+            ?: error("production source root not found")
+    }
+
+    private companion object {
+        val RUN_CATCHING_REGEX = Regex("""\brunCatching\s*\{""")
+        val CATCH_THROWABLE_REGEX = Regex("""catch\s*\(\s*\w+\s*:\s*Throwable\s*\)""")
+        val BLOCK_COMMENT_REGEX = Regex("""/\*[\s\S]*?\*/""")
+        val LINE_COMMENT_REGEX = Regex("""//[^\n]*""")
     }
 }
