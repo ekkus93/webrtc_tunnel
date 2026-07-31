@@ -31,20 +31,20 @@ class ProbeEvidenceShellContractTest {
     }
 
     private fun findScript(): File {
-        val workingDir = File(System.getProperty("user.dir"))
         val relative = "tests/e2e/probe_evidence_test.sh"
-        val candidates =
-            listOf(
-                File(relative),
-                File(workingDir, relative),
-                File(workingDir, "../$relative"),
-                File(workingDir, "../../$relative"),
-                File(workingDir, "../../../$relative"),
-            )
-        return candidates.firstOrNull(File::isFile)
+        val workingDir = File(System.getProperty("user.dir")).canonicalFile
+        val roots =
+            listOfNotNull(
+                System.getenv("GITHUB_WORKSPACE")?.let(::File),
+                workingDir,
+                workingDir.parentFile,
+                workingDir.parentFile?.parentFile,
+            ).map(File::getCanonicalFile).distinct()
+        val candidates = roots.map { root -> File(root, relative) }
+        return candidates.firstOrNull { candidate -> candidate.isFile }
             ?: error(
                 "probe evidence fixture not found; checked: " +
-                    candidates.joinToString { it.absolutePath },
+                    candidates.joinToString { candidate -> candidate.absolutePath },
             )
     }
 }
