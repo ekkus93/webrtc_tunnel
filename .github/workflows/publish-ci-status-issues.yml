@@ -37,29 +37,60 @@ jobs:
           set -euo pipefail
 
           case "${WORKFLOW_NAME}" in
-            "CI") issue_number=1; issue_title="CI Status: Main Workflow"; heading="Latest Main CI Workflow" ;;
-            "RC diagnostics") issue_number=2; issue_title="CI Status: RC Diagnostics"; heading="Latest RC Diagnostics" ;;
-            "FIX9 broker-secret instrumentation") issue_number=3; issue_title="CI Status: Broker Secret Instrumentation"; heading="Latest Broker Secret Instrumentation" ;;
-            "Android signed release") issue_number=6; issue_title="CI Status: Android Signed Release — master"; heading="Latest Android Signed Release — master" ;;
-            *) printf 'Unsupported workflow: %s\n' "${WORKFLOW_NAME}" >&2; exit 1 ;;
+            "CI")
+              issue_number=1
+              issue_title="CI Status: Main Workflow"
+              heading="Latest Main CI Workflow"
+              ;;
+            "RC diagnostics")
+              issue_number=2
+              issue_title="CI Status: RC Diagnostics"
+              heading="Latest RC Diagnostics"
+              ;;
+            "FIX9 broker-secret instrumentation")
+              issue_number=3
+              issue_title="CI Status: Broker Secret Instrumentation"
+              heading="Latest Broker Secret Instrumentation"
+              ;;
+            "Android signed release")
+              issue_number=6
+              issue_title="CI Status: Android Signed Release — master"
+              heading="Latest Android Signed Release — master"
+              ;;
+            *)
+              printf 'Unsupported workflow: %s\n' "${WORKFLOW_NAME}" >&2
+              exit 1
+              ;;
           esac
           monitored_branch=master
+          owner_marker='<!-- maintained by publish-ci-status-issues.yml -->'
 
           if [[ "${HEAD_BRANCH}" != "${monitored_branch}" ]]; then
-            printf 'Ignoring %s run %s on unrelated branch %s.\n' "${WORKFLOW_NAME}" "${RUN_ID}" "${HEAD_BRANCH}"
+            printf 'Ignoring %s run %s on unrelated branch %s.\n' \
+              "${WORKFLOW_NAME}" "${RUN_ID}" "${HEAD_BRANCH}"
             exit 0
           fi
 
-          latest_run_id="$(gh api \
-            "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?branch=${monitored_branch}&per_page=1" \
-            --jq '.workflow_runs[0].id // empty')"
+          latest_run_id="$(
+            gh api \
+              "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?branch=${monitored_branch}&per_page=1" \
+              --jq '.workflow_runs[0].id // empty'
+          )"
           if [[ -z "${latest_run_id}" ]]; then
             printf 'No visible %s run on %s yet.\n' "${WORKFLOW_NAME}" "${monitored_branch}"
             exit 0
           fi
           if [[ "${latest_run_id}" != "${RUN_ID}" ]]; then
-            printf 'Skipping stale run %s; latest applicable run is %s.\n' "${RUN_ID}" "${latest_run_id}"
+            printf 'Skipping stale run %s; latest applicable run is %s.\n' \
+              "${RUN_ID}" "${latest_run_id}"
             exit 0
+          fi
+
+          current_body="$(gh api "repos/${REPOSITORY}/issues/${issue_number}" --jq '.body // ""')"
+          if [[ "${current_body}" != "${owner_marker}"* ]]; then
+            printf 'Refusing to overwrite issue #%s because its ownership marker is absent.\n' \
+              "${issue_number}" >&2
+            exit 1
           fi
 
           run_json="${RUNNER_TEMP}/run.json"
@@ -67,11 +98,14 @@ jobs:
           artifacts_json="${RUNNER_TEMP}/artifacts.json"
           patch_json="${RUNNER_TEMP}/patch.json"
 
+          # Re-fetch canonical state rather than trusting a possibly stale event payload.
           gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" > "${run_json}"
           gh api --paginate --slurp \
-            "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" > "${jobs_json}"
+            "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
+            > "${jobs_json}"
           gh api --paginate --slurp \
-            "repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" > "${artifacts_json}"
+            "repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            > "${artifacts_json}"
 
           export ISSUE_NUMBER="${issue_number}"
           export ISSUE_TITLE="${issue_title}"
@@ -86,10 +120,12 @@ jobs:
           from pathlib import Path
 
           run_path, jobs_path, artifacts_path, patch_path = map(Path, sys.argv[1:])
-          run = json.loads(run_path.read_text())
-          job_pages = json.loads(jobs_path.read_text())
-          artifact_pages = json.loads(artifacts_path.read_text())
+          run = json.loads(run_path.read_text(encoding="utf-8"))
+          job_pages = json.loads(jobs_path.read_text(encoding="utf-8"))
+          artifact_pages = json.loads(artifacts_path.read_text(encoding="utf-8"))
 
+          if not isinstance(run, dict):
+              raise RuntimeError("malformed workflow-run response")
           if not isinstance(job_pages, list) or not all(isinstance(page, dict) for page in job_pages):
               raise RuntimeError("malformed paginated jobs response")
           if not isinstance(artifact_pages, list) or not all(isinstance(page, dict) for page in artifact_pages):
@@ -97,23 +133,30 @@ jobs:
 
           raw_jobs = []
           for page in job_pages:
-              jobs = page.get("jobs")
-              if not isinstance(jobs, list):
+              page_jobs = page.get("jobs")
+              if not isinstance(page_jobs, list):
                   raise RuntimeError("jobs page missing jobs array")
-              raw_jobs.extend(jobs)
+              raw_jobs.extend(page_jobs)
 
           raw_artifacts = []
           for page in artifact_pages:
-              artifacts = page.get("artifacts")
-              if not isinstance(artifacts, list):
+              page_artifacts = page.get("artifacts")
+              if not isinstance(page_artifacts, list):
                   raise RuntimeError("artifacts page missing artifacts array")
-              raw_artifacts.extend(artifacts)
+              raw_artifacts.extend(page_artifacts)
 
           branch = os.environ["MONITORED_BRANCH"]
           if run.get("head_branch") != branch:
               raise RuntimeError("re-fetched run does not match monitored branch")
 
-          abnormal = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
+          abnormal = {
+              "failure",
+              "cancelled",
+              "timed_out",
+              "action_required",
+              "startup_failure",
+              "stale",
+          }
           jobs = []
           problem_jobs = []
           problem_steps = []
@@ -122,10 +165,14 @@ jobs:
           for raw_job in raw_jobs:
               if not isinstance(raw_job, dict):
                   raise RuntimeError("non-object job")
+              raw_steps = raw_job.get("steps") or []
+              if not isinstance(raw_steps, list):
+                  raise RuntimeError(f'job {raw_job.get("id")} has malformed steps')
+
               steps = []
-              for raw_step in raw_job.get("steps") or []:
+              for raw_step in raw_steps:
                   if not isinstance(raw_step, dict):
-                      raise RuntimeError("non-object step")
+                      raise RuntimeError(f'job {raw_job.get("id")} contains a non-object step')
                   step = {
                       "number": raw_step.get("number"),
                       "name": raw_step.get("name"),
@@ -135,7 +182,16 @@ jobs:
                       "completed_at": raw_step.get("completed_at"),
                   }
                   steps.append(step)
-                  indexed = {"job_id": raw_job.get("id"), "job": raw_job.get("name"), **step}
+                  indexed = {
+                      "job_id": raw_job.get("id"),
+                      "job": raw_job.get("name"),
+                      "step_number": step["number"],
+                      "step": step["name"],
+                      "status": step["status"],
+                      "conclusion": step["conclusion"],
+                      "started_at": step["started_at"],
+                      "completed_at": step["completed_at"],
+                  }
                   if step["conclusion"] in abnormal:
                       problem_steps.append(indexed)
                   if step["status"] == "in_progress":
@@ -154,36 +210,93 @@ jobs:
               }
               jobs.append(job)
               if job["conclusion"] in abnormal:
-                  problem_jobs.append({k: job[k] for k in ("id", "name", "status", "conclusion")})
+                  problem_jobs.append({key: job[key] for key in ("id", "name", "status", "conclusion")})
 
           artifacts = []
-          for raw in raw_artifacts:
-              if not isinstance(raw, dict):
+          for raw_artifact in raw_artifacts:
+              if not isinstance(raw_artifact, dict):
                   raise RuntimeError("non-object artifact")
-              artifacts.append({
-                  "id": raw.get("id"),
-                  "name": raw.get("name"),
-                  "size_in_bytes": raw.get("size_in_bytes"),
-                  "expired": raw.get("expired"),
-                  "created_at": raw.get("created_at"),
-                  "expires_at": raw.get("expires_at"),
-              })
+              artifacts.append(
+                  {
+                      "id": raw_artifact.get("id"),
+                      "name": raw_artifact.get("name"),
+                      "size_in_bytes": raw_artifact.get("size_in_bytes"),
+                      "expired": raw_artifact.get("expired"),
+                      "created_at": raw_artifact.get("created_at"),
+                      "expires_at": raw_artifact.get("expires_at"),
+                  }
+              )
 
           status = run.get("status") or "unknown"
+          workflow_name = run.get("name")
           workflow_conclusion = run.get("conclusion")
-          not_run = status == "completed" and (not jobs or all(j["conclusion"] == "skipped" for j in jobs))
+
+          def job_executed(job):
+              return job["status"] != "completed" or job["conclusion"] not in {None, "skipped"}
+
+          if workflow_name == "Android signed release":
+              gate_names = {
+                  "Non-production signed APK/AAB dry run",
+                  "Publish Android dry-run status",
+                  "Publish blocked tag release status",
+                  "Validate production tag before environment approval",
+                  "Build, verify, attest, and publish production Android artifacts",
+                  "Publish production Android release status",
+              }
+              gate_jobs = [job for job in jobs if job["name"] in gate_names]
+              executed = any(job_executed(job) for job in gate_jobs)
+              if any(job_executed(job) for job in gate_jobs if job["name"] == "Non-production signed APK/AAB dry run"):
+                  scope = "dry_run"
+              elif any(job_executed(job) for job in gate_jobs if job["name"] in {
+                  "Validate production tag before environment approval",
+                  "Build, verify, attest, and publish production Android artifacts",
+                  "Publish production Android release status",
+              }):
+                  scope = "production"
+              elif any(job_executed(job) for job in gate_jobs if job["name"] == "Publish blocked tag release status"):
+                  scope = "tag_blocked"
+              else:
+                  scope = "metadata_only" if status == "completed" else "pending"
+          elif workflow_name == "CI":
+              core_names = {"Lint", "Test (Linux)", "Test (macOS)", "Android"}
+              release_names = {"Docker real-data-path E2E", "Android emulator real-data-path E2E"}
+              gate_jobs = [
+                  job for job in jobs
+                  if job["name"] in core_names
+                  or job["name"] in release_names
+                  or job["name"].startswith("Release artifacts (")
+              ]
+              executed = any(job_executed(job) for job in gate_jobs)
+              if any(job_executed(job) for job in gate_jobs if job["name"] in release_names or job["name"].startswith("Release artifacts (")):
+                  scope = "release_candidate"
+              elif any(job_executed(job) for job in gate_jobs if job["name"] in core_names):
+                  scope = "path_required"
+              else:
+                  scope = "metadata_only" if status == "completed" else "pending"
+          else:
+              gate_jobs = jobs
+              executed = any(job_executed(job) for job in gate_jobs)
+              scope = "focused" if executed else ("metadata_only" if status == "completed" else "pending")
+
+          not_run = status == "completed" and not executed
           conclusion = "not_run" if not_run else (workflow_conclusion or "pending")
           observed = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+          jobs_data_state = (
+              "available" if jobs else
+              "unavailable" if status == "completed" else
+              "pending_or_unavailable"
+          )
 
           payload = {
-              "schema_version": 3,
+              "schema_version": 4,
               "publisher": {
                   "workflow_file": ".github/workflows/publish-ci-status-issues.yml",
                   "issue_number": int(os.environ["ISSUE_NUMBER"]),
                   "monitored_branch": branch,
               },
+              "publisher_observed_at": observed,
               "workflow": {
-                  "name": run.get("name"),
+                  "name": workflow_name,
                   "workflow_id": run.get("workflow_id"),
                   "workflow_path": run.get("path"),
                   "run_id": run.get("id"),
@@ -194,67 +307,125 @@ jobs:
                   "status": status,
                   "conclusion": conclusion,
                   "workflow_conclusion": workflow_conclusion,
+                  "executed": executed,
+                  "scope": scope,
                   "head_branch": run.get("head_branch"),
                   "head_sha": run.get("head_sha"),
                   "created_at": run.get("created_at"),
                   "updated_at": run.get("updated_at"),
               },
-              "publisher_observed_at": observed,
-              "jobs_data_state": "available" if jobs else "pending_or_unavailable",
+              "jobs_data_state": jobs_data_state,
               "problem_jobs": problem_jobs,
               "problem_steps": problem_steps,
               "active_steps": active_steps,
               "jobs": jobs,
               "artifacts": artifacts,
+              "details_compacted": False,
+              "compaction_reason": None,
           }
 
           def safe(value):
               return str(value).replace("`", "'").replace("\r", " ").replace("\n", " ")
 
-          def summarize(items, kind):
+          def summarize_jobs(items):
               if not items:
                   return "None"
-              if kind == "job":
-                  return ", ".join(f'{safe(x["name"])} (`{safe(x["id"])}`)' for x in items)
-              if kind == "step":
-                  return ", ".join(f'{safe(x["job"])} / {safe(x["name"])} — `{safe(x["conclusion"] or x["status"])}`' for x in items)
-              return ", ".join(f'{safe(x["name"])} (`{safe(x["id"])}`)' for x in items)
+              return ", ".join(f'{safe(item["name"])} (`{safe(item["id"])}`)' for item in items)
 
-          body = "\n".join([
-              "<!-- maintained by publish-ci-status-issues.yml -->",
-              f'# {os.environ["HEADING"]}',
-              "",
-              f'- **Status:** `{safe(status)}`',
-              f'- **Conclusion:** `{safe(conclusion)}`',
-              f'- **Run:** [{safe(run.get("id"))}]({run.get("html_url")})',
-              f'- **Attempt:** `{safe(run.get("run_attempt"))}`',
-              f'- **Commit:** `{safe(run.get("head_sha"))}`',
-              f'- **Branch/event:** `{safe(run.get("head_branch"))}` / `{safe(run.get("event"))}`',
-              f'- **Jobs:** `{len(jobs)}`',
-              f'- **Problem jobs:** {summarize(problem_jobs, "job")}',
-              f'- **Problem steps:** {summarize(problem_steps, "step")}',
-              f'- **Active steps:** {summarize(active_steps, "step")}',
-              f'- **Artifacts:** {summarize(artifacts, "artifact")}',
-              f'- **Observed:** `{safe(observed)}`',
-              "",
-              "## Machine-readable status",
-              "",
-              "```json",
-              json.dumps(payload, indent=2, sort_keys=True),
-              "```",
-              "",
-              "This issue is overwritten whenever the latest applicable run changes state. It is not a historical log.",
-          ])
-          if len(body.encode()) > 60000:
-              raise RuntimeError("status issue body exceeds safe size limit")
+          def summarize_steps(items):
+              if not items:
+                  return "None"
+              return ", ".join(
+                  f'{safe(item["job"])} / {safe(item["step"])} — `{safe(item["conclusion"] or item["status"])}`'
+                  for item in items
+              )
 
-          patch_path.write_text(json.dumps({
-              "title": os.environ["ISSUE_TITLE"],
-              "body": body,
-              "state": "open",
-          }))
+          def summarize_artifacts(items):
+              if not items:
+                  return "None"
+              return ", ".join(f'{safe(item["name"])} (`{safe(item["id"])}`)' for item in items)
+
+          def render_body():
+              return "\n".join(
+                  [
+                      "<!-- maintained by publish-ci-status-issues.yml -->",
+                      f'# {os.environ["HEADING"]}',
+                      "",
+                      f'- **Status:** `{safe(status)}`',
+                      f'- **Conclusion:** `{safe(conclusion)}`',
+                      f'- **Workflow conclusion:** `{safe(workflow_conclusion or "pending")}`',
+                      f'- **Executed:** `{str(executed).lower()}`',
+                      f'- **Scope:** `{safe(scope)}`',
+                      f'- **Run:** [{safe(run.get("id"))}]({run.get("html_url")})',
+                      f'- **Attempt:** `{safe(run.get("run_attempt"))}`',
+                      f'- **Commit:** `{safe(run.get("head_sha"))}`',
+                      f'- **Branch/event:** `{safe(run.get("head_branch"))}` / `{safe(run.get("event"))}`',
+                      f'- **Jobs:** `{len(jobs)}`',
+                      f'- **Problem jobs:** {summarize_jobs(problem_jobs)}',
+                      f'- **Problem steps:** {summarize_steps(problem_steps)}',
+                      f'- **Active steps:** {summarize_steps(active_steps)}',
+                      f'- **Artifacts:** {summarize_artifacts(artifacts)}',
+                      f'- **Observed:** `{safe(observed)}`',
+                      "",
+                      "## Machine-readable status",
+                      "",
+                      "```json",
+                      json.dumps(payload, indent=2, sort_keys=True),
+                      "```",
+                      "",
+                      "This issue is overwritten whenever the latest applicable run changes state. It is not a historical log.",
+                  ]
+              )
+
+          body = render_body()
+          if len(body.encode("utf-8")) > 60_000:
+              problem_job_ids = {item["id"] for item in problem_jobs}
+              for job in payload["jobs"]:
+                  if job["id"] not in problem_job_ids:
+                      job["step_count"] = len(job["steps"])
+                      job["steps"] = []
+                      job["steps_compacted"] = True
+              payload["details_compacted"] = True
+              payload["compaction_reason"] = "issue_body_size_limit"
+              body = render_body()
+
+          if len(body.encode("utf-8")) > 60_000:
+              problem_numbers = {
+                  (item["job_id"], item["step_number"])
+                  for item in problem_steps
+              }
+              for job in payload["jobs"]:
+                  original_steps = job["steps"]
+                  if original_steps:
+                      job["step_count"] = len(original_steps)
+                      job["steps"] = [
+                          step for step in original_steps
+                          if (job["id"], step["number"]) in problem_numbers
+                      ]
+                      job["steps_compacted"] = True
+              payload["details_compacted"] = True
+              payload["compaction_reason"] = "issue_body_size_limit_preserving_problem_steps"
+              body = render_body()
+
+          if len(body.encode("utf-8")) > 60_000:
+              raise RuntimeError("status issue body exceeds safe size limit after deterministic compaction")
+
+          patch_path.write_text(
+              json.dumps(
+                  {
+                      "title": os.environ["ISSUE_TITLE"],
+                      "body": body,
+                      "state": "open",
+                  }
+              ),
+              encoding="utf-8",
+          )
           PY
 
-          gh api --method PATCH "repos/${REPOSITORY}/issues/${ISSUE_NUMBER}" --input "${patch_json}" >/dev/null
+          gh api \
+            --method PATCH \
+            "repos/${REPOSITORY}/issues/${ISSUE_NUMBER}" \
+            --input "${patch_json}" \
+            >/dev/null
           printf 'Published run %s for %s on %s to issue #%s.\n' \
             "${RUN_ID}" "${WORKFLOW_NAME}" "${monitored_branch}" "${ISSUE_NUMBER}"
