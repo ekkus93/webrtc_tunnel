@@ -22,12 +22,31 @@ ACT=".MainActivity"
 APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 P2PCTL="$ROOT/target/debug/p2pctl"
 XML=/tmp/p2p_e2e_ui.xml
+DUMP_ERROR=/tmp/p2p_e2e_ui_dump.err
 
 log() { printf '\033[1;34m[e2e]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[e2e FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ---- UI helpers (uiautomator-based, screen-size independent) ----
-dump() { $ADB shell uiautomator dump /sdcard/p2p_e2e.xml >/dev/null 2>&1 || true; $ADB shell cat /sdcard/p2p_e2e.xml 2>/dev/null > "$XML" || true; }
+# Keep dump failures non-fatal to the polling loop, but never let a failed/stale dump
+# masquerade as valid UI. A failed dump empties XML and records the reason for the
+# bounded startup diagnostic report.
+dump() {
+  : > "$XML"
+  : > "$DUMP_ERROR"
+  $ADB shell rm -f /sdcard/p2p_e2e.xml >/dev/null 2>&1 || true
+  if ! $ADB shell uiautomator dump --compressed /sdcard/p2p_e2e.xml >"$DUMP_ERROR" 2>&1; then
+    return 0
+  fi
+  if ! $ADB shell cat /sdcard/p2p_e2e.xml > "$XML" 2>>"$DUMP_ERROR"; then
+    : > "$XML"
+    return 0
+  fi
+  if ! grep -q '<hierarchy' "$XML"; then
+    printf '%s\n' 'uiautomator output did not contain a hierarchy' >> "$DUMP_ERROR"
+    : > "$XML"
+  fi
+}
 
 # Echo "cx cy" for the center of the first node whose attribute exactly equals the
 # requested value. Return failure when no matching node or usable bounds exist.
@@ -146,22 +165,94 @@ wait_for_text() {
 
 # Wait for a control represented by either its visible label or its explicit content
 # description. This covers Material navigation items whose label semantics may be
-# merged differently across Android/Compose versions.
+# merged differently across Android/Compose versions. A visible notification gate is
+# a prerequisite failure, not a screen to dismiss silently.
 wait_for_semantic() {
   local text="$1" description="$2" timeout="$3" end
   end=$(( $(date +%s) + timeout ))
   while [ "$(date +%s)" -lt "$end" ]; do
     dump
     if bounds_of_semantic "$text" "$description" >/dev/null 2>&1; then return 0; fi
+    if bounds_of_text "Notification permission" >/dev/null 2>&1; then
+      return 2
+    fi
     sleep 1
   done
   return 1
+}
+
+# Bounded, pre-wizard diagnostics. This path runs before identity/broker input, so the
+# captured UI/activity/log snippets cannot contain the E2E secrets entered later.
+startup_diagnostics() {
+  printf '%s\n' '--- Android startup diagnostics ---' >&2
+  if [ -s "$DUMP_ERROR" ]; then
+    printf '%s\n' '[uiautomator]' >&2
+    tail -40 "$DUMP_ERROR" >&2 || true
+  fi
+  if [ -s "$XML" ]; then
+    printf '%s\n' '[ui hierarchy, first 12000 bytes]' >&2
+    head -c 12000 "$XML" >&2 || true
+    printf '\n' >&2
+  fi
+  printf '%s\n' '[notification permission]' >&2
+  $ADB shell dumpsys package "$PKG" 2>/dev/null \
+    | grep -F 'android.permission.POST_NOTIFICATIONS' | tail -5 >&2 || true
+  printf '%s\n' '[focused/resumed activity]' >&2
+  $ADB shell dumpsys window windows 2>/dev/null \
+    | grep -E 'mCurrentFocus|mFocusedApp' | tail -10 >&2 || true
+  $ADB shell dumpsys activity activities 2>/dev/null \
+    | grep -E "topResumedActivity|mResumedActivity|$PKG" | tail -30 >&2 || true
+  printf '%s\n' '[bounded logcat]' >&2
+  $ADB logcat -d -t 300 2>/dev/null \
+    | grep -E "$PKG|AndroidRuntime|ActivityTaskManager" | tail -120 >&2 || true
+  printf '%s\n' '--- end Android startup diagnostics ---' >&2
 }
 
 # Dismiss the soft keyboard. When the IME is shown, BACK (keyevent 4) is consumed by
 # the IME to hide itself and does NOT navigate the Activity. Only call right after
 # typing (keyboard guaranteed up), else BACK would pop the screen.
 hide_kbd() { $ADB shell input keyevent 4 >/dev/null 2>&1 || true; sleep 0.5; }
+
+notification_permission_is_granted() {
+  $ADB shell dumpsys package "$PKG" 2>/dev/null \
+    | tr -d '\r' \
+    | grep -F 'android.permission.POST_NOTIFICATIONS: granted=true' >/dev/null
+}
+
+grant_notification_permission() {
+  local sdk
+  sdk="$($ADB shell getprop ro.build.version.sdk 2>/dev/null | tr -d '\r')"
+  case "$sdk" in
+    ''|*[!0-9]*) fail "invalid Android SDK level '$sdk'" ;;
+  esac
+  if [ "$sdk" -ge 33 ]; then
+    $ADB shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS >/dev/null \
+      || fail "could not grant POST_NOTIFICATIONS"
+    notification_permission_is_granted \
+      || fail "POST_NOTIFICATIONS was not granted after pm grant"
+  fi
+}
+
+prepare_device_ui() {
+  $ADB shell input keyevent KEYCODE_WAKEUP >/dev/null \
+    || fail "could not wake Android device"
+  $ADB shell wm dismiss-keyguard >/dev/null \
+    || fail "could not dismiss Android keyguard"
+}
+
+launch_app_wait() {
+  local launch_output
+  if ! launch_output="$($ADB shell am start -W -n "$PKG/$ACT" 2>&1)"; then
+    printf '%s\n' "$launch_output" >&2
+    startup_diagnostics
+    fail "ActivityManager could not launch $PKG/$ACT"
+  fi
+  if ! printf '%s\n' "$launch_output" | grep -Fq 'Status: ok'; then
+    printf '%s\n' "$launch_output" >&2
+    startup_diagnostics
+    fail "ActivityManager did not report a successful launch"
+  fi
+}
 
 # ---- build + install the debug APK; reset app state ----
 android_install_app() {
@@ -178,7 +269,8 @@ android_install_app() {
   $ADB install -r "$APK" >/dev/null
   log "resetting app state"
   $ADB shell pm clear "$PKG" >/dev/null
-  $ADB shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
+  grant_notification_permission
+  prepare_device_ui
 }
 
 # ---- generate a remote peer identity (input-safe: no + or / in base64) ----
@@ -204,10 +296,18 @@ android_run_wizard_to_listening() {
   local broker_host="$1" broker_port="$2"
 
   log "launching app"
-  $ADB shell am start -n "$PKG/$ACT" >/dev/null
+  launch_app_wait
   # Do not rely on a fixed startup sleep or on an empty awk pipeline returning success.
   # Wait for the actual navigation semantics exported by the app.
-  wait_for_semantic "Settings" "Settings tab icon" 30 || fail "home never rendered Settings navigation"
+  local startup_status=0
+  wait_for_semantic "Settings" "Settings tab icon" 30 || startup_status=$?
+  if [ "$startup_status" -ne 0 ]; then
+    startup_diagnostics
+    if [ "$startup_status" -eq 2 ]; then
+      fail "notification permission gate remained visible after verified grant"
+    fi
+    fail "home never rendered Settings navigation"
+  fi
   local W H
   W="$(screen_w)"; H="$(screen_h)"
   # Settings tab: use app-owned semantic selectors. The content description protects
