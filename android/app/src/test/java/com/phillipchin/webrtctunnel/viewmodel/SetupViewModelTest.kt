@@ -329,7 +329,7 @@ class SetupViewModelTest : AppViewModelTestBase() {
 
         viewModel.forwardsEditor.deleteForward(existing.id)
 
-        val state = awaitSetupState(viewModel) { it.saveResult == "Forward deleted" }
+        val state = awaitSetupState(viewModel) { it.saveResult == "Forward draft removed" }
         assertEquals(null, state.errorMessage)
         assertTrue(
             "the wizard draft must reflect the delete",
@@ -372,7 +372,7 @@ class SetupViewModelTest : AppViewModelTestBase() {
 
         viewModel.forwardsEditor.upsertForward(newForward)
 
-        val state = awaitSetupState(viewModel) { it.saveResult == "Forward saved" }
+        val state = awaitSetupState(viewModel) { it.saveResult == "Forward draft updated" }
         assertEquals(null, state.errorMessage)
         assertTrue(
             "the wizard draft must reflect the upsert",
@@ -403,7 +403,7 @@ class SetupViewModelTest : AppViewModelTestBase() {
 
         viewModel.forwardsEditor.deleteForward(existing.id)
 
-        val state = awaitSetupState(viewModel) { it.saveResult == "Forward deleted" }
+        val state = awaitSetupState(viewModel) { it.saveResult == "Forward draft removed" }
         assertEquals(null, state.errorMessage)
         assertTrue(viewModel.forwards.value.none { it.id == existing.id })
     }
