@@ -1,67 +1,40 @@
 # WebRTC Tunnel FIX9 Validation Request
 
-**Purpose:** trigger full validation for the completed FIX9 implementation and enforcement pass.
+**Purpose:** trigger the definitive full release-candidate validation for FIX9 after implementation, production-path tests, static enforcement, bounded concurrency harnesses, and the setup readiness/admission race fix.
 
-**Original validation requested from SHA:** `29ac4d4b1550663495bc43dc6b6116bfb75daef5`  
-**Latest implementation/test baseline:** `12dcfbe6233e2dcb54786f6b5902f8e4817538e0`
+**Final implementation baseline before signoff docs:** `41b3e08cffe83292776eaeb62524a4133837e19a`  
+**Completion ledger:** `docs/review-source/WEBRTC_TUNNEL_FIX9_COMPLETION_EVIDENCE.md`
 
-This file creates traceable `[full-signoff]` commits that force the repository's full CI matrix, including lint, unit tests, Android validation, Rust validation, Docker/Android E2E, focused RC diagnostics, and broker-secret permission instrumentation.
+This file is part of the final docs-only `[full-signoff]` candidate. The candidate must run the full Rust, Android, Docker, emulator/data-plane, RC diagnostics, release artifact, and broker-secret permission gates. A successful subset or evidence from another SHA is insufficient.
 
-## Previous validation history
+## Final implementation facts under validation
 
-- Run `30344714809` failed Android detekt; formatting and complexity findings were fixed without relaxing detekt.
-- Run `30346404007` proved the broker-secret instrumentation test passed, but its custom status-posting step failed. The workflow now uses its authoritative job result.
-- Runs `30347751225`, `30349093311`, and `30350167310` exposed remaining controller complexity findings; helper logic was moved out without weakening thresholds.
-- Run `30353490703` exposed a Robolectric release-test latch race; commit `1f99b703e93d488eb2c2052bc765121759ef4c68` bound latches to the test Application instance.
-- Runs `30499169031` and `30499670720` exposed the final Android controller detekt findings; helper extraction fixed them without suppressions.
-- Commit `85e77ea5d933c9c7ea85e130bd873d3ff4f8a01b` extracted persistence-request construction without changing cancellation, rollback, or stale-commit warning behavior.
-- Temporary patch workflows and marker files were removed, issue #4 was closed, and the authoritative status publisher was restored to status-only behavior at `04386c97cdf317aff77803457e341dcf8c54c573`.
-- Run `30502929767` passed every non-Android gate and exposed one `ConfigRepository.kt` ktlint indentation issue; commit `039696b1c34f5bf8458d86b0d325fbd0557206c4` corrected it.
-- Broker run `30502929768` exposed a multiline emulator-action shell-directory defect; commit `0cf4bf61f2518dde1a1fd1b9745a4b47d2fc10c3` now invokes `./android/gradlew -p android` directly.
-- Commits `1ce0153fca7e147b78107a5d1463a32608c7e873` and `a8ffde57af963e7e518ffe6d7ae200d288356ea4` added comment-resistant source enforcement for identity-draft, forward-draft, final-persist, and tunnel-start freshness boundaries.
-- Runs `30504403878` and `30505101514` exposed two ktlint formatting defects in the Result-contract source audit. Commits `096d0b4b8a23f23530e2b085772b8fb0f0700ab7` and `022f754f724e9664e191594be9dde7623ae36de0` corrected them without weakening assertions.
-- Final-candidate broker run `30505896676` passed the real broker-secret permission instrumentation test.
-- Main run `30505896686` passed Rust lint, Linux, macOS, and Docker E2E, then exposed three test-only detekt findings: two non-injected IO dispatchers and one ignored `Result`. Commits `8c3911ed1d4b8a82a7d5ce1228262d138ad66dbb` and `12dcfbe6233e2dcb54786f6b5902f8e4817538e0` consume the Result and use a closed injected test dispatcher.
+- Setup admission owns the actual coroutine `Job`; abandonment cancels and invalidates it.
+- Identity import/generation, forward drafts, navigation, final persistence, and foreground-service start are freshness-gated on their production paths.
+- Transactional save cancellation rolls back attempted stages under `NonCancellable`; incomplete rollback is durable and visible.
+- `SetupLoadState.Ready` is published only after `BaselineLoad` releases admission. Unexpected baseline exceptions fail closed as a redacted durable failure.
+- Public identity reads are serialized with identity-pair replacement.
+- Canonical private/public identity output is mandatory on import; source-text fallback is removed.
+- Identified `Result` APIs convert ordinary exceptions to failure values and rethrow cancellation.
+- Comment-resistant source audits enforce setup freshness and Result contracts.
+- Broker-secret permission instrumentation proves exact `0600` after persist and restore.
 
-## FIX9 completion changes under validation
+## Last bounded Android failure and correction
 
-- Active setup ownership captures and cancels the real coroutine `Job` when setup is abandoned.
-- Final save checks freshness immediately before transactional persistence; cancellation inside persistence rolls back attempted stages.
-- A stale operation that somehow observes a completed commit publishes a durable `setup_commit_completed_after_cancel` warning and never starts the tunnel.
-- `IdentityRepository.readPublicIdentity()` is serialized under the same storage lock as identity-pair replacement.
-- Setup forward edits use draft-truthful messages.
-- `ConfigRepository.savePreferences()` has an injected writer seam proving ordinary thrown failures become `Result.failure` while cancellation propagates.
-- Production-path stale tests cover path/URI import, generation, forward upsert/delete, navigation validation, pre-commit save cancellation, cancellation during transactional persistence, start-from-review, and newer-error preservation.
-- Added coherent identity-pair concurrency proof, canonical identity-field failure tests, Result-contract tests, CheckResult enforcement, and source-level FIX9 freshness enforcement.
+Run `30593967688` completed with six failures. The apparent final-save rollback timeout and four forward timeouts were not independent deadlocks: tests observed `SetupLoadState.Ready` while `BaselineLoad` still owned admission, so production forward/save methods were rejected as busy and never reached their barriers. Commit `41b3e08cffe83292776eaeb62524a4133837e19a` moved terminal load-state publication after admission release. No retry loop, delay, suppression, fallback, or relaxed threshold was added.
 
-## Required validation
+Run `30598677024` then passed full Gradle check, the dedicated stop-failure suite, assemble/unit packaging, and path-scoped full-matrix signoff for the final implementation baseline.
 
-```bash
-cd android
-./gradlew --no-daemon ktlintCheck
-./gradlew --no-daemon detekt
-./gradlew --no-daemon lintDebug
-./gradlew --no-daemon testDebugUnitTest --rerun-tasks
-./gradlew --no-daemon testDebugUnitTest --rerun-tasks
-./gradlew --no-daemon assembleDebug
-./gradlew --no-daemon check
-```
+## Required exact-candidate conclusions
 
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo clippy --workspace --release --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features
-cargo test -p p2p-daemon --test real_broker_tunnel --all-features
-cargo build --release -p p2p-offer -p p2p-answer -p p2pctl
-tests/e2e/docker/run.sh
-tests/e2e/docker/stop_lifecycle.sh
-```
+- `ci/rc-diagnostics`: success
+- `ci/full-matrix`: success
+- `ci/release-candidate`: success
+- broker-secret instrumentation workflow: success
+- path detection: Rust and Android required
+- Android full Gradle check, unit tests, lint, detekt, ktlint, assemble, emulator/data-plane E2E: success
+- Rust fmt/clippy/tests/release builds and real broker test: success
+- Docker real-data-path and stop-lifecycle E2E: success
+- release artifacts: success
 
-```bash
-./android/gradlew -p android --no-daemon connectedDebugAndroidTest \
-  -PskipRustBuild=true \
-  -Pandroid.testInstrumentationRunnerArguments.class=com.phillipchin.webrtctunnel.data.BrokerSecretRepositoryInstrumentedTest
-```
-
-**Status:** exact-SHA validation requested after detekt-compliant test cleanup; do not claim signoff until every required workflow passes for this commit.
+**Status:** validation requested. Do not claim FIX9 release signoff until every required conclusion belongs to this exact candidate SHA.
