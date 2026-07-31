@@ -4,7 +4,8 @@
 **Initial audit baseline:** `141a5425f620ae6b37a29ee0d8956cbfbd4d7b27`  
 **Implementation baseline:** `6bad7a1f18b180676cc567031f93f7a99fb91d52`  
 **Validated functional repair candidate:** `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc`  
-**Disposition:** functional implementation, enforcement, and a complete exact-SHA release-candidate run are proven. Final documentation/evidence closure is valid only if the exact `[full-signoff]` commit containing this ledger passes the same applicable gates.
+**Latest startup-hardening correction:** `673ea778d104673826f83592325fef46271133e9`  
+**Disposition:** functional implementation, enforcement, and one complete exact-SHA release-candidate run are proven. The first documentation-only closure candidate failed the emulator startup gate, so final closure remains conditional on a new exact `[full-signoff]` commit passing the same applicable gates.
 
 This ledger maps FIX9 requirements to production paths and named evidence. A helper seam, partial matrix, successful parent SHA, or retry from another commit is not treated as completion.
 
@@ -73,7 +74,7 @@ The failing test, `LogsViewModelTest.concurrentExportIsRejectedWhileOneIsAlready
 - No retry, sleep, suppression, relaxed rule, or extended timeout is used.
 - Path-scoped Android run `30600821345` passed full Gradle `check`, the dedicated stop-failure suite, the second `assembleDebug testDebugUnitTest`, and path-scoped full-matrix signoff.
 
-## Failed exact candidate — Android Settings navigation
+## Failed exact candidate — Android Settings navigation false-positive
 
 Candidate `7be00838feef85d374f20aa8dd6b7365969ba3dd` reached the real Android emulator and failed the E2E script with:
 
@@ -81,11 +82,9 @@ Candidate `7be00838feef85d374f20aa8dd6b7365969ba3dd` reached the real Android em
 
 The emulator booted, the APK installed, and the app launched. The failure was in the shell harness readiness contract, not emulator provisioning or WebRTC.
 
-### Root cause
+### Root cause and repair
 
 The old `bounds_of_text()` pipeline ended with `awk`. When no node matched, `awk` produced no coordinates but still returned success. The startup readiness check therefore treated a missing Settings node as found and immediately attempted the tap.
-
-### Repair
 
 Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc`:
 
@@ -127,21 +126,52 @@ Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` passed every applicable commit
 
 ### Real Android data-path proof
 
-The emulator job completed the production wizard path:
+The emulator job completed the production wizard path: Mode, identity generation, TLS broker configuration, remote peer authorization, forwards and network-policy defaults, review/start, and `Listening`. It then launched the dockerized answer, triggered WebRTC negotiation, delivered the marker through the Android-offer tunnel, and verified that the answer received `PING` and replied `PONG`.
 
-- Mode
-- Identity generation
-- TLS broker configuration
-- Remote peer authorization
-- Forwards and network-policy defaults
-- Review and start
-- `Listening`
+## Failed exact documentation candidate — startup prerequisite
 
-It then launched the dockerized answer, triggered WebRTC negotiation, delivered the marker through the Android-offer tunnel, and verified that the answer received `PING` and replied `PONG`.
+Candidate `9b1d1999fa81865adb051574221a68f4e15e8d74` was correctly rejected by main run `30606054232`.
+
+### Gates that passed on `9b1d1999...`
+
+- RC diagnostics run `30606054239`: success
+- broker-secret permission instrumentation run `30606054195`: success
+- Rust lint/Linux/macOS/Docker: success
+- Android full Gradle `check`: success
+- dedicated foreground-service stop-failure suite: success
+- second `assembleDebug testDebugUnitTest`: success without retry
+
+### Gate that failed
+
+- Android emulator real-data-path E2E job `91080851616`: failure
+- exact failure: `[e2e FAIL] home never rendered Settings navigation`
+- emulator boot, APK installation, app-state reset, and app launch all occurred before the failure
+- full matrix and release-candidate signoff therefore did not complete successfully
+
+### Startup prerequisite correction
+
+Inspection found that `android_install_app()` cleared app state and then ran:
+
+`pm grant ... POST_NOTIFICATIONS ... || true`
+
+That ignored an authoritative runtime-permission result. If the grant failed, `NotificationPermissionGate` could display a modal over the Home surface while the harness continued to poll for Settings semantics. The harness also did not wait for ActivityManager launch completion and suppressed UI-dump errors.
+
+Commit `673ea778d104673826f83592325fef46271133e9` corrects those contracts:
+
+- Android API level parsing is required and validated.
+- `pm grant POST_NOTIFICATIONS` must succeed on API 33+.
+- package state must report `android.permission.POST_NOTIFICATIONS: granted=true`.
+- device wake and keyguard dismissal must succeed.
+- `am start -W` must complete with `Status: ok`.
+- failed/stale UI dumps produce empty XML rather than reusable stale data.
+- dump errors are preserved for bounded reporting.
+- a visible notification-permission modal is treated as an explicit prerequisite failure.
+- startup diagnostics include bounded permission, focus, activity, UI hierarchy, and logcat evidence before any setup secret is entered.
+- the Settings semantic wait remains bounded at 30 seconds; no retry-only rerun, silent dismissal, or timeout inflation is introduced.
 
 ## Final documentation/evidence exact-SHA rule
 
-The final candidate is the exact `[full-signoff]` commit containing this ledger and its companion documents. The SHA is intentionally defined by the published commit rather than guessed in advance.
+The final candidate is the exact `[full-signoff]` commit containing this ledger, its companion documents, and correction `673ea778d104673826f83592325fef46271133e9`. The SHA is intentionally defined by the published commit rather than guessed in advance.
 
 FIX9 commit-level closure is valid only when all of these records identify that exact SHA:
 
