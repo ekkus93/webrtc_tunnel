@@ -5,6 +5,8 @@ import com.phillipchin.webrtctunnel.data.AppDependencies
 import com.phillipchin.webrtctunnel.model.NetworkPolicyStatus
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
+import kotlinx.coroutines.ExecutorCoroutineDispatcher
+import kotlinx.coroutines.asCoroutineDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -12,6 +14,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 private val NO_NETWORK =
     NetworkPolicyStatus(
@@ -21,6 +26,30 @@ private val NO_NETWORK =
         allowedByUserPolicy = false,
         tunnelAllowed = false,
     )
+
+private class BlockedIoDispatcher : AutoCloseable {
+    private val executor = Executors.newSingleThreadExecutor()
+    val dispatcher: ExecutorCoroutineDispatcher = executor.asCoroutineDispatcher()
+    private val release = CountDownLatch(1)
+
+    init {
+        val entered = CountDownLatch(1)
+        executor.execute {
+            entered.countDown()
+            check(release.await(5, TimeUnit.SECONDS)) { "blocked diagnostics IO was never released" }
+        }
+        check(entered.await(5, TimeUnit.SECONDS)) { "diagnostics IO blocker did not start" }
+    }
+
+    fun release() {
+        release.countDown()
+    }
+
+    override fun close() {
+        release()
+        dispatcher.close()
+    }
+}
 
 @RunWith(RobolectricTestRunner::class)
 class LogsViewModelTest : AppViewModelTestBase() {
@@ -83,31 +112,30 @@ class LogsViewModelTest : AppViewModelTestBase() {
 
     @Test
     fun concurrentExportIsRejectedWhileOneIsAlreadyInFlight() {
-        // The shared `deps` fixture uses fully inline (Unconfined) dispatchers, so
-        // exportDiagnostics() would run start-to-finish before a second call could ever
-        // observe isBusy == true. Use real IO dispatchers here so `withContext(io)`
-        // genuinely suspends the launch at that point, giving us a window to fire the
-        // second call while the first is still in flight.
-        val realIoDeps =
-            AppDependencies(
-                context = app,
-                nativeBridgeFactory = { recordingBridge },
-                configRepository = configRepository,
-                networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
-                identityRepository = deps.identityRepository,
-                dispatchers = realIoTestDispatchers(),
-            )
-        val viewModel = LogsViewModel(realIoDeps)
-        val firstOutput = File(app.filesDir, "diagnostics_first.txt")
-        val secondOutput = File(app.filesDir, "diagnostics_second.txt")
+        BlockedIoDispatcher().use { blockedIo ->
+            val blockedDeps =
+                AppDependencies(
+                    context = app,
+                    nativeBridgeFactory = { recordingBridge },
+                    configRepository = configRepository,
+                    networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
+                    identityRepository = deps.identityRepository,
+                    dispatchers = realIoTestDispatchers(blockedIo.dispatcher),
+                )
+            val viewModel = LogsViewModel(blockedDeps)
+            val firstOutput = File(app.filesDir, "diagnostics_first.txt")
+            val secondOutput = File(app.filesDir, "diagnostics_second.txt")
 
-        viewModel.exportDiagnostics(firstOutput.absolutePath, NO_NETWORK)
-        assertTrue("first export should set isBusy before yielding to the IO dispatcher", viewModel.isBusy.value)
-        viewModel.exportDiagnostics(secondOutput.absolutePath, NO_NETWORK)
+            viewModel.exportDiagnostics(firstOutput.absolutePath, NO_NETWORK)
+            assertTrue("first export must claim admission before launch", viewModel.isBusy.value)
+            viewModel.exportDiagnostics(secondOutput.absolutePath, NO_NETWORK)
+            assertFalse("second concurrent export must be rejected before IO", secondOutput.exists())
 
-        awaitCondition { viewModel.message.value != null }
-        assertTrue(firstOutput.exists())
-        assertFalse("second concurrent export must be ignored, not written", secondOutput.exists())
+            blockedIo.release()
+            awaitCondition { viewModel.message.value != null }
+            assertTrue(firstOutput.exists())
+            assertFalse("rejected export must never be written", secondOutput.exists())
+        }
     }
 
     @Test
