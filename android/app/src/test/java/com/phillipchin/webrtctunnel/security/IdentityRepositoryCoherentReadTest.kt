@@ -109,8 +109,7 @@ private class PairReplacementBarrier {
     }
 }
 
-private fun CountDownLatch.awaitDeadline(): Boolean =
-    await(CONCURRENCY_WAIT_SECONDS, TimeUnit.SECONDS)
+private fun CountDownLatch.awaitDeadline(): Boolean = await(CONCURRENCY_WAIT_SECONDS, TimeUnit.SECONDS)
 
 private fun daemonThread(
     name: String,
