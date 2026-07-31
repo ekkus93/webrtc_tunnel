@@ -24,7 +24,10 @@ class ProbeEvidenceShellContractTest {
 
         assertTrue("probe evidence fixture timed out:\n$output", completed)
         assertEquals("probe evidence fixture failed:\n$output", 0, process.exitValue())
-        assertTrue("probe evidence fixture did not report PASS:\n$output", output.contains("[probe-evidence-test] PASS"))
+        assertTrue(
+            "probe evidence fixture did not report PASS:\n$output",
+            output.contains("[probe-evidence-test] PASS"),
+        )
     }
 
     private fun findScript(): File {
