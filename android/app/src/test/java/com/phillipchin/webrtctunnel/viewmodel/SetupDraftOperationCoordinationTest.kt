@@ -3,12 +3,14 @@ package com.phillipchin.webrtctunnel.viewmodel
 import androidx.lifecycle.viewModelScope
 import com.phillipchin.webrtctunnel.awaitCondition
 import com.phillipchin.webrtctunnel.data.AppDependencies
+import com.phillipchin.webrtctunnel.data.AppDispatchers
 import com.phillipchin.webrtctunnel.data.SensitiveDataRedactor
 import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.SetupConfigInput
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -20,8 +22,48 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 private const val SETUP_COORDINATION_TEST_TIMEOUT_MS = 15_000L
+private const val BASELINE_GATE_TIMEOUT_SECONDS = 5L
+
+/**
+ * Holds every task dispatched to [dispatchers] until [release] is called. This makes the
+ * constructor-time `Initializing` contract deterministic: the test does not depend on whether
+ * a real IO pool happens to finish before the assertion runs. The worker is daemonized and every
+ * wait is bounded so a failed test cannot strand Gradle's test executor.
+ */
+private class GatedBaselineDispatchers : AutoCloseable {
+    private val releaseLatch = CountDownLatch(1)
+    private val executor =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "setup-baseline-gated-io").apply { isDaemon = true }
+        }
+    private val gatedExecutor =
+        Executor { command ->
+            executor.execute {
+                check(releaseLatch.await(BASELINE_GATE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    "setup baseline IO gate was never released"
+                }
+                command.run()
+            }
+        }
+    private val dispatcher = gatedExecutor.asCoroutineDispatcher()
+
+    val dispatchers = AppDispatchers(io = dispatcher, default = dispatcher, main = dispatcher)
+
+    fun release() {
+        releaseLatch.countDown()
+    }
+
+    override fun close() {
+        release()
+        executor.shutdownNow()
+    }
+}
 
 /**
  * FIX8 P1-001: the shared setup-local [SetupOperationCoordinator] — baseline load off the main
@@ -32,14 +74,14 @@ private const val SETUP_COORDINATION_TEST_TIMEOUT_MS = 15_000L
  */
 @RunWith(RobolectricTestRunner::class)
 class SetupDraftOperationCoordinationTest : AppViewModelTestBase() {
-    private fun realIoDeps(): AppDependencies =
+    private fun realIoDeps(dispatchers: AppDispatchers = realIoTestDispatchers()): AppDependencies =
         AppDependencies(
             context = app,
             nativeBridgeFactory = { recordingBridge },
             configRepository = configRepository,
             networkPolicyManager = NetworkPolicyManager { NetworkType.UnmeteredWifi to false },
             identityRepository = deps.identityRepository,
-            dispatchers = realIoTestDispatchers(),
+            dispatchers = dispatchers,
         )
 
     private fun awaitSetupState(
@@ -53,38 +95,45 @@ class SetupDraftOperationCoordinationTest : AppViewModelTestBase() {
     }
 
     // setupViewModelConstructionPerformsNoFileIoOnMainThread
-    @Test
+    @Test(timeout = SETUP_COORDINATION_TEST_TIMEOUT_MS)
     fun setupViewModelConstructionPerformsNoFileIoOnMainThread() {
         configRepository.saveSetupInput(
             SetupConfigInput(brokerHost = "saved-broker.local", remotePeerId = "saved-remote-peer"),
         )
-        val viewModel = SetupViewModel(realIoDeps())
+        GatedBaselineDispatchers().use { gate ->
+            val viewModel = SetupViewModel(realIoDeps(gate.dispatchers))
 
-        // FIX8 P1-001-B: the setup-input read/decode is genuinely IO-dispatched — construction
-        // itself must return before that real thread hop completes, proven here by observing
-        // the load is still Initializing at the instant the constructor returns (no idling yet).
-        assertEquals(SetupLoadState.Initializing, viewModel.loadState.value)
+            // FIX8 P1-001-B: construction returns while the actual IO-dispatched baseline is
+            // deliberately held behind a test-owned gate. This proves the constructor did not
+            // perform the setup-input read synchronously on its caller thread without racing a
+            // fast shared IO pool.
+            assertEquals(SetupLoadState.Initializing, viewModel.loadState.value)
 
-        awaitLoadReady(viewModel)
-        assertEquals("saved-broker.local", viewModel.state.value.input.brokerHost)
+            gate.release()
+            awaitLoadReady(viewModel)
+            assertEquals("saved-broker.local", viewModel.state.value.input.brokerHost)
+        }
     }
 
     // setupLoadInitializingBlocksNextAndSave
-    @Test
+    @Test(timeout = SETUP_COORDINATION_TEST_TIMEOUT_MS)
     fun setupLoadInitializingBlocksNextAndSave() {
-        val viewModel = SetupViewModel(realIoDeps())
-        assertEquals(SetupLoadState.Initializing, viewModel.loadState.value)
-        val stepBefore = viewModel.state.value.currentStep
+        GatedBaselineDispatchers().use { gate ->
+            val viewModel = SetupViewModel(realIoDeps(gate.dispatchers))
+            assertEquals(SetupLoadState.Initializing, viewModel.loadState.value)
+            val stepBefore = viewModel.state.value.currentStep
 
-        viewModel.goNext()
+            viewModel.goNext()
 
-        assertEquals(
-            "Next must be rejected while the baseline is still loading",
-            stepBefore,
-            viewModel.state.value.currentStep,
-        )
-        assertTrue(viewModel.state.value.errorMessage != null)
-        awaitLoadReady(viewModel)
+            assertEquals(
+                "Next must be rejected while the baseline is still loading",
+                stepBefore,
+                viewModel.state.value.currentStep,
+            )
+            assertTrue(viewModel.state.value.errorMessage != null)
+            gate.release()
+            awaitLoadReady(viewModel)
+        }
     }
 
     // setupLoadReadyUsesLoadedDraftBaseline
