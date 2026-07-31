@@ -29,11 +29,46 @@ fail() { printf '\033[1;31m[e2e FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
 # ---- UI helpers (uiautomator-based, screen-size independent) ----
 dump() { $ADB shell uiautomator dump /sdcard/p2p_e2e.xml >/dev/null 2>&1 || true; $ADB shell cat /sdcard/p2p_e2e.xml 2>/dev/null > "$XML" || true; }
 
-# Echo "cx cy" for the center of the first node whose text equals $1, else nothing.
-bounds_of_text() {
-  tr '>' '\n' < "$XML" | grep -F "text=\"$1\"" \
-    | sed -E 's/.*bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1 \2 \3 \4/' | head -1 \
-    | awk 'NF==4{printf "%d %d", ($1+$3)/2, ($2+$4)/2}'
+# Echo "cx cy" for the center of the first node whose attribute exactly equals the
+# requested value. Return failure when no matching node or usable bounds exist.
+# The explicit non-empty checks matter: without them, the final awk in the old
+# pipeline returned status 0 for an empty input, so callers incorrectly believed a
+# missing node had been found.
+bounds_of_attribute() {
+  local attribute="$1" value="$2" line xy
+  line="$(
+    tr '>' '\n' < "$XML" \
+      | grep -F "${attribute}=\"${value}\"" \
+      | head -1 \
+      || true
+  )"
+  [ -n "$line" ] || return 1
+  xy="$(
+    printf '%s\n' "$line" \
+      | sed -E 's/.*bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1 \2 \3 \4/' \
+      | awk 'NF==4{printf "%d %d", ($1+$3)/2, ($2+$4)/2}'
+  )"
+  [ -n "$xy" ] || return 1
+  printf '%s' "$xy"
+}
+
+# Echo "cx cy" for the center of the first node whose text equals $1.
+bounds_of_text() { bounds_of_attribute text "$1"; }
+
+# Echo "cx cy" for the center of the first node whose content description equals $1.
+bounds_of_content_desc() { bounds_of_attribute content-desc "$1"; }
+
+# Resolve a stable semantic control by visible text first, then by its explicit
+# accessibility description. This is not a coordinate fallback: both selectors are
+# app-owned UI semantics exported through the same uiautomator tree.
+bounds_of_semantic() {
+  local text="$1" description="$2" xy
+  xy="$(bounds_of_text "$text" || true)"
+  if [ -z "$xy" ]; then
+    xy="$(bounds_of_content_desc "$description" || true)"
+  fi
+  [ -n "$xy" ] || return 1
+  printf '%s' "$xy"
 }
 
 # Echo "cx cy" for the center of the Nth (1-based) EditText node.
@@ -64,7 +99,14 @@ input_text_reliable() {
 
 tap_text() {
   dump
-  local xy; xy="$(bounds_of_text "$1")"
+  local xy; xy="$(bounds_of_text "$1" || true)"
+  [ -n "$xy" ] || return 1
+  tap_xy $xy
+}
+
+tap_semantic() {
+  dump
+  local xy; xy="$(bounds_of_semantic "$1" "$2" || true)"
   [ -n "$xy" ] || return 1
   tap_xy $xy
 }
@@ -77,7 +119,7 @@ screen_h() { $ADB shell wm size | sed -E 's/.*: ([0-9]+)x([0-9]+).*/\2/' | tail 
 # content up and retry — uiautomator-located, hence screen-size independent.
 tap_next() {
   dump
-  local xy; xy="$(bounds_of_text "Next")"
+  local xy; xy="$(bounds_of_text "Next" || true)"
   if [ -n "$xy" ]; then tap_xy $xy; return 0; fi
   local w h; w="$(screen_w)"; h="$(screen_h)"
   local _
@@ -85,7 +127,7 @@ tap_next() {
     $ADB shell input swipe "$(( w/2 ))" "$(( h*70/100 ))" "$(( w/2 ))" "$(( h*25/100 ))" 250
     sleep 1
     dump
-    xy="$(bounds_of_text "Next")"
+    xy="$(bounds_of_text "Next" || true)"
     if [ -n "$xy" ]; then tap_xy $xy; return 0; fi
   done
   return 1
@@ -96,7 +138,21 @@ wait_for_text() {
   local want="$1" timeout="$2" end; end=$(( $(date +%s) + timeout ))
   while [ "$(date +%s)" -lt "$end" ]; do
     dump
-    if tr '>' '\n' < "$XML" | grep -qF "text=\"$want\""; then return 0; fi
+    if bounds_of_text "$want" >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
+# Wait for a control represented by either its visible label or its explicit content
+# description. This covers Material navigation items whose label semantics may be
+# merged differently across Android/Compose versions.
+wait_for_semantic() {
+  local text="$1" description="$2" timeout="$3" end
+  end=$(( $(date +%s) + timeout ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    dump
+    if bounds_of_semantic "$text" "$description" >/dev/null 2>&1; then return 0; fi
     sleep 1
   done
   return 1
@@ -149,16 +205,14 @@ android_run_wizard_to_listening() {
 
   log "launching app"
   $ADB shell am start -n "$PKG/$ACT" >/dev/null
-  sleep 3
-  dump
+  # Do not rely on a fixed startup sleep or on an empty awk pipeline returning success.
+  # Wait for the actual navigation semantics exported by the app.
+  wait_for_semantic "Settings" "Settings tab icon" 30 || fail "home never rendered Settings navigation"
   local W H
   W="$(screen_w)"; H="$(screen_h)"
-  if ! bounds_of_text "Settings" >/dev/null 2>&1; then
-    wait_for_text "Settings" 15 || fail "home never rendered"
-  fi
-  # Settings tab: locate it via uiautomator (the bottom nav sits above any system
-  # gesture area, so a hardcoded % of screen height misses on tall/physical devices).
-  tap_text "Settings" || fail "could not find Settings nav tab"
+  # Settings tab: use app-owned semantic selectors. The content description protects
+  # against Compose versions that merge or omit an unselected navigation label.
+  tap_semantic "Settings" "Settings tab icon" || fail "could not find Settings nav tab"
   sleep 1
   tap_text "Run setup wizard again" || fail "could not open setup wizard"
   wait_for_text "Step 1 of 7: Mode" 15 || fail "wizard did not open at Mode step"
