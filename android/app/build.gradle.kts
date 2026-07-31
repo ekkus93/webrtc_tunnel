@@ -1,3 +1,10 @@
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermission
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.PrivateKey
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -7,17 +14,95 @@ plugins {
     alias(libs.plugins.detekt)
 }
 
+val androidVersionProperties =
+    Properties().apply {
+        val source = rootProject.file("version.properties")
+        if (!source.isFile) {
+            throw GradleException("Missing android/version.properties")
+        }
+        source.inputStream().use(::load)
+    }
+
+fun requiredVersionProperty(name: String): String =
+    androidVersionProperties.getProperty(name)?.trim()?.takeIf(String::isNotEmpty)
+        ?: throw GradleException("Missing Android version property: $name")
+
+val appVersionCode =
+    requiredVersionProperty("versionCode").toIntOrNull()?.takeIf { it > 0 }
+        ?: throw GradleException("versionCode must be a positive integer")
+val appVersionName = requiredVersionProperty("versionName")
+val productionRelease = providers.gradleProperty("productionRelease").map(String::toBoolean).orElse(false)
+
+fun requiredReleaseEnvironment(name: String): String =
+    providers.environmentVariable(name).orNull?.takeIf(String::isNotBlank)
+        ?: throw GradleException("Missing required production signing input: $name")
+
+fun normalizedSha256(value: String): String {
+    val normalized = value.replace(Regex("[:\\s]"), "").lowercase()
+    if (!normalized.matches(Regex("[0-9a-f]{64}"))) {
+        throw GradleException("Production certificate fingerprint must contain exactly 64 hexadecimal digits")
+    }
+    return normalized
+}
+
+val productionKeystoreFile =
+    if (productionRelease.get()) {
+        file(requiredReleaseEnvironment("ANDROID_RELEASE_KEYSTORE_PATH"))
+    } else {
+        null
+    }
+val productionStorePassword =
+    if (productionRelease.get()) requiredReleaseEnvironment("ANDROID_RELEASE_STORE_PASSWORD") else null
+val productionKeyAlias =
+    if (productionRelease.get()) requiredReleaseEnvironment("ANDROID_RELEASE_KEY_ALIAS") else null
+val productionKeyPassword =
+    if (productionRelease.get()) requiredReleaseEnvironment("ANDROID_RELEASE_KEY_PASSWORD") else null
+val productionCertificateSha256 =
+    if (productionRelease.get()) {
+        normalizedSha256(
+            providers.gradleProperty("releaseCertificateSha256").orNull
+                ?: throw GradleException("Missing -PreleaseCertificateSha256 for a production release build"),
+        )
+    } else {
+        null
+    }
+
 android {
     namespace = "com.phillipchin.webrtctunnel"
     compileSdk = 35
+
+    signingConfigs {
+        if (productionRelease.get()) {
+            create("productionRelease") {
+                storeFile = productionKeystoreFile
+                storePassword = productionStorePassword
+                keyAlias = productionKeyAlias
+                keyPassword = productionKeyPassword
+                storeType = "PKCS12"
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.phillipchin.webrtctunnel"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.3.2"
+        versionCode = appVersionCode
+        versionName = appVersionName
         testInstrumentationRunner = "com.phillipchin.webrtctunnel.TestTunnelRunner"
+    }
+
+    buildTypes {
+        getByName("release") {
+            isDebuggable = false
+            if (productionRelease.get()) {
+                signingConfig = signingConfigs.getByName("productionRelease")
+            }
+        }
     }
 
     buildFeatures {
@@ -171,10 +256,86 @@ tasks.register("requireRustJniLibs") {
     }
 }
 
+val validateProductionReleaseSigning =
+    tasks.register("validateProductionReleaseSigning") {
+        group = "verification"
+        description = "Validates the production PKCS#12 key, alias, passwords, permissions, and pinned certificate."
+        doLast {
+            if (!productionRelease.get()) {
+                throw GradleException("validateProductionReleaseSigning requires -PproductionRelease=true")
+            }
+            val keystoreFile = productionKeystoreFile ?: throw GradleException("Production keystore is unavailable")
+            if (!keystoreFile.isFile) {
+                throw GradleException("Production keystore is missing or not a regular file")
+            }
+            try {
+                val permissions = Files.getPosixFilePermissions(keystoreFile.toPath())
+                val unsafe =
+                    permissions.any {
+                        it in
+                            setOf(
+                                PosixFilePermission.GROUP_READ,
+                                PosixFilePermission.GROUP_WRITE,
+                                PosixFilePermission.GROUP_EXECUTE,
+                                PosixFilePermission.OTHERS_READ,
+                                PosixFilePermission.OTHERS_WRITE,
+                                PosixFilePermission.OTHERS_EXECUTE,
+                            )
+                    }
+                if (unsafe) {
+                    throw GradleException("Production keystore permissions grant group/other access")
+                }
+            } catch (_: UnsupportedOperationException) {
+                // Non-POSIX local filesystems cannot expose these bits. Production CI runs on Linux
+                // and separately creates/chmods the temporary key file with mode 0600.
+            }
+
+            val storePasswordChars = productionStorePassword?.toCharArray() ?: charArrayOf()
+            val keyPasswordChars = productionKeyPassword?.toCharArray() ?: charArrayOf()
+            try {
+                val keyStore = KeyStore.getInstance("PKCS12")
+                try {
+                    keystoreFile.inputStream().use { keyStore.load(it, storePasswordChars) }
+                    val alias = productionKeyAlias ?: throw GradleException("Production key alias is unavailable")
+                    if (!keyStore.isKeyEntry(alias)) {
+                        throw GradleException("Production signing alias is not a private-key entry")
+                    }
+                    val key = keyStore.getKey(alias, keyPasswordChars)
+                    if (key !is PrivateKey) {
+                        throw GradleException("Production signing alias does not resolve to a private key")
+                    }
+                    val certificate =
+                        keyStore.getCertificate(alias)
+                            ?: throw GradleException("Production signing certificate is unavailable")
+                    val actualFingerprint =
+                        MessageDigest.getInstance("SHA-256")
+                            .digest(certificate.encoded)
+                            .joinToString(separator = "") { byte -> "%02x".format(byte) }
+                    if (actualFingerprint != productionCertificateSha256) {
+                        throw GradleException("Production signing certificate does not match the pinned fingerprint")
+                    }
+                } catch (error: GradleException) {
+                    throw error
+                } catch (_: Exception) {
+                    throw GradleException("Production release keystore validation failed")
+                }
+            } finally {
+                storePasswordChars.fill('\u0000')
+                keyPasswordChars.fill('\u0000')
+            }
+        }
+    }
+
 tasks.named("preBuild") {
     // Skipped for local lint/unit-test cycles via -PskipRustBuild=true; on by default.
     if (!skipRustBuild) {
         dependsOn("verifyRustJniLibs")
+    }
+}
+
+if (productionRelease.get()) {
+    tasks.named("preReleaseBuild") {
+        dependsOn(validateProductionReleaseSigning)
     }
 }
 
