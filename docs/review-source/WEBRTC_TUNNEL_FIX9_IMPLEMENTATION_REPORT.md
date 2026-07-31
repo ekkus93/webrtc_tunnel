@@ -1,23 +1,33 @@
 # WebRTC Tunnel FIX9 Implementation Report
 
 **TODO:** `docs/WEBRTC_TUNNEL_STALE_SETUP_RESULT_CONTRACT_FIX9_TODO.md`  
-**Initial FIX9 baseline:** `141a5425f620ae6b37a29ee0d8956cbfbd4d7b27`  
-**Final implementation baseline before signoff docs:** `41b3e08cffe83292776eaeb62524a4133837e19a`  
+**Initial baseline:** `141a5425f620ae6b37a29ee0d8956cbfbd4d7b27`  
+**Implementation baseline submitted for the next exact-SHA signoff:** `6bad7a1f18b180676cc567031f93f7a99fb91d52`  
 **Task evidence:** `docs/review-source/WEBRTC_TUNNEL_FIX9_COMPLETION_EVIDENCE.md`  
-**Status:** implementation/enforcement complete; exact-SHA release-candidate workflows pending the companion `[full-signoff]` commit.
+**Status:** implementation/enforcement complete; exact-SHA release signoff pending.
 
 ## Delivered behavior
 
-FIX9 now provides one explicit stale-operation contract across setup baseline loading, identity import/generation, forward edits, navigation validation, final transactional save, and start-from-review:
+FIX9 provides one stale-operation contract across setup baseline loading, identity import/generation, forward edits, navigation validation, final transactional save, and start-from-review:
 
-- the admitted operation owns a typed freshness token and the real coroutine `Job`;
+- an admitted operation owns a typed freshness token and the real coroutine `Job`;
 - abandonment invalidates and cancels the exact owner;
 - stale work cannot publish identity, forward, navigation, success, or error state;
 - final persistence checks freshness before mutation and rolls back cancellation during mutation;
 - a commit observed after abandonment is reported durably and never starts the tunnel;
-- `Ready` is published only after `BaselineLoad` admission is released, so readiness and admission cannot contradict each other.
+- setup `Ready` is published only after baseline admission releases.
 
-The identified `Result` APIs now represent ordinary failures as `Result.failure`, preserve cancellation, and are backed by behavioral plus source-level negative-fixture enforcement. Public identity reads are coherent with pair replacement. Private identity import requires canonical native output. Setup forward messages accurately describe draft-only mutations. Broker-secret persist/restore permissions are proven as exact `0600` on Android.
+Result-returning APIs now represent ordinary failures as values and preserve cancellation. Public identity reads are coherent with pair replacement. Private identity import requires canonical native output. Setup forward messages state draft truth. Broker-secret persist/restore permissions are tested as exact `0600` on Android.
+
+## Additional release-validation hardening
+
+The failed exact candidate `34b95051defd1a63d67836f01de6b1716f694ac3` exposed a diagnostics-export double-admission race only on the second full unit invocation. `LogsViewModel` now atomically claims busy ownership before launching either path or URI export. The regression parks IO behind a bounded latch, so it no longer depends on dispatcher speed.
+
+Principal correction commits:
+
+- `41b3e08cffe83292776eaeb62524a4133837e19a` — truthful setup readiness after baseline admission release
+- `590c66717a7c67cb4d8fd08f48daa881d8834641` — atomic diagnostics export admission
+- `6bad7a1f18b180676cc567031f93f7a99fb91d52` — deterministic diagnostics concurrency regression
 
 ## Principal production files
 
@@ -30,8 +40,9 @@ The identified `Result` APIs now represent ordinary failures as `Result.failure`
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt`
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/security/IdentityRepository.kt`
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportService.kt`
+- `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/LogsViewModel.kt`
 
-## Enforcement and production-path evidence
+## Principal evidence
 
 - `SetupFix9CancellationRegressionTest`
 - `SetupFix9NativeBarrierCancellationTest`
@@ -45,27 +56,19 @@ The identified `Result` APIs now represent ordinary failures as `Result.failure`
 - `CheckResultEnforcementFixtureTest`
 - `ImportExportCanonicalContractTest`
 - `BrokerSecretRepositoryInstrumentedTest`
+- `LogsViewModelTest.concurrentExportIsRejectedWhileOneIsAlreadyInFlight`
 
-## Validation history relevant to final disposition
+## Validation history
 
-- `30505896676`: broker-secret Android instrumentation passed.
-- `30505896686`: Rust lint, Linux, macOS, and Docker E2E passed; Android exposed test-only detekt issues subsequently fixed.
-- `30508394902`: bounded Android validation exposed a ktlint-only latch-helper defect; corrected without weakening rules.
-- `30592736451`: demonstrated the need to bound remaining concurrency tests; no live-log assumption was used.
-- `30593967688`: terminated normally with six failures, all traced to the same production readiness/admission race.
-- `41b3e08cffe83292776eaeb62524a4133837e19a`: publishes terminal setup load state only after baseline admission release and fails unexpected baseline exceptions closed.
-- `30598677024`: path-scoped Android proof passed full Gradle check, stop-failure tests, assemble/unit packaging, and path-scoped full-matrix signoff for the final implementation baseline.
+- `30505896676`: broker-secret instrumentation passed on an earlier candidate.
+- `30593967688`: exposed the setup readiness/admission race.
+- `30598677024`: final setup implementation baseline passed the path-scoped Android gate.
+- `30600821345`: diagnostics admission baseline `6bad7a1f…` passed full Gradle `check`, the dedicated stop suite, the second full debug unit invocation, and path-scoped signoff without retry.
+- Exact candidate `34b95051…`:
+  - RC diagnostics and broker instrumentation passed.
+  - Rust lint/Linux/macOS/Docker passed.
+  - Android full check and dedicated stop suite passed.
+  - the second full debug unit invocation failed the diagnostics concurrency regression.
+  - full-matrix and release-candidate statuses correctly failed.
 
-## Exact-SHA signoff procedure
-
-The companion docs commit uses `[full-signoff]` and changes no production/test/workflow behavior. That commit is the release-candidate SHA. After all required workflows terminate, this report receives one docs-only evidence update recording:
-
-- candidate SHA;
-- main CI run URL/id;
-- broker instrumentation run URL/id;
-- `ci/rc-diagnostics` conclusion;
-- `ci/full-matrix` conclusion;
-- `ci/release-candidate` conclusion;
-- confirmation that the recording commit itself is docs-only.
-
-Until those exact-SHA results are recorded, the implementation is complete but release signoff is not claimed.
+The next companion `[full-signoff]` commit changes documentation only relative to implementation baseline `6bad7a1f…`. Its exact workflow results determine release signoff. Tag-only release packaging is validated when a release tag is created, not by the commit candidate workflow.
