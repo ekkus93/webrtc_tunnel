@@ -26,6 +26,13 @@ object SensitiveDataRedactor {
                 """[A-Za-z0-9_.-]*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^,\s}\]]+)""",
         )
 
+    // The diagnostics redactor intentionally treats a bare "identity" as path-like, but the
+    // fixed phrase "private identity peer ID" contains no path or secret. Excluding only that
+    // phrase prevents a safe setup mismatch message from being mangled while retaining the
+    // broad identity-path/bare-word rule everywhere else.
+    private val identityPathRegex =
+        Regex("""(?im)(?<!private )(/[^/\s]+/)*identity(\.toml|\.enc)?(?! peer ID)""")
+
     /**
      * Redacts structured secret VALUES only (password/token/api-key/kex-secret/signing-key
      * fields, PEM private-key blocks, `sign.private`/`kex.private` lines, `Bearer`/`Basic` auth
@@ -62,7 +69,7 @@ object SensitiveDataRedactor {
             .replace(Regex("""(?im)\bcandidate\s*[:=]\s*.*$"""), "candidate=***REDACTED***")
             .replace(Regex("""(?im)\bdecrypted[_\s-]?payload\s*[:=]\s*.*$"""), "decrypted_payload=***REDACTED***")
             .replace(Regex("""(?im)\bforwarded[_\s-]?data\s*[:=]\s*.*$"""), "forwarded_data=***REDACTED***")
-            .replace(Regex("""(?im)(/[^/\s]+/)*identity(\.toml|\.enc)?"""), "***REDACTED_IDENTITY_PATH***")
+            .replace(identityPathRegex, "***REDACTED_IDENTITY_PATH***")
     }
 
     // The regex's field-name group captures whatever variant actually matched (e.g.
