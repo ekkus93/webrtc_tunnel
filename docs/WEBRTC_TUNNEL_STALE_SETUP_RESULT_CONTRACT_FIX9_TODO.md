@@ -4,10 +4,11 @@
 **Initial audit baseline:** `141a5425f620ae6b37a29ee0d8956cbfbd4d7b27`  
 **Implementation baseline:** `6bad7a1f18b180676cc567031f93f7a99fb91d52`  
 **Validated functional repair candidate:** `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc`  
+**Latest startup-hardening correction:** `673ea778d104673826f83592325fef46271133e9`  
 **Detailed implementation-era checklist:** retained in Git history at `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc^` and earlier revisions of this path.  
-**Current disposition:** implementation and functional release-candidate validation are complete. Commit-level FIX9 closure is valid only when the exact `[full-signoff]` commit containing this completion ledger passes every required exact-SHA gate below.
+**Current disposition:** implementation and functional release-candidate validation are complete. The first documentation-only closure candidate failed the Android emulator startup gate, so FIX9 remains open until a new exact `[full-signoff]` commit containing this ledger passes every required gate below.
 
-This file is now the FIX9 closure ledger. It replaces the implementation-oriented unchecked checklist after the production paths, negative paths, static enforcement, Android instrumentation, and real-data-path E2E were implemented and validated. Historical code snippets and task-level instructions remain available through Git history.
+This file is the FIX9 closure ledger. It replaces the implementation-oriented unchecked checklist after the production paths, negative paths, static enforcement, Android instrumentation, and real-data-path E2E were implemented and validated. Historical code snippets and task-level instructions remain available through Git history.
 
 ---
 
@@ -95,7 +96,7 @@ Exact candidate `34b95051defd1a63d67836f01de6b1716f694ac3` correctly failed the 
 - [x] `6bad7a1f18b180676cc567031f93f7a99fb91d52` makes the regression deterministic with a blocked IO dispatcher and bounded latches.
 - [x] Path-scoped run `30600821345` passed full Gradle `check`, the dedicated foreground-service stop suite, the second full debug unit invocation, and path-scoped signoff without retry.
 
-### Android emulator Settings-navigation race
+### Android emulator Settings-navigation false-positive
 
 Exact candidate `7be00838feef85d374f20aa8dd6b7365969ba3dd` reached the real emulator but failed with `could not find Settings nav tab`.
 
@@ -106,6 +107,22 @@ Root cause: the old `bounds_of_text()` pipeline ended in `awk`, which returned s
 - [x] Settings resolution accepts the visible label or the explicit `Settings tab icon` content description.
 - [x] No hardcoded coordinate fallback, silent bypass, retry suppression, or timeout inflation was added.
 - [x] Real emulator job `91074610794` completed the wizard, reached `Listening`, negotiated WebRTC with the dockerized answer, delivered the marker through the tunnel, and verified the `PING`/`PONG` data-plane probe.
+
+### Documentation-candidate Android startup prerequisite failure
+
+Exact documentation candidate `9b1d1999fa81865adb051574221a68f4e15e8d74` correctly remained unsigned because Android emulator job `91080851616` failed with `home never rendered Settings navigation`.
+
+All earlier required jobs on that SHA passed, including RC diagnostics, broker-secret instrumentation, Rust/Linux/macOS/Docker, the Android full Gradle `check`, the dedicated stop-failure suite, and the second full debug unit invocation. The emulator booted, installed the APK, cleared app state, and launched the app, but the harness did not obtain Settings semantics during the bounded startup wait.
+
+Inspection found a second fail-open startup contract: after `pm clear`, the harness ran `pm grant POST_NOTIFICATIONS ... || true`. A failed runtime-permission grant could therefore be silently ignored while `NotificationPermissionGate` displayed a modal over the Home surface. The harness also used a non-waiting ActivityManager launch and discarded `uiautomator` failure details.
+
+- [x] `673ea778d104673826f83592325fef46271133e9` removes the ignored permission result.
+- [x] Android API level and notification permission state are verified after `pm grant`.
+- [x] Device wake/keyguard dismissal and `am start -W` ActivityManager completion are required.
+- [x] Failed or stale UI dumps are emptied instead of reused and retain bounded diagnostics.
+- [x] A visible notification-permission modal is reported as a prerequisite failure rather than dismissed silently.
+- [x] Startup failure diagnostics are bounded and run before identity/broker input, preventing secret capture.
+- [x] The semantic wait remains bounded at 30 seconds; no retry-only rerun or timeout inflation is used.
 
 ---
 
@@ -132,7 +149,7 @@ The main workflow had no failed jobs or steps. Release-artifact jobs were skippe
 
 ## Final exact-SHA closure rule
 
-The final FIX9 documentation/evidence candidate is **the exact `[full-signoff]` commit containing this ledger**. The SHA must be taken from Git after publication; a parent, sibling, rerun from another SHA, or earlier successful candidate is not interchangeable.
+The final FIX9 documentation/evidence candidate is **the exact `[full-signoff]` commit containing this ledger and the startup-hardening correction**. The SHA must be taken from Git after publication; a parent, sibling, retry from another SHA, or earlier successful candidate is not interchangeable.
 
 FIX9 commit-level closure is complete only when all of the following status records refer to that exact commit:
 
