@@ -1,1 +1,1 @@
-Export the guarded explicit Android App Bundle signing migration as a checksummed tree artifact.
+Export the guarded Android App Bundle signing migration with exact base commit and base tree identities.
