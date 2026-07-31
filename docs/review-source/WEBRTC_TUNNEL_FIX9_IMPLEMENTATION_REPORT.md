@@ -2,188 +2,70 @@
 
 **TODO:** `docs/WEBRTC_TUNNEL_STALE_SETUP_RESULT_CONTRACT_FIX9_TODO.md`  
 **Initial FIX9 baseline:** `141a5425f620ae6b37a29ee0d8956cbfbd4d7b27`  
-**Current implementation SHA:** `b7e5d836426163a4c8f6f8ecd3299b6f8088760e`  
-**Status:** implementation pass complete; validation not yet proven by local/CI output in this report.
+**Final implementation baseline before signoff docs:** `41b3e08cffe83292776eaeb62524a4133837e19a`  
+**Task evidence:** `docs/review-source/WEBRTC_TUNNEL_FIX9_COMPLETION_EVIDENCE.md`  
+**Status:** implementation/enforcement complete; exact-SHA release-candidate workflows pending the companion `[full-signoff]` commit.
 
-This report records what was changed during the FIX9 Ralph-loop implementation pass. It deliberately does **not** claim release signoff. The GitHub status API returned no statuses for the current implementation SHA at the time this report was created.
+## Delivered behavior
 
----
+FIX9 now provides one explicit stale-operation contract across setup baseline loading, identity import/generation, forward edits, navigation validation, final transactional save, and start-from-review:
 
-## Implemented changes
+- the admitted operation owns a typed freshness token and the real coroutine `Job`;
+- abandonment invalidates and cancels the exact owner;
+- stale work cannot publish identity, forward, navigation, success, or error state;
+- final persistence checks freshness before mutation and rolls back cancellation during mutation;
+- a commit observed after abandonment is reported durably and never starts the tunnel;
+- `Ready` is published only after `BaselineLoad` admission is released, so readiness and admission cannot contradict each other.
 
-### P0-001 — Setup stale/cancel semantics
+The identified `Result` APIs now represent ordinary failures as `Result.failure`, preserve cancellation, and are backed by behavioral plus source-level negative-fixture enforcement. Public identity reads are coherent with pair replacement. Private identity import requires canonical native output. Setup forward messages accurately describe draft-only mutations. Broker-secret persist/restore permissions are proven as exact `0600` on Android.
 
-Implemented explicit `SetupOperationToken` in `SetupOperationCoordinator` and changed guarded setup operations to receive the token instead of a raw `Long`.
-
-Key behavior now expected:
-
-- `cancel()` calls `operations.invalidate()`.
-- Any in-flight setup operation whose token is stale skips UI publication through `publishIfFresh`.
-- Identity import wipes the validated replacement private bytes when cancellation makes the operation stale before publication.
-- Final save carries the token through setup-local admission, global `ConfigurationMutationCoordinator.SetupSave` admission, validation, persistence, and optional start-from-review.
-- `startTunnelFromReview()` starts the foreground service only through the fresh-success callback.
-
-Files changed:
+## Principal production files
 
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupOperationCoordinator.kt`
+- `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupViewModel.kt`
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupIdentityController.kt`
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupForwardsController.kt`
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupSaveController.kt`
-- `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupViewModel.kt`
-
-Tests added/expanded:
-
-- `cancelDuringIdentityImportFromPathDoesNotPublishImportedIdentity`
-- `cancelDuringFinalSaveValidationDoesNotPersistOrPublishSuccess`
-
-Support test seam added:
-
-- `RecordingBridge.blockNextPrivateIdentityValidation()`
-- `RecordingBridge.privateIdentityValidationEnteredNow()`
-- `RecordingBridge.releaseBlockedPrivateIdentityValidation(...)`
-
-### P0-002 — `Result` contract hardening
-
-Implemented ordinary-exception handling for the identified `ConfigRepository` gaps.
-
-Files changed:
-
+- `android/app/src/main/java/com/phillipchin/webrtctunnel/data/SetupPersistenceCoordinator.kt`
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/data/ConfigRepository.kt`
-
-Changes:
-
-- `savePreferences(...)` now returns `Result.failure(error)` for all ordinary `Exception`s and rethrows `CancellationException`.
-- `prepareActiveConfigForStart(...)` now wraps config read/rewrite failures in `Result.failure` and rethrows `CancellationException`.
-- `replaceConfigTransactionally(...)` now returns `Result.failure` when prior snapshot capture fails before attempting any write or restore.
-
-### P0-003 — Public identity read coherence
-
-Partially implemented.
-
-Changed `ImportExportViewModel.publicIdentityForShare()` to read the public identity through `IdentityRepository.readStoredIdentityMaterial`, the existing coherent encrypted/public snapshot API, instead of calling the standalone `readPublicIdentity()` path.
-
-Files changed:
-
-- `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportViewModel.kt`
-
-Remaining work:
-
-- `IdentityRepository.readPublicIdentity()` itself still needs to be locked or deprecated/replaced completely.
-- `SettingsViewModel` still needs to be moved to the coherent snapshot read path or covered by a locked repository method.
-
-### P0-004 — Remove private-identity canonical fallback
-
-Implemented.
-
-Files changed:
-
+- `android/app/src/main/java/com/phillipchin/webrtctunnel/security/IdentityRepository.kt`
 - `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/ImportExportService.kt`
 
-Change:
+## Enforcement and production-path evidence
 
-- `ImportExportService.importPrivateIdentityContent(...)` now requires `validated.canonicalPrivateIdentity` and no longer falls back to the original source private identity text.
-- Canonical public identity remains required.
-- Canonical private bytes are still wiped in `finally`.
+- `SetupFix9CancellationRegressionTest`
+- `SetupFix9NativeBarrierCancellationTest`
+- `SetupStaleFinalSaveTest`
+- `SetupDraftOperationCoordinationTest`
+- `IdentityRepositoryCoherentReadTest`
+- `ConfigRepositoryFix9ResultContractTest`
+- `Fix9ResultContractViewModelTest`
+- `Fix9SetupFreshnessSourceAuditTest`
+- `Fix9ResultContractSourceAuditTest`
+- `CheckResultEnforcementFixtureTest`
+- `ImportExportCanonicalContractTest`
+- `BrokerSecretRepositoryInstrumentedTest`
 
-### P0-005 — Setup draft-truth messages
+## Validation history relevant to final disposition
 
-Implemented.
+- `30505896676`: broker-secret Android instrumentation passed.
+- `30505896686`: Rust lint, Linux, macOS, and Docker E2E passed; Android exposed test-only detekt issues subsequently fixed.
+- `30508394902`: bounded Android validation exposed a ktlint-only latch-helper defect; corrected without weakening rules.
+- `30592736451`: demonstrated the need to bound remaining concurrency tests; no live-log assumption was used.
+- `30593967688`: terminated normally with six failures, all traced to the same production readiness/admission race.
+- `41b3e08cffe83292776eaeb62524a4133837e19a`: publishes terminal setup load state only after baseline admission release and fails unexpected baseline exceptions closed.
+- `30598677024`: path-scoped Android proof passed full Gradle check, stop-failure tests, assemble/unit packaging, and path-scoped full-matrix signoff for the final implementation baseline.
 
-Files changed:
+## Exact-SHA signoff procedure
 
-- `android/app/src/main/java/com/phillipchin/webrtctunnel/viewmodel/SetupForwardsController.kt`
+The companion docs commit uses `[full-signoff]` and changes no production/test/workflow behavior. That commit is the release-candidate SHA. After all required workflows terminate, this report receives one docs-only evidence update recording:
 
-Changes:
+- candidate SHA;
+- main CI run URL/id;
+- broker instrumentation run URL/id;
+- `ci/rc-diagnostics` conclusion;
+- `ci/full-matrix` conclusion;
+- `ci/release-candidate` conclusion;
+- confirmation that the recording commit itself is docs-only.
 
-- `Forward saved` -> `Forward draft updated`
-- `Forward deleted` -> `Forward draft removed`
-
-### P0-006 — Android broker-secret permission instrumentation
-
-Implemented test file; not yet validated.
-
-Files added:
-
-- `android/app/src/androidTest/java/com/phillipchin/webrtctunnel/data/BrokerSecretRepositoryInstrumentedTest.kt`
-
-Test added:
-
-- `persistedAndRestoredBrokerSecretHasOwnerOnlyPermissions`
-
-Expected evidence:
-
-- After persist, `Os.stat(path).st_mode and 0x1FF == 0x180`.
-- After restore from snapshot, the same permission bits are verified.
-
-### P0-007 — Documentation/signoff truth
-
-Implemented this report.
-
-Files added:
-
-- `docs/review-source/WEBRTC_TUNNEL_FIX9_IMPLEMENTATION_REPORT.md`
-
----
-
-## Validation still required
-
-Run the focused Android tests first:
-
-```bash
-cd android
-./gradlew --no-daemon testDebugUnitTest --rerun-tasks \
-  --tests '*SetupDraftOperationCoordinationTest' \
-  --tests '*SetupStaleFinalSaveTest' \
-  --tests '*SetupSaveControllerTest' \
-  --tests '*ConfigRepositoryTest' \
-  --tests '*ImportExportServiceTest'
-```
-
-Run instrumentation for the broker-secret permission evidence:
-
-```bash
-cd android
-./gradlew --no-daemon connectedDebugAndroidTest \
-  -PskipRustBuild=true \
-  -Pandroid.testInstrumentationRunnerArguments.class=com.phillipchin.webrtctunnel.data.BrokerSecretRepositoryInstrumentedTest
-```
-
-Then run the broader validation from the FIX9 TODO:
-
-```bash
-cd android
-./gradlew --no-daemon ktlintCheck
-./gradlew --no-daemon detekt
-./gradlew --no-daemon lintDebug
-./gradlew --no-daemon testDebugUnitTest --rerun-tasks
-./gradlew --no-daemon assembleDebug
-./gradlew --no-daemon check
-```
-
-Repository-level validation still required:
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo clippy --workspace --release --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features
-cargo build --release -p p2p-offer -p p2p-answer -p p2pctl
-tests/e2e/docker/run.sh
-tests/e2e/docker/stop_lifecycle.sh
-```
-
----
-
-## Known remaining gaps
-
-1. `IdentityRepository.readPublicIdentity()` is not yet changed directly. `ImportExportViewModel` has been moved to the coherent pair snapshot, but `SettingsViewModel` and the repository method itself still need cleanup.
-2. No source-level enforcement test has been added yet for banning stale setup publication without token freshness guards.
-3. No source-level enforcement test has been added yet for all remaining `Result` API catch-contract patterns.
-4. The newly added tests were not run in this environment.
-5. The current SHA has no CI statuses at the time this report was written.
-
----
-
-## Current disposition
-
-Implementation work has advanced substantially, especially for stale setup operations and broker-secret Android permission evidence. This is **not** a release-candidate signoff until the validation commands above pass and a final `[full-signoff]` SHA is recorded.
+Until those exact-SHA results are recorded, the implementation is complete but release signoff is not claimed.
