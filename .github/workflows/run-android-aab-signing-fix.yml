@@ -136,9 +136,13 @@ jobs:
               upserts.append(record)
               records.append((path, data))
 
+          base_tree_sha = subprocess.check_output(
+              ["git", "rev-parse", f"{os.environ['GITHUB_SHA']}^{{tree}}"], text=True
+          ).strip()
           manifest = {
               "schema_version": 1,
               "base_sha": os.environ["GITHUB_SHA"],
+              "base_tree_sha": base_tree_sha,
               "upserts": sorted(upserts, key=lambda item: item["path"]),
               "deletions": sorted(deletions),
           }
