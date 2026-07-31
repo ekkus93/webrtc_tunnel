@@ -10,10 +10,10 @@ import com.phillipchin.webrtctunnel.model.IdentityValidationResult
 import com.phillipchin.webrtctunnel.model.NetworkType
 import com.phillipchin.webrtctunnel.model.ValidationResult
 import com.phillipchin.webrtctunnel.network.NetworkPolicyManager
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -24,6 +24,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import java.io.File
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 
 private const val FIX9_CONCURRENCY_TEST_TIMEOUT_MS = 15_000L
@@ -88,14 +89,18 @@ class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
                     },
                 )
             awaitReady(viewModel)
+            val authoritativeBaseline = viewModel.forwards.value
 
             viewModel.forwardsEditor.upsertForward(validForward())
             entered.await()
             viewModel.cancel()
             release.complete(Unit)
             awaitSettled(viewModel)
+            awaitCondition(description = "authoritative forwards restored after cancelled upsert") {
+                viewModel.forwards.value == authoritativeBaseline
+            }
 
-            assertTrue(viewModel.forwards.value.isEmpty())
+            assertEquals(authoritativeBaseline, viewModel.forwards.value)
             assertNull(viewModel.state.value.saveResult)
         }
 
@@ -135,28 +140,27 @@ class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
     @Test(timeout = FIX9_CONCURRENCY_TEST_TIMEOUT_MS)
     fun cancelDuringFinalSaveRollsBackAuthoritativeStagesAndCancelsJob() =
         runBlocking {
-            val entered = CompletableDeferred<Unit>()
-            val cancellationObserved = CompletableDeferred<Unit>()
+            val entered = CountDownLatch(1)
+            val cancellationObserved = CountDownLatch(1)
             val writes = AtomicInteger(0)
             val viewModel =
                 prepareFinalSaveViewModel { _: AndroidAppPreferences ->
                     if (writes.incrementAndGet() == 1) {
-                        entered.complete(Unit)
-                        try {
-                            CompletableDeferred<Unit>().await()
-                        } catch (cancelled: CancellationException) {
-                            cancellationObserved.complete(Unit)
-                            throw cancelled
+                        entered.countDown()
+                        suspendCancellableCoroutine<Unit> { continuation ->
+                            continuation.invokeOnCancellation { cancellationObserved.countDown() }
                         }
                     }
                     Result.success(Unit)
                 }
 
             viewModel.save.saveAndApplyConfig()
-            entered.await()
+            awaitCondition(description = "preferences persistence entered") { entered.count == 0L }
             assertTrue(File(app.filesDir, "setup_input.json").exists())
             viewModel.cancel()
-            cancellationObserved.await()
+            awaitCondition(description = "preferences persistence cancellation observed") {
+                cancellationObserved.count == 0L
+            }
             awaitSettled(viewModel)
 
             assertFalse(File(app.filesDir, "config.toml").exists())
