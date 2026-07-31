@@ -13,7 +13,9 @@ Automate the final Ralph Loop closure step without accepting statuses from a par
   - explicitly dispatches the main CI, RC diagnostic, and broker instrumentation workflows;
   - waits for the exact candidate's required commit statuses;
   - fails if `master` moves, a status fails, or the timeout expires;
-  - publishes `closure/<closure-id>` and updates issue #5.
+  - publishes `closure/<closure-id>` and updates issue #5;
+  - can start manually or from a successful `master` CI run whose request commit contains `[request-exact-sha-closure]`;
+  - does not recurse because generated candidates contain `[full-signoff]`, not the request marker.
 - `scripts/exact_sha_closure.py`
   - validates safe manifest/document paths and complete TODO state;
   - prevents a manifest from weakening the fixed status baseline;

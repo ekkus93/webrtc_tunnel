@@ -17,6 +17,16 @@ For the FIX9 review follow-up, use:
 .github/closure-manifests/fix9-review-followup.json
 ```
 
+### Automatic one-shot request
+
+For the default FIX9 manifest, a write-authorized automation may create a normal `master` commit whose message contains:
+
+```text
+[request-exact-sha-closure]
+```
+
+After ordinary CI succeeds for that request commit, the orchestrator starts automatically. The marker is not copied into the generated `[full-signoff]` candidate, preventing recursive closure runs. Manual `workflow_dispatch` remains available for any manifest.
+
 ## What the workflow does
 
 The orchestrator fails closed unless all of the following are true:
