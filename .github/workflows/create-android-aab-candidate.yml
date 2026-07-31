@@ -1,0 +1,251 @@
+name: Create Android AAB signing candidate
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/android-aab-candidate-trigger
+
+concurrency:
+  group: create-android-aab-signing-candidate
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+  statuses: write
+
+jobs:
+  candidate:
+    name: Build unreachable explicit AAB signing candidate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish pending candidate status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state=pending -f context=ci/android-aab-candidate \
+            -f description='guarded explicit AAB signing candidate is being built' \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Check out exact trigger commit
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Extract and compile audited migration payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          awk '
+            /base64 --decode <<.MIGRATION_PAYLOAD./ { capture=1; next }
+            capture && /^[[:space:]]*MIGRATION_PAYLOAD$/ { exit }
+            capture { sub(/^[[:space:]]+/, ""); print }
+          ' .github/workflows/apply-android-aab-signing-fix.yml | \
+            base64 --decode | gzip --decompress > "$RUNNER_TEMP/apply-android-aab-signing-fix.py"
+          chmod 0500 "$RUNNER_TEMP/apply-android-aab-signing-fix.py"
+          python3 -m py_compile "$RUNNER_TEMP/apply-android-aab-signing-fix.py"
+      - name: Require current master and apply migration locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/master ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          remote=$(git ls-remote origin refs/heads/master | cut -f1)
+          [[ "$remote" == "$GITHUB_SHA" ]] || {
+            echo "master advanced before candidate build: expected=$GITHUB_SHA actual=$remote" >&2
+            exit 1
+          }
+          python3 "$RUNNER_TEMP/apply-android-aab-signing-fix.py"
+          rm -f .github/android-aab-signing-fix-trigger
+          rm -f .github/android-aab-candidate-trigger
+          rm -f .github/workflows/android-release-build-diagnostic.yml
+          rm -f .github/workflows/apply-android-aab-signing-fix.yml
+          rm -f .github/workflows/run-android-aab-signing-fix.yml
+          rm -f .github/workflows/create-android-aab-candidate.yml
+      - name: Compile and run all release contract tests
+        run: |
+          python3 -m py_compile scripts/android_release.py scripts/android_bundle_release.py scripts/test_android_release.py scripts/test_android_bundle_release.py
+          PYTHONPATH=scripts python3 -m unittest -v scripts/test_android_release.py scripts/test_android_bundle_release.py
+      - name: Validate final candidate invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' \
+            .github/workflows/ci.yml .github/workflows/android-release.yml \
+            .github/actions/setup-android-release/action.yml
+          git diff --check
+          test ! -e .github/android-aab-signing-fix-trigger
+          test ! -e .github/android-aab-candidate-trigger
+          test ! -e .github/workflows/android-release-build-diagnostic.yml
+          test ! -e .github/workflows/apply-android-aab-signing-fix.yml
+          test ! -e .github/workflows/run-android-aab-signing-fix.yml
+          test ! -e .github/workflows/create-android-aab-candidate.yml
+          grep -Fq 'app-release-signed.aab' .github/workflows/android-release.yml
+          ! grep -Fq ':app:assembleRelease :app:bundleRelease' .github/workflows/android-release.yml
+          grep -Fq 'BUNDLETOOL_SHA256' .github/actions/setup-android-release/action.yml
+          ! grep -Fq 'android_release.py verify-artifacts' .github/workflows/android-release.yml
+          ! grep -Fq '|| true' .github/workflows/android-release.yml
+      - name: Create unreachable exact-tree candidate commit
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          find scripts -type d -name __pycache__ -prune -exec rm -rf '{}' +
+          git add -A
+          git diff --cached --quiet && { echo 'migration produced no changes' >&2; exit 1; }
+          CANDIDATE_REPORT="$RUNNER_TEMP/android-aab-candidate.json" python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path, PurePosixPath
+
+          def command(arguments, *, input_text=None):
+              completed = subprocess.run(
+                  arguments,
+                  input=input_text,
+                  text=True,
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+              )
+              if completed.returncode != 0:
+                  raise SystemExit(f"command failed ({arguments[0]}):\n{completed.stdout[-4000:]}")
+              return completed.stdout
+
+          def gh_post(endpoint, payload):
+              output = command(
+                  ["gh", "api", "--method", "POST", endpoint, "--input", "-"],
+                  input_text=json.dumps(payload, separators=(",", ":")),
+              )
+              return json.loads(output)
+
+          raw = subprocess.check_output(
+              ["git", "diff", "--cached", "--name-status", "--no-renames", "-z"]
+          ).split(b"\0")
+          if raw and raw[-1] == b"":
+              raw.pop()
+          if len(raw) % 2:
+              raise SystemExit("unexpected git name-status record shape")
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          base_sha = os.environ["GITHUB_SHA"]
+          base_tree_sha = command(["git", "rev-parse", f"{base_sha}^{{tree}}" ]).strip()
+          tree_entries = []
+          report_entries = []
+          for offset in range(0, len(raw), 2):
+              status = raw[offset].decode("ascii")
+              path = raw[offset + 1].decode("utf-8")
+              pure = PurePosixPath(path)
+              if pure.is_absolute() or ".." in pure.parts or path != pure.as_posix():
+                  raise SystemExit(f"unsafe candidate path: {path}")
+              if status == "D":
+                  ls_tree = command(["git", "ls-tree", base_sha, "--", path]).strip()
+                  if not ls_tree:
+                      raise SystemExit(f"deleted candidate path is absent from base tree: {path}")
+                  mode, object_type, _, _ = ls_tree.split(None, 3)
+                  if object_type != "blob":
+                      raise SystemExit(f"deleted candidate path is not a blob: {path}")
+                  tree_entries.append({"path": path, "mode": mode, "type": "blob", "sha": None})
+                  report_entries.append({"path": path, "action": "delete", "mode": mode})
+                  continue
+              if status not in {"A", "M", "T"}:
+                  raise SystemExit(f"unsupported candidate status {status}: {path}")
+              index_line = command(["git", "ls-files", "-s", "--", path]).strip()
+              mode = index_line.split()[0]
+              if mode not in {"100644", "100755"}:
+                  raise SystemExit(f"unsupported candidate mode {mode}: {path}")
+              data = Path(path).read_bytes()
+              blob = gh_post(
+                  f"repos/{repo}/git/blobs",
+                  {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"},
+              )
+              blob_sha = blob["sha"]
+              tree_entries.append({"path": path, "mode": mode, "type": "blob", "sha": blob_sha})
+              report_entries.append(
+                  {
+                      "path": path,
+                      "action": "upsert",
+                      "mode": mode,
+                      "blob_sha": blob_sha,
+                      "sha256": hashlib.sha256(data).hexdigest(),
+                      "size": len(data),
+                  }
+              )
+
+          tree = gh_post(
+              f"repos/{repo}/git/trees",
+              {"base_tree": base_tree_sha, "tree": tree_entries},
+          )
+          local_tree_sha = command(["git", "write-tree"]).strip()
+          if tree["sha"] != local_tree_sha:
+              raise SystemExit(
+                  f"GitHub candidate tree mismatch: local={local_tree_sha} remote={tree['sha']}"
+              )
+          commit = gh_post(
+              f"repos/{repo}/git/commits",
+              {
+                  "message": "fix(android): explicitly sign and validate app bundle",
+                  "tree": tree["sha"],
+                  "parents": [base_sha],
+              },
+          )
+          candidate_sha = commit["sha"]
+          remote_commit = json.loads(command(["gh", "api", f"repos/{repo}/git/commits/{candidate_sha}"]))
+          if remote_commit["tree"]["sha"] != tree["sha"]:
+              raise SystemExit("candidate commit tree changed after creation")
+          if [parent["sha"] for parent in remote_commit["parents"]] != [base_sha]:
+              raise SystemExit("candidate commit parent changed after creation")
+          current_master = command(["git", "ls-remote", "origin", "refs/heads/master"]).split()[0]
+          if current_master != base_sha:
+              raise SystemExit(
+                  f"master advanced while creating candidate: expected={base_sha} actual={current_master}"
+              )
+          report = {
+              "schema_version": 1,
+              "base_sha": base_sha,
+              "base_tree_sha": base_tree_sha,
+              "candidate_sha": candidate_sha,
+              "candidate_tree_sha": tree["sha"],
+              "entries": sorted(report_entries, key=lambda item: item["path"]),
+          }
+          Path(os.environ["CANDIDATE_REPORT"]).write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+          candidate_sha=$(python3 -c 'import json,os; print(json.load(open(os.environ["CANDIDATE_REPORT"]))["candidate_sha"])')
+          echo "sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+          echo "report=$RUNNER_TEMP/android-aab-candidate.json" >> "$GITHUB_OUTPUT"
+      - name: Upload candidate identity and file ledger
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-aab-candidate-${{ github.sha }}
+          path: ${{ steps.candidate.outputs.report }}
+          retention-days: 3
+          if-no-files-found: error
+      - name: Publish terminal candidate status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$JOB_STATUS" == success ]]; then
+            state=success
+            description="unreachable AAB signing candidate ${CANDIDATE_SHA:0:12} is ready"
+          else
+            state=failure
+            description="explicit AAB signing candidate ended with $JOB_STATUS"
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state="$state" -f context=ci/android-aab-candidate \
+            -f description="$description" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          [[ "$state" == success ]]
