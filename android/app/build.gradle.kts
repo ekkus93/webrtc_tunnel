@@ -334,7 +334,7 @@ tasks.named("preBuild") {
 }
 
 if (productionRelease.get()) {
-    tasks.named("preReleaseBuild") {
+    tasks.matching { it.name == "preReleaseBuild" }.configureEach {
         dependsOn(validateProductionReleaseSigning)
     }
 }
