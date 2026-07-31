@@ -28,6 +28,8 @@ set -eu
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/e2e/lib/android_wizard.sh
 . "$HERE/lib/android_wizard.sh"
+# shellcheck source=tests/e2e/lib/probe_evidence.sh
+. "$HERE/lib/probe_evidence.sh"
 
 BROKER_HOST="${BROKER_HOST:-broker.emqx.io}"
 BROKER_PORT="${BROKER_PORT:-8883}"
@@ -119,7 +121,7 @@ ANSWER_DIR="$(mktemp -d)"; chmod 700 "$ANSWER_DIR"
 cp "$KEYHOME/.config/p2ptunnel/identity" "$ANSWER_DIR/identity"
 chmod 600 "$ANSWER_DIR/identity"
 cp "$APP_PUB" "$ANSWER_DIR/authorized_keys"
-cat > "$ANSWER_DIR/answer.toml" <<EOF
+cat > "$ANSWER_DIR/answer.toml" <<EOF2
 format = "p2ptunnel-config-v3"
 [node]
 peer_id = "$REMOTE_PEER"
@@ -198,7 +200,7 @@ log_rotation = "none"
 status_socket = ""
 write_status_file = false
 status_file = "/cfg/state/status.json"
-EOF
+EOF2
 
 cleanup() {
   $ADB forward --remove tcp:18080 >/dev/null 2>&1 || true
@@ -265,14 +267,11 @@ for _ in $(seq 1 60); do
 done
 
 if [ "$RESULT" = "ok" ]; then
-  log "PASS: marker delivered THROUGH the Android offer tunnel to the dockerized answer"
-  # The healthy path must have exercised the data-plane probe round trip.
+  log "marker delivered THROUGH the Android offer tunnel to the dockerized answer"
+  # Marker delivery and the explicit PING/PONG probe are independent required evidence.
   dump_answer_log
-  if grep -qi "received tunnel PING; sending PONG" "$ANSWER_LOG"; then
-    log "verified data-plane probe: answer received PING and replied PONG"
-  else
-    log "WARN: marker delivered but no probe PING/PONG seen in answer logs (level=info?)"
-  fi
+  verify_probe_evidence "$ANSWER_LOG" || exit 1
+  log "PASS: marker delivery and data-plane probe contract both verified"
   exit 0
 fi
 log "FAIL: marker not delivered through the tunnel within timeout."
