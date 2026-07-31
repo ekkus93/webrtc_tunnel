@@ -1,5 +1,5 @@
 name: Set up Android release toolchain
-description: Install the pinned Android/Rust toolchain and build both required JNI ABIs.
+description: Install the pinned Android/Rust toolchain, enable emulator acceleration, and build both required JNI ABIs.
 runs:
   using: composite
   steps:
@@ -15,6 +15,23 @@ runs:
     - name: Install pinned Android SDK components
       shell: bash
       run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264" "emulator" "system-images;android-35;google_apis;x86_64"
+    - name: Enable KVM for Android emulator validation
+      shell: bash
+      run: |
+        set -euo pipefail
+        [[ -e /dev/kvm ]] || {
+          echo '/dev/kvm is unavailable on this runner; hardware-accelerated release smoke testing is required' >&2
+          exit 1
+        }
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | \
+          sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        [[ -r /dev/kvm && -w /dev/kvm ]] || {
+          echo '/dev/kvm is not readable and writable after permission setup' >&2
+          ls -l /dev/kvm >&2 || true
+          exit 1
+        }
     - name: Install Rust toolchain with Android targets
       uses: dtolnay/rust-toolchain@stable
       with:
