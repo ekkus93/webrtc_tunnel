@@ -281,7 +281,10 @@ class RepositoryContractTest(unittest.TestCase):
             "actions/attest@v4",
             "softprops/action-gh-release@v3",
             "verify-environment",
-            "verify-artifacts",
+            "android_bundle_release.py verify-chain",
+            "assert-unsigned-aab",
+            "app-release-signed.aab",
+            "BUNDLETOOL_JAR",
             "Run negative release contract tests",
             "github.event.workflow_run.conclusion",
             "ci/android-release-artifacts",
@@ -292,6 +295,7 @@ class RepositoryContractTest(unittest.TestCase):
                 self.assertIn(fragment, workflow)
         self.assertNotIn("continue-on-error: true", workflow)
         self.assertNotIn("|| true", workflow)
+        self.assertNotIn("android_release.py verify-artifacts", workflow)
 
     def test_gradle_production_signing_never_uses_debug_config(self) -> None:
         gradle = (self.repo_root / "android/app/build.gradle.kts").read_text(encoding="utf-8")

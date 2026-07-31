@@ -10,6 +10,8 @@ on:
       - android/version.properties
       - android/release-certificate.properties
       - scripts/android_release.py
+      - scripts/android_bundle_release.py
+      - scripts/test_android_bundle_release.py
       - scripts/test_android_release.py
       - scripts/test_android_release_negative.sh
       - docs/ANDROID_RELEASE_SIGNING_POLICY.md
@@ -111,7 +113,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.classify.outputs.target_sha }}
       - name: Run fail-closed release unit tests
-        run: PYTHONPATH=scripts python3 -m unittest -v scripts/test_android_release.py
+        run: PYTHONPATH=scripts python3 -m unittest -v scripts/test_android_release.py scripts/test_android_bundle_release.py
       - name: Verify production pin remains explicit
         run: python3 scripts/android_release.py certificate --properties android/release-certificate.properties --allow-unprovisioned
       - name: Set up pinned Android release toolchain
@@ -147,18 +149,40 @@ jobs:
         run: python3 scripts/android_release.py validate-signing-env
       - name: Run negative release contract tests
         run: scripts/test_android_release_negative.sh
-      - name: Build signed release APK and AAB
+      - name: Prepare private password files for signing tools
+        run: |
+          python3 scripts/android_bundle_release.py prepare-password-files \
+            --directory "$RUNNER_TEMP/android-release-secret-files" \
+            --github-env "$GITHUB_ENV"
+      - name: Build production-style signed release APK
         run: |
           cd android
           ./gradlew --no-daemon -PskipRustBuild=true -PproductionRelease=true \
             -PreleaseCertificateSha256="$ANDROID_RELEASE_CERT_SHA256" \
-            :app:assembleRelease :app:bundleRelease
-      - name: Verify signatures, package metadata, release flags, and ABIs
+            :app:assembleRelease
+      - name: Build unsigned release AAB
         run: |
-          python3 scripts/android_release.py verify-artifacts \
+          cd android
+          ./gradlew --no-daemon -PskipRustBuild=true :app:bundleRelease
+      - name: Require an unsigned AAB intermediate
+        run: |
+          python3 scripts/android_bundle_release.py assert-unsigned-aab \
+            --aab android/app/build/outputs/bundle/release/app-release.aab
+      - name: Sign AAB explicitly with jarsigner
+        run: |
+          python3 scripts/android_bundle_release.py sign-aab \
+            --unsigned-aab android/app/build/outputs/bundle/release/app-release.aab \
+            --signed-aab android/app/build/outputs/bundle/release/app-release-signed.aab \
+            --fingerprint "$ANDROID_RELEASE_CERT_SHA256"
+      - name: Verify direct APK, signed AAB, and bundle-generated APK
+        run: |
+          python3 scripts/android_bundle_release.py verify-chain \
             --properties android/version.properties \
-            --apk android/app/build/outputs/apk/release/app-release.apk \
-            --aab android/app/build/outputs/bundle/release/app-release.aab \
+            --direct-apk android/app/build/outputs/apk/release/app-release.apk \
+            --signed-aab android/app/build/outputs/bundle/release/app-release-signed.aab \
+            --apks-archive "$RUNNER_TEMP/android-release-from-aab.apks" \
+            --generated-apk "$RUNNER_TEMP/android-release-from-aab.apk" \
+            --bundletool "$BUNDLETOOL_JAR" \
             --fingerprint "$ANDROID_RELEASE_CERT_SHA256" \
             --application-id com.phillipchin.webrtctunnel \
             --apksigner "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" \
@@ -172,7 +196,7 @@ jobs:
           cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/android-release-inventory/cargo-metadata.json"
           python3 scripts/android_release.py stage \
             --apk android/app/build/outputs/apk/release/app-release.apk \
-            --aab android/app/build/outputs/bundle/release/app-release.aab \
+            --aab android/app/build/outputs/bundle/release/app-release-signed.aab \
             --verification-report "$RUNNER_TEMP/android-release-verification.json" \
             --gradle-inventory "$RUNNER_TEMP/android-release-inventory/gradle-release-runtime.txt" \
             --cargo-inventory "$RUNNER_TEMP/android-release-inventory/cargo-metadata.json" \
@@ -181,7 +205,7 @@ jobs:
             --workflow-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --distribution dry_run
           python3 scripts/android_release.py verify-checksums --directory release/android
-      - name: Smoke-test signed release APK on Android emulator
+      - name: Smoke-test direct and bundle-generated release APKs
         uses: reactivecircus/android-emulator-runner@v2.37.0
         with:
           api-level: 35
@@ -190,11 +214,27 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            adb install -r android/app/build/outputs/apk/release/app-release.apk
-            adb shell monkey -p com.phillipchin.webrtctunnel -c android.intent.category.LAUNCHER 1
-            sleep 5
-            adb shell pidof com.phillipchin.webrtctunnel
-            adb shell dumpsys package com.phillipchin.webrtctunnel | grep -F "versionName=${{ steps.version.outputs.version_name }}"
+            set -euo pipefail
+            smoke_test() {
+              local apk="$1"
+              adb install "$apk"
+              adb shell monkey -p com.phillipchin.webrtctunnel -c android.intent.category.LAUNCHER 1
+              local pid=""
+              for _ in $(seq 1 30); do
+                if pid=$(adb shell pidof com.phillipchin.webrtctunnel 2>/dev/null); then
+                  [[ -n "$pid" ]] && break
+                else
+                  pid=""
+                fi
+                sleep 1
+              done
+              [[ -n "$pid" ]] || { echo "release APK process did not start: $apk" >&2; exit 1; }
+              adb shell dumpsys package com.phillipchin.webrtctunnel | \
+                grep -F "versionName=${{ steps.version.outputs.version_name }}"
+              adb uninstall com.phillipchin.webrtctunnel
+            }
+            smoke_test android/app/build/outputs/apk/release/app-release.apk
+            smoke_test "$RUNNER_TEMP/android-release-from-aab.apk"
       - name: Upload non-production dry-run artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -204,7 +244,9 @@ jobs:
           if-no-files-found: error
       - name: Delete ephemeral signing material
         if: always()
-        run: rm -f "${ANDROID_RELEASE_KEYSTORE_PATH:-}"
+        run: |
+          rm -f -- "${ANDROID_RELEASE_KEYSTORE_PATH:-}"             "${ANDROID_RELEASE_STORE_PASSWORD_FILE:-}"             "${ANDROID_RELEASE_KEY_PASSWORD_FILE:-}"
+          rm -rf -- "$RUNNER_TEMP/android-release-secret-files"
 
   dry-run-status:
     name: Publish Android dry-run status
@@ -261,7 +303,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.classify.outputs.target_sha }}
       - name: Run fail-closed release unit tests
-        run: PYTHONPATH=scripts python3 -m unittest -v scripts/test_android_release.py
+        run: PYTHONPATH=scripts python3 -m unittest -v scripts/test_android_release.py scripts/test_android_bundle_release.py
       - name: Validate release tag, monotonic version, and exact source SHA
         run: |
           python3 scripts/android_release.py validate-tag --properties android/version.properties \
@@ -332,18 +374,40 @@ jobs:
       - name: Read Android version
         id: version
         run: python3 scripts/android_release.py version --properties android/version.properties --github-output "$GITHUB_OUTPUT"
-      - name: Build production-signed release APK and AAB
+      - name: Prepare private password files for production signing tools
+        run: |
+          python3 scripts/android_bundle_release.py prepare-password-files \
+            --directory "$RUNNER_TEMP/android-release-secret-files" \
+            --github-env "$GITHUB_ENV"
+      - name: Build production-signed release APK
         run: |
           cd android
           ./gradlew --no-daemon -PskipRustBuild=true -PproductionRelease=true \
             -PreleaseCertificateSha256="$ANDROID_RELEASE_CERT_SHA256" \
-            :app:assembleRelease :app:bundleRelease
-      - name: Verify signatures, pinned fingerprint, package metadata, release flags, and ABIs
+            :app:assembleRelease
+      - name: Build unsigned release AAB
         run: |
-          python3 scripts/android_release.py verify-artifacts \
+          cd android
+          ./gradlew --no-daemon -PskipRustBuild=true :app:bundleRelease
+      - name: Require an unsigned AAB intermediate
+        run: |
+          python3 scripts/android_bundle_release.py assert-unsigned-aab \
+            --aab android/app/build/outputs/bundle/release/app-release.aab
+      - name: Sign AAB explicitly with jarsigner
+        run: |
+          python3 scripts/android_bundle_release.py sign-aab \
+            --unsigned-aab android/app/build/outputs/bundle/release/app-release.aab \
+            --signed-aab android/app/build/outputs/bundle/release/app-release-signed.aab \
+            --fingerprint "$ANDROID_RELEASE_CERT_SHA256"
+      - name: Verify direct APK, signed AAB, and bundle-generated APK
+        run: |
+          python3 scripts/android_bundle_release.py verify-chain \
             --properties android/version.properties \
-            --apk android/app/build/outputs/apk/release/app-release.apk \
-            --aab android/app/build/outputs/bundle/release/app-release.aab \
+            --direct-apk android/app/build/outputs/apk/release/app-release.apk \
+            --signed-aab android/app/build/outputs/bundle/release/app-release-signed.aab \
+            --apks-archive "$RUNNER_TEMP/android-release-from-aab.apks" \
+            --generated-apk "$RUNNER_TEMP/android-release-from-aab.apk" \
+            --bundletool "$BUNDLETOOL_JAR" \
             --fingerprint "$ANDROID_RELEASE_CERT_SHA256" \
             --application-id com.phillipchin.webrtctunnel \
             --apksigner "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" \
@@ -357,7 +421,7 @@ jobs:
           cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/android-release-inventory/cargo-metadata.json"
           python3 scripts/android_release.py stage \
             --apk android/app/build/outputs/apk/release/app-release.apk \
-            --aab android/app/build/outputs/bundle/release/app-release.aab \
+            --aab android/app/build/outputs/bundle/release/app-release-signed.aab \
             --verification-report "$RUNNER_TEMP/android-release-verification.json" \
             --gradle-inventory "$RUNNER_TEMP/android-release-inventory/gradle-release-runtime.txt" \
             --cargo-inventory "$RUNNER_TEMP/android-release-inventory/cargo-metadata.json" \
@@ -366,7 +430,7 @@ jobs:
             --workflow-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --distribution github_release
           python3 scripts/android_release.py verify-checksums --directory release/android
-      - name: Smoke-test production release APK on Android emulator
+      - name: Smoke-test production direct and bundle-generated APKs
         uses: reactivecircus/android-emulator-runner@v2.37.0
         with:
           api-level: 35
@@ -375,11 +439,27 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            adb install android/app/build/outputs/apk/release/app-release.apk
-            adb shell monkey -p com.phillipchin.webrtctunnel -c android.intent.category.LAUNCHER 1
-            sleep 5
-            adb shell pidof com.phillipchin.webrtctunnel
-            adb shell dumpsys package com.phillipchin.webrtctunnel | grep -F "versionName=${{ steps.version.outputs.version_name }}"
+            set -euo pipefail
+            smoke_test() {
+              local apk="$1"
+              adb install "$apk"
+              adb shell monkey -p com.phillipchin.webrtctunnel -c android.intent.category.LAUNCHER 1
+              local pid=""
+              for _ in $(seq 1 30); do
+                if pid=$(adb shell pidof com.phillipchin.webrtctunnel 2>/dev/null); then
+                  [[ -n "$pid" ]] && break
+                else
+                  pid=""
+                fi
+                sleep 1
+              done
+              [[ -n "$pid" ]] || { echo "release APK process did not start: $apk" >&2; exit 1; }
+              adb shell dumpsys package com.phillipchin.webrtctunnel | \
+                grep -F "versionName=${{ steps.version.outputs.version_name }}"
+              adb uninstall com.phillipchin.webrtctunnel
+            }
+            smoke_test android/app/build/outputs/apk/release/app-release.apk
+            smoke_test "$RUNNER_TEMP/android-release-from-aab.apk"
       - name: Upload verified workflow artifacts for retention and inspection
         uses: actions/upload-artifact@v7
         with:
@@ -422,7 +502,9 @@ jobs:
           python3 scripts/android_release.py verify-checksums --directory "$RUNNER_TEMP/published"
       - name: Delete temporary production signing material
         if: always()
-        run: rm -f "${ANDROID_RELEASE_KEYSTORE_PATH:-}"
+        run: |
+          rm -f -- "${ANDROID_RELEASE_KEYSTORE_PATH:-}"             "${ANDROID_RELEASE_STORE_PASSWORD_FILE:-}"             "${ANDROID_RELEASE_KEY_PASSWORD_FILE:-}"
+          rm -rf -- "$RUNNER_TEMP/android-release-secret-files"
 
   production-status:
     name: Publish production Android release status

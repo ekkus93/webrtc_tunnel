@@ -94,3 +94,10 @@ The following cannot be completed safely through repository source changes alone
 6. approve and execute the first production tag release.
 
 The repository intentionally fails closed until those steps are complete.
+
+
+## Explicit AAB signing correction
+
+The first production-style build successfully generated an APK and AAB, but strict JDK verification rejected the Android Gradle Plugin-signed AAB because `JarFile` and `JarInputStream` disagreed about signature metadata ordering. The verifier remained fail-closed; staging, emulator testing, and upload did not run.
+
+The corrected chain builds the AAB unsigned, rejects pre-existing signature metadata, signs a distinct bundle with `jarsigner`, validates exactly one signer and the pinned certificate, validates the bundle with pinned bundletool 1.18.3, generates a universal APK, and verifies/smoke-tests both distribution paths. The failed run remains evidence and is not reclassified as success.

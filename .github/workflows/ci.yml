@@ -152,6 +152,8 @@ jobs:
           ref: ${{ inputs.expected_sha || github.sha }}
       - name: Run exact-SHA closure unit tests
         run: PYTHONPATH=scripts python3 -m unittest -v scripts/test_exact_sha_closure.py
+      - name: Run Android release contract unit tests
+        run: PYTHONPATH=scripts python3 -m unittest -v scripts/test_android_release.py scripts/test_android_bundle_release.py
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

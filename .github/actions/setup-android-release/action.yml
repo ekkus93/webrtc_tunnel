@@ -29,3 +29,23 @@ runs:
       env:
         ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.3.11579264
       run: cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build -p p2p-mobile --release
+
+    - name: Install pinned bundletool
+      shell: bash
+      env:
+        BUNDLETOOL_VERSION: "1.18.3"
+        BUNDLETOOL_SHA256: "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29"
+      run: |
+        set -euo pipefail
+        destination="$RUNNER_TEMP/bundletool-all-${BUNDLETOOL_VERSION}.jar"
+        curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 0 \
+          --output "$destination" \
+          "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar"
+        actual=$(sha256sum "$destination" | cut -d' ' -f1)
+        [[ "$actual" == "$BUNDLETOOL_SHA256" ]] || {
+          echo "bundletool SHA-256 mismatch: expected=$BUNDLETOOL_SHA256 actual=$actual" >&2
+          exit 1
+        }
+        chmod 0444 "$destination"
+        echo "BUNDLETOOL_JAR=$destination" >> "$GITHUB_ENV"
+        echo "BUNDLETOOL_VERSION=$BUNDLETOOL_VERSION" >> "$GITHUB_ENV"

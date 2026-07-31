@@ -61,3 +61,18 @@ Compare the displayed SHA-256 certificate digest with `android/release-certifica
 - After publication: remove the Android assets, mark the release notes as yanked, preserve incident evidence, and publish a corrected higher version/tag.
 - Never overwrite an APK/AAB/checksum under an existing tag.
 - On suspected key compromise, follow the revocation procedure in the signing policy before any further build.
+
+
+## Explicit AAB signing and bundle-derived APK verification
+
+The APK and AAB use separate, fail-closed paths:
+
+1. Gradle builds the directly distributable APK with the protected signing identity.
+2. Gradle builds an unsigned AAB without `productionRelease`.
+3. CI rejects any pre-existing `.SF`/`.RSA`/`.DSA`/`.EC` signature metadata.
+4. `jarsigner` signs a distinct `app-release-signed.aab` using mode-0600 password files.
+5. Strict `jarsigner` verification and `keytool -printcert` prove one signer and the pinned SHA-256 certificate.
+6. Pinned bundletool 1.18.3 (`a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29`) validates the AAB and produces a universal APK.
+7. `apksigner`, `aapt`, ABI inspection, and emulator smoke tests validate both the direct APK and the APK generated from the signed AAB.
+
+The unsigned AAB intermediate is never staged, uploaded, attested, or published. Password files, the temporary keystore, and generated secret directory are removed under `if: always()`.
