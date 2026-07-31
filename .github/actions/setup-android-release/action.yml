@@ -14,7 +14,7 @@ runs:
         packages: ""
     - name: Install pinned Android SDK components
       shell: bash
-      run: yes | sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264" "emulator" "system-images;android-35;google_apis;x86_64"
+      run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264" "emulator" "system-images;android-35;google_apis;x86_64"
     - name: Install Rust toolchain with Android targets
       uses: dtolnay/rust-toolchain@stable
       with:
