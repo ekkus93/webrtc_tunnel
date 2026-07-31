@@ -1,40 +1,44 @@
 # WebRTC Tunnel FIX9 Validation Request
 
-**Purpose:** trigger the definitive full release-candidate validation for FIX9 after implementation, production-path tests, static enforcement, bounded concurrency harnesses, and the setup readiness/admission race fix.
+**Purpose:** trigger a new definitive full release-candidate validation after correcting the diagnostics-export double-admission race exposed by the previous exact candidate.
 
-**Final implementation baseline before signoff docs:** `41b3e08cffe83292776eaeb62524a4133837e19a`  
-**Completion ledger:** `docs/review-source/WEBRTC_TUNNEL_FIX9_COMPLETION_EVIDENCE.md`
+**Implementation baseline:** `6bad7a1f18b180676cc567031f93f7a99fb91d52`  
+**Completion ledger:** `docs/review-source/WEBRTC_TUNNEL_FIX9_COMPLETION_EVIDENCE.md`  
+**Previous failed candidate:** `34b95051defd1a63d67836f01de6b1716f694ac3`
 
-This file is part of the final docs-only `[full-signoff]` candidate. The candidate must run the full Rust, Android, Docker, emulator/data-plane, RC diagnostics, release artifact, and broker-secret permission gates. A successful subset or evidence from another SHA is insufficient.
+This file is part of a docs-only `[full-signoff]` commit. A successful subset, a workflow from another SHA, or a retry of the failed candidate is insufficient.
 
-## Final implementation facts under validation
+## Why the prior candidate failed
 
-- Setup admission owns the actual coroutine `Job`; abandonment cancels and invalidates it.
-- Identity import/generation, forward drafts, navigation, final persistence, and foreground-service start are freshness-gated on their production paths.
-- Transactional save cancellation rolls back attempted stages under `NonCancellable`; incomplete rollback is durable and visible.
-- `SetupLoadState.Ready` is published only after `BaselineLoad` releases admission. Unexpected baseline exceptions fail closed as a redacted durable failure.
-- Public identity reads are serialized with identity-pair replacement.
-- Canonical private/public identity output is mandatory on import; source-text fallback is removed.
-- Identified `Result` APIs convert ordinary exceptions to failure values and rethrow cancellation.
-- Comment-resistant source audits enforce setup freshness and Result contracts.
-- Broker-secret permission instrumentation proves exact `0600` after persist and restore.
+Main run `30599682106` passed Rust, Linux, macOS, Docker, Android full Gradle `check`, and the dedicated stop-failure suite. Its second `assembleDebug testDebugUnitTest` invocation failed:
 
-## Last bounded Android failure and correction
+`LogsViewModelTest.concurrentExportIsRejectedWhileOneIsAlreadyInFlight`
 
-Run `30593967688` completed with six failures. The apparent final-save rollback timeout and four forward timeouts were not independent deadlocks: tests observed `SetupLoadState.Ready` while `BaselineLoad` still owned admission, so production forward/save methods were rejected as busy and never reached their barriers. Commit `41b3e08cffe83292776eaeb62524a4133837e19a` moved terminal load-state publication after admission release. No retry loop, delay, suppression, fallback, or relaxed threshold was added.
+The failure exposed a production check-before-launch race. Both diagnostics export APIs checked busy state before launch but claimed ownership only after the coroutine began. Two immediate callers could therefore both pass the check.
 
-Run `30598677024` then passed full Gradle check, the dedicated stop-failure suite, assemble/unit packaging, and path-scoped full-matrix signoff for the final implementation baseline.
+## Correction under validation
 
-## Required exact-candidate conclusions
+- `LogsViewModel.exportDiagnostics(...)` and `exportDiagnosticsToUri(...)` now share atomic `MutableStateFlow.compareAndSet(false, true)` admission before launch.
+- The concurrency regression uses a blocked single-thread IO dispatcher and bounded latches. It does not rely on real IO being slow, sleeps, retries, or enlarged timeouts.
+- The rejected export must never reach its destination.
+
+Path-scoped Android run `30600821345` passed full Gradle `check`, the dedicated stop suite, the second full debug unit invocation, and path-scoped signoff on implementation baseline `6bad7a1f…` without retry.
+
+All previously delivered FIX9 setup freshness, transactional rollback, Result contract, coherent identity, canonical import, draft-truth, static-enforcement, and broker-permission behavior remains in scope.
+
+## Required conclusions on this exact candidate
 
 - `ci/rc-diagnostics`: success
 - `ci/full-matrix`: success
 - `ci/release-candidate`: success
-- broker-secret instrumentation workflow: success
-- path detection: Rust and Android required
-- Android full Gradle check, unit tests, lint, detekt, ktlint, assemble, emulator/data-plane E2E: success
-- Rust fmt/clippy/tests/release builds and real broker test: success
-- Docker real-data-path and stop-lifecycle E2E: success
-- release artifacts: success
+- broker-secret instrumentation: success
+- Android full Gradle check: success
+- dedicated foreground-service stop-failure suite: success
+- second `assembleDebug testDebugUnitTest`: success without retry
+- Android emulator/data-plane E2E: success
+- Rust fmt/clippy/tests/package/lifecycle gates: success
+- Docker TLS/data-path and graceful-stop E2E: success
 
-**Status:** validation requested. Do not claim FIX9 release signoff until every required conclusion belongs to this exact candidate SHA.
+Release APK/AAB jobs are tag-only and are expected to skip for this commit candidate. They are not part of commit-level full-matrix/release-candidate status and must be validated on the eventual release tag.
+
+**Status:** validation requested. Do not claim FIX9 release signoff until every applicable conclusion belongs to the exact commit containing this request.
