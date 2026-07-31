@@ -78,6 +78,7 @@ Implementation commits:
 
 - `8a9d9a5fb504541110b29b8f5e164420e4e43b22`
 - `fbabe71a725c6aa98bb0fd84ffc94ffccaaa6a55`
+- `e89151a2ec8cefc98d6bce4f92fec27109ff4765`
 
 ---
 
@@ -110,7 +111,7 @@ Implementation commits:
 - [x] Executable `runCatching { ... }` is rejected in those files.
 - [x] Executable `catch (...: Throwable)` is rejected in those files.
 - [x] Existing selected-subclass and pre-`try` `getOrThrow()` negative fixtures remain active.
-- [x] The scanner strips comments and quoted values before checking forbidden executable patterns.
+- [x] The scanner removes comments before checking forbidden executable patterns.
 - [x] Added a fixture proving explanatory comments do not create false positives.
 
 ## P2-004 — Setup-operation token propagation
@@ -125,10 +126,15 @@ Implementation commits:
 - [x] Audits cover start-from-review freshness.
 - [x] Runtime cancellation tests remain the behavioral proof; source checks remain regression tripwires.
 
-Implementation commits:
+Implementation and quality-gate correction commits:
 
 - `b33858e621d9dc7d66f2afdf89c27666770be346`
 - `f213fc98ef459a4b8fde72be7e2768bf0f253c37`
+- `8960e33288e3dbfb176b0cb8f8b5a1bc9bedaf1a`
+- `1e7eef8d6227e08bc3c7f6ca6fdeab9c4994614b`
+- `50dee78aa34d47b5ab30a9943a4ec8b04af287e8`
+
+No Detekt suppression, threshold change, ignored result, or weakened source assertion was accepted.
 
 ---
 
@@ -158,11 +164,25 @@ Implementation commit:
 ## P4-001 — Follow-up evidence
 
 - [x] Added `docs/review-source/WEBRTC_TUNNEL_FIX9_REVIEW_FOLLOWUP_IMPLEMENTATION_REPORT.md`.
-- [x] Recorded implementation commits and decisions.
+- [x] Recorded implementation commits, validation defects, and corrective commits.
 - [x] Explicitly stated that Android release artifacts are not in the current contract.
 - [x] Explicitly stated that PING/PONG evidence is required for healthy Android E2E success.
 - [x] Distinguished commit-level validation from tag-only Rust release artifacts.
 - [x] Did not claim tag artifact validation from a commit-only run.
+
+## Validation defects found and repaired
+
+### First exact full-signoff candidate
+
+Exact candidate `d1e677a9a022ecf1f9a6b4e16adb1b71b2a68bdb` correctly failed Android job `91103082196` in main run `30614054982` at `:app:detekt` before unit tests or emulator E2E. Five structural findings in the new tests were fixed without suppressions or threshold changes. Rust/Linux/macOS/Docker and RC diagnostics had passed; Android/full signoff remained failed and emulator E2E was correctly skipped.
+
+### Focused Android correction candidate
+
+Path-required candidate `1e7eef8d6227e08bc3c7f6ca6fdeab9c4994614b` correctly failed Android job `91105504303` in run `30614798207` at `:app:detekt`. Two remaining structure limits—a 61-line method and nested parenthesis scanner—were fixed by `50dee78aa34d47b5ab30a9943a4ec8b04af287e8` through extraction/decomposition, not suppression.
+
+- [x] Both failed candidates remain documented as real validation evidence.
+- [x] Neither candidate was retried or relabeled as infrastructure failure.
+- [x] The next exact candidate includes all corrective commits.
 
 ## P4-002 — Exact-SHA final validation rule
 
