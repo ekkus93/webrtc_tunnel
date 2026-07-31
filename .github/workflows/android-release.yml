@@ -1,0 +1,447 @@
+name: Android signed release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/actions/setup-android-release/action.yml
+      - .github/workflows/android-release.yml
+      - android/app/build.gradle.kts
+      - android/version.properties
+      - android/release-certificate.properties
+      - scripts/android_release.py
+      - scripts/test_android_release.py
+      - scripts/test_android_release_negative.sh
+      - docs/ANDROID_RELEASE_SIGNING_POLICY.md
+      - docs/ANDROID_RELEASE_RUNBOOK.md
+      - docs/WEBRTC_TUNNEL_ANDROID_SIGNED_RELEASE_ARTIFACTS_TODO.md
+      - docs/review-source/WEBRTC_TUNNEL_ANDROID_SIGNED_RELEASE_ARTIFACTS_IMPLEMENTATION_REPORT.md
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact current master SHA to exercise with the non-production dry-run key
+        required: false
+        default: ""
+        type: string
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+concurrency:
+  group: android-signed-release-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  classify:
+    name: Classify release event
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+      target_sha: ${{ steps.classify.outputs.target_sha }}
+      release_tag: ${{ steps.classify.outputs.release_tag }}
+    steps:
+      - name: Resolve exact target and release mode
+        id: classify
+        shell: bash
+        env:
+          DISPATCH_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+        run: |
+          set -euo pipefail
+          mode=skip
+          target_sha=""
+          release_tag=""
+          case "$GITHUB_EVENT_NAME" in
+            push)
+              mode=dry_run
+              target_sha="$GITHUB_SHA"
+              ;;
+            workflow_dispatch)
+              [[ "$GITHUB_REF" == refs/heads/master ]] || { echo 'manual dry runs are restricted to master' >&2; exit 1; }
+              target_sha="${DISPATCH_EXPECTED_SHA:-$GITHUB_SHA}"
+              [[ "$target_sha" == "$GITHUB_SHA" ]] || { echo 'expected_sha must equal the selected master SHA' >&2; exit 1; }
+              mode=dry_run
+              ;;
+            workflow_run)
+              if [[ "$WORKFLOW_RUN_EVENT" == push \
+                && "$WORKFLOW_RUN_HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" \
+                && "$WORKFLOW_RUN_HEAD_BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+                target_sha="$WORKFLOW_RUN_HEAD_SHA"
+                release_tag="$WORKFLOW_RUN_HEAD_BRANCH"
+                [[ "$WORKFLOW_RUN_CONCLUSION" == success ]] && mode=production || mode=tag_failed
+              fi
+              ;;
+            *) echo "unsupported event: $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+          esac
+          if [[ -n "$target_sha" && ! "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'target SHA must be a full lowercase commit SHA' >&2
+            exit 1
+          fi
+          printf 'mode=%s\ntarget_sha=%s\nrelease_tag=%s\n' "$mode" "$target_sha" "$release_tag" >> "$GITHUB_OUTPUT"
+
+  dry-run:
+    name: Non-production signed APK/AAB dry run
+    needs: classify
+    if: needs.classify.outputs.mode == 'dry_run'
+    permissions:
+      contents: read
+      statuses: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish pending dry-run status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.classify.outputs.target_sha }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f state=pending -f context=ci/android-release-dry-run \
+            -f description='non-production Android signed release validation is running' \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Check out exact source commit
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.classify.outputs.target_sha }}
+      - name: Run fail-closed release unit tests
+        run: PYTHONPATH=scripts python3 -m unittest -v scripts/test_android_release.py
+      - name: Verify production pin remains explicit
+        run: python3 scripts/android_release.py certificate --properties android/release-certificate.properties --allow-unprovisioned
+      - name: Set up pinned Android release toolchain
+        uses: ./.github/actions/setup-android-release
+      - name: Read Android version
+        id: version
+        run: python3 scripts/android_release.py version --properties android/version.properties --github-output "$GITHUB_OUTPUT"
+      - name: Generate ephemeral non-production signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/android-release-dry-run.p12"
+          password=$(openssl rand -hex 24)
+          alias=android-release-dry-run
+          echo "::add-mask::$password"
+          umask 077
+          keytool -genkeypair -storetype PKCS12 -keystore "$keystore" \
+            -storepass "$password" -keypass "$password" -alias "$alias" \
+            -keyalg RSA -keysize 3072 -sigalg SHA256withRSA -validity 2 \
+            -dname 'CN=WebRTC Tunnel CI Dry Run,OU=Non-Production,O=WebRTC Tunnel Project,C=US' -noprompt
+          chmod 600 "$keystore"
+          fingerprint=$(keytool -list -v -storetype PKCS12 -keystore "$keystore" \
+            -storepass "$password" -alias "$alias" | PYTHONPATH=scripts python3 -c \
+            'import sys; from android_release import parse_keytool_fingerprint; print(parse_keytool_fingerprint(sys.stdin.read()))')
+          {
+            echo "ANDROID_RELEASE_KEYSTORE_PATH=$keystore"
+            echo "ANDROID_RELEASE_STORE_PASSWORD=$password"
+            echo "ANDROID_RELEASE_KEY_ALIAS=$alias"
+            echo "ANDROID_RELEASE_KEY_PASSWORD=$password"
+            echo "ANDROID_RELEASE_CERT_SHA256=$fingerprint"
+          } >> "$GITHUB_ENV"
+      - name: Validate dry-run signing inputs
+        run: python3 scripts/android_release.py validate-signing-env
+      - name: Run negative release contract tests
+        run: scripts/test_android_release_negative.sh
+      - name: Build signed release APK and AAB
+        run: |
+          cd android
+          ./gradlew --no-daemon -PskipRustBuild=true -PproductionRelease=true \
+            -PreleaseCertificateSha256="$ANDROID_RELEASE_CERT_SHA256" \
+            :app:assembleRelease :app:bundleRelease
+      - name: Verify signatures, package metadata, release flags, and ABIs
+        run: |
+          python3 scripts/android_release.py verify-artifacts \
+            --properties android/version.properties \
+            --apk android/app/build/outputs/apk/release/app-release.apk \
+            --aab android/app/build/outputs/bundle/release/app-release.aab \
+            --fingerprint "$ANDROID_RELEASE_CERT_SHA256" \
+            --application-id com.phillipchin.webrtctunnel \
+            --apksigner "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" \
+            --aapt "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" \
+            --report "$RUNNER_TEMP/android-release-verification.json"
+      - name: Generate dependency inventories and checksummed staging
+        run: |
+          mkdir -p "$RUNNER_TEMP/android-release-inventory"
+          (cd android && ./gradlew --no-daemon -PskipRustBuild=true :app:dependencies \
+            --configuration releaseRuntimeClasspath) > "$RUNNER_TEMP/android-release-inventory/gradle-release-runtime.txt"
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/android-release-inventory/cargo-metadata.json"
+          python3 scripts/android_release.py stage \
+            --apk android/app/build/outputs/apk/release/app-release.apk \
+            --aab android/app/build/outputs/bundle/release/app-release.aab \
+            --verification-report "$RUNNER_TEMP/android-release-verification.json" \
+            --gradle-inventory "$RUNNER_TEMP/android-release-inventory/gradle-release-runtime.txt" \
+            --cargo-inventory "$RUNNER_TEMP/android-release-inventory/cargo-metadata.json" \
+            --output-dir release/android --label "dry-run-${GITHUB_SHA:0:12}" \
+            --repository "$GITHUB_REPOSITORY" --source-sha "${{ needs.classify.outputs.target_sha }}" \
+            --workflow-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --distribution dry_run
+          python3 scripts/android_release.py verify-checksums --directory release/android
+      - name: Smoke-test signed release APK on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2.37.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            adb install -r android/app/build/outputs/apk/release/app-release.apk
+            adb shell monkey -p com.phillipchin.webrtctunnel -c android.intent.category.LAUNCHER 1
+            sleep 5
+            adb shell pidof com.phillipchin.webrtctunnel
+            adb shell dumpsys package com.phillipchin.webrtctunnel | grep -F "versionName=${{ steps.version.outputs.version_name }}"
+      - name: Upload non-production dry-run artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-release-dry-run-${{ needs.classify.outputs.target_sha }}
+          path: release/android/
+          retention-days: 3
+          if-no-files-found: error
+      - name: Delete ephemeral signing material
+        if: always()
+        run: rm -f "${ANDROID_RELEASE_KEYSTORE_PATH:-}"
+
+  dry-run-status:
+    name: Publish Android dry-run status
+    needs: [classify, dry-run]
+    if: always() && needs.classify.outputs.mode == 'dry_run'
+    permissions:
+      contents: read
+      statuses: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish terminal dry-run status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.classify.outputs.target_sha }}
+          RESULT: ${{ needs.dry-run.result }}
+        run: |
+          [[ "$RESULT" == success ]] && state=success || state=failure
+          [[ "$state" == success ]] && description='non-production signed APK/AAB dry run passed' || description="Android release dry run was $RESULT"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f state="$state" -f context=ci/android-release-dry-run -f description="$description" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          [[ "$state" == success ]]
+
+  tag-ci-failure-status:
+    name: Publish blocked tag release status
+    needs: classify
+    if: needs.classify.outputs.mode == 'tag_failed'
+    permissions:
+      contents: read
+      statuses: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark Android release blocked by failed tag CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.classify.outputs.target_sha }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f state=failure -f context=ci/android-release-artifacts \
+            -f description='tag CI failed; Android publication was not attempted' \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  production-preflight:
+    name: Validate production tag before environment approval
+    needs: classify
+    if: needs.classify.outputs.mode == 'production'
+    runs-on: ubuntu-latest
+    outputs:
+      certificate_sha256: ${{ steps.certificate.outputs.fingerprint }}
+    steps:
+      - name: Check out exact tagged commit
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.classify.outputs.target_sha }}
+      - name: Run fail-closed release unit tests
+        run: PYTHONPATH=scripts python3 -m unittest -v scripts/test_android_release.py
+      - name: Validate release tag, monotonic version, and exact source SHA
+        run: |
+          python3 scripts/android_release.py validate-tag --properties android/version.properties \
+            --repo-root . --tag "${{ needs.classify.outputs.release_tag }}" \
+            --sha "${{ needs.classify.outputs.target_sha }}"
+      - name: Require a provisioned public production certificate pin
+        id: certificate
+        run: |
+          fingerprint=$(python3 scripts/android_release.py certificate --properties android/release-certificate.properties)
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+
+  production:
+    name: Build, verify, attest, and publish production Android artifacts
+    needs: [classify, production-preflight]
+    if: needs.classify.outputs.mode == 'production'
+    environment: android-production-release
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+      statuses: write
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+      ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+      ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+      ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+      ANDROID_RELEASE_CERT_SHA256: ${{ needs.production-preflight.outputs.certificate_sha256 }}
+    steps:
+      - name: Publish pending production status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.classify.outputs.target_sha }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f state=pending -f context=ci/android-release-artifacts \
+            -f description='production Android artifact verification is running' \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Check out exact tagged commit
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.classify.outputs.target_sha }}
+      - name: Verify protected environment policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/environments/android-production-release" > "$RUNNER_TEMP/environment.json"
+          gh api "repos/$GITHUB_REPOSITORY/environments/android-production-release/deployment-branch-policies?per_page=100" > "$RUNNER_TEMP/policies.json"
+          python3 scripts/android_release.py verify-environment --input "$RUNNER_TEMP/environment.json" --branch-policies "$RUNNER_TEMP/policies.json"
+      - name: Decode temporary production keystore
+        run: |
+          set -euo pipefail
+          : "${ANDROID_RELEASE_KEYSTORE_BASE64:?ANDROID_RELEASE_KEYSTORE_BASE64 is required}"
+          : "${ANDROID_RELEASE_STORE_PASSWORD:?ANDROID_RELEASE_STORE_PASSWORD is required}"
+          : "${ANDROID_RELEASE_KEY_ALIAS:?ANDROID_RELEASE_KEY_ALIAS is required}"
+          : "${ANDROID_RELEASE_KEY_PASSWORD:?ANDROID_RELEASE_KEY_PASSWORD is required}"
+          keystore="$RUNNER_TEMP/android-production-release.p12"
+          umask 077
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          echo "ANDROID_RELEASE_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+      - name: Validate production signing inputs
+        run: python3 scripts/android_release.py validate-signing-env
+      - name: Set up pinned Android release toolchain
+        uses: ./.github/actions/setup-android-release
+      - name: Read Android version
+        id: version
+        run: python3 scripts/android_release.py version --properties android/version.properties --github-output "$GITHUB_OUTPUT"
+      - name: Build production-signed release APK and AAB
+        run: |
+          cd android
+          ./gradlew --no-daemon -PskipRustBuild=true -PproductionRelease=true \
+            -PreleaseCertificateSha256="$ANDROID_RELEASE_CERT_SHA256" \
+            :app:assembleRelease :app:bundleRelease
+      - name: Verify signatures, pinned fingerprint, package metadata, release flags, and ABIs
+        run: |
+          python3 scripts/android_release.py verify-artifacts \
+            --properties android/version.properties \
+            --apk android/app/build/outputs/apk/release/app-release.apk \
+            --aab android/app/build/outputs/bundle/release/app-release.aab \
+            --fingerprint "$ANDROID_RELEASE_CERT_SHA256" \
+            --application-id com.phillipchin.webrtctunnel \
+            --apksigner "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" \
+            --aapt "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" \
+            --report "$RUNNER_TEMP/android-release-verification.json"
+      - name: Generate dependency inventories and checksummed staging
+        run: |
+          mkdir -p "$RUNNER_TEMP/android-release-inventory"
+          (cd android && ./gradlew --no-daemon -PskipRustBuild=true :app:dependencies \
+            --configuration releaseRuntimeClasspath) > "$RUNNER_TEMP/android-release-inventory/gradle-release-runtime.txt"
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/android-release-inventory/cargo-metadata.json"
+          python3 scripts/android_release.py stage \
+            --apk android/app/build/outputs/apk/release/app-release.apk \
+            --aab android/app/build/outputs/bundle/release/app-release.aab \
+            --verification-report "$RUNNER_TEMP/android-release-verification.json" \
+            --gradle-inventory "$RUNNER_TEMP/android-release-inventory/gradle-release-runtime.txt" \
+            --cargo-inventory "$RUNNER_TEMP/android-release-inventory/cargo-metadata.json" \
+            --output-dir release/android --label "${{ needs.classify.outputs.release_tag }}" \
+            --repository "$GITHUB_REPOSITORY" --source-sha "${{ needs.classify.outputs.target_sha }}" \
+            --workflow-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --distribution github_release
+          python3 scripts/android_release.py verify-checksums --directory release/android
+      - name: Smoke-test production release APK on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2.37.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            adb install android/app/build/outputs/apk/release/app-release.apk
+            adb shell monkey -p com.phillipchin.webrtctunnel -c android.intent.category.LAUNCHER 1
+            sleep 5
+            adb shell pidof com.phillipchin.webrtctunnel
+            adb shell dumpsys package com.phillipchin.webrtctunnel | grep -F "versionName=${{ steps.version.outputs.version_name }}"
+      - name: Upload verified workflow artifacts for retention and inspection
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-release-${{ needs.classify.outputs.release_tag }}-${{ needs.classify.outputs.target_sha }}
+          path: release/android/
+          retention-days: 90
+          if-no-files-found: error
+      - name: Generate GitHub build provenance attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: release/android/*
+      - name: Reject replacement of existing Android release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.classify.outputs.release_tag }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/existing.txt"
+          while IFS= read -r asset; do
+            name=$(basename "$asset")
+            grep -Fxq "$name" "$RUNNER_TEMP/existing.txt" && { echo "refusing to replace existing release asset: $name" >&2; exit 1; }
+          done < <(find release/android -maxdepth 1 -type f -print | sort)
+      - name: Attach only verified Android assets to the existing GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.classify.outputs.release_tag }}
+          target_commitish: ${{ needs.classify.outputs.target_sha }}
+          files: release/android/*
+          fail_on_unmatched_files: true
+      - name: Download published assets and compare byte-for-byte
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.classify.outputs.release_tag }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/published"
+          while IFS= read -r asset; do
+            name=$(basename "$asset")
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$RUNNER_TEMP/published"
+            cmp "$asset" "$RUNNER_TEMP/published/$name"
+          done < <(find release/android -maxdepth 1 -type f -print | sort)
+          python3 scripts/android_release.py verify-checksums --directory "$RUNNER_TEMP/published"
+      - name: Delete temporary production signing material
+        if: always()
+        run: rm -f "${ANDROID_RELEASE_KEYSTORE_PATH:-}"
+
+  production-status:
+    name: Publish production Android release status
+    needs: [classify, production]
+    if: always() && needs.classify.outputs.mode == 'production'
+    permissions:
+      contents: read
+      statuses: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish terminal production release status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.classify.outputs.target_sha }}
+          RESULT: ${{ needs.production.result }}
+        run: |
+          [[ "$RESULT" == success ]] && state=success || state=failure
+          [[ "$state" == success ]] && description='signed Android APK/AAB verified and published' || description="Android release publication was $RESULT"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f state="$state" -f context=ci/android-release-artifacts -f description="$description" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          [[ "$state" == success ]]
