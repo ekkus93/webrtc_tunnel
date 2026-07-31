@@ -248,15 +248,13 @@ class Fix9FollowupContractAuditTest {
                     char == '\\' -> escaped = true
                     char == quote -> quote = null
                 }
-                continue
-            }
-            if (char == '"' || char == '\'') {
+            } else if (char == '"' || char == '\'') {
                 quote = char
-                continue
-            }
-            when (char) {
-                '(' -> depth++
-                ')' -> if (--depth == 0) return index
+            } else {
+                when (char) {
+                    '(' -> depth++
+                    ')' -> if (--depth == 0) return index
+                }
             }
         }
         return null
