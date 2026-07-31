@@ -71,9 +71,11 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
         path: String,
         networkStatus: NetworkPolicyStatus,
     ) {
-        if (_isBusy.value) return
+        // Admission must be claimed before launch. The previous check-then-launch shape set busy
+        // only inside the coroutine, so two immediate callers could both observe false and both
+        // write. MutableStateFlow.compareAndSet makes path and URI exports share one atomic owner.
+        if (!_isBusy.compareAndSet(expect = false, update = true)) return
         viewModelScope.launch {
-            _isBusy.value = true
             try {
                 val status = deps.tunnelRepository.status.value
                 val logs = _logs.value
@@ -99,9 +101,8 @@ class LogsViewModel(private val deps: AppDependencies) : ViewModel() {
         uri: Uri,
         networkStatus: NetworkPolicyStatus,
     ) {
-        if (_isBusy.value) return
+        if (!_isBusy.compareAndSet(expect = false, update = true)) return
         viewModelScope.launch {
-            _isBusy.value = true
             try {
                 val status = deps.tunnelRepository.status.value
                 val logs = _logs.value
