@@ -219,7 +219,7 @@ class SetupWizardNoIdentityMutationTest : AppViewModelTestBase() {
                 enabled = true,
             ),
         )
-        awaitState(viewModel) { it.saveResult == "Forward saved" }
+        awaitState(viewModel) { it.saveResult == "Forward draft updated" }
 
         viewModel.cancel()
 
