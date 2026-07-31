@@ -26,6 +26,8 @@ import org.robolectric.Shadows
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
+private const val FIX9_CONCURRENCY_TEST_TIMEOUT_MS = 15_000L
+
 @RunWith(RobolectricTestRunner::class)
 class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
     private fun realIoDeps(): AppDependencies =
@@ -48,7 +50,7 @@ class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
         awaitCondition(description = "setup operation settled") { !viewModel.state.value.isBusy }
     }
 
-    @Test
+    @Test(timeout = FIX9_CONCURRENCY_TEST_TIMEOUT_MS)
     fun cancelDuringIdentityImportFromUriDoesNotPublishImportedIdentity() =
         runBlocking {
             val source = File(app.filesDir, "stale-uri-identity.toml").apply { writeText("private") }
@@ -71,7 +73,7 @@ class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
             assertNull(viewModel.identityDraft.copyForSave())
         }
 
-    @Test
+    @Test(timeout = FIX9_CONCURRENCY_TEST_TIMEOUT_MS)
     fun cancelDuringForwardUpsertDoesNotPublishDraftChange() =
         runBlocking {
             val entered = CompletableDeferred<Unit>()
@@ -97,7 +99,7 @@ class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
             assertNull(viewModel.state.value.saveResult)
         }
 
-    @Test
+    @Test(timeout = FIX9_CONCURRENCY_TEST_TIMEOUT_MS)
     fun cancelDuringForwardDeleteDoesNotPublishDraftChange() =
         runBlocking {
             val testDeps = realIoDeps()
@@ -130,7 +132,7 @@ class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
             assertNull(viewModel.state.value.saveResult)
         }
 
-    @Test
+    @Test(timeout = FIX9_CONCURRENCY_TEST_TIMEOUT_MS)
     fun cancelDuringFinalSaveRollsBackAuthoritativeStagesAndCancelsJob() =
         runBlocking {
             val entered = CompletableDeferred<Unit>()
@@ -166,7 +168,7 @@ class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
             assertNull(viewModel.state.value.errorMessage)
         }
 
-    @Test
+    @Test(timeout = FIX9_CONCURRENCY_TEST_TIMEOUT_MS)
     fun cancelDuringStartTunnelFromReviewDoesNotStartForegroundService() =
         runBlocking {
             val viewModel = prepareFinalSaveViewModel()
@@ -184,7 +186,7 @@ class SetupFix9CancellationRegressionTest : AppViewModelTestBase() {
             assertNull(viewModel.state.value.saveResult)
         }
 
-    @Test
+    @Test(timeout = FIX9_CONCURRENCY_TEST_TIMEOUT_MS)
     fun staleFinalSaveCannotClearNewerSetupError() =
         runBlocking {
             val viewModel = prepareFinalSaveViewModel()
