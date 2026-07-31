@@ -4,11 +4,11 @@
 **Initial audit baseline:** `141a5425f620ae6b37a29ee0d8956cbfbd4d7b27`  
 **Implementation baseline:** `6bad7a1f18b180676cc567031f93f7a99fb91d52`  
 **Validated functional repair candidate:** `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc`  
-**Latest startup-hardening correction:** `673ea778d104673826f83592325fef46271133e9`  
-**Detailed implementation-era checklist:** retained in Git history at `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc^` and earlier revisions of this path.  
-**Current disposition:** implementation and functional release-candidate validation are complete. The first documentation-only closure candidate failed the Android emulator startup gate, so FIX9 remains open until a new exact `[full-signoff]` commit containing this ledger passes every required gate below.
+**Startup-hardening correction:** `673ea778d104673826f83592325fef46271133e9`  
+**FIX9 exact-SHA closure:** `9503b4aba0f3046446a0392522fa7eac242a9343`  
+**Current disposition:** core FIX9 implementation and commit-level release-candidate validation are complete.
 
-This file is the FIX9 closure ledger. It replaces the implementation-oriented unchecked checklist after the production paths, negative paths, static enforcement, Android instrumentation, and real-data-path E2E were implemented and validated. Historical code snippets and task-level instructions remain available through Git history.
+This file is the FIX9 closure ledger. Historical implementation snippets and the detailed implementation-era checklist remain available in Git history at revisions before the closure-ledger conversion.
 
 ---
 
@@ -24,7 +24,7 @@ This file is the FIX9 closure ledger. It replaces the implementation-oriented un
 - [x] Final save checks freshness before global mutation admission, before persistence, after persistence, and before foreground-service start.
 - [x] Cancellation during persistence rolls back attempted stages under `NonCancellable`; incomplete rollback is durable and visible.
 - [x] Setup baseline terminal state is published only after baseline admission releases.
-- [x] Public ViewModel/controller tests cover cancellation during identity, forward, navigation, final-save, rollback, and start-from-review production boundaries with deterministic barriers.
+- [x] Public ViewModel/controller tests cover cancellation at production suspend/native/persistence boundaries with deterministic barriers.
 
 Principal evidence:
 
@@ -40,7 +40,7 @@ Principal evidence:
 - [x] `prepareActiveConfigForStart(...)` converts active-config read/rewrite failures to `Result.failure` and aborts start visibly.
 - [x] `replaceConfigTransactionally(...)` converts snapshot-capture failures to `Result.failure` without writing or restoring.
 - [x] Settings and network-policy callers publish stable visible failure codes.
-- [x] Static enforcement rejects selected-subclass catches, pre-`try` `getOrThrow()`, ignored authoritative results, and fake `.also { }` consumption.
+- [x] Static enforcement rejects selected-subclass catches, pre-`try` `getOrThrow()`, ignored authoritative results, and fake result-consumption patterns.
 
 Principal evidence:
 
@@ -59,9 +59,9 @@ Principal evidence: `IdentityRepositoryCoherentReadTest`.
 ### P0-004 — Canonical private-identity import
 
 - [x] Import requires canonical native private and public output.
-- [x] Source text is never used as an unsafe fallback.
+- [x] Source text is never used as an unsafe import fallback.
 - [x] Canonical private bytes are wiped after use.
-- [x] Missing canonical output fails visibly.
+- [x] Missing canonical import output fails visibly.
 
 Principal evidence: `ImportExportCanonicalContractTest`.
 
@@ -100,72 +100,71 @@ Exact candidate `34b95051defd1a63d67836f01de6b1716f694ac3` correctly failed the 
 
 Exact candidate `7be00838feef85d374f20aa8dd6b7365969ba3dd` reached the real emulator but failed with `could not find Settings nav tab`.
 
-Root cause: the old `bounds_of_text()` pipeline ended in `awk`, which returned status zero for empty input. The readiness check therefore treated a missing node as present and attempted the Settings tap before Compose navigation semantics were available.
+The old bounds pipeline returned success for empty input, allowing a missing semantic node to masquerade as present.
 
 - [x] `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` makes missing-node/bounds resolution return failure.
 - [x] Startup waits for app-owned Settings semantics instead of a fixed sleep.
-- [x] Settings resolution accepts the visible label or the explicit `Settings tab icon` content description.
+- [x] Settings resolution accepts the visible label or explicit `Settings tab icon` content description.
 - [x] No hardcoded coordinate fallback, silent bypass, retry suppression, or timeout inflation was added.
-- [x] Real emulator job `91074610794` completed the wizard, reached `Listening`, negotiated WebRTC with the dockerized answer, delivered the marker through the tunnel, and verified the `PING`/`PONG` data-plane probe.
+- [x] Emulator job `91074610794` completed the wizard, reached `Listening`, delivered the tunnel marker, and verified the PING/PONG probe.
 
 ### Documentation-candidate Android startup prerequisite failure
 
 Exact documentation candidate `9b1d1999fa81865adb051574221a68f4e15e8d74` correctly remained unsigned because Android emulator job `91080851616` failed with `home never rendered Settings navigation`.
 
-All earlier required jobs on that SHA passed, including RC diagnostics, broker-secret instrumentation, Rust/Linux/macOS/Docker, the Android full Gradle `check`, the dedicated stop-failure suite, and the second full debug unit invocation. The emulator booted, installed the APK, cleared app state, and launched the app, but the harness did not obtain Settings semantics during the bounded startup wait.
-
-Inspection found a second fail-open startup contract: after `pm clear`, the harness ran `pm grant POST_NOTIFICATIONS ... || true`. A failed runtime-permission grant could therefore be silently ignored while `NotificationPermissionGate` displayed a modal over the Home surface. The harness also used a non-waiting ActivityManager launch and discarded `uiautomator` failure details.
+Inspection found a second fail-open startup contract: after `pm clear`, the harness ignored `pm grant POST_NOTIFICATIONS` failure. It also used a non-waiting ActivityManager launch and discarded UI-dump failure detail.
 
 - [x] `673ea778d104673826f83592325fef46271133e9` removes the ignored permission result.
 - [x] Android API level and notification permission state are verified after `pm grant`.
-- [x] Device wake/keyguard dismissal and `am start -W` ActivityManager completion are required.
-- [x] Failed or stale UI dumps are emptied instead of reused and retain bounded diagnostics.
-- [x] A visible notification-permission modal is reported as a prerequisite failure rather than dismissed silently.
-- [x] Startup failure diagnostics are bounded and run before identity/broker input, preventing secret capture.
+- [x] Device wake/keyguard dismissal and `am start -W` completion are required.
+- [x] Failed/stale UI dumps are emptied rather than reused and retain bounded diagnostics.
+- [x] A visible permission modal is reported as a prerequisite failure rather than dismissed silently.
+- [x] Diagnostics run before identity/broker input and remain bounded/redacted.
 - [x] The semantic wait remains bounded at 30 seconds; no retry-only rerun or timeout inflation is used.
 
 ---
 
-## Validated functional candidate evidence
+## Exact-SHA FIX9 closure evidence
 
-Commit `9ca07ff87d60e9c896bd1139a375fc84dbccc4cc` passed the complete applicable commit-level release-candidate matrix:
+Commit `9503b4aba0f3046446a0392522fa7eac242a9343` passed the complete applicable commit-level release-candidate matrix:
 
-- [x] `ci/rc-diagnostics` — success, run `30603969425`
-- [x] `ci/full-matrix` — success, main run `30603969420`
-- [x] `ci/release-candidate` — success, main run `30603969420`
-- [x] broker-secret permission instrumentation — success, run `30603969417`
+- [x] `ci/rc-diagnostics` — success
+- [x] `ci/full-matrix` — success
+- [x] `ci/release-candidate` — success
+- [x] broker-secret permission instrumentation — success
 - [x] Rust formatting/clippy/tests/package/lifecycle gates — success
 - [x] Linux and macOS tests/install-layout/lifecycle gates — success
 - [x] Android full Gradle `check` — success
 - [x] dedicated foreground-service stop-failure truthfulness suite — success
 - [x] second `assembleDebug testDebugUnitTest` invocation — success without retry
 - [x] Docker TLS/data-path and graceful-stop E2E — success
-- [x] Android emulator real-data-path E2E — success, job `91074610794`
-- [x] full matrix signoff — success, job `91076875217`
+- [x] Android emulator real-data-path E2E — success
+- [x] full matrix signoff — success
 
-The main workflow had no failed jobs or steps. Release-artifact jobs were skipped because commit candidates do not satisfy the tag-only packaging condition.
+Release-artifact jobs skipped on that commit because commit candidates do not satisfy the tag-only packaging condition. That skip was expected and was not reported as artifact validation.
 
 ---
 
-## Final exact-SHA closure rule
+## Post-closure review follow-up
 
-The final FIX9 documentation/evidence candidate is **the exact `[full-signoff]` commit containing this ledger and the startup-hardening correction**. The SHA must be taken from Git after publication; a parent, sibling, retry from another SHA, or earlier successful candidate is not interchangeable.
+The post-FIX9 comprehensive review found non-blocking release-process/test-contract/static-audit issues. They are implemented and validated separately through:
 
-FIX9 commit-level closure is complete only when all of the following status records refer to that exact commit:
+- `docs/WEBRTC_TUNNEL_FIX9_REVIEW_FOLLOWUP_TODO.md`
+- `docs/review-source/WEBRTC_TUNNEL_FIX9_REVIEW_FOLLOWUP_IMPLEMENTATION_REPORT.md`
 
-- `ci/rc-diagnostics`: `success`
-- `ci/full-matrix`: `success`
-- `ci/release-candidate`: `success`
-- broker-secret permission instrumentation workflow: `success`
-- Android full check, dedicated stop suite, second unit invocation, and emulator real-data-path E2E: `success`
-- Rust/Linux/macOS/Docker required jobs: `success`
+Those changes do not retroactively invalidate FIX9 closure.
 
-The authoritative CI status issues and commit status API are the machine-readable closure record. This self-reference avoids embedding a guessed SHA before the final commit exists and fails closed if any required gate fails or belongs to a different SHA.
+## Current tagged release-artifact contract
 
-## Release-tag follow-up — outside commit-level FIX9 closure
+The current tag workflow publishes **Rust CLI/daemon archives only**. It does not build, sign, verify, or publish Android APK/AAB release assets.
 
-- [ ] Create the eventual release tag only after commit-level FIX9 closure.
-- [ ] Require tag-only APK/AAB packaging jobs to succeed on that release tag.
-- [ ] Verify the produced release artifacts before publication.
+- [ ] Create an eventual release tag only when an actual Rust release is intended.
+- [ ] Require the existing tag-only Rust archive jobs to succeed on that release tag.
+- [ ] Verify the Rust archives before publication.
+- [x] Do not claim APK/AAB validation from the current workflow.
 
-Tag-only packaging is deliberately not a dependency of `ci/full-matrix` or `ci/release-candidate` for a `[full-signoff]` commit. Skipping those jobs on the commit candidate is expected and must not be misreported as artifact validation.
+Android release publication is deliberately outside the current contract because the project does not yet define a production signing identity, protected keystore/credential flow, certificate-fingerprint verification, or signed-artifact provenance policy. Future Android work is tracked in:
+
+- `docs/WEBRTC_TUNNEL_ANDROID_SIGNED_RELEASE_ARTIFACTS_TODO.md`
+
+Unsigned or debug-signed Android files must not be presented as production release assets. Tag-only packaging remains outside `ci/full-matrix` and `ci/release-candidate` for an ordinary `[full-signoff]` commit.
