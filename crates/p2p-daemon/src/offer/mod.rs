@@ -1,7 +1,11 @@
 //! Offer-role daemon: binds local listeners, dials the configured remote peer,
 //! runs a single multiplexed peer session at a time, and transparently attempts
 //! ICE-restart reconnects before returning to the waiting-for-local-client steady
-//! state. Startup/security failures are fatal; transport turbulence is recoverable.
+//! state. Startup/security failures are fatal — except the initial broker
+//! subscribe, which gets a few short retries first (see
+//! `crate::signaling::subscribe_own_topic_with_retry`), since a transient
+//! signaling hiccup there is indistinguishable from a real outage within a single
+//! attempt. Transport turbulence after startup is recoverable indefinitely.
 //!
 //! The module is split across a few files: this one holds only the public entry
 //! points (`run_offer_daemon` and its test-hook variants), [`runtime`] holds the

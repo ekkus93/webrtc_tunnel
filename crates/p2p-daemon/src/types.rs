@@ -23,6 +23,16 @@ use crate::status::{ForwardRuntimeStatus, SessionStatus, StatusWriter};
 
 pub(crate) const DAEMON_RUNTIME_RETRY_DELAY: Duration = Duration::from_secs(1);
 
+/// How many times the daemon retries its very first broker subscribe at startup
+/// before giving up and returning a fatal error. A transient signaling failure
+/// there (e.g. rumqttc's fixed ~5s connect-and-CONNACK timeout tripping against a
+/// slow/flaky broker) looks identical to a real misconfiguration from inside a
+/// single attempt, so it gets a few short retries first — see
+/// `crate::signaling::subscribe_own_topic_with_retry`. A failure that still
+/// hasn't cleared after this many attempts is treated as genuinely fatal (bad
+/// broker URL, rejected auth, broker actually down).
+pub(crate) const SIGNALING_STARTUP_MAX_ATTEMPTS: u32 = 5;
+
 pub(crate) const ANSWER_SESSION_CAPACITY: usize = 16;
 
 pub trait DaemonSignalingTransport {

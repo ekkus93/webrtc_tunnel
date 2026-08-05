@@ -61,7 +61,8 @@ pub(super) async fn run_answer_daemon_inner<T: DaemonSignalingTransport>(
         config.security.max_clock_skew_secs,
         config.security.max_message_age_secs,
     );
-    transport.subscribe_own_topic().await?;
+    subscribe_own_topic_with_retry(&mut transport, &mut shutdown, DAEMON_RUNTIME_RETRY_DELAY)
+        .await?;
     let status = StatusWriter::new(&config);
     let mut runtime = DaemonRuntimeState::new_connected_with_shutdown(shutdown.clone());
     let mut ctx = RuntimeContext { config: &config, status: &status, runtime: &mut runtime };

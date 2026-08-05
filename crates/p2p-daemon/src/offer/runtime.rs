@@ -51,7 +51,7 @@ pub(super) async fn run_offer_daemon_inner<T: DaemonSignalingTransport>(
         config.security.max_clock_skew_secs,
         config.security.max_message_age_secs,
     );
-    transport.subscribe_own_topic().await?;
+    subscribe_own_topic_with_retry(transport, &mut shutdown, DAEMON_RUNTIME_RETRY_DELAY).await?;
 
     #[cfg(any(test, debug_assertions))]
     let status = match (status_sink, status_audit) {

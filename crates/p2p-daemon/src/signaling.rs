@@ -6,6 +6,7 @@
 //! requests through the session event channel.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use p2p_core::{DaemonState, PeerId, SessionId};
 use p2p_crypto::AuthorizedKey;
@@ -18,14 +19,55 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
 use crate::DaemonError;
+use crate::ShutdownToken;
 use crate::config::steady_state_for_role;
 use crate::messages::current_time_ms;
 use crate::status::{DaemonStatus, ForwardRuntimeStatus, StatusWriter};
 use crate::types::{
     ANSWER_SESSION_CAPACITY, ActiveSession, AnswerSessionEvent, AnswerSessionHandle,
     AnswerStatusSnapshot, DAEMON_RUNTIME_RETRY_DELAY, DaemonSignalingTransport, OutgoingSignal,
-    PublishRequest, PublishedSignal, RuntimeContext, SessionStatusSnapshot, StatusSnapshot,
+    PublishRequest, PublishedSignal, RuntimeContext, SIGNALING_STARTUP_MAX_ATTEMPTS,
+    SessionStatusSnapshot, StatusSnapshot,
 };
+
+/// Retries the initial broker subscribe used at daemon startup instead of letting
+/// a single transient MQTT connect failure take the whole process down. Mirrors
+/// the steady-state idle loop's "log a warning, back off, try again" treatment of
+/// signaling errors (see `poll_idle_signal_payload`) — the difference is this
+/// gives up after `SIGNALING_STARTUP_MAX_ATTEMPTS` and returns the last error,
+/// since a startup failure that persists past a few short retries is more likely
+/// a real misconfiguration than a transient blip, and per this daemon's own
+/// design that must still surface loudly rather than retry forever.
+///
+/// `retry_delay` is threaded through (rather than reading `DAEMON_RUNTIME_RETRY_DELAY`
+/// directly) purely so tests can shrink it instead of eating real wall-clock time;
+/// every production caller passes `DAEMON_RUNTIME_RETRY_DELAY`.
+pub(crate) async fn subscribe_own_topic_with_retry<T: DaemonSignalingTransport>(
+    transport: &mut T,
+    shutdown: &mut ShutdownToken,
+    retry_delay: Duration,
+) -> Result<(), DaemonError> {
+    let mut attempt = 1u32;
+    loop {
+        match transport.subscribe_own_topic().await {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt >= SIGNALING_STARTUP_MAX_ATTEMPTS => return Err(error.into()),
+            Err(error) => {
+                tracing::warn!(
+                    reason = %error,
+                    attempt,
+                    max_attempts = SIGNALING_STARTUP_MAX_ATTEMPTS,
+                    "signaling transport unusable during startup; retrying before giving up"
+                );
+                tokio::select! {
+                    _ = sleep(retry_delay) => {}
+                    _ = shutdown.cancelled() => return Err(error.into()),
+                }
+                attempt += 1;
+            }
+        }
+    }
+}
 
 /// Ordinary (non-terminal) status is only truthful while the daemon is fully
 /// `Running` and the shared shutdown token has not been requested: before
@@ -520,4 +562,109 @@ pub(crate) async fn retry_pending_acks<T: DaemonSignalingTransport>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    use p2p_core::PeerId;
+    use p2p_signaling::SignalingError;
+
+    use super::subscribe_own_topic_with_retry;
+    use crate::ShutdownToken;
+    use crate::types::{DaemonSignalingTransport, SIGNALING_STARTUP_MAX_ATTEMPTS};
+
+    /// Fails its first `remaining_failures` subscribe attempts with a `Protocol`
+    /// error, then succeeds. `attempts` records how many calls actually happened
+    /// so tests can assert on retry counts, not just the final outcome.
+    struct FlakyTransport {
+        remaining_failures: u32,
+        attempts: Arc<AtomicU32>,
+    }
+
+    impl DaemonSignalingTransport for FlakyTransport {
+        async fn subscribe_own_topic(&mut self) -> Result<(), SignalingError> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            if self.remaining_failures > 0 {
+                self.remaining_failures -= 1;
+                Err(SignalingError::Protocol("simulated transient failure".to_owned()))
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn publish_signal(
+            &mut self,
+            _peer_id: &PeerId,
+            _topic_prefix: &str,
+            _payload: Vec<u8>,
+        ) -> Result<(), SignalingError> {
+            Ok(())
+        }
+
+        async fn poll_signal_payload(&mut self) -> Result<Option<Vec<u8>>, SignalingError> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_recovers_from_a_transient_failure_before_the_attempt_cap() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let mut transport = FlakyTransport { remaining_failures: 2, attempts: attempts.clone() };
+        let mut shutdown = ShutdownToken::new();
+
+        let result =
+            subscribe_own_topic_with_retry(&mut transport, &mut shutdown, Duration::from_millis(1))
+                .await;
+
+        assert!(result.is_ok(), "expected eventual success, got {result:?}");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            3,
+            "should stop retrying as soon as it succeeds"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_gives_up_and_returns_the_last_error_after_the_attempt_cap() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let mut transport =
+            FlakyTransport { remaining_failures: u32::MAX, attempts: attempts.clone() };
+        let mut shutdown = ShutdownToken::new();
+
+        let result =
+            subscribe_own_topic_with_retry(&mut transport, &mut shutdown, Duration::from_millis(1))
+                .await;
+
+        assert!(result.is_err(), "expected a fatal error once the attempt cap is hit");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            SIGNALING_STARTUP_MAX_ATTEMPTS,
+            "should stop at the documented attempt cap instead of retrying forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_a_retry_wait_returns_promptly_instead_of_finishing_all_attempts() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let mut transport =
+            FlakyTransport { remaining_failures: u32::MAX, attempts: attempts.clone() };
+        let mut shutdown = ShutdownToken::new();
+        shutdown.request_shutdown();
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            subscribe_own_topic_with_retry(&mut transport, &mut shutdown, Duration::from_secs(30)),
+        )
+        .await
+        .expect(
+            "an already-requested shutdown should short-circuit the retry wait, not block for it",
+        );
+
+        assert!(outcome.is_err(), "a shutdown mid-retry still surfaces the last real error");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "only the first attempt should have run");
+    }
 }
