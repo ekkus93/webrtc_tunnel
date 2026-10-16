@@ -112,6 +112,10 @@ happening.
 
 The service runs as `NT SERVICE\p2ptunnel`, not `LocalSystem`.
 
+Windows derives a virtual account's name from its service's name (`NT SERVICE\<service
+name>`), so this account exists only because the service itself is named `p2ptunnel`.
+There is exactly one such service per machine; see §6.4.
+
 Rationale: the answer daemon makes outbound connections to the broker and inbound-to-
 localhost connections to forward targets. Neither requires machine-level authority.
 Running a network-facing service that forwards RDP as `LocalSystem` grants an attacker who
@@ -329,9 +333,10 @@ Which of the two applies is chosen by the caller, never guessed — see §6.2.
 `default_config_dir()` returns the interactive path; the service is started with an
 explicit `--config` under `%ProgramData%`.
 
-The `%ProgramData%` tree must have a DACL granting only `NT SERVICE\p2ptunnel` and
-`BUILTIN\Administrators`, with inheritance enabled so the identity file is protected on
-creation rather than by a later fixup.
+The `%ProgramData%\p2ptunnel` tree must have a DACL granting only `NT SERVICE\p2ptunnel`,
+`NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`, with inheritance enabled so the
+identity file is protected on creation rather than by a later fixup. Only one service
+exists (§6.4), so one ACL on the tree root covers every `<role>` directory beneath it.
 
 #### Logging in service mode
 
@@ -385,24 +390,37 @@ So the choice is: give `p2p-answer` a supervisor-specific mode (violating the ru
 or put the SCM-specific mode in a separate binary. This spec chooses the second.
 `p2p-offer` and `p2p-answer` stay exactly what they are today on every platform.
 
-#### One binary, two registered services
+#### One binary, one registered service
 
-`p2p-service-windows` takes `--role offer|answer` and is registered **twice**, as two
-independent services, mirroring the unix arrangement of separate `p2p-offer.service` and
-`p2p-answer.service` units:
+`p2p-service-windows` takes `--role offer|answer` and is registered **once**, as a single
+service named `p2ptunnel`. The role is fixed at install time by the `--role` argument in the
+service's `binPath`:
 
 ```text
-  Service "p2ptunnel-answer"              Service "p2ptunnel-offer"
-  binPath: p2p-service-windows.exe        binPath: p2p-service-windows.exe
-           --role answer                           --role offer
-  config:  %ProgramData%\p2ptunnel\       config:  %ProgramData%\p2ptunnel\
-           answer\config.toml                      offer\config.toml
+  Service "p2ptunnel"   (runs as NT SERVICE\p2ptunnel)
+  binPath: p2p-service-windows.exe --role <answer|offer>
+  config:  %ProgramData%\p2ptunnel\<role>\config.toml
 ```
 
-Each service has its own name, its own config directory (the `<role>` element already
-present in §6.3), its own state and log directories, and its own lifecycle. Neither role is
-privileged over the other; the initial deployment happens to install only `answer`, but
-`offer` is registered the same way when needed.
+**Decision (2026-10-15):** one service with one shared virtual account, rather than one
+service per role. An earlier draft registered `p2ptunnel-answer` and `p2ptunnel-offer`, but
+it also named the account `NT SERVICE\p2ptunnel`, which cannot exist under that scheme
+(see §2.6). The single-service form was chosen to resolve that inconsistency.
+
+Consequences:
+
+- **One role per machine runs as a service.** The initial deployment installs `answer`.
+  Switching a machine to `offer` means reinstalling with the other role. Neither role is
+  privileged over the other; both go through the same wrapper and the same installer.
+- The other role can still run on the same machine as an ordinary foreground `p2p-offer` /
+  `p2p-answer` process under the interactive user's own config (§6.3). This spec only rules
+  out running *both* roles as services at once.
+- The config, state and log directories keep the `<role>` element from §6.3 and
+  `p2p_platform::service_config_dir(role)`. That keeps the Windows layout parallel to the
+  unix one, and a reinstall with the other role cannot pick up the previous role's identity
+  by accident.
+- The wrapper hosts exactly one daemon. Hosting both roles in one service process would
+  put orchestration in `p2p-service-windows`, which the next paragraph forbids.
 
 ```text
               Service Control Manager

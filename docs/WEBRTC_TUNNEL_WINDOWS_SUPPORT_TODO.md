@@ -58,6 +58,14 @@ P2 = packaging and release-matrix work
 Two open policy questions are called out inline as **DECISION REQUIRED**. Do not
 implement past them without sign-off; record the answer in this file when given.
 
+Decisions recorded so far:
+
+- **2026-10-15, service topology:** a single service named `p2ptunnel`, running as one
+  shared virtual account `NT SERVICE\p2ptunnel`, with its role fixed at install time. This
+  replaces the earlier one-service-per-role draft (`p2ptunnel-answer` / `p2ptunnel-offer`),
+  which contradicted the account name. See spec §2.6 and §6.4. P0-007 and P0-008 follow
+  from it.
+
 ---
 
 # P0 tasks
@@ -331,9 +339,12 @@ documented `bins/p2p-service-windows` exception on the model of `p2p-mobile`, or
 different crate. Record the outcome of the experiment here either way.
 
 ### Acceptance criteria
-- [ ] Registered as two independent services per spec §6.4 (`p2ptunnel-answer`,
-      `p2ptunnel-offer`), one binary with `--role`, each with its own config directory.
-- [ ] `sc.exe start` / `sc.exe stop` work for each.
+- [ ] Runs as the single service `p2ptunnel` per spec §6.4. The role is fixed at install
+      time by `--role answer|offer` in `binPath`, and the config is read from
+      `p2p_platform::service_config_dir(role)`.
+- [ ] `sc.exe start p2ptunnel` / `sc.exe stop p2ptunnel` work with either role installed.
+- [ ] The service hosts exactly one daemon. Running both roles as services at once is out
+      of scope (spec §6.4).
 - [ ] Stop is graceful: exit code 0, terminal `Closed` status, no lingering listeners.
 - [ ] Binary contains no tunnel logic.
 - [ ] `p2p-offer` and `p2p-answer` are unchanged — no supervisor-specific mode is added to
@@ -353,11 +364,18 @@ scripts/
 Install the service under `NT SERVICE\p2ptunnel` and lock down the config directory.
 
 ### Recommended implementation
-- Create the service with `sc.exe create ... obj= "NT SERVICE\p2ptunnel"`, which
+- The installer takes the role (`answer` or `offer`) as a parameter and registers the single
+  service `p2ptunnel` with `binPath= "<install dir>\p2p-service-windows.exe --role <role>"`.
+  The service name must be exactly `p2ptunnel`, because the virtual account's name comes
+  from it (spec §2.6). Installing when `p2ptunnel` already exists must fail clearly instead
+  of silently switching roles. To switch roles, uninstall and then install again.
+- Create the service with `sc.exe create p2ptunnel ... obj= "NT SERVICE\p2ptunnel"`, which
   materializes the virtual account without password management.
-- Apply a DACL to `%ProgramData%\p2ptunnel` granting only that account and
-  `BUILTIN\Administrators`, with inheritance on so the identity file is protected at
-  creation rather than by a later fixup.
+- Apply a DACL to `%ProgramData%\p2ptunnel` granting only that account,
+  `NT AUTHORITY\SYSTEM`, and `BUILTIN\Administrators`, with inheritance on below it so the
+  identity file is protected at creation rather than by a later fixup. Inheritance *from*
+  `%ProgramData%` must be disabled on that directory, or `BUILTIN\Users` read access flows
+  back in.
 - Mirror the validation style of `scripts/check-systemd-units.sh` and
   `scripts/check-launchd-plists.sh` with an equivalent Windows check script.
 - Any config the installer seeds must set `file_logging = true` and
@@ -372,6 +390,7 @@ Install the service under `NT SERVICE\p2ptunnel` and lock down the config direct
 - [ ] Log output lands in the role's log file, and is not lost to a nonexistent console.
 - [ ] Service runs with no user logged in and survives logoff.
 - [ ] Uninstall removes the service and does not leave the account or ACLs behind.
+- [ ] Re-running install while `p2ptunnel` already exists fails with a clear message.
 
 ---
 
