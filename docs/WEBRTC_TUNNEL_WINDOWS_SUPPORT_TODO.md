@@ -65,6 +65,12 @@ Decisions recorded so far:
   replaces the earlier one-service-per-role draft (`p2ptunnel-answer` / `p2ptunnel-offer`),
   which contradicted the account name. See spec §2.6 and §6.4. P0-007 and P0-008 follow
   from it.
+- **2026-10-15, P2-004 runtime DACL validation:** option 1. Use the `windows-permissions`
+  crate pinned to exactly `=0.2.4` through its safe API, with no `unsafe` anywhere in our
+  crates. The user accepted the risk that it has been unmaintained since 2021 (its last
+  release was 2021-06-29), and any panic or error inside the check counts as a rejection.
+  The basis is a research comparison of a safe-wrapper crate, a documented `unsafe`
+  exception, and shelling out to `icacls` / `Get-Acl`.
 
 ---
 
@@ -297,7 +303,12 @@ role to ASCII letters, digits, `-`, and `_`, so it cannot be walked out of its t
 
 ---
 
-## P0-007 — `p2p-service-windows` binary with SCM integration
+## P0-007 — `p2p-service-windows` binary with SCM integration — **CODE COMPLETE**
+
+**Status:** `bins/p2p-service-windows` builds, is clippy-clean, and its CLI unit tests pass.
+Run by hand, it refuses with a clear message pointing at `p2p-answer` / `p2p-offer`. The
+SCM-level acceptance criteria below (`sc.exe start` / `stop`, graceful stop) are **not yet
+verified**. They need P0-008's installer and an elevated run.
 
 ### Files
 ```text
@@ -337,6 +348,40 @@ compiles under the workspace lint.
 Only if it does not compile is there a decision to make, and then the options are: a
 documented `bins/p2p-service-windows` exception on the model of `p2p-mobile`, or a
 different crate. Record the outcome of the experiment here either way.
+
+**Outcome (2026-10-15): no exception needed.** A minimal skeleton using
+`define_windows_service!` from `windows-service` 0.8.1 compiles cleanly under the workspace
+`unsafe_code = "forbid"`. The control check was that adding a bare `unsafe {}` block to the
+same crate fails with "usage of an `unsafe` block … requested on the command line with
+`-F unsafe-code`", so the lint really was active. The macro expansion contains no `unsafe`
+in our crate.
+
+### Implementation notes
+- **Config location.** The binary resolves its config as
+  `p2p_platform::service_config_dir(role)\config.toml`. The installer's `binPath` passes only
+  `--role`, so the installer and the wrapper agree on one path through the seam instead of
+  each hardcoding it (spec §6.2). An optional `--config` override exists for diagnosis.
+- **Startup glue is duplicated, not shared.** The load → validate → `setup_logging` →
+  `report_unenforced_platform_checks` → identity → authorized-keys sequence mirrors
+  `p2p-answer` / `p2p-offer` `run()`. Factoring it into `p2p-daemon` would mean editing
+  both foreground binaries, which this task's acceptance criteria say stay unchanged. It is
+  config plumbing, not tunnel logic.
+- **Status reporting.** `StartPending` while the config and identity load, then `Running`
+  with `STOP` accepted. On `SERVICE_CONTROL_STOP` the handler only calls
+  `ShutdownToken::request_shutdown()`. The service thread then reports `StopPending`,
+  advancing the checkpoint every few seconds while sessions drain, so the wait hint stays
+  truthful. Draining is capped at 30 s, matching `TimeoutStopSec=30s` in the shipped
+  systemd units. If the daemon is still running at the cap, the service reports `Stopped`
+  with a service-specific non-zero exit code, never as a clean stop.
+- **Exit codes.** A clean stop reports `NO_ERROR`. A failure reports a service-specific
+  code by phase (config, logging, identity/keys, daemon error, drain timeout), so
+  `sc.exe query p2ptunnel` can tell them apart. A daemon that finishes on its own, with no
+  stop request, is also reported as a daemon failure rather than a clean stop, so the SCM's
+  restart-on-failure recovery actions can fire. Errors before `setup_logging` cannot reach
+  the log file. Writing them to the Windows Event Log is a known gap, left as a follow-up.
+- **Non-Windows hosts.** `windows-service` is a `cfg(windows)` target dependency, and
+  `main` on other platforms prints that the binary is Windows-only and exits 1. That keeps
+  `cargo clippy --workspace` and `cargo test --workspace` clean on Linux and macOS CI.
 
 ### Acceptance criteria
 - [ ] Runs as the single service `p2ptunnel` per spec §6.4. The role is fixed at install
@@ -556,6 +601,25 @@ one of:
 Record the decision here. Note this is genuinely optional: P0-008's install-time ACL is what
 provides the actual protection, and this task only upgrades `ENFORCES_FILE_PERMISSIONS`
 from advisory to verified.
+
+**Decided 2026-10-15: option 1, `windows-permissions = "=0.2.4"`.** See "Decisions recorded
+so far". Rules for the check:
+- Read the file's owner and DACL through `GetNamedSecurityInfo`. The returned DACL already
+  includes inherited ACEs, so do not skip them. Skip `INHERIT_ONLY` ACEs when checking a
+  directory itself.
+- Consider only *allow* ACEs, and reject conservatively without crediting deny ordering.
+- Count these as read access: `FILE_READ_DATA` (0x1), `FILE_READ_EA` (0x8),
+  `GENERIC_READ`, `GENERIC_ALL` and `MAXIMUM_ALLOWED`. Count these as write access:
+  `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_EA`, `FILE_DELETE_CHILD`, `DELETE`,
+  `WRITE_DAC`, `WRITE_OWNER`, `GENERIC_WRITE` and `GENERIC_ALL`.
+- Allowed principals are matched by SID, never by name: the file's owner, SYSTEM
+  (S-1-5-18), Administrators (S-1-5-32-544), and the SID the current process runs as.
+  Under the service, that last one is `NT SERVICE\p2ptunnel`, which the installer's ACE
+  grants. That covers an installer-created file owned by Administrators without
+  `p2p-platform` hardcoding the service name.
+- `ensure_not_writable_by_others` checks the nearest existing ancestor, as on unix.
+- Wrap the crate calls in `catch_unwind`. A panic or an error counts as a rejection,
+  reported through `PlatformError`, never silently as success.
 
 ### Acceptance criteria
 - [ ] `ENFORCES_FILE_PERMISSIONS` is `true` on Windows.

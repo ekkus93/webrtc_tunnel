@@ -11,6 +11,7 @@ members = [
   "bins/p2p-offer",
   "bins/p2p-answer",
   "bins/p2pctl",
+  "bins/p2p-service-windows",
 ]
 resolver = "2"
 
