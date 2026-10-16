@@ -538,6 +538,42 @@ Spec §1 requires both roles. Only the answer role is exercised by the initial d
 
 ---
 
+## P1-006 — Let `p2pctl` write directly into the service config directory — **DONE**
+
+### Files
+```text
+bins/p2pctl/src/main.rs
+bins/p2pctl/src/commands.rs
+bins/p2pctl/src/commands/tests.rs
+docs/WINDOWS.md, packaging/windows/install.ps1 (operator instructions)
+```
+
+### Goal
+`p2pctl keygen` and `add-authorized-key` can only write into the interactive user's
+directory. Setting up the service therefore means copying the identity into
+`%ProgramData%\p2ptunnel\<role>\`. A file that is *moved* rather than copied keeps the ACL
+it had, so this manual step is an easy way to leave the private key readable. The P0-008
+installer work flagged it.
+
+### Recommended implementation
+- `p2pctl keygen <PEER_ID> [--dir <DIR>]` writes `identity` / `identity.pub` into `DIR`
+  instead of the default config directory. The file is created in place through
+  `p2p_platform::create_private_file`, so on Windows it inherits the directory's DACL
+  at creation.
+- `p2pctl add-authorized-key <IDENTITY_PUB> [--authorized-keys <FILE>]` appends to `FILE`
+  instead of the default.
+- Both default to exactly today's behavior when the flag is omitted.
+- Update the operator instructions to use these flags instead of copy steps.
+
+### Acceptance criteria
+- [x] Without the flags, behavior and output are unchanged.
+- [x] `keygen --dir` creates the identity in the given directory, and refuses to overwrite
+      without `--force` exactly as before.
+- [x] `add-authorized-key --authorized-keys` appends to the given file with the same
+      duplicate-peer refusal.
+
+---
+
 ## P1-005 — Real-network ICE validation
 
 ### Goal

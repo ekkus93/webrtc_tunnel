@@ -75,11 +75,15 @@ native Windows PowerShell; you do not need Git Bash.
 ## 2. Generate an identity
 
 `p2pctl keygen` takes the peer id as a positional argument and writes to your interactive
-directory, `%USERPROFILE%\.config\p2ptunnel\`. It has no option to write anywhere else.
+directory, `%USERPROFILE%\.config\p2ptunnel\`, unless you pass `--dir`:
 
 ```powershell
-p2pctl keygen answer-office       # or: p2pctl keygen offer-home
+p2pctl keygen answer-office                                          # interactive
+p2pctl keygen answer-office --dir "$env:ProgramData\p2ptunnel\answer"   # service (elevated)
 ```
+
+For the service, always use `--dir`: the key is then created inside the locked-down
+directory and inherits its ACL from the start.
 
 This writes `identity` (the private keys) and `identity.pub` (the public record). It
 refuses to overwrite existing identity files unless you pass `--force`. The `peer_id`
@@ -104,13 +108,11 @@ listed:
 p2pctl add-authorized-key .\offer-home.identity.pub
 ```
 
-`add-authorized-key` only ever writes to the interactive directory. For the service, put
-the same line into `%ProgramData%\p2ptunnel\<role>\authorized_keys` yourself: an
-`authorized_keys` file is one line per peer, and each line is exactly the content of that
-peer's `identity.pub`. From an elevated PowerShell:
+For the service, point it at the service's file with `--authorized-keys`, from an elevated
+PowerShell:
 
 ```powershell
-Get-Content .\offer-home.identity.pub | Add-Content "$env:ProgramData\p2ptunnel\answer\authorized_keys"
+p2pctl add-authorized-key .\offer-home.identity.pub --authorized-keys "$env:ProgramData\p2ptunnel\answer\authorized_keys"
 ```
 
 ## 4. Write `config.toml`
@@ -308,10 +310,10 @@ at this point would fail. Finish setup first:
 1. Edit `%ProgramData%\p2ptunnel\<role>\config.toml`: `[node] peer_id`, `[broker]` `url`,
    `client_id`, `username` and `password_file`, the `[[forwards]]`, and for `offer`,
    `[peer] remote_peer_id`.
-2. Run `p2pctl keygen <peer_id>` (writes to your profile), then **copy, do not move**,
-   `%USERPROFILE%\.config\p2ptunnel\identity` to `%ProgramData%\p2ptunnel\<role>\identity`,
-   and delete the copy in your profile.
-3. Add the peer's public key to `authorized_keys` ([step 3](#3-authorize-the-peer)) and
+2. Run `p2pctl keygen <peer_id> --dir "$env:ProgramData\p2ptunnel\<role>"`, so the key is
+   created in place under the directory's ACL ([step 2](#2-generate-an-identity)).
+3. Add the peer's public key with `add-authorized-key --authorized-keys`
+   ([step 3](#3-authorize-the-peer)) and
    put the broker's CA certificate in `ca.crt`, both in the same directory.
 4. Run `p2pctl check-config --config "$env:ProgramData\p2ptunnel\<role>\config.toml"` from an
    elevated shell.
@@ -465,9 +467,6 @@ standard user. Use an elevated shell.
   not run on Windows, and the Service Control Manager test needs an elevated run.
 - **Early startup failures are visible only as an exit code**; nothing is written to the
   Event Log.
-- **Keygen and authorization are interactive-profile only.** `p2pctl keygen` and
-  `add-authorized-key` have no option to target the service directory, so setting up the
-  service means copying files as in [step 6](#6-install-the-service).
 - **Automatic restart after a failure is not yet observed on a real install.** By default
   Windows runs restart-on-failure actions only when the service process dies without
   reporting `STOPPED`. The wrapper reports every failure as `STOPPED` with a service-specific

@@ -270,13 +270,10 @@ Write-Host @"
 Before starting it, finish $($layout.Config):
   1. [node] peer_id, [broker] url / client_id / username / password_file,
      [[forwards]], and for offer [peer] remote_peer_id: replace the example values.
-  2. Identity: run ``p2pctl keygen <peer_id>`` (it writes to YOUR profile,
-     %USERPROFILE%\.config\p2ptunnel\), then COPY (not move) the identity file to
-       $($layout.Identity)
-     so it inherits this directory's DACL, and delete the copy in your profile.
-     A moved file keeps its old ACL.
-  3. Put the peer's public key in $($layout.AuthorizedKeys)
-     and the broker CA certificate in $($layout.CaFile).
+  2. Identity, created in place so it inherits this directory's DACL:
+       p2pctl keygen <peer_id> --dir "$($layout.RoleDir)"
+  3. Authorize the peer, and put the broker CA certificate in $($layout.CaFile):
+       p2pctl add-authorized-key <peer.identity.pub> --authorized-keys "$($layout.AuthorizedKeys)"
   4. p2pctl check-config --config "$($layout.Config)"
   5. sc.exe start $P2pServiceName
      Logs: $($layout.LogFile)

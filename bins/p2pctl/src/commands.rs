@@ -15,9 +15,13 @@ use p2p_platform::{PlatformError, create_private_file, default_config_dir};
 #[cfg(test)]
 mod tests;
 
-pub(crate) fn keygen(peer_id: &str, force: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn keygen(
+    peer_id: &str,
+    force: bool,
+    dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let generated = generate_identity(peer_id)?;
-    let config_dir = default_config_dir()?;
+    let config_dir = explicit_or_default(dir, default_config_dir)?;
     fs::create_dir_all(&config_dir)?;
 
     let (identity_path, identity_pub_path, replaced) =
@@ -61,9 +65,13 @@ fn render_fingerprint(public_identity: &PublicIdentity) -> String {
     format!("peer_id={}\nfingerprint={kid}\n", public_identity.peer_id)
 }
 
-pub(crate) fn add_authorized_key(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn add_authorized_key(
+    path: &Path,
+    authorized_keys: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let public_identity = load_public_identity(path)?;
-    let authorized_keys_path = default_config_dir()?.join("authorized_keys");
+    let authorized_keys_path =
+        explicit_or_default(authorized_keys, || Ok(default_config_dir()?.join("authorized_keys")))?;
     append_authorized_key(&authorized_keys_path, &public_identity)?;
     println!("updated {}", authorized_keys_path.display());
     Ok(())
@@ -194,5 +202,17 @@ fn resolve_config_path(
     match path {
         Some(path) => Ok(path.to_path_buf()),
         None => Ok(default_config_dir()?.join("config.toml")),
+    }
+}
+
+/// An explicitly given path as-is, otherwise the lazily computed default, so an
+/// explicit flag never consults the environment.
+fn explicit_or_default(
+    explicit: Option<&Path>,
+    default: impl FnOnce() -> Result<PathBuf, PlatformError>,
+) -> Result<PathBuf, PlatformError> {
+    match explicit {
+        Some(path) => Ok(path.to_path_buf()),
+        None => default(),
     }
 }

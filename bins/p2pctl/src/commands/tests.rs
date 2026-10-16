@@ -9,8 +9,8 @@ use p2p_daemon::{DaemonStatus, SessionStatus};
 use p2p_platform::PlatformError;
 
 use super::{
-    append_authorized_key, check_config, fingerprint, render_fingerprint, render_status,
-    resolve_config_path, write_identity_files,
+    append_authorized_key, check_config, explicit_or_default, fingerprint, render_fingerprint,
+    render_status, resolve_config_path, write_identity_files,
 };
 
 /// Renders a path for embedding in a hand-written TOML basic string. `Path::display()`
@@ -581,4 +581,21 @@ fn missing_config_flag_without_home_yields_a_normal_error_not_a_panic() {
         resolve_config_path(None, || Err(PlatformError::Unresolved("HOME is not set".to_owned())))
             .expect_err("an unresolvable default must error, not panic");
     assert!(error.to_string().contains("HOME is not set"));
+}
+
+#[test]
+fn explicit_output_path_never_consults_the_default() {
+    let explicit = Path::new("C:/ProgramData/p2ptunnel/answer");
+    let resolved = explicit_or_default(Some(explicit), || {
+        unreachable!("an explicit --dir / --authorized-keys must not consult the default")
+    })
+    .expect("explicit path resolves");
+    assert_eq!(resolved, explicit);
+}
+
+#[test]
+fn missing_output_flag_uses_the_default() {
+    let default = PathBuf::from("/home/ctl-user/.config/p2ptunnel");
+    let resolved = explicit_or_default(None, || Ok(default.clone())).expect("default resolves");
+    assert_eq!(resolved, default);
 }

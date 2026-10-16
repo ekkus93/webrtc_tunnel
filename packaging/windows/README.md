@@ -108,14 +108,14 @@ The script prints what is left to do:
 
 1. In `config.toml`, replace `[node] peer_id`, `[broker]` `url`, `client_id`, `username`
    and `password_file`, the `[[forwards]]`, and for `offer`, `[peer] remote_peer_id`.
-2. **Identity.** `p2pctl keygen <peer_id>` has no output-directory option. It writes to
-   *your* profile, `%USERPROFILE%\.config\p2ptunnel\identity`. **Copy** that file (do not
-   move it) to `%ProgramData%\p2ptunnel\<role>\identity`, then delete the copy in your
-   profile. A copied file is created fresh in the directory and inherits its DACL. A moved
-   file keeps the ACL it had before. If you moved it by mistake, run
-   `icacls "%ProgramData%\p2ptunnel\<role>\identity" /reset`.
-3. Put the peer's public key in `authorized_keys`, and the broker's CA certificate in
-   `ca.crt`, in the same directory.
+2. **Identity.** Create it in place, so it inherits the directory's DACL from the moment
+   it exists:
+   `p2pctl keygen <peer_id> --dir "%ProgramData%\p2ptunnel\<role>"`.
+   Don't generate it in your profile and *move* it in: a moved file keeps the ACL it had
+   before. If you did, run `icacls "%ProgramData%\p2ptunnel\<role>\identity" /reset`.
+3. Authorize the peer with
+   `p2pctl add-authorized-key <peer.identity.pub> --authorized-keys "%ProgramData%\p2ptunnel\<role>\authorized_keys"`,
+   and put the broker's CA certificate in `ca.crt` in the same directory.
 4. Run `p2pctl check-config --config "%ProgramData%\p2ptunnel\<role>\config.toml"`.
 5. Run `sc.exe start p2ptunnel`.
 
