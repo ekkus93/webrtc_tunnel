@@ -471,7 +471,16 @@ against it, forwarding one port. This can precede the automated version in P2-00
 
 ---
 
-## P1-002 — Windows shutdown lifecycle test
+## P1-002 — Windows shutdown lifecycle test — **CODE COMPLETE**
+
+**Status:** `bins/p2p-service-windows/tests/scm_shutdown.rs` registers a throwaway
+`p2ptunnel-test-<pid>` service, never `p2ptunnel` itself, with `--role offer` and a temp
+config. A minimal in-process fake TLS MQTT broker keeps the daemon alive: with an
+unreachable broker it exits after about 24 s and never binds its listener. The test then
+asserts RUNNING, a `listening` forward, a real `SERVICE_CONTROL_STOP`, a clean exit code, a
+final `closed` status, and that the port is released. It skips on access denied unless
+`P2P_REQUIRE_SCM_TEST=1` is set. It has **not yet run elevated**. Hosted `windows-latest`
+runners are elevated, so it will likely run for real in CI.
 
 ### Files
 ```text
@@ -489,7 +498,7 @@ listeners — but drive it through `SERVICE_CONTROL_STOP` rather than a signal.
 
 ### Acceptance criteria
 - [ ] Test is `#![cfg(windows)]` and runs in the `test-windows` CI job.
-- [ ] Asserts the same truthfulness properties as the unix test.
+- [x] Asserts the same truthfulness properties as the unix test. (Written; not yet executed.)
 
 ---
 
@@ -593,14 +602,22 @@ unverified.
 
 # P2 tasks
 
-## P2-001 — Windows packaging
+## P2-001 — Windows packaging — **CODE COMPLETE, NOT BUILT**
+
+**Status:** `packaging/windows/wix/` (`Product.wxs`, `build-msi.ps1`, `README.md`) defines a
+WiX v4+ MSI. It installs the binaries and runs the reviewed `install.ps1` / `uninstall.ps1`
+as deferred elevated custom actions. `ROLE=answer|offer` is required and is stored for
+upgrades and repairs; `REMOVEDATA=1` is optional. It has never been built, because WiX isn't
+installed here. **Open decision for the user:** WiX v6+ is under the OSMF EULA, so
+`build-msi.ps1` passes the EULA acceptance through only with an opt-in `-AcceptEula`, and
+no CI build step exists.
 
 ### Goal
 An installable artifact, matching the intent of `packaging/debian` and `packaging/macos`.
 
 ### Acceptance criteria
 - [ ] Produces a signed-installable package that performs P0-008's account and ACL setup.
-- [ ] A documented uninstall path.
+- [x] A documented uninstall path. (`packaging/windows/wix/README.md`; `uninstall.ps1`.)
 
 ---
 
@@ -640,7 +657,7 @@ is covered in CI.
 
 ---
 
-## P2-004 — Runtime DACL validation
+## P2-004 — Runtime DACL validation — **DONE**
 
 ### Goal
 Defense in depth on top of P0-008's install-time ACL: verify at load time that no ACE
@@ -686,6 +703,8 @@ so far". Rules for the check:
   reported through `PlatformError`, never silently as success.
 
 ### Acceptance criteria
-- [ ] `ENFORCES_FILE_PERMISSIONS` is `true` on Windows.
-- [ ] A deliberately world-readable identity file is rejected at load.
-- [ ] The P0-005 startup warning is removed as no longer applicable.
+- [x] `ENFORCES_FILE_PERMISSIONS` is `true` on Windows.
+- [x] A deliberately world-readable identity file is rejected at load. (Unit tests in
+      `p2p-platform`'s `windows.rs` and `p2p-crypto/tests/identity_parsing.rs`.)
+- [x] The P0-005 startup warning is no longer emitted on Windows. The function stays, and
+      is silent whenever the constant is `true`.

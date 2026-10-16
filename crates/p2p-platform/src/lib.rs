@@ -28,9 +28,9 @@ mod imp;
 /// that [`ensure_private_file_permissions`] and [`ensure_not_writable_by_others`]
 /// describe.
 ///
-/// `false` means those two functions are advisory no-ops here and the
-/// protection has to come from somewhere else (on Windows: a restrictive DACL
-/// on the config directory, applied at install time). Callers that promise
+/// `true` on unix (mode bits) and on Windows (DACL inspection). `false` would
+/// mean those two functions are advisory no-ops and the protection has to come
+/// from somewhere else. Callers that promise
 /// these guarantees to a user should surface this rather than imply enforcement
 /// that is not happening.
 pub const ENFORCES_FILE_PERMISSIONS: bool = imp::ENFORCES_FILE_PERMISSIONS;
@@ -109,7 +109,8 @@ pub fn ensure_not_writable_by_others(path: &Path) -> Result<(), PlatformError> {
 /// the process umask -- and `0600` is re-applied afterwards, because a creation
 /// mode does not affect a file that already existed. On Windows the file
 /// inherits its directory's DACL, which is the protection there (the service
-/// installer restricts the config directory); see [`ENFORCES_FILE_PERMISSIONS`].
+/// installer restricts the config directory), and
+/// [`ensure_private_file_permissions`] rejects it at load if that DACL is loose.
 pub fn create_private_file(path: &Path, contents: &[u8]) -> Result<(), PlatformError> {
     imp::create_private_file(path, contents)
 }

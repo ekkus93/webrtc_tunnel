@@ -8,6 +8,11 @@ rust-version.workspace = true
 [dependencies]
 thiserror.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# Safe wrappers over the Win32 security APIs, for the runtime DACL checks
+# (P2-004). Pinned exactly: unmaintained since 2021, risk accepted.
+windows-permissions = "=0.2.4"
+
 [dev-dependencies]
 tempfile = "3.19.1"
 

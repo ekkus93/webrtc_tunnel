@@ -45,6 +45,19 @@ fn identity_file_rejects_weak_permissions() {
             .expect("set permissions");
         assert!(IdentityFile::from_file(&path).is_err());
     }
+    #[cfg(windows)]
+    {
+        // The Windows counterpart of 0644: an ACE granting Everyone read. Added
+        // with `icacls` by SID so it does not depend on the system language.
+        let status = std::process::Command::new("icacls")
+            .arg(&path)
+            .args(["/grant", "*S-1-1-0:R"])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("icacls should run");
+        assert!(status.success(), "icacls failed to grant Everyone read on {path:?}");
+        assert!(IdentityFile::from_file(&path).is_err());
+    }
 }
 
 #[test]

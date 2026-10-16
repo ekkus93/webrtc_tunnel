@@ -108,6 +108,10 @@ The rule going forward:
 these guarantees to a user must consult it rather than implying enforcement that is not
 happening.
 
+Status: since P2-004, Windows enforces both checks by inspecting DACLs, so the constant is
+`true` on every supported platform. The startup warning (P0-005) is therefore silent today.
+It stays in place for any future platform that cannot enforce the checks.
+
 ### 2.6 The Windows service runs under a virtual account
 
 The service runs as `NT SERVICE\p2ptunnel`, not `LocalSystem`.
@@ -447,9 +451,9 @@ foreground binaries and the Android runtime call.
 
 | Concern | Unix | Windows |
 |---|---|---|
-| Identity file protection | `0600` mode bits, verified at load | Restrictive DACL applied at install; inherited on creation |
-| Path not writable by others | mode bit `0o002` check | Directory DACL scoped to service account |
-| Enforcement reported | `ENFORCES_FILE_PERMISSIONS = true` | `false` until runtime DACL validation is approved |
+| Identity file protection | `0600` mode bits, verified at load | Restrictive DACL applied at install, inherited on creation, and verified at load: no allow ACE grants read or write outside owner / SYSTEM / Administrators / the current process's SID |
+| Path not writable by others | mode bit `0o002` check | DACL check on the path or its nearest existing ancestor, same allowlist, write rights only |
+| Enforcement reported | `ENFORCES_FILE_PERMISSIONS = true` | `true` since P2-004 (`windows-permissions =0.2.4`, safe API) |
 | Wire identity | ed25519 — **identical** | ed25519 — **identical** |
 
 The fail-closed knobs in `AppConfig::validate` remain fail-closed on every platform. They

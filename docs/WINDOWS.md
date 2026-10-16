@@ -225,24 +225,26 @@ shutdown. `--broker-url` overrides the broker URL, as on other platforms.
 ## Security model
 
 The wire protocol and identity format are identical on every platform. Only how the
-private key is protected on the local disk differs, and on Windows that protection is
-weaker in one specific way you should know about.
+private key's on-disk protection is expressed differs: POSIX mode bits on Unix, NTFS ACLs
+on Windows.
 
-**On Unix**, the daemon verifies at startup that `identity` is mode `0600` and that
-configured paths are not world-writable, and refuses to start otherwise. This is what
-`security.refuse_world_readable_identity` and `security.refuse_world_writable_paths` mean,
-and the config schema refuses to load if you turn them off.
+`security.refuse_world_readable_identity` and `security.refuse_world_writable_paths` are
+checked at startup on every platform, and the config schema refuses to load if you turn
+them off.
 
-**On Windows these two checks are not enforced.** `p2p_platform::ENFORCES_FILE_PERMISSIONS`
-is `false`; the functions behind the checks do nothing yet. Checking means walking an NTFS
-ACL. That work is [TODO P2-004](WEBRTC_TUNNEL_WINDOWS_SUPPORT_TODO.md), which will use a
-safe-API crate so the workspace's `unsafe_code = "forbid"` still holds. The config schema still insists
-both settings are `true`, so leave them `true`; they just do not run. Rather than let that
-look like a pass, the daemon logs one warning at startup, once per process, saying the
-checks "did not run, so they did not pass either".
+- **On Unix**, `identity` must be mode `0600` or stricter, and configured paths must not be
+  world-writable.
+- **On Windows**, the daemon reads each path's owner and ACL. `identity` is refused if any
+  ACE grants read or write access to anyone other than its owner, `SYSTEM`,
+  `Administrators`, or the account the daemon runs as (`NT SERVICE\p2ptunnel` under the
+  service). The other configured paths, and the nearest existing parent of a path that
+  doesn't exist yet, are refused if anyone else can write to them. Inherited ACEs count.
+  So does a file owned by a broad group such as `Users`, which is refused because its owner
+  could rewrite the ACL. Any error while reading the ACL is a refusal, never a pass. The
+  rules are in [TODO P2-004](WEBRTC_TUNNEL_WINDOWS_SUPPORT_TODO.md).
 
-What protects the identity on Windows is the **ACL on its directory**, set once at install
-time:
+That makes the ACL on the identity's directory what decides whether the daemon starts.
+It is set once, at install time:
 
 - **Service tree, `%ProgramData%\p2ptunnel`.** `install.ps1` removes inheritance from
   `%ProgramData%` (which would otherwise let `BUILTIN\Users` read) and grants only
@@ -254,13 +256,12 @@ time:
 - **Interactive tree, `%USERPROFILE%\.config\p2ptunnel`.** Your profile's default ACL already
   limits it to you, SYSTEM and Administrators. Nothing more is done.
 
-**What this means for a hand-made config directory.** If you create a directory yourself
-anywhere other than your profile, for example `C:\p2p`, or a new folder under
-`%ProgramData%`, it gets whatever ACL it inherits, the daemon will not check it, and the
-only trace is the startup warning. Under `%ProgramData%` that commonly includes read
-access for every local user, and the private key would be readable by all of them. Either
-use the installer's tree, or lock the directory down before you put the key in it, for
-example:
+**What this means for a hand-made config directory.** A directory you create yourself
+outside your profile gets whatever ACL it inherits, and the daemon will **refuse to start**
+if that ACL is loose. A new folder under `%ProgramData%` usually lets every local user read
+it, and one directly under `C:\` gives Authenticated Users modify access. Expect an error
+naming the path and the SID that has too much access. Either use the installer's tree, or
+lock the directory down before you put the key in it, for example:
 
 ```powershell
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -373,9 +374,8 @@ Get-Content "$env:ProgramData\p2ptunnel\answer\state\log\p2ptunnel.log" -Wait
 ```
 
 Only administrators can read the file. Near the top of each run you will see a
-`p2ptunnel service starting` line and the one-time "file permission checks are NOT
-enforced" warning. That warning is expected on Windows; see
-[Security model](#security-model).
+`p2ptunnel service starting` line. A refused identity or path shows up as exit code 3 or
+1, with the offending SID in the message; see [Security model](#security-model).
 Service start, stop and failure events also appear in the Windows `System` event log
 under the source `Service Control Manager`.
 
@@ -460,9 +460,9 @@ standard user. Use an elevated shell.
   binary and installer in TODO P0-007 and P0-008 (run as the virtual account, stop
   gracefully, survive logoff, the identity unreadable to a standard user) are still open
   there. The installer README lists commands for each; run them on your machine.
-- **No runtime permission validation** (TODO P2-004). The two `refuse_world_*` checks do not
-  run, and the startup warning stays until that lands. Protection is the install-time ACL
-  only.
+- **Runtime ACL checks rely on an old crate.** They use `windows-permissions` 0.2.4, pinned
+  exactly; it has been unmaintained since 2021. Any panic or error inside it is treated as a
+  refusal.
 - **No MSI or other installer package** (P2-001). Tagged releases are set up to publish a
   Windows `.zip` with the binaries, the installer scripts and the example configs (P2-002),
   but that release job has not run yet.
