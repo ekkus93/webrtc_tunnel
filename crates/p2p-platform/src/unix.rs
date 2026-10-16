@@ -15,6 +15,27 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from)
 }
 
+pub(crate) fn default_config_dir() -> Result<PathBuf, PlatformError> {
+    let home = home_dir().ok_or_else(|| {
+        PlatformError::Unresolved(
+            "HOME is not set, so the default config directory cannot be resolved".to_string(),
+        )
+    })?;
+    Ok(home.join(".config").join("p2ptunnel"))
+}
+
+pub(crate) fn service_config_dir(role: &str) -> Result<PathBuf, PlatformError> {
+    // These are not new conventions -- they are the paths the shipped supervisor
+    // definitions already pass with `--config` (`packaging/systemd/*.service`,
+    // `packaging/launchd/*.plist`). Naming them here keeps the wrapper and the
+    // installer from each hardcoding their own copy.
+    #[cfg(target_os = "macos")]
+    let root = PathBuf::from("/Library/Application Support/P2PTunnel");
+    #[cfg(not(target_os = "macos"))]
+    let root = PathBuf::from("/etc/p2ptunnel");
+    Ok(root.join(role))
+}
+
 pub(crate) fn ensure_private_file_permissions(path: &Path) -> Result<(), PlatformError> {
     let metadata = fs::metadata(path).map_err(|error| PlatformError::io(path, error))?;
     let mode = metadata.permissions().mode() & 0o777;

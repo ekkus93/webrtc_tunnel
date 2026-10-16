@@ -283,9 +283,28 @@ pub fn home_dir() -> Option<PathBuf>;                                           
 pub fn ensure_private_file_permissions(path: &Path) -> Result<(), PlatformError>; // implemented
 pub fn ensure_not_writable_by_others(path: &Path) -> Result<(), PlatformError>;   // implemented
 
-pub fn default_config_dir() -> Result<PathBuf, PlatformError>;                  // TODO P0-006
+pub fn default_config_dir() -> Result<PathBuf, PlatformError>;                  // implemented
+pub fn service_config_dir(role: &str) -> Result<PathBuf, PlatformError>;        // implemented
 pub fn create_private_file(path: &Path, contents: &[u8]) -> Result<(), PlatformError>; // TODO P0-004
 ```
+
+`default_config_dir()` resolves the **interactive user** layout only. It never returns a
+service path, and it never tries to detect whether it is running as a service. The two
+layouts are selected by the caller, not sniffed:
+
+* An explicit `--config` wins over everything.
+* A service supervisor always passes `--config` explicitly. This is not a Windows-specific
+  concession; it is what the existing packaging already does on every platform
+  (`packaging/systemd/p2p-answer.service` passes `/etc/p2ptunnel/answer/config.toml`,
+  `packaging/launchd/com.p2ptunnel.answer.plist` passes
+  `/Library/Application Support/P2PTunnel/answer/config.toml`).
+* `service_config_dir(role)` exists so the supervisor and the installer agree on that path
+  without hardcoding it in two places. It is a path constructor, not a detector.
+
+Deciding the layout by inspecting the process token or the `USERNAME`/`USERDOMAIN`
+environment would be a guess, and a wrong guess means a service reading a config out of a
+user-writable directory. Requiring the caller to be explicit removes that failure mode
+entirely.
 
 `home_dir()` reads `HOME` on unix. On Windows it prefers `USERPROFILE` and only falls back
 to `HOME`, because POSIX-emulation shells (Git Bash, MSYS, Cygwin) set `HOME` to a
@@ -305,6 +324,10 @@ Interactive user:
   config     %USERPROFILE%\.config\p2ptunnel\config.toml
   identity   %USERPROFILE%\.config\p2ptunnel\identity
 ```
+
+Which of the two applies is chosen by the caller, never guessed — see §6.2.
+`default_config_dir()` returns the interactive path; the service is started with an
+explicit `--config` under `%ProgramData%`.
 
 The `%ProgramData%` tree must have a DACL granting only `NT SERVICE\p2ptunnel` and
 `BUILTIN\Administrators`, with inheritance enabled so the identity file is protected on

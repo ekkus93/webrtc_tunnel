@@ -45,6 +45,48 @@ pub fn home_dir() -> Option<PathBuf> {
     imp::home_dir()
 }
 
+/// The config directory an *interactive user* gets when no `--config` was given.
+///
+/// `$HOME/.config/p2ptunnel` on unix, `%USERPROFILE%\.config\p2ptunnel` on
+/// Windows.
+///
+/// This never returns a service path and never tries to work out whether it is
+/// running as a service. Supervisors pass `--config` explicitly on every
+/// platform -- the shipped systemd unit and launchd plist both already do -- so
+/// there is nothing to detect. Guessing from the process token or from
+/// `USERNAME` would mean a mis-guess silently pointing a service at a
+/// user-writable config, which is exactly the failure this avoids.
+pub fn default_config_dir() -> Result<PathBuf, PlatformError> {
+    imp::default_config_dir()
+}
+
+/// The config directory a *supervised service* uses for `role`.
+///
+/// `%ProgramData%\p2ptunnel\<role>` on Windows; on unix, the directory the
+/// shipped units already name (`/etc/p2ptunnel/<role>`, or
+/// `/Library/Application Support/P2PTunnel/<role>` on macOS).
+///
+/// This is a path constructor, not a detector: it exists so the service wrapper
+/// and the installer agree on one path instead of hardcoding the same string in
+/// two places.
+pub fn service_config_dir(role: &str) -> Result<PathBuf, PlatformError> {
+    validate_role(role)?;
+    imp::service_config_dir(role)
+}
+
+/// `role` becomes a path component, so keep it to a shape that cannot climb out
+/// of the service tree or mean something exotic to the filesystem.
+fn validate_role(role: &str) -> Result<(), PlatformError> {
+    let well_formed =
+        !role.is_empty() && role.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !well_formed {
+        return Err(PlatformError::Unresolved(format!(
+            "service role '{role}' must be a non-empty name of ASCII letters, digits, '-', or '_'"
+        )));
+    }
+    Ok(())
+}
+
 /// Rejects a private key file that other users on this machine can read.
 ///
 /// A no-op on platforms where [`ENFORCES_FILE_PERMISSIONS`] is `false`.
@@ -66,6 +108,10 @@ pub enum PlatformError {
     /// The path exists but its permissions are weaker than required.
     #[error("{0}")]
     Permission(String),
+    /// A well-known directory could not be determined from the environment, or
+    /// the caller asked for one by a name that is not well-formed.
+    #[error("{0}")]
+    Unresolved(String),
     /// The path could not be inspected.
     #[error("failed to inspect '{path}': {source}")]
     Io {
@@ -95,6 +141,32 @@ mod tests {
         // wrong paths on Windows.
         if let Some(home) = home_dir() {
             assert!(home.is_absolute(), "home_dir() returned a non-absolute path: {home:?}");
+        }
+    }
+
+    #[test]
+    fn default_config_dir_is_under_the_home_directory() {
+        // Skipped rather than failed when the environment names no home: that is
+        // a property of the test host, not of the code under test.
+        let Some(home) = home_dir() else { return };
+        let config_dir = default_config_dir().expect("home is set, so this must resolve");
+        assert_eq!(config_dir, home.join(".config").join("p2ptunnel"));
+    }
+
+    #[test]
+    fn service_config_dir_ends_with_the_role() {
+        let dir = service_config_dir("answer").expect("service config dir should resolve");
+        assert!(dir.is_absolute(), "service config dir must be absolute, got {dir:?}");
+        assert_eq!(dir.file_name().and_then(|role| role.to_str()), Some("answer"));
+    }
+
+    #[test]
+    fn service_config_dir_rejects_roles_that_would_escape_the_tree() {
+        for role in ["", "..", "../offer", "answer/../..", r"answer\..", "an swer"] {
+            assert!(
+                service_config_dir(role).is_err(),
+                "role {role:?} should have been rejected as a path component",
+            );
         }
     }
 

@@ -50,6 +50,31 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+pub(crate) fn default_config_dir() -> Result<PathBuf, PlatformError> {
+    let home = home_dir().ok_or_else(|| {
+        PlatformError::Unresolved(
+            "neither USERPROFILE nor HOME is set, so the default config directory cannot be \
+             resolved"
+                .to_string(),
+        )
+    })?;
+    Ok(home.join(".config").join("p2ptunnel"))
+}
+
+pub(crate) fn service_config_dir(role: &str) -> Result<PathBuf, PlatformError> {
+    // `%ProgramData%` rather than `%APPDATA%`: the service account is not a
+    // logged-on user and has no roaming profile. This is the tree P0-008 locks
+    // down with a DACL, which is what actually protects the identity file here.
+    let program_data =
+        env::var_os("ProgramData").filter(|value| !value.is_empty()).ok_or_else(|| {
+            PlatformError::Unresolved(
+                "ProgramData is not set, so the service config directory cannot be resolved"
+                    .to_string(),
+            )
+        })?;
+    Ok(PathBuf::from(program_data).join("p2ptunnel").join(role))
+}
+
 pub(crate) fn ensure_private_file_permissions(_path: &Path) -> Result<(), PlatformError> {
     // See the module docs: not enforceable without DACL inspection.
     // `ENFORCES_FILE_PERMISSIONS` is `false` so callers can report this honestly.
@@ -73,12 +98,21 @@ mod tests {
         // exists to avoid.
         if let Some(home) = home_dir() {
             assert!(
-                home.components().next().is_some_and(|first| matches!(
-                    first,
-                    std::path::Component::Prefix(_)
-                )),
+                home.components()
+                    .next()
+                    .is_some_and(|first| matches!(first, std::path::Component::Prefix(_))),
                 "home_dir() must return a path with a drive prefix, got {home:?}",
             );
         }
+    }
+
+    #[test]
+    fn service_config_dir_lives_under_program_data() {
+        let Some(program_data) = env::var_os("ProgramData").filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        let dir = service_config_dir("answer").expect("ProgramData is set, so this must resolve");
+        assert_eq!(dir, PathBuf::from(program_data).join("p2ptunnel").join("answer"));
     }
 }

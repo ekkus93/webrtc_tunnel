@@ -206,7 +206,7 @@ At daemon startup, if `!p2p_platform::ENFORCES_FILE_PERMISSIONS`, emit a single
 
 ---
 
-## P0-006 — Windows config and state directory layout
+## P0-006 — Windows config and state directory layout — **DONE**
 
 **P0-004 depends on this task** for `default_config_dir()`. Consider doing it first.
 
@@ -214,21 +214,41 @@ At daemon startup, if `!p2p_platform::ENFORCES_FILE_PERMISSIONS`, emit a single
 ```text
 crates/p2p-platform/src/windows.rs
 crates/p2p-platform/src/unix.rs
-docs/WEBRTC_TUNNEL_WINDOWS_SUPPORT_SPEC.md  (section 6.3)
+docs/WEBRTC_TUNNEL_WINDOWS_SUPPORT_SPEC.md  (sections 6.2, 6.3)
 ```
 
 ### Goal
 Implement `default_config_dir()` per spec §6.3: `%ProgramData%\p2ptunnel\<role>\` for the
 service, `%USERPROFILE%\.config\p2ptunnel\` for an interactive user.
 
-### Recommended implementation
-Select the service path when running under the service account, otherwise the user path.
-Prefer an explicit `--config` argument over either; do not guess when the caller was
-explicit.
+### Design decision — the layout is chosen by the caller, not detected
+
+The original sketch said "select the service path when running under the service account".
+That was dropped. Detecting the service account without `unsafe` means sniffing
+`USERNAME`/`USERDOMAIN`, and a wrong guess means a service silently reading its config out
+of a user-writable directory — a security regression, not a cosmetic one.
+
+The existing packaging already establishes the correct pattern: **supervisors pass
+`--config` explicitly on every platform.** `packaging/systemd/p2p-answer.service` passes
+`/etc/p2ptunnel/answer/config.toml`; `packaging/launchd/com.p2ptunnel.answer.plist` passes
+`/Library/Application Support/P2PTunnel/answer/config.toml`. Neither relies on a default.
+Windows follows suit, so this is consistency with the existing design rather than an
+exception to it.
+
+The seam therefore exposes two path constructors and no detector:
+
+- `default_config_dir()` — interactive user only.
+- `service_config_dir(role)` — the supervisor/installer path, so P0-007 and P0-008 agree on
+  it without hardcoding the same string twice.
+
+### Status
+Complete. Both functions exist on both platforms, with `PlatformError::Unresolved` for the
+"environment does not name a home / `%ProgramData%`" case. `service_config_dir` restricts a
+role to ASCII letters, digits, `-`, and `_`, so it cannot be walked out of its tree.
 
 ### Acceptance criteria
-- [ ] Both layouts resolve correctly and are covered by unit tests.
-- [ ] Unix behavior is unchanged.
+- [x] Both layouts resolve correctly and are covered by unit tests.
+- [x] Unix behavior is unchanged.
 
 ---
 
@@ -243,6 +263,7 @@ crates/p2p-daemon/src/process_signal.rs
 ### Goal
 Host `run_answer_daemon` / `run_offer_daemon` under the Service Control Manager, with
 `SERVICE_CONTROL_STOP` driving the existing `ShutdownToken`.
+crates/p2p-platform/src/lib.rs
 
 ### Recommended implementation
 - SCM registration, control handler, and `SERVICE_STATUS` reporting live only in this
