@@ -63,7 +63,7 @@ jobs:
             fi
           fi
 
-          rust_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/|bins/|crates/|scripts/|tests/|docs/examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$|clippy\.toml$|rustfmt\.toml$|\.rustfmt\.toml$)'
+          rust_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/|bins/|crates/|scripts/|tests/|docs/examples/|packaging/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$|clippy\.toml$|rustfmt\.toml$|\.rustfmt\.toml$)'
           android_path_pattern='^(\.cargo/|\.github/actions/|\.github/workflows/|android/|bins/|crates/|tests/|Cargo\.toml$|Cargo\.lock$|rust-toolchain(\.toml)?$)'
 
           detect_paths() {
@@ -95,6 +95,7 @@ jobs:
           assert_flags "scripts/check-systemd-units.sh" true false
           assert_flags "tests/e2e/android_tunnel_e2e.sh" true true
           assert_flags "docs/examples/offer-config.toml" true false
+          assert_flags "packaging/windows/install.ps1" true false
           assert_flags "android/app/src/main/AndroidManifest.xml" false true
           assert_flags ".github/actions/example/action.yml" true true
           assert_flags ".github/workflows/rc-diagnostics.yml" true true
@@ -256,9 +257,34 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features
+      - name: Check Windows service scripts
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-service-scripts.ps1
+      # TEMPORARY: `continue-on-error` is set on this one step only, because the
+      # native-mosquitto broker E2E has never run on a hosted windows-latest runner
+      # (Chocolatey install, loopback TLS, and runner firewall behaviour are all
+      # unproven there). The user explicitly relaxed gating for this step while it
+      # is being proven. Once it has passed on the hosted runner, remove
+      # `continue-on-error` so it becomes a required gate like every other step.
+      - name: Native mosquitto TLS broker E2E (temporarily non-blocking)
+        continue-on-error: true
+        shell: pwsh
+        env:
+          P2P_REQUIRE_BROKER_TEST: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install mosquitto -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install mosquitto failed ($LASTEXITCODE)" }
+          $mosquittoDir = Join-Path $env:ProgramFiles 'mosquitto'
+          $env:P2P_MOSQUITTO_BIN = Join-Path $mosquittoDir 'mosquitto.exe'
+          if (-not (Test-Path $env:P2P_MOSQUITTO_BIN)) { throw "mosquitto.exe not found at $env:P2P_MOSQUITTO_BIN" }
+          $env:PATH = "$mosquittoDir;$env:PATH"
+          cargo test -p p2p-daemon --test native_broker_tunnel -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "native_broker_tunnel failed ($LASTEXITCODE)" }
       # Deliberately narrower than the Linux/macOS jobs. Not run here:
       #   - the Docker broker E2E, because windows-latest runners cannot
-      #     reliably host Linux containers;
+      #     reliably host Linux containers (the native-mosquitto step above
+      #     covers the same real-broker tunnel path without Docker);
       #   - the real-process signal lifecycle test, because Windows has no
       #     SIGINT/SIGTERM -- `process_signal_shutdown.rs` is `#![cfg(unix)]`.
       #     A Windows equivalent driven by the Service Control Manager's
@@ -505,6 +531,7 @@ jobs:
       - lint
       - test
       - test-macos
+      - test-windows
       - android
       - docker-e2e
       - android-emulator-e2e
@@ -515,9 +542,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
+        include:
+          - os: ubuntu-latest
+            archive: tar.gz
+          - os: macos-latest
+            archive: tar.gz
+          - os: windows-latest
+            archive: zip
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -530,6 +561,7 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --workspace
       - name: Package release binaries
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           artifact_dir="rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}"
@@ -539,13 +571,40 @@ jobs:
           cp target/release/p2p-answer "$artifact_dir/"
           cp README.md LICENSE "$artifact_dir/"
           tar -czf "${artifact_dir}.tar.gz" "$artifact_dir"
+      # Windows gets a .zip (the native archive format; Explorer opens it without
+      # extra tools) and also ships the service wrapper plus its installer scripts.
+      # The scripts keep the repository layout (packaging\windows\ next to
+      # docs\examples\): install.ps1 dot-sources p2ptunnel-common.ps1 from its own
+      # directory and finds its default config template at ..\..\docs\examples.
+      - name: Package release binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactDir = "rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          foreach ($bin in 'p2pctl', 'p2p-offer', 'p2p-answer', 'p2p-service-windows') {
+            Copy-Item "target/release/$bin.exe" $artifactDir
+          }
+          Copy-Item README.md, LICENSE $artifactDir
+          $serviceDir = Join-Path $artifactDir 'packaging/windows'
+          New-Item -ItemType Directory -Force -Path $serviceDir | Out-Null
+          $scripts = @(Get-ChildItem packaging/windows -Filter *.ps1)
+          if ($scripts.Count -eq 0) { throw 'no packaging/windows/*.ps1 scripts found' }
+          $scripts | Copy-Item -Destination $serviceDir
+          Copy-Item packaging/windows/README.md $serviceDir
+          $examplesDir = Join-Path $artifactDir 'docs/examples'
+          New-Item -ItemType Directory -Force -Path $examplesDir | Out-Null
+          Copy-Item docs/examples/answer-config.toml, docs/examples/offer-config.toml $examplesDir
+          if (Test-Path docs/WINDOWS.md) { Copy-Item docs/WINDOWS.md $artifactDir }
+          Compress-Archive -Path $artifactDir -DestinationPath "$artifactDir.zip"
       - name: Upload release artifacts
         uses: actions/upload-artifact@v7
         with:
           name: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}
-          path: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.tar.gz
+          path: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.${{ matrix.archive }}
       - name: Upload release assets
         uses: softprops/action-gh-release@v3
         with:
-          files: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.tar.gz
+          files: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.${{ matrix.archive }}
           generate_release_notes: true
