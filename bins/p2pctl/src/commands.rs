@@ -3,8 +3,6 @@
 //! and dispatch) to stay under the repo's 800-line file-size guidance.
 
 use std::fs::{self, OpenOptions};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use p2p_core::AppConfig;
@@ -12,13 +10,14 @@ use p2p_crypto::{
     AuthorizedKeys, IdentityFile, PublicIdentity, generate_identity, kid_from_signing_key,
 };
 use p2p_daemon::DaemonStatus;
+use p2p_platform::{PlatformError, create_private_file, default_config_dir};
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) fn keygen(peer_id: &str, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     let generated = generate_identity(peer_id)?;
-    let config_dir = default_config_dir(std::env::var_os("HOME").map(PathBuf::from))?;
+    let config_dir = default_config_dir()?;
     fs::create_dir_all(&config_dir)?;
 
     let (identity_path, identity_pub_path, replaced) =
@@ -46,9 +45,7 @@ fn write_identity_files(
         .into());
     }
 
-    fs::write(&identity_path, generated.identity.render_toml())?;
-    #[cfg(unix)]
-    fs::set_permissions(&identity_path, fs::Permissions::from_mode(0o600))?;
+    create_private_file(&identity_path, generated.identity.render_toml().as_bytes())?;
     fs::write(&identity_pub_path, format!("{}\n", generated.public_identity.render()))?;
     Ok((identity_path, identity_pub_path, identity_exists || identity_pub_exists))
 }
@@ -66,8 +63,7 @@ fn render_fingerprint(public_identity: &PublicIdentity) -> String {
 
 pub(crate) fn add_authorized_key(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let public_identity = load_public_identity(path)?;
-    let authorized_keys_path =
-        default_config_dir(std::env::var_os("HOME").map(PathBuf::from))?.join("authorized_keys");
+    let authorized_keys_path = default_config_dir()?.join("authorized_keys");
     append_authorized_key(&authorized_keys_path, &public_identity)?;
     println!("updated {}", authorized_keys_path.display());
     Ok(())
@@ -178,7 +174,7 @@ fn render_status(status: &DaemonStatus) -> String {
 }
 
 fn load_config(path: Option<&Path>) -> Result<AppConfig, Box<dyn std::error::Error>> {
-    let resolved = resolve_config_path(path, std::env::var_os("HOME").map(PathBuf::from))?;
+    let resolved = resolve_config_path(path, default_config_dir)?;
     Ok(AppConfig::load_from_file(&resolved)?)
 }
 
@@ -187,21 +183,16 @@ fn load_public_identity(path: &Path) -> Result<PublicIdentity, Box<dyn std::erro
     Ok(PublicIdentity::parse(content.trim())?)
 }
 
-/// Config-path resolution, parameterized on `home` so it's testable without touching
-/// the real `$HOME`: an explicit path is used as-is (ignoring `home` entirely), otherwise
-/// falls back to `$HOME/.config/p2ptunnel/config.toml`. Mirrors the pattern used by
-/// `p2p-offer`/`p2p-answer`.
+/// Config-path resolution, parameterized on the default directory so it's testable
+/// without touching the real environment: an explicit path is used as-is (the default
+/// is never evaluated), otherwise falls back to `<default_config_dir>/config.toml`.
+/// Mirrors the pattern used by `p2p-offer`/`p2p-answer`.
 fn resolve_config_path(
     path: Option<&Path>,
-    home: Option<PathBuf>,
+    default_config_dir: impl FnOnce() -> Result<PathBuf, PlatformError>,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     match path {
         Some(path) => Ok(path.to_path_buf()),
-        None => Ok(default_config_dir(home)?.join("config.toml")),
+        None => Ok(default_config_dir()?.join("config.toml")),
     }
-}
-
-fn default_config_dir(home: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home = home.ok_or("HOME is not set")?;
-    Ok(home.join(".config/p2ptunnel"))
 }

@@ -1,7 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 use crate::DaemonError;
 use p2p_core::LoggingConfig;
@@ -22,6 +22,34 @@ pub fn setup_logging(config: &LoggingConfig) -> Result<(), DaemonError> {
         _ => builder.try_init(),
     }
     .map_err(|error| DaemonError::Logging(error.to_string()))
+}
+
+/// Warns, once per process, about security checks this platform cannot run.
+///
+/// `AppConfig::validate` refuses to load a config that disables
+/// `refuse_world_readable_identity` or `refuse_world_writable_paths`, so an operator
+/// is entitled to assume they are enforced. Where `p2p_platform` cannot enforce them
+/// (Windows, today), saying nothing would imply a check passed that never ran.
+/// Call after [`setup_logging`] so the warning reaches the configured sinks.
+pub fn report_unenforced_platform_checks() {
+    static REPORTED: Once = Once::new();
+    REPORTED.call_once(|| {
+        if let Some(message) = unenforced_checks_warning(p2p_platform::ENFORCES_FILE_PERMISSIONS) {
+            tracing::warn!("{message}");
+        }
+    });
+}
+
+/// The startup warning text, or `None` when the platform enforces the checks. Takes
+/// the enforcement flag as a parameter so both branches are testable on any host.
+fn unenforced_checks_warning(enforces_file_permissions: bool) -> Option<&'static str> {
+    (!enforces_file_permissions).then_some(
+        "file permission checks are NOT enforced on this platform: \
+         security.refuse_world_readable_identity and security.refuse_world_writable_paths \
+         did not run, so they did not pass either. The identity file is protected only by \
+         the access control list on its config directory, which the service installer \
+         restricts; a hand-made config directory gets no such protection.",
+    )
 }
 
 pub fn redact_secret(_value: &str) -> String {
@@ -142,7 +170,10 @@ mod tests {
 
     use p2p_core::LoggingConfig;
 
-    use super::{candidate_log_summary, redact_candidate, redact_sdp, redact_secret};
+    use super::{
+        candidate_log_summary, redact_candidate, redact_sdp, redact_secret,
+        unenforced_checks_warning,
+    };
 
     fn config() -> LoggingConfig {
         LoggingConfig {
@@ -168,6 +199,21 @@ mod tests {
         let redacted = redact_sdp(&config(), "v=0\r\na=candidate");
         assert!(redacted.starts_with("<redacted>:sdp:"));
         assert!(!redacted.contains("candidate"));
+    }
+
+    #[test]
+    fn unenforced_permission_checks_produce_a_warning_that_says_they_did_not_run() {
+        let message = unenforced_checks_warning(false).expect("a gap must be reported");
+        assert!(message.contains("NOT enforced"), "message was: {message}");
+        assert!(message.contains("did not run"), "message was: {message}");
+        assert!(message.contains("refuse_world_readable_identity"), "message was: {message}");
+        assert!(message.contains("refuse_world_writable_paths"), "message was: {message}");
+        assert!(!message.contains("  "), "message has runs of spaces: {message}");
+    }
+
+    #[test]
+    fn enforced_permission_checks_produce_no_warning() {
+        assert_eq!(unenforced_checks_warning(true), None);
     }
 
     #[test]

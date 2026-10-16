@@ -33,6 +33,7 @@
 //! plainly instead of reporting a check that did not happen.
 
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::PlatformError;
@@ -73,6 +74,13 @@ pub(crate) fn service_config_dir(role: &str) -> Result<PathBuf, PlatformError> {
             )
         })?;
     Ok(PathBuf::from(program_data).join("p2ptunnel").join(role))
+}
+
+pub(crate) fn create_private_file(path: &Path, contents: &[u8]) -> Result<(), PlatformError> {
+    // No per-file ACL is set: the file inherits its directory's DACL, which is
+    // what protects it (see the module docs). `ENFORCES_FILE_PERMISSIONS` is
+    // `false`, so nothing here claims a stronger guarantee than that.
+    fs::write(path, contents).map_err(|error| PlatformError::io(path, error))
 }
 
 pub(crate) fn ensure_private_file_permissions(_path: &Path) -> Result<(), PlatformError> {

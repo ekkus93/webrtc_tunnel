@@ -103,6 +103,17 @@ pub fn ensure_not_writable_by_others(path: &Path) -> Result<(), PlatformError> {
     imp::ensure_not_writable_by_others(path)
 }
 
+/// Creates (or replaces) a file holding private key material.
+///
+/// On unix the file is created `0600` -- so it is never briefly readable under
+/// the process umask -- and `0600` is re-applied afterwards, because a creation
+/// mode does not affect a file that already existed. On Windows the file
+/// inherits its directory's DACL, which is the protection there (the service
+/// installer restricts the config directory); see [`ENFORCES_FILE_PERMISSIONS`].
+pub fn create_private_file(path: &Path, contents: &[u8]) -> Result<(), PlatformError> {
+    imp::create_private_file(path, contents)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
     /// The path exists but its permissions are weaker than required.
@@ -121,9 +132,6 @@ pub enum PlatformError {
     },
 }
 
-// Only the unix implementation inspects the filesystem; the Windows one cannot
-// yet (see `windows.rs`), so this constructor has no caller there.
-#[cfg(unix)]
 impl PlatformError {
     pub(crate) fn io(path: &Path, source: std::io::Error) -> Self {
         PlatformError::Io { path: path.to_path_buf(), source }
@@ -167,6 +175,26 @@ mod tests {
                 service_config_dir(role).is_err(),
                 "role {role:?} should have been rejected as a path component",
             );
+        }
+    }
+
+    #[test]
+    fn create_private_file_writes_and_replaces_contents() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("identity");
+        create_private_file(&path, b"first").expect("create");
+        create_private_file(&path, b"second").expect("replace");
+        assert_eq!(std::fs::read(&path).expect("read back"), b"second");
+        ensure_private_file_permissions(&path).expect("a freshly created private file is private");
+    }
+
+    #[test]
+    fn create_private_file_reports_the_path_on_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("missing-dir").join("identity");
+        match create_private_file(&path, b"x") {
+            Err(PlatformError::Io { path: reported, .. }) => assert_eq!(reported, path),
+            other => panic!("expected an Io error naming {path:?}, got {other:?}"),
         }
     }
 

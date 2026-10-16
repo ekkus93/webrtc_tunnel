@@ -6,6 +6,7 @@ use p2p_core::SessionId;
 use p2p_core::{DaemonState, NodeRole};
 use p2p_crypto::{generate_identity, kid_from_signing_key};
 use p2p_daemon::{DaemonStatus, SessionStatus};
+use p2p_platform::PlatformError;
 
 use super::{
     append_authorized_key, check_config, fingerprint, render_fingerprint, render_status,
@@ -559,19 +560,25 @@ fn check_config_fails_clearly_for_a_missing_config_file() {
 #[test]
 fn explicit_config_path_is_used_as_is() {
     let explicit = Path::new("/etc/p2ptunnel/config.toml");
-    let resolved = resolve_config_path(Some(explicit), None).expect("explicit path resolves");
+    let resolved = resolve_config_path(Some(explicit), || {
+        unreachable!("an explicit --config must not consult the default directory")
+    })
+    .expect("explicit path resolves");
     assert_eq!(resolved, explicit);
 }
 
 #[test]
-fn missing_config_flag_falls_back_to_home_config_dir() {
-    let home = PathBuf::from("/home/ctl-user");
-    let resolved = resolve_config_path(None, Some(home.clone())).expect("home fallback resolves");
-    assert_eq!(resolved, home.join(".config/p2ptunnel/config.toml"));
+fn missing_config_flag_falls_back_to_the_default_config_dir() {
+    let config_dir = PathBuf::from("/home/ctl-user/.config/p2ptunnel");
+    let resolved = resolve_config_path(None, || Ok(config_dir.clone()))
+        .expect("default dir fallback resolves");
+    assert_eq!(resolved, config_dir.join("config.toml"));
 }
 
 #[test]
 fn missing_config_flag_without_home_yields_a_normal_error_not_a_panic() {
-    let error = resolve_config_path(None, None).expect_err("missing HOME must error, not panic");
+    let error =
+        resolve_config_path(None, || Err(PlatformError::Unresolved("HOME is not set".to_owned())))
+            .expect_err("an unresolvable default must error, not panic");
     assert!(error.to_string().contains("HOME is not set"));
 }

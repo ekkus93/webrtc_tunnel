@@ -40,7 +40,8 @@ pub use config::{
 };
 pub use error::DaemonError;
 pub use logging::{
-    candidate_log_summary, redact_candidate, redact_sdp, redact_secret, setup_logging,
+    candidate_log_summary, redact_candidate, redact_sdp, redact_secret,
+    report_unenforced_platform_checks, setup_logging,
 };
 pub use offer::{
     run_offer_daemon, run_offer_daemon_with_shutdown, run_offer_daemon_with_status,

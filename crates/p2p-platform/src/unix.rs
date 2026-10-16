@@ -4,7 +4,8 @@
 
 use std::env;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::PlatformError;
@@ -47,6 +48,21 @@ pub(crate) fn ensure_private_file_permissions(path: &Path) -> Result<(), Platfor
         )));
     }
     Ok(())
+}
+
+pub(crate) fn create_private_file(path: &Path, contents: &[u8]) -> Result<(), PlatformError> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| PlatformError::io(path, error))?;
+    // `mode` only applies when the file is created; `keygen --force` replaces an
+    // existing file whose permissions may be looser.
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| PlatformError::io(path, error))?;
+    file.write_all(contents).map_err(|error| PlatformError::io(path, error))
 }
 
 pub(crate) fn ensure_not_writable_by_others(path: &Path) -> Result<(), PlatformError> {
@@ -98,6 +114,17 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");
         ensure_not_writable_by_others(&path).expect("0600 should be accepted");
         ensure_private_file_permissions(&path).expect("0600 should be accepted as private");
+    }
+
+    #[test]
+    fn create_private_file_tightens_an_existing_loose_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("identity");
+        fs::write(&path, "old").expect("write");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("chmod");
+        create_private_file(&path, b"new").expect("replace");
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

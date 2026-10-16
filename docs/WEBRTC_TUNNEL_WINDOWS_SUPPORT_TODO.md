@@ -137,7 +137,7 @@ the `signoff` gate alongside Linux and macOS.
 
 ---
 
-## P0-004 — Move the remaining unix-only production code behind the seam
+## P0-004 — Move the remaining unix-only production code behind the seam — **DONE**
 
 **Depends on P0-006**, which adds `default_config_dir()`. Do that task first; the
 `HOME`-replacement step below calls a function that does not exist until it lands. The
@@ -169,18 +169,40 @@ lookups. Move them to the seam so `p2p-platform` is genuinely the only OS-aware 
 - Replace every `std::env::var_os("HOME")` in the three binaries and `p2pctl` with
   `p2p_platform::default_config_dir()`.
 
+### Implementation notes
+- `create_private_file` on unix opens with mode `0600` (so the key is never briefly
+  world-readable under the umask, which the old `fs::write` + `set_permissions` sequence
+  allowed) and then re-applies `0600`, because `mode` only takes effect when the file is
+  *created* and `keygen --force` overwrites an existing one. On Windows it is a plain write:
+  the file inherits the directory's DACL, which is the actual protection (P0-008), and
+  `ENFORCES_FILE_PERMISSIONS = false` already says nothing stronger is checked.
+- The binaries' `resolve_config_path` helpers take the default directory as a lazily
+  evaluated `FnOnce() -> Result<PathBuf, PlatformError>` instead of an `Option<home>`. An
+  explicit `--config` never consults the environment, and tests can inject a directory
+  without touching real environment variables. The home → `.config/p2ptunnel` mapping
+  itself is tested once, in `p2p-platform`.
+- `p2p-crypto` maps `PlatformError::Io` to `CryptoError::IoPath`, so a missing identity file
+  reports the same error variant as before.
+
+### Scope of the `cfg(unix)` grep
+`crates/p2p-daemon/src/process_signal.rs` also carries `#[cfg(unix)]`. That is *signal
+handling*, not a permission or home-directory concern, so it is outside this task and the
+"Non-negotiable implementation rules" above. It belongs to P0-007, which introduces the
+SCM stop path alongside it. The acceptance grep below excludes it on that basis.
+
 ### Acceptance criteria
-- [ ] `grep -rn 'cfg(unix)' crates bins --include=*.rs` outside `p2p-platform` returns only
-      test files. (The Android ICE branches use `cfg(target_os = "android")`, not
-      `cfg(unix)`, so they will not appear in this grep at all — they are a separate,
-      pre-existing concern and are out of scope.)
-- [ ] `grep -rn 'var_os("HOME")' crates bins --include=*.rs` returns nothing outside
+- [x] `grep -rn 'cfg(unix)' crates bins --include=*.rs` outside `p2p-platform` returns only
+      test files and `process_signal.rs` (see scope note). (The Android ICE branches use
+      `cfg(target_os = "android")`, not `cfg(unix)`, so they will not appear in this grep
+      at all — they are a separate, pre-existing concern and are out of scope.)
+- [x] `grep -rn 'var_os("HOME")' crates bins --include=*.rs` returns nothing outside
       `p2p-platform`.
-- [ ] `p2pctl keygen` works from native PowerShell, not only Git Bash.
+- [x] `p2pctl keygen` works from native PowerShell, not only Git Bash. (Verified against a
+      throwaway `%USERPROFILE%` with `HOME` unset: write, refuse-without-`--force`, replace.)
 
 ---
 
-## P0-005 — Report unenforced permission checks at startup
+## P0-005 — Report unenforced permission checks at startup — **DONE**
 
 ### Files
 ```text
@@ -199,10 +221,24 @@ At daemon startup, if `!p2p_platform::ENFORCES_FILE_PERMISSIONS`, emit a single
 `tracing::warn!` naming what is not enforced and what provides the protection instead
 (the config directory DACL). Do not warn per-path; once per process.
 
+### Implementation notes
+- `p2p_daemon::report_unenforced_platform_checks()` lives in `logging.rs`, next to the
+  subscriber it needs, and is called by both binaries immediately after `setup_logging`.
+  P0-007's service binary calls it the same way.
+- A `std::sync::Once` guard makes "once per process" a property of the function rather
+  than of every caller remembering to call it once.
+- The message text is built by a pure function taking the `ENFORCES_FILE_PERMISSIONS`
+  value as a parameter, so both the Windows (warn) and unix (silent) branches are unit
+  tested on every host rather than only on the host whose constant matches.
+
 ### Acceptance criteria
-- [ ] Warning appears exactly once on Windows startup.
-- [ ] No warning on unix.
-- [ ] Wording states plainly that the check did not run, not that it passed.
+- [x] Warning appears exactly once on Windows startup. (Verified by running `p2p-answer`
+      against a filled-in `docs/examples/answer-config.toml`: one line on stdout, one in the
+      log file.)
+- [x] No warning on unix. (Covered by the `enforced_permission_checks_produce_no_warning`
+      unit test plus unix's `ENFORCES_FILE_PERMISSIONS = true`; not yet run on a unix host —
+      Linux/macOS CI will exercise the unit test.)
+- [x] Wording states plainly that the check did not run, not that it passed.
 
 ---
 
@@ -212,6 +248,7 @@ At daemon startup, if `!p2p_platform::ENFORCES_FILE_PERMISSIONS`, emit a single
 
 ### Files
 ```text
+crates/p2p-platform/src/lib.rs
 crates/p2p-platform/src/windows.rs
 crates/p2p-platform/src/unix.rs
 docs/WEBRTC_TUNNEL_WINDOWS_SUPPORT_SPEC.md  (sections 6.2, 6.3)
@@ -263,7 +300,6 @@ crates/p2p-daemon/src/process_signal.rs
 ### Goal
 Host `run_answer_daemon` / `run_offer_daemon` under the Service Control Manager, with
 `SERVICE_CONTROL_STOP` driving the existing `ShutdownToken`.
-crates/p2p-platform/src/lib.rs
 
 ### Recommended implementation
 - SCM registration, control handler, and `SERVICE_STATUS` reporting live only in this

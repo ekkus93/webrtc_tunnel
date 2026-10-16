@@ -1,6 +1,4 @@
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
@@ -144,21 +142,12 @@ pub fn generate_identity(peer_id: impl Into<String>) -> Result<GeneratedIdentity
     Ok(GeneratedIdentity { identity, public_identity })
 }
 
-#[cfg(unix)]
-pub fn validate_private_file_permissions(path: &Path) -> Result<(), CryptoError> {
-    let metadata = fs::metadata(path).map_err(|error| CryptoError::io_path(path, error))?;
-    let mode = metadata.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
-        return Err(CryptoError::Permission(format!(
-            "identity file '{}' must be 0600 or stricter, got {:o}",
-            path.display(),
-            mode
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub fn validate_private_file_permissions(_path: &Path) -> Result<(), CryptoError> {
-    Ok(())
+/// Refuses an identity file other local users can read. Where the platform
+/// cannot check this (see `p2p_platform::ENFORCES_FILE_PERMISSIONS`) it is a
+/// no-op, and the daemon says so at startup.
+fn validate_private_file_permissions(path: &Path) -> Result<(), CryptoError> {
+    p2p_platform::ensure_private_file_permissions(path).map_err(|error| match error {
+        p2p_platform::PlatformError::Io { path, source } => CryptoError::IoPath { path, source },
+        other => CryptoError::Permission(other.to_string()),
+    })
 }

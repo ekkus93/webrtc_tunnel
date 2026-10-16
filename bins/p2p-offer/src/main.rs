@@ -4,9 +4,10 @@ use clap::{Parser, Subcommand};
 use p2p_core::AppConfig;
 use p2p_crypto::{AuthorizedKeys, IdentityFile};
 use p2p_daemon::{
-    ShutdownToken, apply_env_overrides, apply_offer_overrides, run_offer_daemon_with_shutdown,
-    setup_logging, wait_for_process_shutdown_signal,
+    ShutdownToken, apply_env_overrides, apply_offer_overrides, report_unenforced_platform_checks,
+    run_offer_daemon_with_shutdown, setup_logging, wait_for_process_shutdown_signal,
 };
+use p2p_platform::PlatformError;
 
 #[derive(Debug, Parser)]
 #[command(name = "p2p-offer")]
@@ -43,6 +44,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     config.ensure_runtime_dirs()?;
 
     setup_logging(&config.logging)?;
+    report_unenforced_platform_checks();
 
     let local_identity = IdentityFile::from_file(&config.paths.identity)?;
     config.validate_identity_peer(&local_identity.peer_id)?;
@@ -68,53 +70,55 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn load_config(path: Option<&Path>) -> Result<AppConfig, Box<dyn std::error::Error>> {
-    let resolved = resolve_config_path(path, std::env::var_os("HOME").map(PathBuf::from))?;
+    let resolved = resolve_config_path(path, p2p_platform::default_config_dir)?;
     Ok(AppConfig::load_from_file(&resolved)?)
 }
 
-/// Config-path resolution, parameterized on `home` so it's testable without touching
-/// the real `$HOME`: an explicit path is used as-is (ignoring `home` entirely), otherwise
-/// falls back to `$HOME/.config/p2ptunnel/config.toml`.
+/// Config-path resolution, parameterized on the default directory so it's testable
+/// without touching the real environment: an explicit path is used as-is (the default
+/// is never evaluated), otherwise falls back to `<default_config_dir>/config.toml`.
 fn resolve_config_path(
     path: Option<&Path>,
-    home: Option<PathBuf>,
+    default_config_dir: impl FnOnce() -> Result<PathBuf, PlatformError>,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     match path {
         Some(path) => Ok(path.to_path_buf()),
-        None => Ok(default_config_dir(home)?.join("config.toml")),
+        None => Ok(default_config_dir()?.join("config.toml")),
     }
-}
-
-fn default_config_dir(home: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home = home.ok_or("HOME is not set")?;
-    Ok(home.join(".config/p2ptunnel"))
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use p2p_platform::PlatformError;
+
     use super::resolve_config_path;
 
     #[test]
     fn explicit_config_path_is_used_as_is() {
         let explicit = Path::new("/etc/p2ptunnel/config.toml");
-        let resolved = resolve_config_path(Some(explicit), None).expect("explicit path resolves");
+        let resolved = resolve_config_path(Some(explicit), || {
+            unreachable!("an explicit --config must not consult the default directory")
+        })
+        .expect("explicit path resolves");
         assert_eq!(resolved, explicit);
     }
 
     #[test]
-    fn missing_config_flag_falls_back_to_home_config_dir() {
-        let home = PathBuf::from("/home/offer-user");
-        let resolved =
-            resolve_config_path(None, Some(home.clone())).expect("home fallback resolves");
-        assert_eq!(resolved, home.join(".config/p2ptunnel/config.toml"));
+    fn missing_config_flag_falls_back_to_the_default_config_dir() {
+        let config_dir = PathBuf::from("/home/offer-user/.config/p2ptunnel");
+        let resolved = resolve_config_path(None, || Ok(config_dir.clone()))
+            .expect("default dir fallback resolves");
+        assert_eq!(resolved, config_dir.join("config.toml"));
     }
 
     #[test]
-    fn missing_home_produces_a_clear_error_not_a_panic() {
-        let error =
-            resolve_config_path(None, None).expect_err("missing HOME must error, not panic");
+    fn unresolvable_default_dir_produces_a_clear_error_not_a_panic() {
+        let error = resolve_config_path(None, || {
+            Err(PlatformError::Unresolved("HOME is not set".to_owned()))
+        })
+        .expect_err("an unresolvable default must error, not panic");
         assert!(error.to_string().contains("HOME is not set"));
     }
 }

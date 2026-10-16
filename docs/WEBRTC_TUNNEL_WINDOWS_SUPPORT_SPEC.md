@@ -285,7 +285,7 @@ pub fn ensure_not_writable_by_others(path: &Path) -> Result<(), PlatformError>; 
 
 pub fn default_config_dir() -> Result<PathBuf, PlatformError>;                  // implemented
 pub fn service_config_dir(role: &str) -> Result<PathBuf, PlatformError>;        // implemented
-pub fn create_private_file(path: &Path, contents: &[u8]) -> Result<(), PlatformError>; // TODO P0-004
+pub fn create_private_file(path: &Path, contents: &[u8]) -> Result<(), PlatformError>; // implemented
 ```
 
 `default_config_dir()` resolves the **interactive user** layout only. It never returns a
