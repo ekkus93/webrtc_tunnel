@@ -61,7 +61,9 @@ What it does, in order:
 3. **Creates the service** with
    `sc.exe create p2ptunnel binPath= "\"...\p2p-service-windows.exe\" --role <role>" obj= "NT SERVICE\p2ptunnel" start= delayed-auto`.
    Creating the service is what brings the virtual account into existence. Then it runs
-   `sc.exe sidtype p2ptunnel unrestricted`, sets a description and the failure actions,
+   `sc.exe sidtype p2ptunnel unrestricted`, sets a description and the failure actions
+   (with `sc.exe failureflag p2ptunnel 1`, so they also fire when the wrapper reports
+   `STOPPED` with a non-zero exit code rather than crashing),
    and confirms that `NT SERVICE\p2ptunnel` resolves to the SID it computed
    (`S-1-5-80-1253224334-2237551498-3137952417-4040730996-425943683`, the same value
    `sc.exe showsid p2ptunnel` prints).

@@ -170,6 +170,10 @@ try {
     # Restart on failure, like Restart=on-failure / RestartSec=5s in the systemd units.
     $null = Invoke-P2pNative -Tool 'sc.exe' -Arguments ("failure $P2pServiceName reset= 86400 " +
         'actions= restart/5000/restart/5000/restart/30000')
+    # By default the SCM runs those actions only when the process dies without reporting
+    # STOPPED. p2p-service-windows reports every failure as STOPPED with a
+    # service-specific exit code, so without this flag the actions would never run.
+    $null = Invoke-P2pNative -Tool 'sc.exe' -Arguments "failureflag $P2pServiceName 1"
 
     # The account now exists. Cross-check the computed SID the DACL is about to use.
     $resolvedSid = (New-Object System.Security.Principal.NTAccount($P2pServiceAccount)).Translate(
