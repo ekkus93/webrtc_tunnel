@@ -20,8 +20,18 @@ class ForwardsConfigStoreTest {
 
     @Before
     fun setUp() {
-        file.delete()
+        // deleteRecursively, not delete: some tests obstruct this path with a non-empty
+        // directory to force an I/O failure without relying on POSIX permission bits.
+        file.deleteRecursively()
         store = ForwardsConfigStore(context)
+    }
+
+    /** Puts a non-empty directory where forwards.json is expected: reading it fails, and no
+     * file can be moved over or delete it — on every host OS, unlike chmod-style tricks
+     * that are no-ops on Windows (NTFS ACLs do not map to POSIX mode bits). */
+    private fun obstructWithNonEmptyDirectory() {
+        file.deleteRecursively()
+        assertTrue(File(file, "obstruction").mkdirs())
     }
 
     private fun forward(
@@ -67,44 +77,45 @@ class ForwardsConfigStoreTest {
 
     @Test
     fun unreadableFileIsReadFailureNotParseFailure() {
-        file.writeText("[]")
         // Force forwardsFile.readText() itself to fail, as opposed to decoding failing on
         // malformed content, so the two distinct failure modes are provably distinguished
-        // (P1-003) rather than both being reported as "corrupt".
-        assertTrue(file.setReadable(false))
-        try {
-            val error = store.loadForwardsResult().exceptionOrNull()
-            assertTrue(error is ForwardsReadException)
-        } finally {
-            file.setReadable(true)
-        }
+        // (P1-003) rather than both being reported as "corrupt". The path exists (so the
+        // load takes the read branch, not the seed branch) but is not a readable file.
+        obstructWithNonEmptyDirectory()
+
+        val error = store.loadForwardsResult().exceptionOrNull()
+
+        assertTrue(error is ForwardsReadException)
     }
 
     @Test
     fun loadForwardsResultReturnsFailureWithoutThrowingWhenSeedWriteFails() {
         file.delete()
-        // Force the missing-file default-seeding write inside loadForwardsResult() to fail,
-        // by making its target directory read-only, instead of throwing past the Result
-        // contract (P1-002).
-        assertTrue(context.filesDir.setReadOnly())
-        try {
-            val result = store.loadForwardsResult()
-            assertTrue(result.isFailure)
-            assertTrue(result.exceptionOrNull() is ForwardsWriteException)
-        } finally {
-            context.filesDir.setWritable(true)
-        }
+        // Force the missing-file default-seeding write inside loadForwardsResult() to fail
+        // through the store's injectable move seam, instead of throwing past the Result
+        // contract (P1-002). The path must stay absent for the seed branch to run, so it
+        // cannot be obstructed on disk.
+        val storeWithFailingMove =
+            ForwardsConfigStore(
+                context,
+                moveIntoPlace = { _, _ -> throw java.io.IOException("simulated seed write failure") },
+            )
+
+        val result = storeWithFailingMove.loadForwardsResult()
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is ForwardsWriteException)
     }
 
     @Test
     fun saveForwardsWrapsUnderlyingFailureAsForwardsWriteException() {
-        assertTrue(context.filesDir.setReadOnly())
-        try {
-            val error = runCatching { store.saveForwards(listOf(forward("a", 1111))) }.exceptionOrNull()
-            assertTrue(error is ForwardsWriteException)
-        } finally {
-            context.filesDir.setWritable(true)
-        }
+        // The real move cannot replace a non-empty directory, so the underlying
+        // java.nio failure comes from the filesystem itself, not a fake.
+        obstructWithNonEmptyDirectory()
+
+        val error = runCatching { store.saveForwards(listOf(forward("a", 1111))) }.exceptionOrNull()
+
+        assertTrue(error is ForwardsWriteException)
     }
 
     @Test

@@ -165,15 +165,18 @@ class ForwardsViewModelTest : AppViewModelTestBase() {
         awaitCondition { entered.count == 0L }
         assertTrue(realIoDeps.forwardsRepository.current().any { it.id == "web" })
 
-        // Make the forwards-restore (rollback) fail: the real ForwardsConfigStore writes
-        // forwards.json under filesDir, so making that directory unwritable forces the
-        // restore's atomic replace to throw — no production hook needed.
-        assertTrue(app.filesDir.setWritable(false))
+        // Make the forwards-restore (rollback) fail: the real ForwardsConfigStore restores
+        // forwards.json by atomic replace (or delete, for an absent snapshot), and neither can
+        // displace a non-empty directory at that path — on every host OS, unlike an
+        // unwritable filesDir, which is a no-op on Windows (NTFS ACLs, not POSIX bits).
+        val forwardsFile = File(app.filesDir, "forwards.json")
+        assertTrue(forwardsFile.delete())
+        assertTrue(File(forwardsFile, "obstruction").mkdirs())
         try {
             release.countDown()
             awaitMessage(vm) { it != null }
         } finally {
-            app.filesDir.setWritable(true)
+            forwardsFile.deleteRecursively()
         }
 
         val message = requireNotNull(vm.message.value)

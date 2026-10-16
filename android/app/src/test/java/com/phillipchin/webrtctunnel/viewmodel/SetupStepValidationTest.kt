@@ -82,9 +82,11 @@ class SetupStepValidationTest : AppViewModelTestBase() {
 
     @Test
     fun forwardsStepReportsStorageErrorForUnreadableFileInsteadOfNoForwards() {
+        // A non-empty directory at the path makes the read itself fail on every host OS;
+        // setReadable(false) is a no-op on Windows (NTFS ACLs, not POSIX mode bits).
         val file = File(app.filesDir, "forwards.json")
-        file.writeText("[]")
-        file.setReadable(false)
+        file.delete()
+        assertTrue(File(file, "obstruction").mkdirs())
         try {
             val message = validateStep(deps, SetupStep.Forwards, SetupWizardState())
 
@@ -92,7 +94,7 @@ class SetupStepValidationTest : AppViewModelTestBase() {
             assertTrue(message != "Enable at least one forward")
             assertTrue(message!!.contains("Unable to read forwards configuration"))
         } finally {
-            file.setReadable(true)
+            file.deleteRecursively()
         }
     }
 

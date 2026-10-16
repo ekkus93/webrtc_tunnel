@@ -17,7 +17,6 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -41,7 +40,6 @@ class ConfigRepositoryTest {
         // exists() reports true and ensureDefaultConfig short-circuits.
         File(context.filesDir, "config.toml").deleteRecursively()
         File(context.filesDir, "forwards.json").deleteRecursively()
-        context.filesDir.setWritable(true)
         runBlocking {
             context.dataStore.edit { preferences -> preferences.clear() }
         }
@@ -76,23 +74,26 @@ class ConfigRepositoryTest {
             // The write only runs when config.toml is absent, so the failure has to come
             // from the write itself rather than from an obstruction at that path (a
             // directory there would make exists() true and short-circuit to success).
-            // Making filesDir read-only fails Files.createTempFile inside the writer.
-            val filesDir = context.filesDir
-            assertTrue("precondition: filesDir starts writable", filesDir.canWrite())
-            filesDir.setWritable(false)
-            try {
-                // A root/permission-ignoring filesystem would silently make this a
-                // false-pass, so state that as a precondition rather than asserting into
-                // a writable directory and calling it proof.
-                assumeTrue("filesystem honours the read-only bit", !filesDir.canWrite())
+            // Failing createTempFile through the injected file ops does that on every host
+            // OS; a read-only filesDir is a no-op on Windows (NTFS ACLs, not POSIX bits).
+            val failingRepo = ConfigRepository(context, FailingCreateTempFileOps())
 
-                val result = repository.ensureDefaultConfig("default")
+            val result = failingRepo.ensureDefaultConfig("default")
 
-                assertTrue("a failed default-config write must be reported, not discarded", result.isFailure)
-            } finally {
-                filesDir.setWritable(true)
-            }
+            assertTrue("a failed default-config write must be reported, not discarded", result.isFailure)
+            assertFalse(
+                "the failed write must not leave a config behind",
+                File(context.filesDir, "config.toml").exists(),
+            )
         }
+
+    private class FailingCreateTempFileOps : AtomicConfigFileOps by RealAtomicConfigFileOps {
+        override fun createTempFile(
+            dir: Path,
+            prefix: String,
+            suffix: String,
+        ): Path = throw IOException("simulated temp-file creation failure")
+    }
 
     @Test
     fun ensureDefaultConfigDoesNotRouteThroughTheMutexTakingWriter() =
@@ -168,7 +169,9 @@ class ConfigRepositoryTest {
         assertFalse(template.contains("~/.config"))
         assertFalse(template.contains("~/.local"))
         assertFalse(template.contains("/etc/ssl/certs"))
-        assertTrue(template.contains(context.filesDir.absolutePath))
+        // Paths are emitted as TOML basic strings, so a Windows host's backslash separators
+        // appear escaped (`\\`); compare against that form. No-op on POSIX hosts.
+        assertTrue(template.contains(context.filesDir.absolutePath.replace("\\", "\\\\")))
     }
 
     @Test

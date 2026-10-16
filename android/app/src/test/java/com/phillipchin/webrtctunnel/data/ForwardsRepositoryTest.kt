@@ -159,9 +159,10 @@ class ForwardsRepositoryTest {
             parseFailureRepo.refresh()
             val parseMessage = parseFailureRepo.loadError.value
 
+            // A non-empty directory at the path makes the read itself fail on every host OS;
+            // setReadable(false) is a no-op on Windows (NTFS ACLs, not POSIX mode bits).
             file.delete()
-            file.writeText("[]")
-            assertTrue(file.setReadable(false))
+            assertTrue(File(file, "obstruction").mkdirs())
             try {
                 val readFailureRepo = ForwardsRepository(ForwardsConfigStore(context), AppDispatchers())
                 readFailureRepo.refresh()
@@ -174,7 +175,7 @@ class ForwardsRepositoryTest {
                 assertTrue(parseMessage?.contains("corrupt") == true)
                 assertFalse(readMessage?.contains("corrupt") == true)
             } finally {
-                file.setReadable(true)
+                file.deleteRecursively()
             }
         }
 

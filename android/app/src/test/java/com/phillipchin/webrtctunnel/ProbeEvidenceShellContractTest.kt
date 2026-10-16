@@ -11,8 +11,12 @@ class ProbeEvidenceShellContractTest {
     @Test
     fun healthyAndMissingProbeFixturesEnforceTheContract() {
         val script = findScript()
+        // Pass the script relative to the working directory set below, not as an absolute
+        // path: on a Windows host the `bash` found first is often WSL's, which treats the
+        // backslashes in `C:\Users\...` as escapes and strips them. A bare file name is
+        // read the same way by every bash (Linux, WSL, Git Bash).
         val process =
-            ProcessBuilder("bash", script.absolutePath)
+            ProcessBuilder("bash", script.name)
                 .directory(script.parentFile)
                 .redirectErrorStream(true)
                 .start()
