@@ -173,13 +173,10 @@ async fn host_daemon(
     let mut stop_requested = shutdown.clone();
     tokio::select! {
         result = &mut daemon => {
-            // A service daemon has no reason to finish on its own. Reporting that
-            // as a clean stop would keep the SCM's restart-on-failure recovery
-            // actions from ever firing.
-            return result.and(Err(Failure::new(
-                FailurePhase::Daemon,
-                "the daemon exited without a stop request",
-            )));
+            // `select!` picks at random when both branches are ready, and a stop
+            // request wakes the daemon and this watcher in the same poll, so the
+            // flag, not the branch taken, says whether this exit was asked for.
+            return judge_daemon_exit(result, shutdown.is_shutdown_requested());
         }
         () = stop_requested.cancelled() => {}
     }
@@ -203,6 +200,19 @@ async fn host_daemon(
                 ),
             ));
         }
+    }
+}
+
+/// A service daemon has no reason to finish on its own, so returning without a stop
+/// request is a failure, however cleanly it exited: reporting it as a clean stop
+/// would keep the SCM's restart-on-failure recovery actions from ever firing.
+/// With a stop request outstanding, the daemon's own result stands.
+fn judge_daemon_exit(result: Result<(), Failure>, stop_requested: bool) -> Result<(), Failure> {
+    match result {
+        Ok(()) if !stop_requested => {
+            Err(Failure::new(FailurePhase::Daemon, "the daemon exited without a stop request"))
+        }
+        other => other,
     }
 }
 
@@ -320,5 +330,33 @@ impl StatusReporter {
             wait_hint,
             process_id: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Failure, FailurePhase, judge_daemon_exit};
+
+    #[test]
+    fn a_clean_exit_after_a_stop_request_is_a_clean_stop() {
+        // The race: the daemon finishes in the same poll that observes the stop.
+        assert!(judge_daemon_exit(Ok(()), true).is_ok());
+    }
+
+    #[test]
+    fn a_clean_exit_with_no_stop_request_is_a_failure() {
+        let outcome = judge_daemon_exit(Ok(()), false);
+        assert!(matches!(outcome, Err(Failure { phase: FailurePhase::Daemon, .. })));
+    }
+
+    #[test]
+    fn a_daemon_error_is_kept_whether_or_not_a_stop_was_requested() {
+        for stop_requested in [false, true] {
+            let failed = Err(Failure::new(FailurePhase::Daemon, "broker rejected the session"));
+            match judge_daemon_exit(failed, stop_requested) {
+                Err(failure) => assert_eq!(failure.message, "broker rejected the session"),
+                Ok(()) => panic!("a daemon error must not become a clean stop"),
+            }
+        }
     }
 }

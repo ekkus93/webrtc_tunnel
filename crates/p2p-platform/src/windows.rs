@@ -156,6 +156,23 @@ mod tests {
         assert!(status.success(), "icacls /grant *{sid}:{rights} failed on {path:?}");
     }
 
+    /// Gives `NT SERVICE\p2ptunnel` Modify on `path`. `icacls` cannot do this: it
+    /// refuses a service SID that no installed service resolves, whereas .NET's ACL
+    /// API stores the raw SID.
+    fn grant_service_account_modify(path: &Path) {
+        // Temp paths contain no single quote, so a single-quoted literal is safe.
+        let script = format!(
+            "$sid = New-Object System.Security.Principal.SecurityIdentifier(                'S-1-5-80-1253224334-2237551498-3137952417-4040730996-425943683');             $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(                $sid, 'Modify', 'Allow');             $acl = Get-Acl -LiteralPath '{0}'; $acl.AddAccessRule($rule);             Set-Acl -LiteralPath '{0}' -AclObject $acl",
+            path.display()
+        );
+        let status = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdout(Stdio::null())
+            .status()
+            .expect("powershell should run");
+        assert!(status.success(), "granting the service account Modify failed on {path:?}");
+    }
+
     fn temp_file(dir: &Path) -> PathBuf {
         let path = dir.join("identity");
         fs::write(&path, "x").expect("write");
@@ -231,6 +248,24 @@ mod tests {
             Err(PlatformError::Permission(_))
         ));
         assert!(matches!(ensure_not_writable_by_others(&path), Err(PlatformError::Permission(_))));
+    }
+
+    #[test]
+    fn grants_to_the_service_account_are_accepted_by_any_process() {
+        // The installer gives NT SERVICE\p2ptunnel read access to the identity and
+        // Modify on state\. A different account inspecting those files, for example
+        // an administrator running `p2pctl check-config`, must accept them.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = temp_file(dir.path());
+        grant_service_account_modify(&path);
+        ensure_private_file_permissions(&path).expect("the service account's ACE is expected");
+        ensure_not_writable_by_others(&path).expect("the service account's ACE is expected");
+        // Only that one account is exempt.
+        grant(&path, EVERYONE, "R");
+        assert!(matches!(
+            ensure_private_file_permissions(&path),
+            Err(PlatformError::Permission(_))
+        ));
     }
 
     #[test]

@@ -698,6 +698,15 @@ so far". Rules for the check:
   Under the service, that last one is `NT SERVICE\p2ptunnel`, which the installer's ACE
   grants. That covers an installer-created file owned by Administrators without
   `p2p-platform` hardcoding the service name.
+- **Amended 2026-10-16 (code review):** the allowlist also always includes the
+  `NT SERVICE\p2ptunnel` SID, not only when the process runs as it. The installer grants
+  that account read access to the identity and Modify on `state\`, so any other process
+  loading the service's files, such as `p2pctl check-config` or a hand-run `p2p-answer`
+  from an elevated shell, would otherwise reject the installer's own ACEs. The SID is
+  derived, not looked up by name: `S-1-5-80-` followed by the five little-endian 32-bit
+  words of the SHA-1 of the upper-cased UTF-16LE service name. That is how Windows derives
+  it, it is independent of the system language, and a test pins it to the value
+  `sc.exe showsid` reports.
 - `ensure_not_writable_by_others` checks the nearest existing ancestor, as on unix.
 - Wrap the crate calls in `catch_unwind`. A panic or an error counts as a rejection,
   reported through `PlatformError`, never silently as success.

@@ -1822,6 +1822,7 @@ dependencies = [
 name = "p2p-platform"
 version = "0.3.2"
 dependencies = [
+ "sha1",
  "tempfile",
  "thiserror 2.0.18",
  "windows-permissions",

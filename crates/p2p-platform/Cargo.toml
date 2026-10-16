@@ -12,6 +12,8 @@ thiserror.workspace = true
 # Safe wrappers over the Win32 security APIs, for the runtime DACL checks
 # (P2-004). Pinned exactly: unmaintained since 2021, risk accepted.
 windows-permissions = "=0.2.4"
+# Derives the p2ptunnel service account's SID, the way Windows does.
+sha1 = "0.10.6"
 
 [dev-dependencies]
 tempfile = "3.19.1"

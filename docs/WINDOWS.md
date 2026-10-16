@@ -236,8 +236,9 @@ them off.
   world-writable.
 - **On Windows**, the daemon reads each path's owner and ACL. `identity` is refused if any
   ACE grants read or write access to anyone other than its owner, `SYSTEM`,
-  `Administrators`, or the account the daemon runs as (`NT SERVICE\p2ptunnel` under the
-  service). The other configured paths, and the nearest existing parent of a path that
+  `Administrators`, the account the daemon runs as, or the service account
+  `NT SERVICE\p2ptunnel` (always accepted, so an elevated `p2pctl check-config` still
+  passes on the service's own files). The other configured paths, and the nearest existing parent of a path that
   doesn't exist yet, are refused if anyone else can write to them. Inherited ACEs count.
   So does a file owned by a broad group such as `Users`, which is refused because its owner
   could rewrite the ACL. Any error while reading the ACL is a refusal, never a pass. The

@@ -53,6 +53,10 @@ const WRITE_RIGHTS: u32 = FILE_WRITE_DATA
     | GENERIC_WRITE
     | GENERIC_ALL;
 
+/// The installed Windows service's name. Windows derives the virtual account
+/// `NT SERVICE\<name>` from it, and the installer grants that account access to
+/// the identity and state directory (spec 2.6), so its SID is always trusted.
+const SERVICE_NAME: &str = "p2ptunnel";
 const SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
 
@@ -117,8 +121,15 @@ fn inspect(path: &Path, is_dir: bool, checked: u32) -> io::Result<Option<String>
         return Ok(Some("it has no DACL, which grants everyone full access".to_string()));
     };
 
-    let trusted =
-        [parse_sid(SYSTEM)?, parse_sid(ADMINISTRATORS)?, utilities::current_process_sid()?];
+    // The service account is trusted whichever account is inspecting: the installer
+    // deliberately grants it access, so an administrator running `p2pctl
+    // check-config` or debugging in a console must not see that as a stranger.
+    let trusted = [
+        parse_sid(SYSTEM)?,
+        parse_sid(ADMINISTRATORS)?,
+        parse_sid(&service_account_sid())?,
+        utilities::current_process_sid()?,
+    ];
 
     let ace_count = dacl.len();
     for index in 0..ace_count {
@@ -160,6 +171,24 @@ fn is_allow(ace_type: AceType) -> bool {
     )
 }
 
+/// The SID of `NT SERVICE\<SERVICE_NAME>`, in string form.
+///
+/// Windows derives a service SID as `S-1-5-80-` plus the five little-endian 32-bit
+/// words of the SHA-1 of the upper-cased UTF-16LE service name. Deriving it avoids
+/// resolving the account by name, whose `NT SERVICE` prefix is localised and
+/// which only resolves once the service exists.
+fn service_account_sid() -> String {
+    use sha1::{Digest, Sha1};
+
+    let name: Vec<u8> =
+        SERVICE_NAME.to_uppercase().encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let words: Vec<String> = Sha1::digest(&name)
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]).to_string())
+        .collect();
+    format!("S-1-5-80-{}", words.join("-"))
+}
+
 fn parse_sid(sid: &str) -> io::Result<LocalBox<Sid>> {
     sid.parse()
 }
@@ -178,4 +207,19 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
         .copied()
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
         .unwrap_or("non-string panic payload")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::service_account_sid;
+
+    #[test]
+    fn service_sid_matches_the_value_windows_reports() {
+        // From `sc.exe showsid p2ptunnel` on a real machine; the installer's check
+        // script pins the same value.
+        assert_eq!(
+            service_account_sid(),
+            "S-1-5-80-1253224334-2237551498-3137952417-4040730996-425943683"
+        );
+    }
 }
