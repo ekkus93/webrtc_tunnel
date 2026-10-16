@@ -16,7 +16,7 @@ use std::path::Path;
 use windows_permissions::constants::{AceFlags, AceType, SeObjectType, SecurityInformation};
 use windows_permissions::{LocalBox, Sid, utilities, wrappers};
 
-use crate::PlatformError;
+use crate::{PlatformError, SERVICE_NAME};
 
 /// Which rights a check refuses to see granted to anyone outside the allowlist.
 #[derive(Clone, Copy)]
@@ -53,10 +53,6 @@ const WRITE_RIGHTS: u32 = FILE_WRITE_DATA
     | GENERIC_WRITE
     | GENERIC_ALL;
 
-/// The installed Windows service's name. Windows derives the virtual account
-/// `NT SERVICE\<name>` from it, and the installer grants that account access to
-/// the identity and state directory (spec 2.6), so its SID is always trusted.
-const SERVICE_NAME: &str = "p2ptunnel";
 const SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
 

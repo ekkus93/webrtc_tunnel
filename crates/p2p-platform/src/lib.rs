@@ -35,6 +35,15 @@ mod imp;
 /// that is not happening.
 pub const ENFORCES_FILE_PERMISSIONS: bool = imp::ENFORCES_FILE_PERMISSIONS;
 
+/// The name of the Windows service that hosts a daemon.
+///
+/// Windows derives the service's virtual account, `NT SERVICE\p2ptunnel`, from this
+/// name, and the installer grants that account access to the config tree, so the
+/// name and the account have to agree everywhere. This is the one Rust definition;
+/// `scripts/check-windows-service-scripts.ps1` fails if the installer's copy of it
+/// differs. It is not `cfg(windows)` so other platforms' tests can see it.
+pub const SERVICE_NAME: &str = "p2ptunnel";
+
 /// The current user's home directory, or `None` if it cannot be determined.
 ///
 /// Unix reads `HOME`. Windows prefers `USERPROFILE` -- the native value -- and

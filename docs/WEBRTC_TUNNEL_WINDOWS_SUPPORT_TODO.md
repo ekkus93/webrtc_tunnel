@@ -361,11 +361,20 @@ in our crate.
   `p2p_platform::service_config_dir(role)\config.toml`. The installer's `binPath` passes only
   `--role`, so the installer and the wrapper agree on one path through the seam instead of
   each hardcoding it (spec §6.2). An optional `--config` override exists for diagnosis.
-- **Startup glue is duplicated, not shared.** The load → validate → `setup_logging` →
-  `report_unenforced_platform_checks` → identity → authorized-keys sequence mirrors
-  `p2p-answer` / `p2p-offer` `run()`. Factoring it into `p2p-daemon` would mean editing
-  both foreground binaries, which this task's acceptance criteria say stay unchanged. It is
-  config plumbing, not tunnel logic.
+- **Startup glue is shared (changed 2026-10-16 after code review).** It was first
+  duplicated from `p2p-answer` / `p2p-offer` to leave them untouched, but that let the
+  three copies drift. It now lives in `p2p-daemon::startup` as two functions,
+  `load_runtime_config` (load, env overrides, broker URL, optional role check, validate,
+  runtime dirs) and `load_identity_and_keys`. All three binaries call them with
+  `setup_logging` and `report_unenforced_platform_checks` between, which also keeps the
+  service's per-phase exit codes meaningful. The foreground binaries keep their
+  behavior and flags; they gain no supervisor-specific mode, which is what the
+  acceptance criterion protects. Only the service asks for the role check, so
+  a foreground run behaves exactly as before.
+- **One service-name constant.** `p2p_platform::SERVICE_NAME` is the single Rust source for
+  `p2ptunnel`. The service binary and the DACL check use it, and
+  `scripts/check-windows-service-scripts.ps1` fails if it differs from the installer's
+  `$P2pServiceName`.
 - **Status reporting.** `StartPending` while the config and identity load, then `Running`
   with `STOP` accepted. On `SERVICE_CONTROL_STOP` the handler only calls
   `ShutdownToken::request_shutdown()`. The service thread then reports `StopPending`,

@@ -199,6 +199,12 @@ if ($sideEffects.Count -gt 0 -or $script:failures.Count -gt 0) {
 . $commonPath
 
 Assert-That ($P2pServiceName -ceq 'p2ptunnel') "service name must be exactly 'p2ptunnel', got '$P2pServiceName'"
+$platformLib = Join-Path $PSScriptRoot '..\crates\p2p-platform\src\lib.rs'
+$rustName = $null
+if ((Get-Content -LiteralPath $platformLib -Raw) -match '(?m)^pub const SERVICE_NAME: &str = "([^"]+)";') {
+    $rustName = $Matches[1]
+}
+Assert-That ($rustName -ceq $P2pServiceName) "p2p_platform::SERVICE_NAME ('$rustName') must equal the installer's service name ('$P2pServiceName')"
 Assert-That ($P2pServiceAccount -ceq 'NT SERVICE\p2ptunnel') "service account must be exactly 'NT SERVICE\p2ptunnel', got '$P2pServiceAccount'"
 Assert-That ($P2pSidSystem -eq 'S-1-5-18') 'SYSTEM SID constant is wrong'
 Assert-That ($P2pSidAdministrators -eq 'S-1-5-32-544') 'Administrators SID constant is wrong'

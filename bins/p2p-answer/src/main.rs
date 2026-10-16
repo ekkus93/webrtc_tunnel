@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use p2p_core::AppConfig;
-use p2p_crypto::{AuthorizedKeys, IdentityFile};
+use p2p_core::NodeRole;
 use p2p_daemon::{
-    ShutdownToken, apply_answer_overrides, apply_env_overrides, report_unenforced_platform_checks,
-    run_answer_daemon_with_shutdown, setup_logging, wait_for_process_shutdown_signal,
+    RuntimeConfigRequest, ShutdownToken, load_identity_and_keys, load_runtime_config,
+    report_unenforced_platform_checks, run_answer_daemon_with_shutdown, setup_logging,
+    wait_for_process_shutdown_signal,
 };
 use p2p_platform::PlatformError;
 
@@ -37,18 +37,18 @@ async fn main() {
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Command::Run { config, broker_url } = Cli::parse().command;
-    let mut config = load_config(config.as_deref())?;
-    apply_env_overrides(&mut config)?;
-    apply_answer_overrides(&mut config, broker_url);
-    config.validate()?;
-    config.ensure_runtime_dirs()?;
+    let config_path = resolve_config_path(config.as_deref(), p2p_platform::default_config_dir)?;
+    let config = load_runtime_config(RuntimeConfigRequest {
+        path: &config_path,
+        role: NodeRole::Answer,
+        broker_url,
+        require_matching_role: false,
+    })?;
 
     setup_logging(&config.logging)?;
     report_unenforced_platform_checks();
 
-    let local_identity = IdentityFile::from_file(&config.paths.identity)?;
-    config.validate_identity_peer(&local_identity.peer_id)?;
-    let authorized_keys = AuthorizedKeys::from_file(&config.paths.authorized_keys)?;
+    let (local_identity, authorized_keys) = load_identity_and_keys(&config)?;
 
     let shutdown = ShutdownToken::new();
     let daemon =
@@ -67,11 +67,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     result?;
     Ok(())
-}
-
-fn load_config(path: Option<&Path>) -> Result<AppConfig, Box<dyn std::error::Error>> {
-    let resolved = resolve_config_path(path, p2p_platform::default_config_dir)?;
-    Ok(AppConfig::load_from_file(&resolved)?)
 }
 
 /// Config-path resolution, parameterized on the default directory so it's testable

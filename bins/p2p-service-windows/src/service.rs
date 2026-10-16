@@ -9,8 +9,9 @@ use clap::Parser;
 use p2p_core::AppConfig;
 use p2p_crypto::{AuthorizedKeys, IdentityFile};
 use p2p_daemon::{
-    DaemonError, ShutdownToken, apply_env_overrides, report_unenforced_platform_checks,
-    run_answer_daemon_with_shutdown, run_offer_daemon_with_shutdown, setup_logging,
+    DaemonError, RuntimeConfigRequest, ShutdownToken, load_identity_and_keys, load_runtime_config,
+    report_unenforced_platform_checks, run_answer_daemon_with_shutdown,
+    run_offer_daemon_with_shutdown, setup_logging,
 };
 use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
@@ -20,10 +21,7 @@ use windows_service::{define_windows_service, service_dispatcher};
 
 use crate::cli::{Invocation, Role};
 
-/// The service's registered name. It must match the installer's `sc.exe create`
-/// name exactly, because Windows names the virtual account `NT SERVICE\p2ptunnel`
-/// after it (spec §2.6).
-const SERVICE_NAME: &str = "p2ptunnel";
+use p2p_platform::SERVICE_NAME;
 
 /// How long sessions may drain after a stop request before the service gives up
 /// and reports a failed stop. Matches `TimeoutStopSec=30s` in the shipped
@@ -251,37 +249,26 @@ struct Prepared {
     authorized_keys: AuthorizedKeys,
 }
 
-/// Mirrors the startup sequence of `p2p-answer` / `p2p-offer` `run()`, minus the
-/// `--broker-url` override, which a service has no use for.
+/// The same startup sequence as `p2p-answer` / `p2p-offer` (shared through
+/// `p2p_daemon`), minus the `--broker-url` override a service has no use for, plus the
+/// check that the config's role is the one this service was installed with.
 fn prepare(invocation: &Invocation) -> Result<Prepared, Failure> {
-    let config_failure = |error: &dyn std::fmt::Display| Failure::new(FailurePhase::Config, error);
-
-    let path = invocation.config_path().map_err(|error| config_failure(&error))?;
-    let mut config = AppConfig::load_from_file(&path)
-        .map_err(|error| config_failure(&format!("{}: {error}", path.display())))?;
-    apply_env_overrides(&mut config).map_err(|error| config_failure(&error))?;
-    if config.node.role != invocation.role.node_role() {
-        return Err(config_failure(&format!(
-            "{} is a {:?} config, but this service was installed with --role {}",
-            path.display(),
-            config.node.role,
-            invocation.role.as_str()
-        )));
-    }
-    config.validate().map_err(|error| config_failure(&error))?;
-    config.ensure_runtime_dirs().map_err(|error| config_failure(&error))?;
+    let path =
+        invocation.config_path().map_err(|error| Failure::new(FailurePhase::Config, error))?;
+    let config = load_runtime_config(RuntimeConfigRequest {
+        path: &path,
+        role: invocation.role.node_role(),
+        broker_url: None,
+        require_matching_role: true,
+    })
+    .map_err(|error| Failure::new(FailurePhase::Config, format!("{}: {error}", path.display())))?;
 
     setup_logging(&config.logging).map_err(|error| Failure::new(FailurePhase::Logging, error))?;
     report_unenforced_platform_checks();
     tracing::info!(role = invocation.role.as_str(), config = %path.display(), "p2ptunnel service starting");
 
-    let identity_failure =
-        |error: &dyn std::fmt::Display| Failure::new(FailurePhase::Identity, error);
-    let identity = IdentityFile::from_file(&config.paths.identity)
-        .map_err(|error| identity_failure(&error))?;
-    config.validate_identity_peer(&identity.peer_id).map_err(|error| identity_failure(&error))?;
-    let authorized_keys = AuthorizedKeys::from_file(&config.paths.authorized_keys)
-        .map_err(|error| identity_failure(&error))?;
+    let (identity, authorized_keys) = load_identity_and_keys(&config)
+        .map_err(|error| Failure::new(FailurePhase::Identity, error))?;
 
     Ok(Prepared { config, identity, authorized_keys })
 }

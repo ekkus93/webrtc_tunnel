@@ -27,6 +27,7 @@ mod predicates;
 mod process_signal;
 mod shutdown;
 mod signaling;
+mod startup;
 mod status;
 mod types;
 
@@ -50,6 +51,7 @@ pub use offer::{
 };
 pub use process_signal::wait_for_process_shutdown_signal;
 pub use shutdown::ShutdownToken;
+pub use startup::{RuntimeConfigRequest, load_identity_and_keys, load_runtime_config};
 pub use status::{
     DaemonStatus, ForwardListenState, ForwardRuntimeStatus, SessionStatus, StatusWriter,
 };
