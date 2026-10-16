@@ -135,6 +135,9 @@ fn run_service(invocation: &Invocation) -> windows_service::Result<()> {
     let exit_code = match outcome {
         Ok(()) => ServiceExitCode::NO_ERROR,
         Err(failure) => {
+            if matches!(failure.phase, FailurePhase::Config | FailurePhase::Logging) {
+                record_startup_error(invocation, &failure);
+            }
             tracing::error!(phase = ?failure.phase, "p2ptunnel service failed: {}", failure.message);
             ServiceExitCode::ServiceSpecific(failure.phase as u32)
         }
@@ -200,6 +203,35 @@ async fn host_daemon(
                 ),
             ));
         }
+    }
+}
+
+/// Leaves a trace of a failure that happened before the log file existed.
+///
+/// It goes under the role's service `state\` directory, the one place the
+/// installer lets the service account write, and it is located without the
+/// config, which may be what failed to load. Best-effort: if even this cannot be
+/// written, the exit code is still reported.
+fn record_startup_error(invocation: &Invocation, failure: &Failure) {
+    use std::io::Write;
+
+    let Ok(role_dir) = p2p_platform::service_config_dir(invocation.role.as_str()) else {
+        return;
+    };
+    let unix_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let line = format!(
+        "unix_time={unix_time} exit_code={} phase={:?}: {}\n",
+        failure.phase as u32, failure.phase, failure.message
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(role_dir.join("state").join("startup-error.log"))
+    {
+        let _ = file.write_all(line.as_bytes());
     }
 }
 

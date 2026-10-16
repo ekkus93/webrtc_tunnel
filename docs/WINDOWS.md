@@ -356,11 +356,14 @@ service-specific exit code. `sc.exe query p2ptunnel` shows it as `SERVICE_EXIT_C
 | 4 | Daemon error | The daemon returned an error after startup; also failure to start the async runtime or to report status to the SCM. |
 | 5 | Stop timeout | Sessions did not drain within 30 s of the stop request. |
 
-**Errors before logging starts only show up as the exit code.** The config is read and
-validated before logging is initialised, so a failure with code 1 cannot be written to the
-log file. There is no Event Log integration yet. For codes 1 and 2, run
-`p2pctl check-config` against the same config from an elevated shell to see the actual
-message. Codes 3 to 5 happen after logging is up, so the reason is in the log file.
+**Errors before logging starts go to `startup-error.log`.** The config is read and
+validated before logging is initialised, so failures with codes 1 and 2 can't reach the
+log file. The wrapper appends them to
+`%ProgramData%\p2ptunnel\<role>\state\startup-error.log` instead, one line per failure with
+a Unix timestamp, the exit code and the message. That write is best-effort: if it fails
+too, run `p2pctl check-config` against the same config from an elevated shell. Codes 3 to 5
+happen after logging is up, so their reason is in the normal log file. There is no Event
+Log integration.
 
 ## 8. Logs
 
@@ -465,8 +468,7 @@ standard user. Use an elevated shell.
   but that release job has not run yet.
 - **No Windows shutdown lifecycle test has run yet** (P1-002). The Unix signal test does
   not run on Windows, and the Service Control Manager test needs an elevated run.
-- **Early startup failures are visible only as an exit code**; nothing is written to the
-  Event Log.
+- **Early startup failures go to `<role>\state\startup-error.log`**, not to the Event Log.
 - **Automatic restart after a failure is not yet observed on a real install.** By default
   Windows runs restart-on-failure actions only when the service process dies without
   reporting `STOPPED`. The wrapper reports every failure as `STOPPED` with a service-specific

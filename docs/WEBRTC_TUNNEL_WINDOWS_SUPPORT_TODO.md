@@ -377,8 +377,13 @@ in our crate.
   code by phase (config, logging, identity/keys, daemon error, drain timeout), so
   `sc.exe query p2ptunnel` can tell them apart. A daemon that finishes on its own, with no
   stop request, is also reported as a daemon failure rather than a clean stop, so the SCM's
-  restart-on-failure recovery actions can fire. Errors before `setup_logging` cannot reach
-  the log file. Writing them to the Windows Event Log is a known gap, left as a follow-up.
+  restart-on-failure recovery actions can fire.
+- **Errors before logging starts.** Config and logging-setup failures happen before the
+  log file exists. The wrapper appends them, with a timestamp and the exit-code phase, to
+  `service_config_dir(role)\state\startup-error.log`. That is the one directory the
+  installer lets the service account write, and it doesn't depend on the config that just
+  failed to load. Writing to it is best-effort and never masks the original failure.
+  Event Log integration would need a registered event source and is not planned.
 - **Non-Windows hosts.** `windows-service` is a `cfg(windows)` target dependency, and
   `main` on other platforms prints that the binary is Windows-only and exits 1. That keeps
   `cargo clippy --workspace` and `cargo test --workspace` clean on Linux and macOS CI.
