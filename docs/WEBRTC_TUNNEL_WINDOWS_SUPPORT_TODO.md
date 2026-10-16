@@ -397,7 +397,14 @@ in our crate.
 
 ---
 
-## P0-008 — Service installer: virtual account and restrictive DACL
+## P0-008 — Service installer: virtual account and restrictive DACL — **CODE COMPLETE**
+
+**Status:** `packaging/windows/install.ps1`, `uninstall.ps1`, `p2ptunnel-common.ps1` and
+`README.md` exist, and `scripts/check-windows-service-scripts.ps1` validates them
+statically. CI runs that check in `test-windows`. The install also sets
+`sc.exe failureflag p2ptunnel 1`, so the recovery actions fire on the wrapper's non-zero
+`STOPPED` exits as well as on crashes. The acceptance criteria below are **not yet
+verified**. They need an elevated install on a real machine.
 
 ### Files
 ```text
@@ -441,7 +448,10 @@ Install the service under `NT SERVICE\p2ptunnel` and lock down the config direct
 
 # P1 tasks
 
-## P1-001 — Prove real `mqtts://` signaling on Windows
+## P1-001 — Prove real `mqtts://` signaling on Windows — **HARNESS WRITTEN**
+
+**Status:** `tests/e2e/windows/mqtts-loopback.ps1` automates the manual proof. It hasn't
+been run, because mosquitto isn't installed on the dev machine.
 
 ### Goal
 The Docker broker E2E is Linux-only, so real MQTT-over-TLS signaling has never run on
@@ -478,7 +488,11 @@ listeners — but drive it through `SERVICE_CONTROL_STOP` rather than a signal.
 
 ---
 
-## P1-003 — Android test-harness portability on a Windows host
+## P1-003 — Android test-harness portability on a Windows host — **DONE on Windows**
+
+**Status:** committed in 79c72c5. On Windows, 790 tests pass with none skipped and
+`./gradlew check` is green, run with `-PskipRustBuild`. That run also fixed a ninth test,
+which had been silently skipping on Windows. Not yet confirmed on Linux CI.
 
 ### Files
 ```text
@@ -549,7 +563,11 @@ An installable artifact, matching the intent of `packaging/debian` and `packagin
 
 ---
 
-## P2-002 — Add Windows to the release-artifacts matrix
+## P2-002 — Add Windows to the release-artifacts matrix — **CODE COMPLETE**
+
+**Status:** `release-artifacts` builds `windows-latest` and publishes a `.zip` with all four
+`.exe` files, `packaging/windows/`, `docs/examples/` and `docs/WINDOWS.md`, laid out the
+way `install.ps1` expects. It has not run on a tag yet.
 
 ### Files
 ```text
@@ -565,7 +583,12 @@ An installable artifact, matching the intent of `packaging/debian` and `packagin
 
 ---
 
-## P2-003 — Windows-native broker E2E
+## P2-003 — Windows-native broker E2E — **CODE COMPLETE**
+
+**Status:** `crates/p2p-daemon/tests/native_broker_tunnel.rs` skips when mosquitto is
+absent, unless `P2P_REQUIRE_BROKER_TEST` is set. `test-windows` installs mosquitto with
+Chocolatey and runs it. The user relaxed gating on 2026-10-15, so that one step is
+`continue-on-error` until it has passed on the hosted runner. Then remove the flag.
 
 ### Goal
 Replace the Docker dependency for Windows with a native mosquitto so the real-broker path
