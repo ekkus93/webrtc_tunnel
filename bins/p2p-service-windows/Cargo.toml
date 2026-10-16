@@ -17,5 +17,13 @@ tracing.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.1"
 
+[dev-dependencies]
+rcgen = "0.14.7"
+serde_json.workspace = true
+tempfile = "3.27.0"
+# Same version and default (aws-lc-rs) features rumqttc already builds, so the
+# SCM test's in-process TLS broker adds no new crypto backend to the build.
+tokio-rustls = "0.26.4"
+
 [lints]
 workspace = true
