@@ -402,12 +402,15 @@ in our crate.
       time by `--role answer|offer` in `binPath`, and the config is read from
       `p2p_platform::service_config_dir(role)`.
 - [ ] `sc.exe start p2ptunnel` / `sc.exe stop p2ptunnel` work with either role installed.
-- [ ] The service hosts exactly one daemon. Running both roles as services at once is out
-      of scope (spec §6.4).
+- [x] The service hosts exactly one daemon. Running both roles as services at once is out
+      of scope (spec §6.4). (By construction: `--role` selects one daemon per process.)
 - [ ] Stop is graceful: exit code 0, terminal `Closed` status, no lingering listeners.
-- [ ] Binary contains no tunnel logic.
-- [ ] `p2p-offer` and `p2p-answer` are unchanged — no supervisor-specific mode is added to
-      either, per the rule quoted in spec §6.4.
+- [x] Binary contains no tunnel logic. (SCM plumbing, status reporting and the shared
+      startup helpers; the daemon entry points are the ones the foreground binaries call.)
+- [x] `p2p-offer` and `p2p-answer` are unchanged — no supervisor-specific mode is added to
+      either, per the rule quoted in spec §6.4. (Their startup code now calls the shared
+      `p2p_daemon::startup` helpers, with the same flags, behavior and error text; no
+      supervisor mode was added.)
 
 ---
 
@@ -544,9 +547,10 @@ Prefer injecting a failing filesystem abstraction over relying on OS permission
 side-effects. Do **not** change app behavior to make these pass.
 
 ### Acceptance criteria
-- [ ] `./gradlew check` is green on a Windows host.
+- [x] `./gradlew check` is green on a Windows host. (Run with `-PskipRustBuild`; the
+      Rust JNI build was not part of that run.)
 - [ ] Still green on Linux CI.
-- [ ] No production Kotlin behavior changed.
+- [x] No production Kotlin behavior changed. (Only the six test files changed.)
 
 ---
 
@@ -646,7 +650,8 @@ way `install.ps1` expects. It has not run on a tag yet.
 
 ### Acceptance criteria
 - [ ] Tagged builds publish a Windows artifact.
-- [ ] Archive format is appropriate for Windows (zip, not tar.gz).
+- [x] Archive format is appropriate for Windows (zip, not tar.gz). (In the workflow; not
+      yet run on a tag.)
 
 ---
 
