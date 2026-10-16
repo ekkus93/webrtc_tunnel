@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSI package for the p2ptunnel Windows service (task P2-001).
+
+  This package only copies files. The service registration and the %ProgramData%\p2ptunnel
+  DACL are done by the reviewed P0-008 scripts, packaging\windows\install.ps1 and
+  uninstall.ps1, run as deferred, elevated (LocalSystem) custom actions. Do not re-implement
+  any of that logic here: there must be exactly one implementation.
+
+  Public properties:
+    ROLE        answer | offer. Required on a fresh install, no default. Remembered in
+                HKLM\SOFTWARE\p2ptunnel\Role so upgrades and repairs reuse it.
+    REMOVEDATA  1 on uninstall also deletes %ProgramData%\p2ptunnel (uninstall.ps1
+                -RemoveData). Anything else keeps it. Never applied during an upgrade.
+    INSTALLFOLDER  Defaults to %ProgramFiles%\p2ptunnel. install.ps1 refuses a folder that
+                non-administrators can write to.
+
+  Built by build-msi.ps1, which defines BinDir, RepoRoot and Version. See README.md.
+-->
+<?ifndef BinDir?>
+<?error BinDir must be defined (the directory holding the release .exe files). Use build-msi.ps1.?>
+<?endif?>
+<?ifndef RepoRoot?>
+<?error RepoRoot must be defined (the repository root). Use build-msi.ps1.?>
+<?endif?>
+<?ifndef Version?>
+<?error Version must be defined (major.minor.patch). Use build-msi.ps1.?>
+<?endif?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="p2ptunnel"
+           Manufacturer="webrtc_tunnel maintainers"
+           Version="$(var.Version)"
+           UpgradeCode="00F8FBAF-A785-45BD-88A3-171CF0049B69"
+           Language="1033"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <SummaryInformation Description="p2ptunnel WebRTC port-forwarding tunnel (Windows service)" />
+
+    <!-- The old product is removed completely (its uninstall custom action stops and deletes
+         the service, keeping %ProgramData%\p2ptunnel) before the new one is installed and
+         registers the service again. -->
+    <MajorUpgrade Schedule="afterInstallValidate"
+                  AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/ekkus93/webrtc_tunnel" />
+    <!-- Only uninstall.ps1 stops the service, with its own 60 s graceful-drain wait. Restart
+         Manager must not stop or restart it behind the scripts' back. -->
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
+
+    <!-- ROLE: required, validated, no default. -->
+    <Property Id="ROLE" Secure="yes" />
+    <Property Id="REMOVEDATA" Secure="yes" />
+
+    <!-- The role an earlier install of this product recorded. Read into a separate property
+         so a ROLE given on the command line always wins over it. It only exists while this
+         product is installed, so a fresh machine still has to be told the role. -->
+    <Property Id="P2P_REMEMBERED_ROLE" Secure="yes">
+      <RegistrySearch Id="P2pRememberedRoleSearch"
+                      Root="HKLM"
+                      Key="SOFTWARE\p2ptunnel"
+                      Name="Role"
+                      Type="raw"
+                      Bitness="always64" />
+    </Property>
+    <SetProperty Id="ROLE"
+                 Value="[P2P_REMEMBERED_ROLE]"
+                 After="AppSearch"
+                 Sequence="both"
+                 Condition="NOT ROLE AND P2P_REMEMBERED_ROLE" />
+
+    <!-- A p2ptunnel service that this product did not install (e.g. from the release .zip and
+         install.ps1). install.ps1 would refuse it anyway; failing here first means nothing is
+         copied and no rollback runs uninstall.ps1 against someone else's service. -->
+    <Property Id="P2P_EXISTING_SERVICE_IMAGE" Secure="yes">
+      <RegistrySearch Id="P2pExistingServiceSearch"
+                      Root="HKLM"
+                      Key="SYSTEM\CurrentControlSet\Services\p2ptunnel"
+                      Name="ImagePath"
+                      Type="raw"
+                      Bitness="always64" />
+    </Property>
+
+    <Launch Condition='Installed OR ROLE~="answer" OR ROLE~="offer"'
+            Message="ROLE is required and must be answer or offer, for example: msiexec /i p2ptunnel.msi ROLE=answer /qn /l*v install.log" />
+    <Launch Condition='NOT REMOVEDATA OR REMOVEDATA="0" OR REMOVEDATA="1"'
+            Message="REMOVEDATA must be 1 (delete %ProgramData%\p2ptunnel on uninstall) or 0 / unset (keep it)." />
+    <Launch Condition="Installed OR WIX_UPGRADE_DETECTED OR NOT P2P_EXISTING_SERVICE_IMAGE"
+            Message="A Windows service named p2ptunnel already exists and was not installed by this package. Remove it first with packaging\windows\uninstall.ps1 (elevated), then run this installer again." />
+
+    <Feature Id="Main" Title="p2ptunnel" Level="1">
+      <ComponentGroupRef Id="P2pBinaries" />
+      <ComponentGroupRef Id="P2pServiceScripts" />
+      <ComponentGroupRef Id="P2pExampleConfigs" />
+      <ComponentGroupRef Id="P2pDocs" />
+      <ComponentRef Id="P2pRememberedRole" />
+    </Feature>
+
+    <!-- Same layout as the release .zip (P2-002): install.ps1 dot-sources
+         p2ptunnel-common.ps1 from its own directory and finds its default config template at
+         ..\..\docs\examples\<role>-config.toml. -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="p2ptunnel">
+        <Directory Id="PackagingDir" Name="packaging">
+          <Directory Id="PackagingWindowsDir" Name="windows" />
+        </Directory>
+        <Directory Id="DocsDir" Name="docs">
+          <Directory Id="DocsExamplesDir" Name="examples" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="P2pBinaries" Directory="INSTALLFOLDER">
+      <Component>
+        <File Id="P2pServiceWindowsExe" Source="$(var.BinDir)\p2p-service-windows.exe" />
+      </Component>
+      <Component>
+        <File Id="P2pAnswerExe" Source="$(var.BinDir)\p2p-answer.exe" />
+      </Component>
+      <Component>
+        <File Id="P2pOfferExe" Source="$(var.BinDir)\p2p-offer.exe" />
+      </Component>
+      <Component>
+        <File Id="P2pctlExe" Source="$(var.BinDir)\p2pctl.exe" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="P2pServiceScripts" Directory="PackagingWindowsDir">
+      <Component>
+        <File Id="InstallPs1" Source="$(var.RepoRoot)\packaging\windows\install.ps1" />
+      </Component>
+      <Component>
+        <File Id="UninstallPs1" Source="$(var.RepoRoot)\packaging\windows\uninstall.ps1" />
+      </Component>
+      <Component>
+        <File Id="CommonPs1" Source="$(var.RepoRoot)\packaging\windows\p2ptunnel-common.ps1" />
+      </Component>
+      <Component>
+        <File Id="ServiceReadme" Source="$(var.RepoRoot)\packaging\windows\README.md" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="P2pExampleConfigs" Directory="DocsExamplesDir">
+      <Component>
+        <File Id="AnswerConfigToml" Source="$(var.RepoRoot)\docs\examples\answer-config.toml" />
+      </Component>
+      <Component>
+        <File Id="OfferConfigToml" Source="$(var.RepoRoot)\docs\examples\offer-config.toml" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="P2pDocs" Directory="INSTALLFOLDER">
+      <Component>
+        <File Id="ReadmeMd" Source="$(var.RepoRoot)\README.md" />
+      </Component>
+      <Component>
+        <File Id="LicenseFile" Source="$(var.RepoRoot)\LICENSE" />
+      </Component>
+      <Component>
+        <File Id="WindowsMd" Source="$(var.RepoRoot)\docs\WINDOWS.md" />
+      </Component>
+    </ComponentGroup>
+
+    <Component Id="P2pRememberedRole" Directory="INSTALLFOLDER" Guid="4E620564-787E-4247-A3B6-58CF831DB85E">
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\p2ptunnel"
+                     Name="Role"
+                     Type="string"
+                     Value="[ROLE]"
+                     KeyPath="yes" />
+    </Component>
+
+    <!--
+      Custom actions. All run powershell.exe through WixQuietExec, which captures the
+      scripts' output into the MSI log (/l*v) and fails the action on a non-zero exit code.
+      Deferred and Impersonate="no", so they run as LocalSystem, which install.ps1 and
+      uninstall.ps1 accept as elevated. The 64-bit Windows PowerShell is named explicitly:
+      both scripts refuse a 32-bit host.
+
+      -InstallDir gets "[INSTALLFOLDER]." rather than "[INSTALLFOLDER]": INSTALLFOLDER ends
+      in a backslash, which would escape the closing quote. install.ps1 normalizes the
+      trailing "\." away with GetFullPath.
+
+      ROLE can only be answer or offer here: the Launch condition above rejects anything
+      else before the execute sequence starts.
+    -->
+
+    <!-- Install: register the service and lock down %ProgramData%\p2ptunnel. -->
+    <CustomAction Id="P2pInstallService"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <SetProperty Id="P2pInstallService"
+                 Action="SetP2pInstallService"
+                 Before="P2pInstallService"
+                 Sequence="execute"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]packaging\windows\install.ps1&quot; -Role [ROLE] -InstallDir &quot;[INSTALLFOLDER].&quot;" />
+
+    <!-- Rolls back a successful install.ps1 if a later action fails. uninstall.ps1 keeps
+         %ProgramData%\p2ptunnel (install.ps1 does the same when it fails itself) and, without
+         -Force, refuses any p2ptunnel service whose binPath is not p2p-service-windows.exe. -->
+    <CustomAction Id="P2pInstallServiceRollback"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixQuietExec"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+    <SetProperty Id="P2pInstallServiceRollback"
+                 Action="SetP2pInstallServiceRollback"
+                 Before="P2pInstallServiceRollback"
+                 Sequence="execute"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]packaging\windows\uninstall.ps1&quot;" />
+
+    <!-- Uninstall: stop and delete the service. Keeps %ProgramData%\p2ptunnel unless
+         REMOVEDATA=1, and never removes it during an upgrade (UPGRADINGPRODUCTCODE is set
+         when a newer package is removing this one). -->
+    <CustomAction Id="P2pUninstallService"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <SetProperty Id="P2pUninstallService"
+                 Action="SetP2pUninstallServiceKeepData"
+                 Before="P2pUninstallService"
+                 Sequence="execute"
+                 Condition='Installed AND REMOVE~="ALL" AND (NOT REMOVEDATA="1" OR UPGRADINGPRODUCTCODE)'
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]packaging\windows\uninstall.ps1&quot;" />
+    <SetProperty Id="P2pUninstallService"
+                 Action="SetP2pUninstallServiceRemoveData"
+                 Before="P2pUninstallService"
+                 Sequence="execute"
+                 Condition='Installed AND REMOVE~="ALL" AND REMOVEDATA="1" AND NOT UPGRADINGPRODUCTCODE'
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]packaging\windows\uninstall.ps1&quot; -RemoveData" />
+
+    <!-- Re-registers the service if the uninstall is rolled back after uninstall.ps1 ran.
+         Runs after RemoveFiles' own rollback has put the scripts back. If the service still
+         exists (uninstall.ps1 itself failed, or it is pending deletion), install.ps1
+         refuses and changes nothing. With REMOVEDATA=1 the data is already gone, so it
+         seeds a fresh example config rather than restoring the old one. -->
+    <CustomAction Id="P2pUninstallServiceRollback"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixQuietExec"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+    <SetProperty Id="P2pUninstallServiceRollback"
+                 Action="SetP2pUninstallServiceRollback"
+                 Before="P2pUninstallServiceRollback"
+                 Sequence="execute"
+                 Condition='Installed AND REMOVE~="ALL" AND (ROLE~="answer" OR ROLE~="offer")'
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]packaging\windows\install.ps1&quot; -Role [ROLE] -InstallDir &quot;[INSTALLFOLDER].&quot;" />
+
+    <InstallExecuteSequence>
+      <!-- Fresh install, including the new package of a major upgrade. Not on repair or
+           modify: install.ps1 refuses an existing service by design. -->
+      <Custom Action="P2pInstallServiceRollback" Before="P2pInstallService" Condition="NOT Installed" />
+      <Custom Action="P2pInstallService" Before="InstallFinalize" Condition="NOT Installed" />
+
+      <!-- Full uninstall, including the old package of a major upgrade. Before RemoveFiles,
+           so the scripts are still on disk and the service has stopped before its binary is
+           deleted. -->
+      <Custom Action="P2pUninstallServiceRollback" Before="P2pUninstallService" Condition='Installed AND REMOVE~="ALL" AND (ROLE~="answer" OR ROLE~="offer")' />
+      <Custom Action="P2pUninstallService" Before="RemoveFiles" Condition='Installed AND REMOVE~="ALL"' />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
