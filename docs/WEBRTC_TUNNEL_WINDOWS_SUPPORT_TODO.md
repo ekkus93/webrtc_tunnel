@@ -316,7 +316,8 @@ through the forwarded ollama port returned 200 and `p2pctl status` showed `tunne
 `sc.exe stop` reached STOPPED in under a second with `WIN32_EXIT_CODE` and
 `SERVICE_EXIT_CODE` both 0, no listener left on any forward port and no
 `p2p-service-windows` process left; a second start/stop cycle behaved the same. The
-**answer role has not been installed and run as a service**.
+**answer role** was later run as an MSI-installed service and served a real tunnel (see
+P2-001).
 
 ### Files
 ```text
@@ -410,7 +411,8 @@ in our crate.
       time by `--role answer|offer` in `binPath`, and the config is read from
       `p2p_platform::service_config_dir(role)`. (Checked for `offer`.)
 - [ ] `sc.exe start p2ptunnel` / `sc.exe stop p2ptunnel` work with either role installed.
-      (Works with `offer`; `answer` not yet tried.)
+      (Works with `offer`, and with `answer` via the MSI-installed service; in the answer
+      run `sc.exe stop` also ended with exit code 0.)
 - [x] The service hosts exactly one daemon. Running both roles as services at once is out
       of scope (spec §6.4). (By construction: `--role` selects one daemon per process.)
 - [x] Stop is graceful: exit code 0, terminal `Closed` status, no lingering listeners.
@@ -673,8 +675,13 @@ tested elevated with the offer role: `wix build` and ICE validation pass first t
 `NT SERVICE\p2ptunnel` with the right ACL; the MSI-installed service connected to the broker
 and stopped with exit code 0; a major upgrade with a rebuilt MSI and no `ROLE` kept the role,
 config and identity; uninstall keeps data, `REMOVEDATA=1` removes it; a zip-installed
-service blocks the MSI; `ROLE=ANSWER` is accepted; repair restores a deleted file. Not
-verified: signing, rollback actions, and a service run in the answer role. The Windows leg
+service blocks the MSI; `ROLE=ANSWER` is accepted; repair restores a deleted file. A second
+elevated run covered the rest of the gaps: install rollback works both when `install.ps1`
+fails mid-way and when a later MSI action fails; the **answer role runs as an
+MSI-installed service** and served a real tunnel (HTTP 200 through it, clean stop with exit
+code 0); and signing works with a self-signed certificate up to the `signtool verify`
+trust check. Not verified: signing with a real, trusted certificate (the user must supply
+one), and the uninstall rollback action. The Windows leg
 of `release-artifacts` now also builds the MSI (WiX 5.0.2, no EULA, unsigned) and uploads it
 as an artifact and a release asset; the step's own commands ran locally, but the job runs
 only on a tag, so it has not run on a hosted runner. Known cosmetic issues: square-bracketed words in `install.ps1`'s output (such

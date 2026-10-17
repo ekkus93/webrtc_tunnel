@@ -206,12 +206,29 @@ unless noted. Everything below passed:
 - A service installed from the zip with `install.ps1` blocks the MSI (1603), and the
   existing service is left untouched.
 - Repair restores a deleted file and leaves the service alone.
+- Install rollback, both ways. (1) `install.ps1` failing after it created the service (a
+  junction planted under `%ProgramData%\p2ptunnel`): it deletes the half-created service, the
+  MSI fails with 1603, the files and the remembered role are rolled back, and the data root
+  is left as it was. (2) A later MSI action failing after `install.ps1` succeeded (tested
+  with a throwaway MSI that adds an action exiting 7): the rollback action runs
+  `uninstall.ps1`, and the service, files and registry values are gone afterwards, with
+  `%ProgramData%\p2ptunnel` left behind by design.
+- The `answer` role as an MSI-installed service, with a real tunnel: `p2pctl keygen --dir`
+  into the service directory inherits the locked-down ACL; the service (running as
+  `NT SERVICE\p2ptunnel`) connected to the broker, accepted a session from a foreground
+  `p2p-offer`, forwarded a request to a local HTTP server and returned its response (HTTP
+  200), and stopped with exit code 0. Both peers were on the same machine, over a public
+  broker with a random topic prefix.
+- Signing as far as a self-signed certificate allows: `build-msi.ps1 -SignCert <thumbprint>`
+  finds `signtool`, signs the staged binary, and then stops at `signtool verify /pa` because
+  the self-signed root is untrusted. It fails safe and builds nothing. The staging copy is
+  removed.
 
 Not verified yet:
 
-- The rollback actions (a failing `install.ps1` or a later MSI action failing).
-- The `answer` role running as an MSI-installed service. Only registration was checked.
-- Signing with a real certificate.
+- Signing with a real, trusted code-signing certificate and a timestamp server (the
+  verify step and signing the MSI itself).
+- The rollback of an uninstall (the `P2pUninstallServiceRollback` action).
 - The release job's MSI step on a hosted runner. The `release-artifacts` Windows leg now
   installs WiX 5.0.2 and builds and uploads an unsigned MSI; its commands were run locally,
   but the job only runs on a tag.

@@ -479,13 +479,13 @@ standard user. Use an elevated shell.
   was STUN only: symmetric NAT and carrier-grade NAT, where there is no TURN fallback, are
   untested. The answer role on Windows has not been checked against a remote offer peer, and
   the scripted TLS broker test (P1-001) has not been run.
-- **The service has been through most of its acceptance list, in the offer role only.**
-  An elevated run on 2026-10-17 installed it, ran a tunnel as `NT SERVICE\p2ptunnel`,
-  stopped it cleanly (exit code 0, no listener left) and uninstalled it with no leftovers.
-  Still open (TODO P0-007, P0-008): the **answer** role as a service, surviving logoff
-  and running with no user logged in, and an actual read attempt on the identity by
-  another account (the ACL was checked with `icacls`). The installer README lists commands
-  for each.
+- **The service has been through most of its acceptance list.** Elevated runs on
+  2026-10-17 installed it, ran tunnels as `NT SERVICE\p2ptunnel` in the offer role (with
+  the scripts) and in the answer role (installed with the MSI), stopped it cleanly (exit
+  code 0, no listener left) and uninstalled it with no leftovers. Still open (TODO P0-007,
+  P0-008): surviving logoff and running with no user logged in, and an actual read attempt
+  on the identity by another account (the ACL was checked with `icacls`). The installer
+  README lists commands for each.
 - **Runtime ACL checks rely on an old crate.** They use `windows-permissions` 0.2.4, pinned
   exactly; it has been unmaintained since 2021. Any panic or error inside it is treated as a
   refusal.
