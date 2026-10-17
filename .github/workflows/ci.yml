@@ -260,19 +260,15 @@ jobs:
       - name: Check Windows service scripts
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-service-scripts.ps1
-      # TEMPORARY: `continue-on-error` is set on this one step only, because the
-      # native-mosquitto broker E2E has never run on a hosted windows-latest runner
-      # (the installer, loopback TLS, and runner firewall behaviour are all
-      # unproven there). The user explicitly relaxed gating for this step while it
-      # is being proven. Once it has passed on the hosted runner, remove
-      # `continue-on-error` so it becomes a required gate like every other step.
-      #
       # Mosquitto comes from the upstream installer, not Chocolatey: the Chocolatey
       # community repository has no `mosquitto` package. The installer is not
       # Authenticode-signed, so its SHA-256 is pinned; when bumping the version,
       # download the new installer and update both values together.
-      - name: Native mosquitto TLS broker E2E (temporarily non-blocking)
-        continue-on-error: true
+      #
+      # This step was non-blocking (`continue-on-error`) until it had passed on a
+      # hosted windows-latest runner, which it did in CI #667; it is now a required
+      # gate like every other step.
+      - name: Native mosquitto TLS broker E2E
         shell: pwsh
         env:
           P2P_REQUIRE_BROKER_TEST: "1"

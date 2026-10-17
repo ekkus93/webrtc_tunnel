@@ -145,9 +145,11 @@ the `signoff` gate alongside Linux and macOS.
 
 ### Acceptance criteria
 - [x] Job added and required in `signoff`.
-- [ ] **Confirm green on the first real run.** It has only ever been validated on a local
-      Windows machine; the hosted runner may differ. If it fails, fix forward rather than
-      demoting the gate.
+- [x] **Confirm green on the first real run.** Green in CI #667 (2026-10-17, `d78722f`).
+      It took four runs: every failure was a test-fixture or CI-setup assumption that held
+      on the dev machine and not on the runner (a PowerShell 7 `PSModulePath` leak, the
+      SCM test's temp-dir ACL, the nonexistent Chocolatey `mosquitto` package). No product
+      bug turned up, and the gate was never demoted.
 
 ---
 
@@ -499,7 +501,11 @@ Install mosquitto natively on Windows (the upstream installer) and run a manual 
 against it, forwarding one port. This can precede the automated version in P2-003.
 
 ### Acceptance criteria
-- [ ] A Windows peer completes signaling against a real TLS broker and passes data.
+- [x] A Windows peer completes signaling against a real TLS broker and passes data.
+      (Two ways: the P2-003 test against a local mosquitto with TLS passes on the dev machine
+      and on `windows-latest` in CI #667, and on 2026-10-17 a Windows `p2p-offer` completed a
+      tunnel through the public `mqtts://broker.emqx.io:8883`. The `mqtts-loopback.ps1`
+      script itself has still not been run.)
 
 ---
 
@@ -536,7 +542,8 @@ Mirror the unix test's assertions — exit code, terminal `Closed` status, no li
 listeners — but drive it through `SERVICE_CONTROL_STOP` rather than a signal.
 
 ### Acceptance criteria
-- [ ] Test is `#![cfg(windows)]` and runs in the `test-windows` CI job.
+- [x] Test is `#![cfg(windows)]` and runs in the `test-windows` CI job. (It ran for real,
+      elevated, in CI #667.)
 - [x] Asserts the same truthfulness properties as the unix test. (Executed elevated; passes.)
 
 ---
@@ -698,26 +705,29 @@ way `install.ps1` expects. It has not run on a tag yet.
 
 ---
 
-## P2-003 — Windows-native broker E2E — **CODE COMPLETE**
+## P2-003 — Windows-native broker E2E — **DONE**
 
 **Status:** `crates/p2p-daemon/tests/native_broker_tunnel.rs` skips when mosquitto is
 absent, unless `P2P_REQUIRE_BROKER_TEST` is set. `test-windows` installs mosquitto and runs
 it. The user relaxed gating on 2026-10-15, so that one step is `continue-on-error` until it
 has passed on the hosted runner. Then remove the flag.
 
-**First hosted run (2026-10-17, CI #666): failed at install.** The step used
+**Hosted runs (2026-10-17).** CI #666 failed at install: the step used
 `choco install mosquitto`, but the Chocolatey community repository has no `mosquitto`
-package, so nothing ran. It now downloads the upstream installer
+package, so nothing ran. The step now downloads the upstream installer
 (`mosquitto-2.0.22-install-windows-x64.exe`, not Authenticode-signed) with its SHA-256
-pinned in the workflow, and installs it silently with `/S`. **Not yet re-run**, so whether
-the silent install and the test itself work on the runner is unknown.
+pinned in the workflow, and installs it silently with `/S`. **CI #667 passed**: the install
+worked and `full_tunnel_over_native_tls_broker` passed in about 3.5 s of test time. The
+`continue-on-error` flag has been removed, so the step is now a required gate. Its
+remaining risk is that every run downloads from mosquitto.org; if that proves flaky, cache
+the installer or host it as a release asset rather than loosening the gate again.
 
 ### Goal
 Replace the Docker dependency for Windows with a native mosquitto so the real-broker path
 is covered in CI.
 
 ### Acceptance criteria
-- [ ] Equivalent coverage to `real_broker_tunnel.rs`, running in the `test-windows` job.
+- [x] Equivalent coverage to `real_broker_tunnel.rs`, running in the `test-windows` job.
 
 ---
 
