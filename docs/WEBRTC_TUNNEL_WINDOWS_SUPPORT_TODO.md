@@ -674,8 +674,10 @@ tested elevated with the offer role: `wix build` and ICE validation pass first t
 and stopped with exit code 0; a major upgrade with a rebuilt MSI and no `ROLE` kept the role,
 config and identity; uninstall keeps data, `REMOVEDATA=1` removes it; a zip-installed
 service blocks the MSI; `ROLE=ANSWER` is accepted; repair restores a deleted file. Not
-verified: signing, an MSI build in CI/release, rollback actions, and a service run in the
-answer role. Known cosmetic issues: square-bracketed words in `install.ps1`'s output (such
+verified: signing, rollback actions, and a service run in the answer role. The Windows leg
+of `release-artifacts` now also builds the MSI (WiX 5.0.2, no EULA, unsigned) and uploads it
+as an artifact and a release asset; the step's own commands ran locally, but the job runs
+only on a tag, so it has not run on a hosted runner. Known cosmetic issues: square-bracketed words in `install.ps1`'s output (such
 as `[node]`) are blanked in the MSI log, and the remembered role is stored as typed
 (`ANSWER`). `WINDOWS.md` is now installed under `docs\` as in the zip; the rebuilt MSI's
 File and Component tables confirm it, but the install tests were not re-run on that build.

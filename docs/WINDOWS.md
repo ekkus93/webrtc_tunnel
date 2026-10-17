@@ -489,9 +489,14 @@ standard user. Use an elevated shell.
 - **Runtime ACL checks rely on an old crate.** They use `windows-permissions` 0.2.4, pinned
   exactly; it has been unmaintained since 2021. Any panic or error inside it is treated as a
   refusal.
-- **No MSI or other installer package** (P2-001). Tagged releases are set up to publish a
-  Windows `.zip` with the binaries, the installer scripts and the example configs (P2-002),
-  but that release job has not run yet.
+- **The MSI is unsigned and new.** There is an MSI (P2-001, built from
+  [`packaging/windows/wix`](../packaging/windows/wix/README.md)) that installs the binaries and
+  runs the same `install.ps1` as the `.zip`, with `msiexec /i p2ptunnel.msi ROLE=answer|offer
+  /qn`. It has been tested locally for install, upgrade, uninstall and repair with the offer
+  role, but it is not code-signed, so SmartScreen will warn. Tagged releases are set up to
+  publish a Windows `.zip` and this `.msi` (P2-001, P2-002), but that release job has not run
+  on a tag yet. Do not install both the `.zip` and the `.msi` on one machine; the MSI refuses
+  when a `p2ptunnel` service it did not install already exists.
 - **The Windows shutdown lifecycle test needs an elevated run.** The Unix signal test does
   not run on Windows. The Service Control Manager test (P1-002) passes when run from an
   elevated shell and skips otherwise; it has not yet run in CI.

@@ -609,13 +609,43 @@ jobs:
           # ../packaging/windows/README.md, examples/) only if it stays in docs/.
           Copy-Item docs/WINDOWS.md (Join-Path $artifactDir 'docs')
           Compress-Archive -Path $artifactDir -DestinationPath "$artifactDir.zip"
+      # The MSI wraps the same files and runs the same install.ps1 / uninstall.ps1 (see
+      # packaging/windows/wix/README.md). WiX 5.0.2 is pinned deliberately: it is MS-RL and
+      # needs no EULA, whereas WiX 6 and later fall under the Open Source Maintenance Fee
+      # EULA, which build-msi.ps1 never accepts for you. The Util extension must match the
+      # tool's version. The MSI is UNSIGNED (build-msi.ps1 only signs with -SignCert);
+      # SmartScreen will warn on it.
+      - name: Build MSI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool update --global wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) { throw "installing the wix tool failed ($LASTEXITCODE)" }
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+          if ($LASTEXITCODE -ne 0) { throw "adding the WiX Util extension failed ($LASTEXITCODE)" }
+          $msi = "rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.msi"
+          ./packaging/windows/wix/build-msi.ps1 -BinDir target/release -OutputPath $msi
+          if (-not (Test-Path $msi)) { throw "build-msi.ps1 did not produce $msi" }
       - name: Upload release artifacts
         uses: actions/upload-artifact@v7
         with:
           name: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}
           path: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.${{ matrix.archive }}
+      - name: Upload MSI artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}-msi
+          path: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.msi
       - name: Upload release assets
         uses: softprops/action-gh-release@v3
         with:
           files: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.${{ matrix.archive }}
           generate_release_notes: true
+      - name: Upload MSI release asset (Windows)
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.msi

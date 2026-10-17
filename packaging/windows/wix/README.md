@@ -212,7 +212,9 @@ Not verified yet:
 - The rollback actions (a failing `install.ps1` or a later MSI action failing).
 - The `answer` role running as an MSI-installed service. Only registration was checked.
 - Signing with a real certificate.
-- An MSI build in CI. The `release-artifacts` job does not build one yet.
+- The release job's MSI step on a hosted runner. The `release-artifacts` Windows leg now
+  installs WiX 5.0.2 and builds and uploads an unsigned MSI; its commands were run locally,
+  but the job only runs on a tag.
 - WiX 6 or 7.
 
 Known cosmetic issues: `install.ps1`'s next-steps text goes through MSI log formatting, which
