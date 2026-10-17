@@ -665,7 +665,20 @@ checks. That is a same-LAN deployment limit, not a Windows defect.
 
 # P2 tasks
 
-## P2-001 — Windows packaging — **CODE COMPLETE, NOT BUILT**
+## P2-001 — Windows packaging — **BUILT AND LIFECYCLE-TESTED LOCALLY (unsigned, not in CI)**
+
+**2026-10-17:** built with WiX 5.0.2 (MS-RL, no EULA; the user chose v5 over v7/OSMF) and
+tested elevated with the offer role: `wix build` and ICE validation pass first time;
+`ROLE=bogus` and a missing `ROLE` fail (1603) before any change; install registers
+`NT SERVICE\p2ptunnel` with the right ACL; the MSI-installed service connected to the broker
+and stopped with exit code 0; a major upgrade with a rebuilt MSI and no `ROLE` kept the role,
+config and identity; uninstall keeps data, `REMOVEDATA=1` removes it; a zip-installed
+service blocks the MSI; `ROLE=ANSWER` is accepted; repair restores a deleted file. Not
+verified: signing, an MSI build in CI/release, rollback actions, and a service run in the
+answer role. Known cosmetic issues: square-bracketed words in `install.ps1`'s output (such
+as `[node]`) are blanked in the MSI log, and the remembered role is stored as typed
+(`ANSWER`). `WINDOWS.md` is now installed under `docs\` as in the zip; the rebuilt MSI's
+File and Component tables confirm it, but the install tests were not re-run on that build.
 
 **Status:** `packaging/windows/wix/` (`Product.wxs`, `build-msi.ps1`, `README.md`) defines a
 WiX v4+ MSI. It installs the binaries and runs the reviewed `install.ps1` / `uninstall.ps1`

@@ -20,8 +20,9 @@ There is one implementation, and the MSI uses it.
 ```text
 %ProgramFiles%\p2ptunnel\
     p2p-service-windows.exe  p2p-answer.exe  p2p-offer.exe  p2pctl.exe
-    README.md  LICENSE  WINDOWS.md
+    README.md  LICENSE
     packaging\windows\   install.ps1  uninstall.ps1  p2ptunnel-common.ps1  README.md
+    docs\                WINDOWS.md
     docs\examples\       answer-config.toml  offer-config.toml
 ```
 
@@ -52,10 +53,13 @@ dotnet tool install --global wix --version <version>
 wix extension add -g WixToolset.Util.wixext/<version>
 ```
 
-> **Licence.** WiX v6 and later are under the Open Source Maintenance Fee (OSMF) EULA,
-> and v7 refuses to run until you accept it ([wixtoolset.org/osmf](https://wixtoolset.org/osmf/)).
+> **Licence.** This package was built and tested with **WiX 5.0.2**
+> (`dotnet tool install --global wix --version 5.0.2`), which is MS-RL and needs no EULA
+> or fee. WiX v6 and later are under the Open Source Maintenance Fee (OSMF) EULA, and v7
+> refuses to run until you accept it ([docs.firegiant.com/wix/osmf](https://docs.firegiant.com/wix/osmf/)).
 > `build-msi.ps1` never accepts it for you. If you decide to accept it, pass
-> `-AcceptEula wix7`, which is forwarded to `wix build -acceptEula`.
+> `-AcceptEula wix7`, which is forwarded to `wix build -acceptEula`. WiX 6 and 7 have not
+> been tried with this package.
 
 Then build, from the repository root, in Windows PowerShell 5.1 or later:
 
@@ -183,23 +187,34 @@ refused.
 
 ## What is verified
 
-Verified locally, without WiX:
+Built with WiX 5.0.2 and run elevated on Windows 11 on 2026-10-17, with the `offer` role
+unless noted. Everything below passed:
 
-- `Product.wxs` is well-formed XML.
-- `build-msi.ps1` parses under Windows PowerShell 5.1, with no parse errors.
+- `wix build` accepts `Product.wxs` (including the `WixQuietExec` reference) and ICE
+  validation passes.
+- A missing or invalid `ROLE` fails with 1603 before any change; `ROLE=ANSWER` (upper
+  case) is accepted.
+- Install registers `NT SERVICE\p2ptunnel` (delayed auto, failure flag set), applies the
+  `%ProgramData%\p2ptunnel` DACL, and writes the remembered role and the Apps & Features
+  entry. `install.ps1` behaves the same under LocalSystem through WixQuietExec as in an
+  elevated shell.
+- With a real config and identity, the MSI-installed service connected to the broker and
+  stopped with exit code 0.
+- A major upgrade with a rebuilt MSI and no `ROLE` kept the role, config and identity.
+- Uninstall keeps `%ProgramData%\p2ptunnel` by default; `REMOVEDATA=1` removes it; a
+  reinstall over kept data keeps the existing `config.toml`.
+- A service installed from the zip with `install.ps1` blocks the MSI (1603), and the
+  existing service is left untouched.
+- Repair restores a deleted file and leaves the service alone.
 
 Not verified yet:
 
-- That `wix build` accepts `Product.wxs`, including the WiX v4 schema and the
-  `Wix4UtilCA_X64` / `WixQuietExec` reference, and that ICE validation passes. This needs
-  a machine with WiX.
-- An elevated `msiexec /i ... ROLE=answer` that registers the service and applies the
-  DACL. That also checks P0-008's own acceptance criteria, which are unverified too.
-- That `install.ps1` and `uninstall.ps1` behave the same under LocalSystem through
-  WixQuietExec as in an elevated shell, for example around `Write-Host` output capture
-  and the SYSTEM profile.
-- Uninstall with and without `REMOVEDATA=1`, the major upgrade, the rollback actions, and
-  the "existing service" launch condition.
+- The rollback actions (a failing `install.ps1` or a later MSI action failing).
+- The `answer` role running as an MSI-installed service. Only registration was checked.
 - Signing with a real certificate.
-- An MSI build in CI. The `release-artifacts` job does not build one yet. That waits on a
-  decision about accepting the WiX OSMF EULA.
+- An MSI build in CI. The `release-artifacts` job does not build one yet.
+- WiX 6 or 7.
+
+Known cosmetic issues: `install.ps1`'s next-steps text goes through MSI log formatting, which
+blanks square-bracketed words such as `[node]`; read the steps in `../README.md` instead.
+`ROLE` is remembered exactly as typed (`ANSWER`), which later installs accept.

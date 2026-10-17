@@ -160,7 +160,9 @@
       <Component>
         <File Id="LicenseFile" Source="$(var.RepoRoot)\LICENSE" />
       </Component>
-      <Component>
+      <!-- In docs\ so its repository-relative links (../README.md, ../packaging/windows/,
+           examples/) resolve, as in the release zip. -->
+      <Component Directory="DocsDir">
         <File Id="WindowsMd" Source="$(var.RepoRoot)\docs\WINDOWS.md" />
       </Component>
     </ComponentGroup>
