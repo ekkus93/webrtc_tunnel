@@ -262,19 +262,32 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-service-scripts.ps1
       # TEMPORARY: `continue-on-error` is set on this one step only, because the
       # native-mosquitto broker E2E has never run on a hosted windows-latest runner
-      # (Chocolatey install, loopback TLS, and runner firewall behaviour are all
+      # (the installer, loopback TLS, and runner firewall behaviour are all
       # unproven there). The user explicitly relaxed gating for this step while it
       # is being proven. Once it has passed on the hosted runner, remove
       # `continue-on-error` so it becomes a required gate like every other step.
+      #
+      # Mosquitto comes from the upstream installer, not Chocolatey: the Chocolatey
+      # community repository has no `mosquitto` package. The installer is not
+      # Authenticode-signed, so its SHA-256 is pinned; when bumping the version,
+      # download the new installer and update both values together.
       - name: Native mosquitto TLS broker E2E (temporarily non-blocking)
         continue-on-error: true
         shell: pwsh
         env:
           P2P_REQUIRE_BROKER_TEST: "1"
+          MOSQUITTO_INSTALLER_URL: https://mosquitto.org/files/binary/win64/mosquitto-2.0.22-install-windows-x64.exe
+          MOSQUITTO_INSTALLER_SHA256: 2D3D57D918CC8CD4A0DF6C6812EDF1C3D723EE813B569354FF4A021E9E1D84BC
         run: |
           $ErrorActionPreference = 'Stop'
-          choco install mosquitto -y --no-progress
-          if ($LASTEXITCODE -ne 0) { throw "choco install mosquitto failed ($LASTEXITCODE)" }
+          $installer = Join-Path $env:RUNNER_TEMP 'mosquitto-install.exe'
+          Invoke-WebRequest -Uri $env:MOSQUITTO_INSTALLER_URL -OutFile $installer -UseBasicParsing
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash
+          if ($actual -ne $env:MOSQUITTO_INSTALLER_SHA256) {
+            throw "mosquitto installer SHA-256 mismatch: expected $env:MOSQUITTO_INSTALLER_SHA256, got $actual"
+          }
+          $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "mosquitto installer failed ($($install.ExitCode))" }
           $mosquittoDir = Join-Path $env:ProgramFiles 'mosquitto'
           $env:P2P_MOSQUITTO_BIN = Join-Path $mosquittoDir 'mosquitto.exe'
           if (-not (Test-Path $env:P2P_MOSQUITTO_BIN)) { throw "mosquitto.exe not found at $env:P2P_MOSQUITTO_BIN" }

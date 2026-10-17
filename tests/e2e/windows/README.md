@@ -21,8 +21,10 @@ Everything binds to loopback, so Windows Firewall should not prompt.
 
 ### Prerequisites
 
-- mosquitto: `choco install mosquitto -y` (installs to `C:\Program Files\mosquitto`,
-  which the script finds without a PATH change). Only the executable is used; the
+- mosquitto: the upstream Windows installer from
+  <https://mosquitto.org/files/binary/win64/> (there is no Chocolatey package). It
+  installs to `C:\Program Files\mosquitto`, which the script finds without a PATH
+  change; `/S` installs it silently. Only the executable is used; the
   installer's `mosquitto` Windows service on port 1883 is not needed and can stay
   stopped.
 - openssl: on `PATH`, or the one bundled with Git for Windows

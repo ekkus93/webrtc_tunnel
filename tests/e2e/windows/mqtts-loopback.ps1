@@ -26,7 +26,7 @@ Windows PowerShell 5.1 compatible. Exit code 0 means the round trip succeeded.
 
 .PARAMETER MosquittoBin
 mosquitto.exe to run. Defaults to $env:P2P_MOSQUITTO_BIN, then mosquitto on PATH, then
-%ProgramFiles%\mosquitto\mosquitto.exe (where the Chocolatey package installs it).
+%ProgramFiles%\mosquitto\mosquitto.exe (where the upstream installer puts it).
 
 .PARAMETER OpenSslBin
 openssl.exe to use. Defaults to openssl on PATH, then the copy bundled with Git for
@@ -247,8 +247,8 @@ if ($env:ProgramFiles) { $programFilesMosquitto = Join-Path $env:ProgramFiles 'm
 $Mosquitto = Resolve-Tool -Explicit $MosquittoBin -EnvValue $env:P2P_MOSQUITTO_BIN `
     -CommandName 'mosquitto' -Fallbacks @($programFilesMosquitto)
 if (-not $Mosquitto) {
-    Write-Failure ('mosquitto not found. Install it (e.g. `choco install mosquitto -y`), then ' +
-        'pass -MosquittoBin or set P2P_MOSQUITTO_BIN.')
+    Write-Failure ('mosquitto not found. Install it from https://mosquitto.org/files/binary/win64/ ' +
+        '(there is no Chocolatey package), then pass -MosquittoBin or set P2P_MOSQUITTO_BIN.')
     exit 1
 }
 

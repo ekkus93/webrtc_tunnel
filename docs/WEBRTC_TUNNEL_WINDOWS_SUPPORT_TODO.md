@@ -495,7 +495,7 @@ The Docker broker E2E is Linux-only, so real MQTT-over-TLS signaling has never r
 Windows. rumqttc and rustls are cross-platform and the risk is low, but it is unverified.
 
 ### Recommended implementation
-Install mosquitto natively on Windows (chocolatey) and run a manual offer↔answer tunnel
+Install mosquitto natively on Windows (the upstream installer) and run a manual offer↔answer tunnel
 against it, forwarding one port. This can precede the automated version in P2-003.
 
 ### Acceptance criteria
@@ -701,9 +701,16 @@ way `install.ps1` expects. It has not run on a tag yet.
 ## P2-003 — Windows-native broker E2E — **CODE COMPLETE**
 
 **Status:** `crates/p2p-daemon/tests/native_broker_tunnel.rs` skips when mosquitto is
-absent, unless `P2P_REQUIRE_BROKER_TEST` is set. `test-windows` installs mosquitto with
-Chocolatey and runs it. The user relaxed gating on 2026-10-15, so that one step is
-`continue-on-error` until it has passed on the hosted runner. Then remove the flag.
+absent, unless `P2P_REQUIRE_BROKER_TEST` is set. `test-windows` installs mosquitto and runs
+it. The user relaxed gating on 2026-10-15, so that one step is `continue-on-error` until it
+has passed on the hosted runner. Then remove the flag.
+
+**First hosted run (2026-10-17, CI #666): failed at install.** The step used
+`choco install mosquitto`, but the Chocolatey community repository has no `mosquitto`
+package, so nothing ran. It now downloads the upstream installer
+(`mosquitto-2.0.22-install-windows-x64.exe`, not Authenticode-signed) with its SHA-256
+pinned in the workflow, and installs it silently with `/S`. **Not yet re-run**, so whether
+the silent install and the test itself work on the runner is unknown.
 
 ### Goal
 Replace the Docker dependency for Windows with a native mosquitto so the real-broker path
