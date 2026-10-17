@@ -222,6 +222,26 @@ p2p-offer  run --config "$env:USERPROFILE\.config\p2ptunnel\config.toml"
 `--config` can be omitted to use that same default path. `Ctrl+C` requests a graceful
 shutdown. `--broker-url` overrides the broker URL, as on other platforms.
 
+### Firewall and same-network peers
+
+- **Windows Firewall.** A new `.exe` gets an "Allow access" prompt the first time it listens.
+  If the process was started somewhere you can't see the prompt (a hidden window, a remote
+  session), no rule is created and unsolicited inbound UDP is dropped on a Public network.
+  Across the internet this usually doesn't matter, because replies to your own outbound ICE
+  checks are allowed back in. It matters when the only working path is the *other* peer
+  reaching you first. To allow it explicitly, from an elevated PowerShell:
+
+  ```powershell
+  New-NetFirewallRule -DisplayName "p2p-offer" -Direction Inbound -Action Allow -Protocol UDP -Program "<full path to p2p-offer.exe>" -Profile Any -RemoteAddress LocalSubnet
+  ```
+
+- **Both peers on the same LAN.** ICE only offers the host addresses each side advertises,
+  plus the shared public address. If the other peer runs in a Docker bridge network it
+  advertises only its container address (such as `172.17.0.x`), which you cannot reach, and
+  most routers do not loop the public address back to the LAN (no hairpin NAT). The tunnel
+  then fails with `ice_failed`. Run the container with host networking, give it a LAN address
+  (macvlan/ipvlan), or test from a different network, such as a phone hotspot.
+
 ## Security model
 
 The wire protocol and identity format are identical on every platform. Only how the
@@ -453,10 +473,12 @@ standard user. Use an elevated shell.
 
 ## Current limitations
 
-- **Not proven on Windows yet:** real `mqtts://` signaling against a real broker (TODO
-  P1-001), and real-network ICE/NAT traversal (P1-005). The WebRTC data plane is proven only
-  over loopback with in-memory signaling. The offer role on Windows has not been checked
-  against a real remote answer peer (P1-004).
+- **Verified by hand (2026-10-17):** a foreground `p2p-offer.exe` completed a tunnel to a
+  Linux `p2p-answer` over `mqtts://broker.emqx.io:8883` from a different network (a phone
+  hotspot), using the system certificate store (`ca_file = ""`) (TODO P1-004, P1-005). That
+  was STUN only: symmetric NAT and carrier-grade NAT, where there is no TURN fallback, are
+  untested. The answer role on Windows has not been checked against a remote offer peer, and
+  the scripted TLS broker test (P1-001) has not been run.
 - **The service has not been through the full acceptance list.** The checks for the service
   binary and installer in TODO P0-007 and P0-008 (run as the virtual account, stop
   gracefully, survive logoff, the identity unreadable to a standard user) are still open

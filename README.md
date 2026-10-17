@@ -44,6 +44,18 @@ Or, in release mode:
 - `target/release/p2p-offer`
 - `target/release/p2p-answer`
 
+## Windows
+
+`p2pctl`, `p2p-offer` and `p2p-answer` also run natively on Windows (no WSL), either in a
+foreground PowerShell window or, for always-on use, as the `p2ptunnel` Windows service
+(`p2p-service-windows`). On Windows the binaries have an `.exe` suffix, config lives under
+`%USERPROFILE%\.config\p2ptunnel` (interactive) or `%ProgramData%\p2ptunnel\<role>` (service),
+and file permissions are enforced through Windows ACLs.
+
+Build with `cargo build --release -p p2p-offer -p p2p-answer -p p2pctl` (add
+`-p p2p-service-windows` for the service). See [docs/WINDOWS.md](docs/WINDOWS.md) for the full
+setup, including TOML path quoting, the service installer and its limitations.
+
 ## Android app
 
 Status: **experimental (offer mode first)**.
