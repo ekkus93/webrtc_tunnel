@@ -303,12 +303,18 @@ role to ASCII letters, digits, `-`, and `_`, so it cannot be walked out of its t
 
 ---
 
-## P0-007 — `p2p-service-windows` binary with SCM integration — **CODE COMPLETE**
+## P0-007 — `p2p-service-windows` binary with SCM integration — **VERIFIED (offer role)**
 
 **Status:** `bins/p2p-service-windows` builds, is clippy-clean, and its CLI unit tests pass.
-Run by hand, it refuses with a clear message pointing at `p2p-answer` / `p2p-offer`. The
-SCM-level acceptance criteria below (`sc.exe start` / `stop`, graceful stop) are **not yet
-verified**. They need P0-008's installer and an elevated run.
+Run by hand, it refuses with a clear message pointing at `p2p-answer` / `p2p-offer`.
+**Verified elevated on 2026-10-17** with the offer role: after `install.ps1 -Role offer`,
+`sc.exe qc` shows `--role offer` in `binPath` and `NT SERVICE\p2ptunnel`; `sc.exe start`
+reached RUNNING and the daemon read `%ProgramData%\p2ptunnel\offer\config.toml`; a request
+through the forwarded ollama port returned 200 and `p2pctl status` showed `tunnel_open`;
+`sc.exe stop` reached STOPPED in under a second with `WIN32_EXIT_CODE` and
+`SERVICE_EXIT_CODE` both 0, no listener left on any forward port and no
+`p2p-service-windows` process left; a second start/stop cycle behaved the same. The
+**answer role has not been installed and run as a service**.
 
 ### Files
 ```text
@@ -398,13 +404,16 @@ in our crate.
   `cargo clippy --workspace` and `cargo test --workspace` clean on Linux and macOS CI.
 
 ### Acceptance criteria
-- [ ] Runs as the single service `p2ptunnel` per spec §6.4. The role is fixed at install
+- [x] Runs as the single service `p2ptunnel` per spec §6.4. The role is fixed at install
       time by `--role answer|offer` in `binPath`, and the config is read from
-      `p2p_platform::service_config_dir(role)`.
+      `p2p_platform::service_config_dir(role)`. (Checked for `offer`.)
 - [ ] `sc.exe start p2ptunnel` / `sc.exe stop p2ptunnel` work with either role installed.
+      (Works with `offer`; `answer` not yet tried.)
 - [x] The service hosts exactly one daemon. Running both roles as services at once is out
       of scope (spec §6.4). (By construction: `--role` selects one daemon per process.)
-- [ ] Stop is graceful: exit code 0, terminal `Closed` status, no lingering listeners.
+- [x] Stop is graceful: exit code 0, terminal `Closed` status, no lingering listeners.
+      (Exit code and listeners from the elevated install run; the `Closed` status file from
+      the P1-002 test.)
 - [x] Binary contains no tunnel logic. (SCM plumbing, status reporting and the shared
       startup helpers; the daemon entry points are the ones the foreground binaries call.)
 - [x] `p2p-offer` and `p2p-answer` are unchanged — no supervisor-specific mode is added to
@@ -414,14 +423,18 @@ in our crate.
 
 ---
 
-## P0-008 — Service installer: virtual account and restrictive DACL — **CODE COMPLETE**
+## P0-008 — Service installer: virtual account and restrictive DACL — **VERIFIED (mostly)**
 
 **Status:** `packaging/windows/install.ps1`, `uninstall.ps1`, `p2ptunnel-common.ps1` and
 `README.md` exist, and `scripts/check-windows-service-scripts.ps1` validates them
 statically. CI runs that check in `test-windows`. The install also sets
 `sc.exe failureflag p2ptunnel 1`, so the recovery actions fire on the wrapper's non-zero
-`STOPPED` exits as well as on crashes. The acceptance criteria below are **not yet
-verified**. They need an elevated install on a real machine.
+`STOPPED` exits as well as on crashes. **Run elevated on 2026-10-17:** install, a refused
+second install, start, stop, a second start/stop and `uninstall.ps1 -RemoveData` all behaved
+as specified; see the ticked criteria. Delayed-auto start, restart-on-failure actions
+(5 s, 5 s, 30 s) and the failure flag were read back with `sc.exe qc`, `qfailure` and
+`qfailureflag`. Not yet shown: an actual read attempt by another account, and the
+logoff/no-user-logged-in criterion.
 
 ### Files
 ```text
@@ -454,12 +467,19 @@ Install the service under `NT SERVICE\p2ptunnel` and lock down the config direct
 
 ### Acceptance criteria
 - [ ] A standard non-admin user cannot read the installed identity file. Verify with
-      `icacls` and by attempting a read as another account.
-- [ ] The service starts and reaches steady state under the virtual account.
-- [ ] Log output lands in the role's log file, and is not lost to a nonexistent console.
-- [ ] Service runs with no user logged in and survives logoff.
-- [ ] Uninstall removes the service and does not leave the account or ACLs behind.
-- [ ] Re-running install while `p2ptunnel` already exists fails with a clear message.
+      `icacls` and by attempting a read as another account. (`icacls` on the identity
+      lists only SYSTEM, Administrators and the service account, with no Users,
+      Authenticated Users or Everyone entry. No read was attempted as another account.)
+- [x] The service starts and reaches steady state under the virtual account. (The
+      `p2p-service-windows` process owner was `NT SERVICE\p2ptunnel`; `tunnel_open`.)
+- [x] Log output lands in the role's log file, and is not lost to a nonexistent console.
+      (`state\log\p2ptunnel.log` was written.)
+- [ ] Service runs with no user logged in and survives logoff. (Not tested; the runs were
+      made from a logged-in session.)
+- [x] Uninstall removes the service and does not leave the account or ACLs behind.
+      (`sc.exe query` returns 1060 afterwards and `%ProgramData%\p2ptunnel` is gone. The
+      installer leaves the binary in `-InstallDir` by design.)
+- [x] Re-running install while `p2ptunnel` already exists fails with a clear message.
 
 ---
 
@@ -483,7 +503,7 @@ against it, forwarding one port. This can precede the automated version in P2-00
 
 ---
 
-## P1-002 — Windows shutdown lifecycle test — **CODE COMPLETE**
+## P1-002 — Windows shutdown lifecycle test — **PASSES ELEVATED**
 
 **Status:** `bins/p2p-service-windows/tests/scm_shutdown.rs` registers a throwaway
 `p2ptunnel-test-<pid>` service, never `p2ptunnel` itself, with `--role offer` and a temp
@@ -491,8 +511,15 @@ config. A minimal in-process fake TLS MQTT broker keeps the daemon alive: with a
 unreachable broker it exits after about 24 s and never binds its listener. The test then
 asserts RUNNING, a `listening` forward, a real `SERVICE_CONTROL_STOP`, a clean exit code, a
 final `closed` status, and that the port is released. It skips on access denied unless
-`P2P_REQUIRE_SCM_TEST=1` is set. It has **not yet run elevated**. Hosted `windows-latest`
-runners are elevated, so it will likely run for real in CI.
+`P2P_REQUIRE_SCM_TEST=1` is set. **First elevated run, 2026-10-17, found two test bugs, now
+fixed; it passes** (STOPPED about 200 ms after the stop request). (1) The fixture's temp
+directory inherited the user's ACL, and the service runs as LocalSystem, where the runtime
+DACL check rejects an identity another ordinary account can read; the fixture now limits its
+directory to SYSTEM and Administrators with `icacls`, as the installer does. (2) Windows
+retransmits the SYN to a closed loopback port for about two seconds before reporting the
+refusal, so the "port refuses connections" probe's 2 s timeout read a refusal as `TimedOut`;
+it is now 10 s. The failure output also now includes `state\startup-error.log`. Hosted
+`windows-latest` runners are elevated, so it will likely run for real in CI.
 
 ### Files
 ```text
@@ -510,7 +537,7 @@ listeners — but drive it through `SERVICE_CONTROL_STOP` rather than a signal.
 
 ### Acceptance criteria
 - [ ] Test is `#![cfg(windows)]` and runs in the `test-windows` CI job.
-- [x] Asserts the same truthfulness properties as the unix test. (Written; not yet executed.)
+- [x] Asserts the same truthfulness properties as the unix test. (Executed elevated; passes.)
 
 ---
 

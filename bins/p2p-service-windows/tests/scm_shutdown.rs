@@ -30,6 +30,7 @@
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -244,6 +245,24 @@ async fn serve_mqtt_client<S: AsyncRead + AsyncWrite + Unpin>(
     }
 }
 
+/// Limits `dir` (and everything created in it afterwards) to SYSTEM and Administrators, the
+/// way the installer limits `%ProgramData%\p2ptunnel`. The service runs as LocalSystem, and
+/// its runtime DACL check refuses an identity that another ordinary account, such as the
+/// user whose `%TEMP%` the fixture would otherwise inherit from, can read.
+fn restrict_to_system_and_administrators(dir: &Path) {
+    let output = Command::new("icacls")
+        .arg(dir)
+        .args(["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"])
+        .output()
+        .expect("run icacls");
+    assert!(
+        output.status.success(),
+        "icacls failed on {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 /// A self-contained offer-role config directory: identity, authorized_keys, and a
 /// config.toml whose paths all point inside it.
 struct OfferFixture {
@@ -259,6 +278,7 @@ impl OfferFixture {
     /// Writes the fixture into `dir`, trusting the broker CA already at `ca_path`.
     fn write(dir: tempfile::TempDir, broker_port: u16, ca_path: &Path) -> Self {
         let root = dir.path();
+        restrict_to_system_and_administrators(root);
         let identity = generate_identity(OFFER_PEER).expect("offer identity");
         let remote = generate_identity(ANSWER_PEER).expect("answer identity");
 
@@ -404,11 +424,21 @@ status_file = '{status_file}'
             .unwrap_or_else(|error| format!("<no log file: {error}>"));
         let tail: Vec<&str> = log.lines().rev().take(40).collect();
         let tail: Vec<&str> = tail.into_iter().rev().collect();
+        // Config and logging failures (exit codes 1 and 2) happen before the log file
+        // exists; the wrapper records them here instead.
+        let startup_error_path = self
+            .config_path
+            .parent()
+            .map(|root| root.join("state").join("startup-error.log"))
+            .unwrap_or_default();
+        let startup_error = std::fs::read_to_string(&startup_error_path)
+            .unwrap_or_else(|error| format!("<no startup-error.log: {error}>"));
         format!(
-            "\n--- status file ({}) ---\n{status}\n--- service log tail ({}) ---\n{}",
+            "\n--- status file ({}) ---\n{status}\n--- service log tail ({}) ---\n{}\n--- startup errors ({}) ---\n{startup_error}",
             self.status_path.display(),
             self.log_path.display(),
             tail.join("\n"),
+            startup_error_path.display(),
         )
     }
 }
@@ -632,10 +662,12 @@ async fn service_control_stop_shuts_the_offer_daemon_down_truthfully() {
     );
 
     // 3. No lingering listener, checked the moment the SCM reports STOPPED: the
-    //    port refuses connections and can be bound again.
+    //    port refuses connections and can be bound again. Windows retransmits the SYN
+    //    to a closed loopback port for about two seconds before it reports the refusal,
+    //    so the timeout has to be well beyond that or a refusal reads as `TimedOut`.
     match std::net::TcpStream::connect_timeout(
         &([127, 0, 0, 1], fixture.listen_port).into(),
-        Duration::from_secs(2),
+        Duration::from_secs(10),
     ) {
         Err(error) if error.kind() == ErrorKind::ConnectionRefused => {}
         other => panic!(

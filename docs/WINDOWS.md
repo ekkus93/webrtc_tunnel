@@ -479,18 +479,22 @@ standard user. Use an elevated shell.
   was STUN only: symmetric NAT and carrier-grade NAT, where there is no TURN fallback, are
   untested. The answer role on Windows has not been checked against a remote offer peer, and
   the scripted TLS broker test (P1-001) has not been run.
-- **The service has not been through the full acceptance list.** The checks for the service
-  binary and installer in TODO P0-007 and P0-008 (run as the virtual account, stop
-  gracefully, survive logoff, the identity unreadable to a standard user) are still open
-  there. The installer README lists commands for each; run them on your machine.
+- **The service has been through most of its acceptance list, in the offer role only.**
+  An elevated run on 2026-10-17 installed it, ran a tunnel as `NT SERVICE\p2ptunnel`,
+  stopped it cleanly (exit code 0, no listener left) and uninstalled it with no leftovers.
+  Still open (TODO P0-007, P0-008): the **answer** role as a service, surviving logoff
+  and running with no user logged in, and an actual read attempt on the identity by
+  another account (the ACL was checked with `icacls`). The installer README lists commands
+  for each.
 - **Runtime ACL checks rely on an old crate.** They use `windows-permissions` 0.2.4, pinned
   exactly; it has been unmaintained since 2021. Any panic or error inside it is treated as a
   refusal.
 - **No MSI or other installer package** (P2-001). Tagged releases are set up to publish a
   Windows `.zip` with the binaries, the installer scripts and the example configs (P2-002),
   but that release job has not run yet.
-- **No Windows shutdown lifecycle test has run yet** (P1-002). The Unix signal test does
-  not run on Windows, and the Service Control Manager test needs an elevated run.
+- **The Windows shutdown lifecycle test needs an elevated run.** The Unix signal test does
+  not run on Windows. The Service Control Manager test (P1-002) passes when run from an
+  elevated shell and skips otherwise; it has not yet run in CI.
 - **Early startup failures go to `<role>\state\startup-error.log`**, not to the Event Log.
 - **Automatic restart after a failure is not yet observed on a real install.** By default
   Windows runs restart-on-failure actions only when the service process dies without
