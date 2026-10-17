@@ -216,14 +216,18 @@ fn judge_daemon_exit(result: Result<(), Failure>, stop_requested: bool) -> Resul
 
 /// Leaves a trace of a failure that happened before the log file existed.
 ///
-/// It goes under the role's service `state\` directory, the one place the
-/// installer lets the service account write, and it is located without the
-/// config, which may be what failed to load. Best-effort: if even this cannot be
-/// written, the exit code is still reported.
+/// It goes under the `state\` directory next to the config file, which for the
+/// installed service is the role's service directory, the one place the installer
+/// lets the service account write. The directory is found from the config's path
+/// alone, not its contents, which may be what failed to load. Best-effort: if even
+/// this cannot be written, the exit code is still reported.
 fn record_startup_error(invocation: &Invocation, failure: &Failure) {
     use std::io::Write;
 
-    let Ok(role_dir) = p2p_platform::service_config_dir(invocation.role.as_str()) else {
+    let Ok(config_path) = invocation.config_path() else {
+        return;
+    };
+    let Some(role_dir) = config_path.parent() else {
         return;
     };
     let unix_time = std::time::SystemTime::now()
