@@ -165,7 +165,12 @@ mod tests {
             "$sid = New-Object System.Security.Principal.SecurityIdentifier(                'S-1-5-80-1253224334-2237551498-3137952417-4040730996-425943683');             $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(                $sid, 'Modify', 'Allow');             $acl = Get-Acl -LiteralPath '{0}'; $acl.AddAccessRule($rule);             Set-Acl -LiteralPath '{0}' -AclObject $acl",
             path.display()
         );
+        // Started from PowerShell 7 (as the hosted CI runner does), the child inherits
+        // pwsh's `PSModulePath`, so Windows PowerShell 5.1 finds PowerShell 7's
+        // incompatible `Microsoft.PowerShell.Security` first and cannot load it. Dropping
+        // the variable makes it use its own default module path.
         let status = Command::new("powershell")
+            .env_remove("PSModulePath")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .stdout(Stdio::null())
             .status()
