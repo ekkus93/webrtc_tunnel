@@ -688,7 +688,23 @@ An installable artifact, matching the intent of `packaging/debian` and `packagin
 
 **Status:** `release-artifacts` builds `windows-latest` and publishes a `.zip` with all four
 `.exe` files, `packaging/windows/`, `docs/examples/` and `docs/WINDOWS.md`, laid out the
-way `install.ps1` expects. It has not run on a tag yet.
+way `install.ps1` expects. **It has not run on a tag yet.** The job is tag-only, needs the
+whole CI matrix (including the Docker and Android emulator E2Es) and publishes a public
+GitHub Release, so it was not exercised that way.
+
+**Checked locally on 2026-10-17.** `cargo build --release --workspace` succeeds on Windows
+(7 min). The workflow's own Windows packaging step, extracted from `ci.yml` and run
+unchanged, produced a 21.8 MB zip with `p2pctl`, `p2p-offer`, `p2p-answer`,
+`p2p-service-windows`, `README.md`, `LICENSE`, `packaging/windows/*`, `docs/examples/*` and
+`docs/WINDOWS.md`. Extracted into an empty directory, the three daemons/tools run, the
+scripts parse, and `install.ps1`'s default config templates (`..\..\docs\examples`) resolve.
+That run found one bug, now fixed: `WINDOWS.md` was placed at the zip root, which broke its
+relative links, so it now ships as `docs/WINDOWS.md`. Not covered locally: the hosted
+runner, `upload-artifact`, the release upload, and running `install.ps1` from the
+extracted tree. The local run used Windows PowerShell 5.1, whose `Compress-Archive` writes
+backslash entry separators; the runner's `pwsh` 7 writes forward slashes. Neither the
+binaries nor the installer care, but check an Explorer extraction of the first real
+release.
 
 ### Files
 ```text

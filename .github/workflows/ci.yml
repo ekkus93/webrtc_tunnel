@@ -605,7 +605,9 @@ jobs:
           $examplesDir = Join-Path $artifactDir 'docs/examples'
           New-Item -ItemType Directory -Force -Path $examplesDir | Out-Null
           Copy-Item docs/examples/answer-config.toml, docs/examples/offer-config.toml $examplesDir
-          if (Test-Path docs/WINDOWS.md) { Copy-Item docs/WINDOWS.md $artifactDir }
+          # docs/WINDOWS.md keeps its repository-relative links (../README.md,
+          # ../packaging/windows/README.md, examples/) only if it stays in docs/.
+          Copy-Item docs/WINDOWS.md (Join-Path $artifactDir 'docs')
           Compress-Archive -Path $artifactDir -DestinationPath "$artifactDir.zip"
       - name: Upload release artifacts
         uses: actions/upload-artifact@v7
