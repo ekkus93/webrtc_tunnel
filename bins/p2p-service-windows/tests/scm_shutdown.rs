@@ -263,6 +263,33 @@ fn restrict_to_system_and_administrators(dir: &Path) {
     );
 }
 
+/// Resets every entry directly inside `dir` to the ACL it inherits from `dir`, dropping any
+/// explicit ACE the creating process added. On a hosted runner the new files carry a
+/// write ACE for the runner's own account (the built-in Administrator, not the
+/// Administrators group), which the service's permission check rightly refuses when it
+/// runs as LocalSystem. Nothing here grants anything: the files end up with exactly the
+/// SYSTEM and Administrators entries `restrict_to_system_and_administrators` set.
+fn reset_children_to_inherited(dir: &Path) {
+    for entry in std::fs::read_dir(dir).expect("read fixture dir") {
+        let path = entry.expect("fixture dir entry").path();
+        let output = Command::new("icacls").arg(&path).arg("/reset").output().expect("run icacls");
+        assert!(
+            output.status.success(),
+            "icacls /reset failed on {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+/// What `icacls` prints for `path`, for failure messages.
+fn acl_listing(path: &Path) -> String {
+    match Command::new("icacls").arg(path).output() {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
+        Err(error) => format!("<icacls failed: {error}>"),
+    }
+}
+
 /// A self-contained offer-role config directory: identity, authorized_keys, and a
 /// config.toml whose paths all point inside it.
 struct OfferFixture {
@@ -406,6 +433,7 @@ status_file = '{status_file}'
             status_file = status_path.display(),
         );
         std::fs::write(&config_path, config).expect("write config.toml");
+        reset_children_to_inherited(root);
 
         OfferFixture { _dir: dir, config_path, status_path, log_path, listen_port }
     }
@@ -433,8 +461,13 @@ status_file = '{status_file}'
             .unwrap_or_default();
         let startup_error = std::fs::read_to_string(&startup_error_path)
             .unwrap_or_else(|error| format!("<no startup-error.log: {error}>"));
+        // The service's permission check reads these, so a rejection is easiest to
+        // understand next to the ACLs it saw.
+        let acls = self.config_path.parent().map_or_else(String::new, |root| {
+            format!("{}{}", acl_listing(root), acl_listing(&root.join("identity")))
+        });
         format!(
-            "\n--- status file ({}) ---\n{status}\n--- service log tail ({}) ---\n{}\n--- startup errors ({}) ---\n{startup_error}",
+            "\n--- status file ({}) ---\n{status}\n--- service log tail ({}) ---\n{}\n--- startup errors ({}) ---\n{startup_error}\n--- fixture ACLs ---\n{acls}",
             self.status_path.display(),
             self.log_path.display(),
             tail.join("\n"),
