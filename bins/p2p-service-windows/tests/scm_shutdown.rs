@@ -250,17 +250,44 @@ async fn serve_mqtt_client<S: AsyncRead + AsyncWrite + Unpin>(
 /// its runtime DACL check refuses an identity that another ordinary account, such as the
 /// user whose `%TEMP%` the fixture would otherwise inherit from, can read.
 fn restrict_to_system_and_administrators(dir: &Path) {
-    let output = Command::new("icacls")
-        .arg(dir)
-        .args(["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"])
-        .output()
-        .expect("run icacls");
+    run_icacls(
+        dir,
+        &["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"],
+    );
+    // `tempfile` leaves the creating account's own full-control entry on the directory,
+    // and `/inheritance:r` only drops inherited entries, so it survives. On a hosted
+    // runner that account (the built-in Administrator) is not SYSTEM, so the service
+    // rejects any file that inherits it. The test process keeps its access through the
+    // Administrators group.
+    let user = current_user_sid();
+    if user != "S-1-5-18" {
+        run_icacls(dir, &["/remove:g", &format!("*{user}")]);
+    }
+}
+
+fn run_icacls(path: &Path, args: &[&str]) {
+    let output = Command::new("icacls").arg(path).args(args).output().expect("run icacls");
     assert!(
         output.status.success(),
-        "icacls failed on {}: {}",
-        dir.display(),
+        "icacls {args:?} failed on {}: {}",
+        path.display(),
         String::from_utf8_lossy(&output.stdout)
     );
+}
+
+/// The SID of the account running this test, from `whoami /user /fo csv /nh`, which prints
+/// `"DOMAIN\user","S-1-5-21-..."`.
+fn current_user_sid() -> String {
+    let output =
+        Command::new("whoami").args(["/user", "/fo", "csv", "/nh"]).output().expect("run whoami");
+    assert!(output.status.success(), "whoami /user failed");
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.trim()
+        .rsplit(',')
+        .next()
+        .map(|field| field.trim_matches('"').to_owned())
+        .filter(|sid| sid.starts_with("S-1-"))
+        .unwrap_or_else(|| panic!("could not read a SID from `whoami /user` output: {text}"))
 }
 
 /// Resets every entry directly inside `dir` to the ACL it inherits from `dir`, dropping any
@@ -271,14 +298,7 @@ fn restrict_to_system_and_administrators(dir: &Path) {
 /// SYSTEM and Administrators entries `restrict_to_system_and_administrators` set.
 fn reset_children_to_inherited(dir: &Path) {
     for entry in std::fs::read_dir(dir).expect("read fixture dir") {
-        let path = entry.expect("fixture dir entry").path();
-        let output = Command::new("icacls").arg(&path).arg("/reset").output().expect("run icacls");
-        assert!(
-            output.status.success(),
-            "icacls /reset failed on {}: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stdout)
-        );
+        run_icacls(&entry.expect("fixture dir entry").path(), &["/reset"]);
     }
 }
 
