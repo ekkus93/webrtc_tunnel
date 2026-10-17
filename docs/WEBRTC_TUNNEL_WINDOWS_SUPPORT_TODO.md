@@ -559,8 +559,15 @@ side-effects. Do **not** change app behavior to make these pass.
 ### Goal
 Spec §1 requires both roles. Only the answer role is exercised by the initial deployment.
 
+**Status (2026-10-17):** verified manually. `p2p-offer.exe` (release build, run in the
+foreground with a copy of a Linux offer config) completed a tunnel to a Linux `p2p-answer`
+over `mqtts://broker.emqx.io:8883` and the data-plane probe was acknowledged. An HTTP GET
+through the forwarded ollama port returned 200 with a real response body. This also covers
+the real-TLS-broker half of P1-001 from the Windows side (default system trust,
+`ca_file = ""`).
+
 ### Acceptance criteria
-- [ ] A Windows offer peer completes a tunnel against a non-Windows answer peer over a
+- [x] A Windows offer peer completes a tunnel against a non-Windows answer peer over a
       real broker and real network.
 
 ---
@@ -607,8 +614,17 @@ installer work flagged it.
 All WebRTC validation so far is loopback. NAT traversal and STUN behaviour on Windows are
 unverified.
 
+**Status (2026-10-17):** verified manually. Windows on a phone hotspot (private
+10.172.x address, public 172.59.x) connected to a Linux answer running in a bridge-mode
+Docker container behind a home/office NAT. ICE reached `connected` about 1 s after checking
+started, with no Windows Firewall rule for `p2p-offer.exe`. STUN only, no TURN, so symmetric
+NAT / CGNAT is still untested. The same test from the answer's own LAN fails (`ice_failed`):
+the answer advertises only its Docker bridge address plus the shared public address, which a
+router without hairpin NAT cannot loop back, and Windows Firewall drops the answer's inbound
+checks. That is a same-LAN deployment limit, not a Windows defect.
+
 ### Acceptance criteria
-- [ ] A tunnel is established between two hosts on different networks with a Windows peer
+- [x] A tunnel is established between two hosts on different networks with a Windows peer
       at one end.
 
 ---
