@@ -691,7 +691,15 @@ checks. That is a same-LAN deployment limit, not a Windows defect.
 
 # P2 tasks
 
-## P2-001 — Windows packaging — **BUILT AND LIFECYCLE-TESTED LOCALLY (unsigned, not in CI)**
+## P2-001 — Windows packaging — **DONE (deliberately unsigned)**
+
+**Decision (2026-10-20): the MSI stays unsigned.** This program is for the project owner's
+own use, and a code-signing certificate only changes what Windows SmartScreen shows people
+who download an installer (it does not affect whether the MSI installs or the service runs).
+Signing support stays in `build-msi.ps1` (`-SignCert`, `-TimestampUrl`) for anyone who
+distributes it, and was tested up to the trust check with a self-signed certificate, but no
+real certificate is planned and it is not tracked as open work. On a downloaded copy,
+SmartScreen's "More info" > "Run anyway", or Properties > Unblock, gets past the warning.
 
 **2026-10-17:** built with WiX 5.0.2 (MS-RL, no EULA; the user chose v5 over v7/OSMF) and
 tested elevated with the offer role: `wix build` and ICE validation pass first time;
@@ -704,8 +712,8 @@ elevated run covered the rest of the gaps: install rollback works both when `ins
 fails mid-way and when a later MSI action fails; the **answer role runs as an
 MSI-installed service** and served a real tunnel (HTTP 200 through it, clean stop with exit
 code 0); and signing works with a self-signed certificate up to the `signtool verify`
-trust check. Not verified: signing with a real, trusted certificate (the user must supply
-one), and the uninstall rollback action. The Windows leg
+trust check. Not verified: the uninstall rollback action (the action that re-registers the
+service if an uninstall is rolled back). The Windows leg
 of `release-artifacts` now also builds the MSI (WiX 5.0.2, no EULA, unsigned) and uploads it
 as an artifact and a release asset. The same scripts ran on a hosted runner in the
 `package-windows` dry run (CI #672), including an MSI install and uninstall there; only the
@@ -714,19 +722,20 @@ as `[node]`) are blanked in the MSI log, and the remembered role is stored as ty
 (`ANSWER`). `WINDOWS.md` is now installed under `docs\` as in the zip; the rebuilt MSI's
 File and Component tables confirm it, but the install tests were not re-run on that build.
 
-**Status:** `packaging/windows/wix/` (`Product.wxs`, `build-msi.ps1`, `README.md`) defines a
-WiX v4+ MSI. It installs the binaries and runs the reviewed `install.ps1` / `uninstall.ps1`
-as deferred elevated custom actions. `ROLE=answer|offer` is required and is stored for
-upgrades and repairs; `REMOVEDATA=1` is optional. It has never been built, because WiX isn't
-installed here. **Open decision for the user:** WiX v6+ is under the OSMF EULA, so
-`build-msi.ps1` passes the EULA acceptance through only with an opt-in `-AcceptEula`, and
-no CI build step exists.
+**Status:** `packaging/windows/wix/` (`Product.wxs`, `build-msi.ps1`, `install-wix.ps1`,
+`README.md`) defines a WiX v4+ MSI, built and tested with WiX 5.0.2. It installs the binaries
+and runs the reviewed `install.ps1` / `uninstall.ps1` as deferred elevated custom actions.
+`ROLE=answer|offer` is required and is stored for upgrades and repairs; `REMOVEDATA=1` is
+optional. WiX 5.0.2 is MS-RL and needs no EULA; WiX v6+ is under the OSMF EULA, which
+`build-msi.ps1` only passes through with an opt-in `-AcceptEula` (the user chose v5, so it
+is not used). The release job and the `package-windows` dry run both build it in CI.
 
 ### Goal
 An installable artifact, matching the intent of `packaging/debian` and `packaging/macos`.
 
 ### Acceptance criteria
-- [ ] Produces a signed-installable package that performs P0-008's account and ACL setup.
+- [x] Produces an installable package that performs P0-008's account and ACL setup. (It
+      does, verified locally and on a hosted runner. It is unsigned by decision; see above.)
 - [x] A documented uninstall path. (`packaging/windows/wix/README.md`; `uninstall.ps1`.)
 
 ---

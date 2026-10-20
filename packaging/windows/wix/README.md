@@ -85,8 +85,13 @@ configs come from this repository, located relative to the script.
 
 ### Signing
 
-Without `-SignCert` the MSI and the binaries inside it are **unsigned**. Unsigned builds
-are for testing only. SmartScreen warns on them, and nothing proves where they came from.
+Without `-SignCert` the MSI and the binaries inside it are **unsigned**. **This project
+ships them unsigned on purpose:** it is for the owner's own use, and a code-signing
+certificate only changes what SmartScreen shows people who download an installer; the MSI
+installs and the service runs the same either way. On a downloaded copy, click "More info"
+then "Run anyway", or tick "Unblock" in the file's Properties (`Unblock-File`); a file you
+build yourself, or install with `msiexec`, usually is not flagged. Nothing proves where an
+unsigned build came from, so if you hand it to other people, sign it as below.
 
 With `-SignCert`, the script finds `signtool.exe` on `PATH` or in the newest Windows 10/11
 SDK under `%ProgramFiles(x86)%\Windows Kits\10\bin\<version>\x64`. It signs a staged
@@ -228,7 +233,7 @@ unless noted. Everything below passed:
 Not verified yet:
 
 - Signing with a real, trusted code-signing certificate and a timestamp server (the
-  verify step and signing the MSI itself).
+  verify step and signing the MSI itself). Not planned: the MSI is unsigned by decision.
 - The rollback of an uninstall (the `P2pUninstallServiceRollback` action).
 - The release job's MSI step on a hosted runner. The `release-artifacts` Windows leg now
   installs WiX 5.0.2 and builds and uploads an unsigned MSI; its commands were run locally,

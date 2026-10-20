@@ -492,7 +492,7 @@ standard user. Use an elevated shell.
 - **Runtime ACL checks rely on an old crate.** They use `windows-permissions` 0.2.4, pinned
   exactly; it has been unmaintained since 2021. Any panic or error inside it is treated as a
   refusal.
-- **The MSI is unsigned and new.** There is an MSI (P2-001, built from
+- **The MSI is unsigned (on purpose) and new.** There is an MSI (P2-001, built from
   `packaging/windows/wix` in the repository; see its README) that installs the binaries and
   runs the same `install.ps1` as the `.zip`, with `msiexec /i p2ptunnel.msi ROLE=answer|offer
   /qn`. It has been tested locally for install, upgrade, uninstall, repair and rollback in
