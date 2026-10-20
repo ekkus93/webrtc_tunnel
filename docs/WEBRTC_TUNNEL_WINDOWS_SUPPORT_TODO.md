@@ -683,8 +683,9 @@ code 0); and signing works with a self-signed certificate up to the `signtool ve
 trust check. Not verified: signing with a real, trusted certificate (the user must supply
 one), and the uninstall rollback action. The Windows leg
 of `release-artifacts` now also builds the MSI (WiX 5.0.2, no EULA, unsigned) and uploads it
-as an artifact and a release asset; the step's own commands ran locally, but the job runs
-only on a tag, so it has not run on a hosted runner. Known cosmetic issues: square-bracketed words in `install.ps1`'s output (such
+as an artifact and a release asset. The same scripts ran on a hosted runner in the
+`package-windows` dry run (CI #672), including an MSI install and uninstall there; only the
+final upload to a GitHub Release is still tag-only. Known cosmetic issues: square-bracketed words in `install.ps1`'s output (such
 as `[node]`) are blanked in the MSI log, and the remembered role is stored as typed
 (`ANSWER`). `WINDOWS.md` is now installed under `docs\` as in the zip; the rebuilt MSI's
 File and Component tables confirm it, but the install tests were not re-run on that build.
@@ -752,7 +753,14 @@ command the verifier ran was `sc.exe query p2ptunnel`, which returns non-zero by
 the service is gone, and GitHub's `pwsh` step wrapper ends with `exit $LASTEXITCODE`. The
 verifier now ends with an explicit `exit 0` (reproduced locally with an elevated, GitHub-style
 wrapper: old script exits 1, fixed script exits 0) and prints the relevant MSI log lines
-when an install or uninstall does fail. Not yet re-run on a runner after the fix.
+when an install or uninstall does fail.
+
+**Hosted-runner dry run passes (2026-10-20, CI #672, `ef41348`).** `package-windows` on
+`windows-latest`: release build 8 min, zip 2 s, WiX install plus MSI build 48 s, verifier
+9 s (all checks, including the MSI install and uninstall), artifact upload 3 s. It kept a
+40.9 MB workflow artifact with the zip and the MSI. The only parts of the release path that
+have still not run on a runner are the tag-gated ones: the `needs:` chain (all other jobs,
+including the Docker and emulator E2Es, must pass) and the upload to a GitHub Release.
 
 ### Files
 ```text
@@ -765,8 +773,8 @@ when an install or uninstall does fail. Not yet re-run on a runner after the fix
 ### Acceptance criteria
 - [ ] Tagged builds publish a Windows artifact. (The packaging and verification can be run
       without a tag via `package-windows`; the publish step itself needs a real tag.)
-- [x] Archive format is appropriate for Windows (zip, not tar.gz). (Verified locally; to be
-      confirmed by a `package-windows` run on a hosted runner.)
+- [x] Archive format is appropriate for Windows (zip, not tar.gz). (Verified locally and by
+      the `package-windows` dry run on a hosted runner, CI #672.)
 
 ---
 

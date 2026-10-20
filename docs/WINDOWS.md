@@ -492,11 +492,13 @@ standard user. Use an elevated shell.
 - **The MSI is unsigned and new.** There is an MSI (P2-001, built from
   `packaging/windows/wix` in the repository; see its README) that installs the binaries and
   runs the same `install.ps1` as the `.zip`, with `msiexec /i p2ptunnel.msi ROLE=answer|offer
-  /qn`. It has been tested locally for install, upgrade, uninstall and repair with the offer
-  role, but it is not code-signed, so SmartScreen will warn. Tagged releases are set up to
-  publish a Windows `.zip` and this `.msi` (P2-001, P2-002), but that release job has not run
-  on a tag yet. Do not install both the `.zip` and the `.msi` on one machine; the MSI refuses
-  when a `p2ptunnel` service it did not install already exists.
+  /qn`. It has been tested locally for install, upgrade, uninstall, repair and rollback in
+  both roles, and a build-and-verify dry run (including an install and uninstall) passes on a
+  GitHub-hosted Windows runner, but it is not code-signed, so SmartScreen will warn. Tagged
+  releases are set up to publish a Windows `.zip` and this `.msi` (P2-001, P2-002); that
+  publish step has not run on a real tag yet. Do not install both the `.zip` and the `.msi`
+  on one machine; the MSI refuses when a `p2ptunnel` service it did not install already
+  exists.
 - **The Windows shutdown lifecycle test needs an elevated run.** The Unix signal test does
   not run on Windows. The Service Control Manager test (P1-002) passes when run from an
   elevated shell and skips otherwise; it has not yet run in CI.
