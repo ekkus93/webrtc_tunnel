@@ -490,7 +490,7 @@ standard user. Use an elevated shell.
   exactly; it has been unmaintained since 2021. Any panic or error inside it is treated as a
   refusal.
 - **The MSI is unsigned and new.** There is an MSI (P2-001, built from
-  [`packaging/windows/wix`](../packaging/windows/wix/README.md)) that installs the binaries and
+  `packaging/windows/wix` in the repository; see its README) that installs the binaries and
   runs the same `install.ps1` as the `.zip`, with `msiexec /i p2ptunnel.msi ROLE=answer|offer
   /qn`. It has been tested locally for install, upgrade, uninstall and repair with the offer
   role, but it is not code-signed, so SmartScreen will warn. Tagged releases are set up to

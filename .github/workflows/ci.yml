@@ -19,6 +19,11 @@ on:
         required: false
         default: false
         type: boolean
+      package_release:
+        description: Build and verify the Windows release zip and MSI on a hosted runner, without publishing anything
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -580,54 +585,30 @@ jobs:
           cp target/release/p2p-answer "$artifact_dir/"
           cp README.md LICENSE "$artifact_dir/"
           tar -czf "${artifact_dir}.tar.gz" "$artifact_dir"
-      # Windows gets a .zip (the native archive format; Explorer opens it without
-      # extra tools) and also ships the service wrapper plus its installer scripts.
-      # The scripts keep the repository layout (packaging\windows\ next to
-      # docs\examples\): install.ps1 dot-sources p2ptunnel-common.ps1 from its own
-      # directory and finds its default config template at ..\..\docs\examples.
+      # Windows gets a .zip (the native archive format; Explorer opens it without extra
+      # tools), an MSI, and a verification pass over both. All of it is done by scripts in
+      # the repository, shared with the package-windows dry-run job below, so there is one
+      # implementation: build-release-zip.ps1 (the zip, in the layout install.ps1 expects),
+      # install-wix.ps1 + build-msi.ps1 (the MSI) and verify-windows-release.ps1 (layout,
+      # docs links, `--help`, and an MSI install/uninstall on this runner). WiX 5.0.2 is
+      # pinned deliberately: it is MS-RL and needs no EULA, whereas WiX 6 and later fall
+      # under the Open Source Maintenance Fee EULA, which build-msi.ps1 never accepts for
+      # you. The MSI is UNSIGNED (build-msi.ps1 only signs with -SignCert); SmartScreen will
+      # warn on it.
       - name: Package release binaries (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $artifactDir = "rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}"
-          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-          foreach ($bin in 'p2pctl', 'p2p-offer', 'p2p-answer', 'p2p-service-windows') {
-            Copy-Item "target/release/$bin.exe" $artifactDir
-          }
-          Copy-Item README.md, LICENSE $artifactDir
-          $serviceDir = Join-Path $artifactDir 'packaging/windows'
-          New-Item -ItemType Directory -Force -Path $serviceDir | Out-Null
-          $scripts = @(Get-ChildItem packaging/windows -Filter *.ps1)
-          if ($scripts.Count -eq 0) { throw 'no packaging/windows/*.ps1 scripts found' }
-          $scripts | Copy-Item -Destination $serviceDir
-          Copy-Item packaging/windows/README.md $serviceDir
-          $examplesDir = Join-Path $artifactDir 'docs/examples'
-          New-Item -ItemType Directory -Force -Path $examplesDir | Out-Null
-          Copy-Item docs/examples/answer-config.toml, docs/examples/offer-config.toml $examplesDir
-          # docs/WINDOWS.md keeps its repository-relative links (../README.md,
-          # ../packaging/windows/README.md, examples/) only if it stays in docs/.
-          Copy-Item docs/WINDOWS.md (Join-Path $artifactDir 'docs')
-          Compress-Archive -Path $artifactDir -DestinationPath "$artifactDir.zip"
-      # The MSI wraps the same files and runs the same install.ps1 / uninstall.ps1 (see
-      # packaging/windows/wix/README.md). WiX 5.0.2 is pinned deliberately: it is MS-RL and
-      # needs no EULA, whereas WiX 6 and later fall under the Open Source Maintenance Fee
-      # EULA, which build-msi.ps1 never accepts for you. The Util extension must match the
-      # tool's version. The MSI is UNSIGNED (build-msi.ps1 only signs with -SignCert);
-      # SmartScreen will warn on it.
+        run: ./packaging/windows/build-release-zip.ps1 -Label "rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}"
       - name: Build MSI (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          dotnet tool update --global wix --version 5.0.2
-          if ($LASTEXITCODE -ne 0) { throw "installing the wix tool failed ($LASTEXITCODE)" }
-          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
-          wix extension add -g WixToolset.Util.wixext/5.0.2
-          if ($LASTEXITCODE -ne 0) { throw "adding the WiX Util extension failed ($LASTEXITCODE)" }
-          $msi = "rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.msi"
-          ./packaging/windows/wix/build-msi.ps1 -BinDir target/release -OutputPath $msi
-          if (-not (Test-Path $msi)) { throw "build-msi.ps1 did not produce $msi" }
+          ./packaging/windows/wix/install-wix.ps1
+          ./packaging/windows/wix/build-msi.ps1 -BinDir target/release -OutputPath "rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.msi"
+      - name: Verify the zip and the MSI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/verify-windows-release.ps1 -Zip "rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.zip" -Msi "rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.msi"
       - name: Upload release artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -649,3 +630,42 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: rust_webrtc-${{ github.ref_name }}-${{ matrix.os }}.msi
+
+  # Builds and verifies exactly what the Windows leg of release-artifacts would publish, on a
+  # hosted runner, without a tag and without publishing anything. Run it by hand: Actions >
+  # CI > Run workflow > tick "package_release". The zip and MSI are kept as workflow
+  # artifacts for a week. Only the final upload to a GitHub Release stays tag-only.
+  package-windows:
+    name: Package (Windows, no publish)
+    if: github.event_name == 'workflow_dispatch' && inputs.package_release
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: cargo build --release --workspace
+      - name: Package release binaries (Windows)
+        shell: pwsh
+        run: ./packaging/windows/build-release-zip.ps1 -Label "rust_webrtc-dryrun-windows-latest"
+      - name: Build MSI (Windows)
+        shell: pwsh
+        run: |
+          ./packaging/windows/wix/install-wix.ps1
+          ./packaging/windows/wix/build-msi.ps1 -BinDir target/release -OutputPath "rust_webrtc-dryrun-windows-latest.msi"
+      - name: Verify the zip and the MSI (Windows)
+        shell: pwsh
+        run: ./scripts/verify-windows-release.ps1 -Zip "rust_webrtc-dryrun-windows-latest.zip" -Msi "rust_webrtc-dryrun-windows-latest.msi"
+      - name: Upload the dry-run artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust_webrtc-dryrun-windows-latest
+          path: |
+            rust_webrtc-dryrun-windows-latest.zip
+            rust_webrtc-dryrun-windows-latest.msi
+          retention-days: 7

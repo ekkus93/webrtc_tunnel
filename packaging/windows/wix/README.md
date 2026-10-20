@@ -45,8 +45,9 @@ service.** The config still holds the example values. Finish the steps that
 
 ## Build
 
-You need the release binaries and the WiX Toolset CLI, v4 or later. Install the CLI and its
-Util extension at the **same** version:
+You need the release binaries and the WiX Toolset CLI, v4 or later. [`install-wix.ps1`](install-wix.ps1)
+installs the pinned, tested version (5.0.2) and puts it on `PATH`; CI uses it. By hand,
+install the CLI and its Util extension at the **same** version:
 
 ```powershell
 dotnet tool install --global wix --version <version>

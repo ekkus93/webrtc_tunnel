@@ -721,12 +721,25 @@ unchanged, produced a 21.8 MB zip with `p2pctl`, `p2p-offer`, `p2p-answer`,
 `docs/WINDOWS.md`. Extracted into an empty directory, the three daemons/tools run, the
 scripts parse, and `install.ps1`'s default config templates (`..\..\docs\examples`) resolve.
 That run found one bug, now fixed: `WINDOWS.md` was placed at the zip root, which broke its
-relative links, so it now ships as `docs/WINDOWS.md`. Not covered locally: the hosted
-runner, `upload-artifact`, the release upload, and running `install.ps1` from the
-extracted tree. The local run used Windows PowerShell 5.1, whose `Compress-Archive` writes
-backslash entry separators; the runner's `pwsh` 7 writes forward slashes. Neither the
-binaries nor the installer care, but check an Explorer extraction of the first real
-release.
+relative links, so it now ships as `docs/WINDOWS.md`.
+
+**Dry-run job (2026-10-20).** The packaging is now done by scripts, not inline YAML:
+`packaging/windows/build-release-zip.ps1` (the zip), `packaging/windows/wix/install-wix.ps1`
+plus `build-msi.ps1` (the MSI) and `scripts/verify-windows-release.ps1`, which checks the
+zip (entry names use forward slashes and sit under one folder; exactly the expected files;
+the three tools run `--help`; the scripts parse; `install.ps1`'s default templates resolve;
+every relative link in `docs/WINDOWS.md` to a shipped file resolves) and, on an elevated
+machine, installs the MSI with `ROLE=answer`, checks the service, files and
+`%ProgramData%` ACL, then uninstalls it with `REMOVEDATA=1` and checks nothing is left.
+`release-artifacts` (Windows leg) and the new **`package-windows`** job both call these
+scripts, so there is one implementation. `package-windows` runs only on a manual dispatch
+with the `package_release` input ticked, on `windows-latest`, builds and verifies the zip
+and MSI exactly as the release would, and uploads them as 7-day workflow artifacts; it
+publishes nothing. The scripts ran locally (zip checks and a real MSI install/uninstall).
+Writing the entries by hand fixed a bug found along the way: `ZipFile.CreateFromDirectory`
+and `Compress-Archive` both write backslash entry names under Windows PowerShell 5.1. Not
+yet run on a hosted runner. Still only possible with a real tag: the upload to a GitHub
+Release (`softprops/action-gh-release`) and the `needs:` chain that gates it.
 
 ### Files
 ```text
@@ -737,9 +750,10 @@ release.
 `release-artifacts` currently builds `ubuntu-latest` and `macos-latest` only.
 
 ### Acceptance criteria
-- [ ] Tagged builds publish a Windows artifact.
-- [x] Archive format is appropriate for Windows (zip, not tar.gz). (In the workflow; not
-      yet run on a tag.)
+- [ ] Tagged builds publish a Windows artifact. (The packaging and verification can be run
+      without a tag via `package-windows`; the publish step itself needs a real tag.)
+- [x] Archive format is appropriate for Windows (zip, not tar.gz). (Verified locally; to be
+      confirmed by a `package-windows` run on a hosted runner.)
 
 ---
 
