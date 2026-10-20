@@ -741,6 +741,19 @@ and `Compress-Archive` both write backslash entry names under Windows PowerShell
 yet run on a hosted runner. Still only possible with a real tag: the upload to a GitHub
 Release (`softprops/action-gh-release`) and the `needs:` chain that gates it.
 
+**First hosted-runner dry runs (2026-10-20, CI #670, `ec695fd`).** On `windows-latest` the
+full release build (5 to 8 min), the zip, the WiX 5.0.2 install and the MSI build all
+succeeded, and the verifier's own output showed every check passing: zip layout and
+forward-slash entries, the three tools' `--help`, the docs links, `msiexec /i ROLE=answer`,
+the service, the locked-down `%ProgramData%\p2ptunnel` ACL and a clean `msiexec /x
+REMOVEDATA=1`. That is the MSI lifecycle running on a hosted machine for the first time.
+The job still failed, twice, with exit code 1 after "all checks passed": the last native
+command the verifier ran was `sc.exe query p2ptunnel`, which returns non-zero by design once
+the service is gone, and GitHub's `pwsh` step wrapper ends with `exit $LASTEXITCODE`. The
+verifier now ends with an explicit `exit 0` (reproduced locally with an elevated, GitHub-style
+wrapper: old script exits 1, fixed script exits 0) and prints the relevant MSI log lines
+when an install or uninstall does fail. Not yet re-run on a runner after the fix.
+
 ### Files
 ```text
 .github/workflows/ci.yml

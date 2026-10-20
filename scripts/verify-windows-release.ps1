@@ -44,6 +44,16 @@ $problems = New-Object System.Collections.Generic.List[string]
 function Step([string]$text) { Write-Host "[verify-windows-release] $text" }
 function Fail([string]$text) { $script:problems.Add($text); Write-Host "[verify-windows-release] FAIL: $text" }
 
+# The lines of an MSI log that explain a failure: the install/uninstall scripts' own output
+# (captured by WixQuietExec) and the failing action. In CI the log file is otherwise unreadable.
+function Show-MsiLog([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { Write-Host "[verify-windows-release] (no MSI log at $path)"; return }
+    Write-Host "[verify-windows-release] --- relevant lines of $path ---"
+    Select-String -LiteralPath $path -Pattern 'WixQuietExec|\[p2ptunnel\]|Return value 3|Error 1[0-9]{3}|CustomAction .* returned actual error|Launch condition' |
+        ForEach-Object { $_.Line.Trim() } | Select-Object -First 60 | ForEach-Object { Write-Host "    $_" }
+    Write-Host '[verify-windows-release] --- end of log excerpt ---'
+}
+
 # ---- Zip -----------------------------------------------------------------------------
 
 $zipPath = (Resolve-Path -LiteralPath $Zip).ProviderPath
@@ -146,6 +156,7 @@ if ($Msi -and -not $SkipMsiInstall) {
         $install = Start-Process msiexec -ArgumentList '/i', "`"$msiPath`"", 'ROLE=answer', '/qn', '/l*v', "`"$installLog`"" -Wait -PassThru
         if ($install.ExitCode -ne 0) {
             Fail "msiexec /i exited $($install.ExitCode); see $installLog"
+            Show-MsiLog $installLog
         } else {
             $installed = $true
             Step 'msiexec /i ROLE=answer ok'
@@ -167,7 +178,10 @@ if ($Msi -and -not $SkipMsiInstall) {
     } finally {
         if ($installed) {
             $uninstall = Start-Process msiexec -ArgumentList '/x', "`"$msiPath`"", 'REMOVEDATA=1', '/qn', '/l*v', "`"$uninstallLog`"" -Wait -PassThru
-            if ($uninstall.ExitCode -ne 0) { Fail "msiexec /x exited $($uninstall.ExitCode); see $uninstallLog" }
+            if ($uninstall.ExitCode -ne 0) {
+                Fail "msiexec /x exited $($uninstall.ExitCode); see $uninstallLog"
+                Show-MsiLog $uninstallLog
+            }
             if (sc.exe query p2ptunnel 2>$null | Select-String 'SERVICE_NAME') { Fail 'the p2ptunnel service survived the uninstall' }
             if (Test-Path -LiteralPath $installDir) { Fail "$installDir survived the uninstall" }
             if (Test-Path -LiteralPath $dataRoot) { Fail "$dataRoot survived uninstall with REMOVEDATA=1" }
@@ -180,3 +194,8 @@ if ($problems.Count -gt 0) {
     throw ("verify-windows-release found $($problems.Count) problem(s):`n - " + ($problems -join "`n - "))
 }
 Step 'all checks passed'
+# Any failure above throws, so reaching here is success. The explicit exit matters: the last
+# native command that ran is often `sc.exe query p2ptunnel` (non-zero by design once the
+# service is gone), and GitHub's pwsh step wrapper ends with `exit $LASTEXITCODE`, which would
+# otherwise fail the step after every check passed.
+exit 0
