@@ -482,10 +482,13 @@ standard user. Use an elevated shell.
 - **The service has been through most of its acceptance list.** Elevated runs on
   2026-10-17 installed it, ran tunnels as `NT SERVICE\p2ptunnel` in the offer role (with
   the scripts) and in the answer role (installed with the MSI), stopped it cleanly (exit
-  code 0, no listener left) and uninstalled it with no leftovers. Still open (TODO P0-007,
-  P0-008): surviving logoff and running with no user logged in, and an actual read attempt
-  on the identity by another account (the ACL was checked with `icacls`). The installer
-  README lists commands for each.
+  code 0, no listener left) and uninstalled it with no leftovers. Real read, list, write and
+  create attempts on the installed identity directory by a de-elevated token of the
+  administrator account, `LOCAL SERVICE` and `NETWORK SERVICE` were all denied, and the
+  service runs in session 0, outside any user session. Still open (TODO P0-008): surviving
+  an actual sign-out, and running with nobody logged in after a restart. Run
+  `tests/e2e/windows/service-logoff-check.ps1 -Phase Before`, sign out and back in (or
+  restart), then `-Phase After`, to check it on your machine.
 - **Runtime ACL checks rely on an old crate.** They use `windows-permissions` 0.2.4, pinned
   exactly; it has been unmaintained since 2021. Any panic or error inside it is treated as a
   refusal.

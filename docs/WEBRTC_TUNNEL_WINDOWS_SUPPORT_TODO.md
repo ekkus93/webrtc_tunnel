@@ -437,8 +437,11 @@ statically. CI runs that check in `test-windows`. The install also sets
 second install, start, stop, a second start/stop and `uninstall.ps1 -RemoveData` all behaved
 as specified; see the ticked criteria. Delayed-auto start, restart-on-failure actions
 (5 s, 5 s, 30 s) and the failure flag were read back with `sc.exe qc`, `qfailure` and
-`qfailureflag`. Not yet shown: an actual read attempt by another account, and the
-logoff/no-user-logged-in criterion.
+`qfailureflag`. **2026-10-20 follow-up (elevated):** real read attempts by principals that
+are not in the ACL were all denied, and the service process was confirmed to live in session
+0 (details under the criteria below). Not yet shown: the logoff/no-user-logged-in criterion
+through an actual sign-out (a before/after script, `tests/e2e/windows/service-logoff-check.ps1`,
+is ready for it).
 
 ### Files
 ```text
@@ -470,16 +473,37 @@ Install the service under `NT SERVICE\p2ptunnel` and lock down the config direct
   appearing to emit nothing. See spec §6.3.
 
 ### Acceptance criteria
-- [ ] A standard non-admin user cannot read the installed identity file. Verify with
+- [x] A standard non-admin user cannot read the installed identity file. Verify with
       `icacls` and by attempting a read as another account. (`icacls` on the identity
       lists only SYSTEM, Administrators and the service account, with no Users,
-      Authenticated Users or Everyone entry. No read was attempted as another account.)
+      Authenticated Users or Everyone entry. On 2026-10-20, with the answer role installed
+      by `install.ps1` and `p2pctl keygen --dir` run in place, three principals that are
+      not in the ACL were tried, each reading `identity`, `identity.pub`,
+      `authorized_keys` and `config.toml`, listing the directory, appending to `identity`
+      and creating a file in the directory: a basic-user token of the signed-in
+      administrator account (`runas /trustlevel:0x20000`, Administrators group not enabled),
+      `NT AUTHORITY\LOCAL SERVICE` and `NT AUTHORITY\NETWORK SERVICE` (the latter two
+      through a throwaway scheduled task). Every one of those was denied, while a control
+      file in a directory those accounts may read was readable by all three, so the probes
+      really ran as those accounts. The service kept running and the identity was
+      unchanged. Caveat: no new local user account was created for this, so it is not a
+      password-based sign-in by a second human user; it is the same kernel access check.)
 - [x] The service starts and reaches steady state under the virtual account. (The
       `p2p-service-windows` process owner was `NT SERVICE\p2ptunnel`; `tunnel_open`.)
 - [x] Log output lands in the role's log file, and is not lost to a nonexistent console.
       (`state\log\p2ptunnel.log` was written.)
-- [ ] Service runs with no user logged in and survives logoff. (Not tested; the runs were
-      made from a logged-in session.)
+- [ ] Service runs with no user logged in and survives logoff. (Partly shown, not through an
+      actual sign-out. Verified 2026-10-20: the running `p2p-service-windows.exe` is in
+      **session 0** (the signed-in desktop's `explorer.exe` is in session 1), its parent is
+      `services.exe`, it is owned by the virtual account `p2ptunnel`, and it was started by
+      the SCM, not by the user's session; start type is delayed-auto. A sign-out ends only
+      session 1 and its processes. The direct proof needs a real sign-out, which cannot be
+      done from inside the session that is running the test:
+      `tests/e2e/windows/service-logoff-check.ps1 -Phase Before`, sign out and in again,
+      then `-Phase After`. It checks the same process id and start time, session 0, and a
+      new interactive logon id, and its verdict logic was exercised against a real service
+      with simulated inputs. After a restart it checks the service started before the first
+      logon of that boot. Not yet run through a real sign-out or restart.)
 - [x] Uninstall removes the service and does not leave the account or ACLs behind.
       (`sc.exe query` returns 1060 afterwards and `%ProgramData%\p2ptunnel` is gone. The
       installer leaves the binary in `-InstallDir` by design.)

@@ -55,3 +55,22 @@ in-process — it calls `run_offer_daemon` / `run_answer_daemon` directly and ge
 its certs with rcgen — and runs in CI's `test-windows` job. This script is the
 real-process complement: the shipped executables, `p2pctl` key management, and TOML
 configs with Windows paths, which the in-process test does not exercise.
+
+## `service-logoff-check.ps1` — does the service survive a sign-out? (P0-008)
+
+A manual two-phase check, because a script cannot sign you out and keep running. With the
+`p2ptunnel` service installed and started (see `packaging/windows/README.md`):
+
+```powershell
+.\tests\e2e\windows\service-logoff-check.ps1 -Phase Before   # records the service process
+# Sign out of Windows (a real sign-out, not Lock or Switch user) and sign back in.
+.\tests\e2e\windows\service-logoff-check.ps1 -Phase After    # compares
+```
+
+It needs no elevation. `After` prints a verdict and sets the exit code: `PASS (logoff)`
+(0) when the same process, still in session 0, is running and a new interactive logon id
+has appeared; `INCONCLUSIVE` (2) when no new logon has happened yet; `FAIL` (1) when the
+process was replaced, is in the wrong session, or the service is not running. After a
+**Restart** (not Shut down, because of Fast Startup) it instead checks that this boot's
+service process started before the first interactive logon, that is, with nobody signed in.
+"A new logon" is a new Windows logon id, which does not depend on the system clock.
