@@ -67,7 +67,9 @@ A manual two-phase check, because a script cannot sign you out and keep running.
 .\tests\e2e\windows\service-logoff-check.ps1 -Phase After    # compares
 ```
 
-It needs no elevation. `After` prints a verdict and sets the exit code: `PASS (logoff)`
+It needs no elevation (starting the service does), and was checked with a non-admin token.
+Run both phases the same way: an elevated shell sees more logon sessions than a normal one,
+so a run that mixes the two reports `INCONCLUSIVE`. `After` prints a verdict and sets the exit code: `PASS (logoff)`
 (0) when the same process, still in session 0, is running and a new interactive logon id
 has appeared; `INCONCLUSIVE` (2) when no new logon has happened yet; `FAIL` (1) when the
 process was replaced, is in the wrong session, or the service is not running. After a

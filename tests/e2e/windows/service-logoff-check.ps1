@@ -23,7 +23,9 @@ verdict:
   INCONCLUSIVE   no new interactive logon since the baseline: sign out and back in first.
   FAIL           anything else, with the reason.
 
-Neither phase needs elevation. "Sign out" must be a real sign-out (Start > your name > Sign
+Neither phase needs elevation (starting the service does). Run both phases the same way: an
+elevated shell sees more logon sessions than a normal one, so a run that mixes the two
+reports INCONCLUSIVE. "Sign out" must be a real sign-out (Start > your name > Sign
 out), not Lock and not Switch user. For the restart case use Restart, not Shut down: Fast
 Startup can make a shutdown and power-on keep the user session's state.
 
@@ -51,6 +53,11 @@ function Get-ServiceProcess {
     $process = $null
     if ($processId -gt 0) { $process = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue }
     return @{ State = $state; Process = $process }
+}
+
+function Test-Elevated {
+    ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 function Get-InteractiveLogons {
@@ -89,6 +96,9 @@ if ($Phase -eq 'Before') {
         # Logon ids are unique for the life of a boot, so a new one proves a new logon even if
         # the system clock was stepped in between (which timestamps cannot).
         interactiveLogonIds = @(Get-InteractiveLogons | ForEach-Object { $_.LogonId })
+        # An elevated shell sees more logon sessions than a normal one, so the two phases must
+        # run the same way or the extra sessions would look like new logons.
+        elevated       = (Test-Elevated)
     }
     $baseline | ConvertTo-Json | Set-Content -LiteralPath $baselinePath -Encoding utf8
     Write-Host "[logoff-check] baseline written to $baselinePath"
@@ -121,7 +131,9 @@ if ($current.Process) {
 }
 
 $verdict = $null
-if ($current.State -ne 'RUNNING' -or $null -eq $current.Process) {
+if ($null -ne $baseline.elevated -and [bool]$baseline.elevated -ne (Test-Elevated)) {
+    $verdict = "INCONCLUSIVE: -Phase Before ran $(if ($baseline.elevated) { 'elevated' } else { 'without elevation' }) but this run is $(if (Test-Elevated) { 'elevated' } else { 'not elevated' }); an elevated shell sees more logon sessions, so the two cannot be compared. Run both phases the same way."
+} elseif ($current.State -ne 'RUNNING' -or $null -eq $current.Process) {
     $verdict = "FAIL: the service is $($current.State) after the sign-out or restart."
 } elseif ($bootNow -gt $baselineBoot.AddSeconds(5)) {
     # The machine restarted: the process must be new, and must predate the first logon of this boot.
